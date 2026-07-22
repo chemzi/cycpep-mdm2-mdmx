@@ -33,9 +33,6 @@ query ($id: String!) {
         }
       }
     }
-    nonpolymer_entities {
-      pdbx_description
-    }
   }
 }
 """
