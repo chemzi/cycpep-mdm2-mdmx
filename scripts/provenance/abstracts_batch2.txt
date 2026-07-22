@@ -1,0 +1,128 @@
+1. Acta Pharm Sin B. 2021 Sep;11(9):2655-2669. doi: 10.1016/j.apsb.2021.06.010. 
+Epub 2021 Jun 18.
+
+Design of ultrahigh-affinity and dual-specificity peptide antagonists of MDM2 
+and MDMX for P53 activation and tumor suppression.
+
+Li X(1)(2), Gohain N(2), Chen S(3), Li Y(4), Zhao X(4)(5), Li B(5), Tolbert 
+WD(2), He W(6), Pazgier M(2), Hu H(4), Lu W(7).
+
+Author information:
+(1)School of Pharmacy, Second Military Medical University, Shanghai 200433, 
+China.
+(2)Institute of Human Virology and Department of Biochemistry and Molecular 
+Biology, University of Maryland School of Medicine, Baltimore, MD 21201, USA.
+(3)School of Medicine, Shanghai University, Shanghai 200444, China.
+(4)Institute of Translational Medicine, Shanghai University, Shanghai 200444, 
+China.
+(5)State Key Laboratory of Rare Earth Resource Utilization, Changchun Institute 
+of Applied Chemistry, Chinese Academy of Sciences, Changchun 130022, China.
+(6)Department of Talent Highland, the First Affiliated Hospital of Xi'an 
+Jiaotong University, Xi'an 710061, China.
+(7)Key Laboratory of Medical Molecular Virology (MOE/NHC/CAMS) of School of 
+Basic Medical Sciences and Shanghai Institute of Infectious Disease and 
+Biosecurity of School of Public Health, Fudan University, Shanghai 200032, 
+China.
+
+Peptide inhibition of the interactions of the tumor suppressor protein P53 with 
+its negative regulators MDM2 and MDMX activates P53 in vitro and in vivo, 
+representing a viable therapeutic strategy for cancer treatment. Using phage 
+display techniques, we previously identified a potent peptide activator of P53, 
+termed PMI (TSFAEYWNLLSP), with binding affinities for both MDM2 and MDMX in the 
+low nanomolar concentration range. Here we report an ultrahigh affinity, 
+dual-specificity peptide antagonist of MDM2 and MDMX obtained through systematic 
+mutational analysis and additivity-based molecular design. Functional assays of 
+over 100 peptide analogs of PMI using surface plasmon resonance and fluorescence 
+polarization techniques yielded a dodecameric peptide termed PMI-M3 
+(LTFLEYWAQLMQ) that bound to MDM2 and MDMX with K d values in the low picomolar 
+concentration range as verified by isothermal titration calorimetry. Co-crystal 
+structures of MDM2 and of MDMX in complex with PMI-M3 were solved at 1.65 and 
+3.0 Å resolution, respectively. Similar to PMI, PMI-M3 occupied the P53-binding 
+pocket of MDM2/MDMX, which was dominated energetically by intermolecular 
+interactions involving Phe3, Tyr6, Trp7, and Leu10. Notable differences in 
+binding between PMI-M3 and PMI were observed at other positions such as Leu4 and 
+Met11 with MDM2, and Leu1 and Met11 with MDMX, collectively contributing to a 
+significantly enhanced binding affinity of PMI-M3 for both proteins. By adding 
+lysine residues to both ends of PMI and PMI-M3 to improve their cellular uptake, 
+we obtained modified peptides termed PMI-2K (KTSFAEYWNLLSPK) and M3-2K 
+(KLTFLEYWAQLMQK). Compared with PMI-2K, M3-2K exhibited significantly improved 
+antitumor activities in vitro and in vivo in a P53-dependent manner. This 
+super-strong peptide inhibitor of the P53-MDM2/MDMX interactions may become, in 
+its own right, a powerful lead compound for anticancer drug development, and can 
+aid molecular design of other classes of P53 activators as well for anticancer 
+therapy.
+
+© 2021 Chinese Pharmaceutical Association and Institute of Materia Medica, 
+Chinese Academy of Medical Sciences. Production and hosting by Elsevier B.V.
+
+DOI: 10.1016/j.apsb.2021.06.010
+PMCID: PMC8463443
+PMID: 34589387
+
+
+2. Curr Top Med Chem. 2018;18(8):647-660. doi: 10.2174/1568026618666180604080119.
+
+An Update on MDMX and Dual MDM2/X Inhibitors.
+
+Espadinha M(1), Barcherini V(1), Lopes EA(1), Santos MMM(1).
+
+Author information:
+(1)Research Institute for Medicines (iMed.ULisboa), Faculty of Pharmacy, 
+Universidade de Lisboa. Av. Prof. Gama Pinto, 1649-003 Lisbon, Portugal.
+
+The tumor suppressor protein p53 is inactivated in all types of human cancers, 
+either by negative regulation, by mutation or deletion of its gene. 
+Specifically, in tumors that retain wild-type (wt) p53 status, p53 is 
+inactivated by interaction with negative regulators, such as MDM2 and MDMX. 
+These two proteins are found to be overexpressed in several different types of 
+cancers, and the restoration of p53 activity by inhibition of these proteins is 
+now considered an important approach for cancer treatment. The first studies 
+using this strategy to reactivate wt p53 were focused on the development of 
+small molecules that could inhibit MDM2. In this way, p53 could be liberated and 
+act again as a tumor suppressor. From these studies, nine small molecules have 
+reached clinical trials. More recently, MDMX was also identified as an important 
+therapeutic target to efficiently reactivate wt p53, and it is now considered 
+that, for full p53 reactivation, dual inhibition of MDM2 and MDMX is required. 
+In this review we will focus on the most recent advances in the discovery of 
+novel small molecules and stapled peptides that act as selective MDMX inhibitors 
+or as dual MDM2/X inhibitors.
+
+Copyright© Bentham Science Publishers; For any queries, please email at 
+epub@benthamscience.org.
+
+DOI: 10.2174/1568026618666180604080119
+PMID: 29866007 [Indexed for MEDLINE]
+
+
+3. Cells. 2025 Apr 12;14(8):583. doi: 10.3390/cells14080583.
+
+Strategies for p53 Activation and Targeted Inhibitors of the p53-Mdm2/MdmX 
+Interaction.
+
+Huang Y(1), Li W(1), Zhou Y(1), Bai J(1), Li N(1), Su Z(2), Cheng X(1).
+
+Author information:
+(1)Institute of Modern Fermentation Engineering and Future Foods, School of 
+Light Industry and Food Engineering, Guangxi University, No. 100, Daxuedong 
+Road, Nanning 530004, China.
+(2)School of Pharmaceutical Sciences and Institute of Materia Medica, Xinjiang 
+University, Urumqi 830017, China.
+
+p53 is a tumor suppressor gene and is regarded as one of the most crucial genes 
+in protecting humans against cancer. The protein Mdm2 and its homolog MdmX serve 
+as negative regulators of p53. In nearly half of cancer cells, there is an 
+overexpression of Mdm2 and MdmX, which inhibit p53 activity. Furthermore, Mdm2's 
+E3 ubiquitin ligase activity promotes the ubiquitination and degradation of p53. 
+Therefore, blocking the interaction between p53 and Mdm2/MdmX to prevent the 
+degradation of wild-type p53 is an effective strategy for inhibiting tumor 
+growth. This paper primarily discusses the regulatory relationship between p53, 
+MdmX and Mdm2, and provides a review of the current status of p53-Mdm2/MdmX 
+inhibitors. It aims to offer a theoretical foundation and research direction for 
+the future discovery and design of targeted inhibitors against the p53-Mdm2/MdmX 
+interaction.
+
+DOI: 10.3390/cells14080583
+PMCID: PMC12025665
+PMID: 40277907 [Indexed for MEDLINE]
+
+Conflict of interest statement: The authors declare no conflicts of interest.

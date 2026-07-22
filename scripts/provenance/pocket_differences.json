@@ -1,0 +1,102 @@
+{
+  "superposition_rmsd_A": 1.88,
+  "n_matched_CA": 85,
+  "residue_equivalence_pockets": [
+    [
+      "LEU54",
+      "MET53"
+    ],
+    [
+      "LEU57",
+      "LEU56"
+    ],
+    [
+      "GLY58",
+      "GLY57"
+    ],
+    [
+      "ILE61",
+      "ILE60"
+    ],
+    [
+      "MET62",
+      "MET61"
+    ],
+    [
+      "TYR67",
+      "TYR66"
+    ],
+    [
+      "GLN72",
+      "GLN71"
+    ],
+    [
+      "VAL75",
+      "VAL74"
+    ],
+    [
+      "VAL93",
+      "VAL92"
+    ],
+    [
+      "HIS96",
+      "PRO95"
+    ],
+    [
+      "ILE99",
+      "LEU98"
+    ],
+    [
+      "TYR100",
+      "TYR99"
+    ]
+  ],
+  "pocket_sasa": {
+    "Phe19_pocket": {
+      "MDM2": 322.8,
+      "MDMX": 327.8,
+      "diff_MDMX_minus_MDM2": 5.0
+    },
+    "Trp23_pocket": {
+      "MDM2": 164.8,
+      "MDMX": 179.6,
+      "diff_MDMX_minus_MDM2": 14.8
+    },
+    "Leu26_pocket": {
+      "MDM2": 393.0,
+      "MDMX": 284.0,
+      "diff_MDMX_minus_MDM2": -109.0
+    }
+  },
+  "gatekeeper": {
+    "ref": "MDM2 p53 Phe19 ring centroid",
+    "MDM2_Leu54_tip_to_Phe19_A": 10.89,
+    "MDMX_Met53_CE_to_Phe19_A": 9.9,
+    "delta_A": 0.98,
+    "interpretation": "positive delta => MDMX Met53 tip closer to Phe19 anchor (encroaches/narrows entrance)"
+  },
+  "leu26_floor": {
+    "ref": "MDM2 p53 Leu26 side-chain tip",
+    "MDM2_His96_to_Leu26_A": 5.44,
+    "MDMX_Tyr99_ring_to_Leu26_A": 5.17,
+    "delta_A": 0.27,
+    "interpretation": "positive delta => MDMX Tyr99 ring closer to Leu26 (fills floor, shallower pocket)"
+  },
+  "anchor_depth": {
+    "Phe19": {
+      "MDM2_A": 8.85,
+      "MDMX_A": 9.5,
+      "delta_MDM2_minus_MDMX": -0.65
+    },
+    "Trp23": {
+      "MDM2_A": 5.47,
+      "MDMX_A": 6.0,
+      "delta_MDM2_minus_MDMX": -0.54
+    },
+    "Leu26": {
+      "MDM2_A": 8.84,
+      "MDMX_A": 9.97,
+      "delta_MDM2_minus_MDMX": -1.13
+    }
+  }
+}

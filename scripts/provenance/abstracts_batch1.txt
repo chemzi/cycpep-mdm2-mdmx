@@ -1,0 +1,226 @@
+1. Proc Natl Acad Sci U S A. 2013 Sep 3;110(36):E3445-54. doi: 
+10.1073/pnas.1303002110. Epub 2013 Aug 14.
+
+Stapled α-helical peptide drug development: a potent dual inhibitor of MDM2 and 
+MDMX for p53-dependent cancer therapy.
+
+Chang YS(1), Graves B, Guerlavais V, Tovar C, Packman K, To KH, Olson KA, 
+Kesavan K, Gangurde P, Mukherjee A, Baker T, Darlak K, Elkin C, Filipovic Z, 
+Qureshi FZ, Cai H, Berry P, Feyfant E, Shi XE, Horstick J, Annis DA, Manning AM, 
+Fotouhi N, Nash H, Vassilev LT, Sawyer TK.
+
+Author information:
+(1)Aileron Therapeutics, Inc., Cambridge, MA 02139, USA. ychang@aileronrx.com
+
+Comment in
+    Nat Rev Drug Discov. 2013 Oct;12(10):741. doi: 10.1038/nrd4133.
+
+Stapled α-helical peptides have emerged as a promising new modality for a wide 
+range of therapeutic targets. Here, we report a potent and selective dual 
+inhibitor of MDM2 and MDMX, ATSP-7041, which effectively activates the p53 
+pathway in tumors in vitro and in vivo. Specifically, ATSP-7041 binds both MDM2 
+and MDMX with nanomolar affinities, shows submicromolar cellular activities in 
+cancer cell lines in the presence of serum, and demonstrates highly specific, 
+on-target mechanism of action. A high resolution (1.7-Å) X-ray crystal structure 
+reveals its molecular interactions with the target protein MDMX, including 
+multiple contacts with key amino acids as well as a role for the hydrocarbon 
+staple itself in target engagement. Most importantly, ATSP-7041 demonstrates 
+robust p53-dependent tumor growth suppression in MDM2/MDMX-overexpressing 
+xenograft cancer models, with a high correlation to on-target pharmacodynamic 
+activity, and possesses favorable pharmacokinetic and tissue distribution 
+properties. Overall, ATSP-7041 demonstrates in vitro and in vivo 
+proof-of-concept that stapled peptides can be developed as therapeutically 
+relevant inhibitors of protein-protein interaction and may offer a viable 
+modality for cancer therapy.
+
+DOI: 10.1073/pnas.1303002110
+PMCID: PMC3767549
+PMID: 23946421 [Indexed for MEDLINE]
+
+Conflict of interest statement: Conflict of interest statement: All authors are 
+employees of either Aileron Therapeutics, Inc. or Hoffmann-La Roche, Inc. and, 
+in each case, are shareholders of the company for which they work.
+
+
+2. Oncogene. 2017 Apr;36(15):2184-2190. doi: 10.1038/onc.2016.361. Epub 2016 Oct 
+10.
+
+Mechanistic validation of a clinical lead stapled peptide that reactivates p53 
+by dual HDM2 and HDMX targeting.
+
+Wachter F(1), Morgan AM(1), Godes M(1), Mourtada R(1)(2), Bird GH(1), Walensky 
+LD(1).
+
+Author information:
+(1)Department of Pediatric Oncology and the Linde Program in Cancer Chemical 
+Biology, Dana-Farber Cancer Institute, Boston, MA, USA.
+(2)The Harvard-MIT Program in Health Sciences and Technology, Massachusetts 
+Institute of Technology, Cambridge, MA, USA.
+
+Hydrocarbon-stapled peptides that display key residues of the p53 
+transactivation domain have emerged as bona fide clinical candidates for 
+reactivating the tumor suppression function of p53 in cancer by dual targeting 
+of the negative regulators HDM2 and HDMX. A recent study questioned the 
+mechanistic specificity of such stapled peptides based on interrogating their 
+capacity to disrupt p53/HDM2 and p53/HDMX complexes in living cells using a new 
+recombinase enhanced bimolecular luciferase complementation platform (ReBiL). 
+Here, we directly evaluate the cellular uptake, intracellular targeting 
+selectivity and p53-dependent cytotoxicity of the clinical prototype ATSP-7041. 
+We find that under standard serum-containing tissue culture conditions, 
+ATSP-7041 achieves intracellular access without membrane disruption, 
+dose-dependently dissociates both p53/HDM2 and p53/HDMX complexes but not an 
+unrelated protein complex in long-term ReBiL experiments, and is selectively 
+cytotoxic to cancer cells bearing wild-type p53 by inducing a surge in p53 
+protein level. These studies underscore the importance of a thorough stepwise 
+approach, including consideration of the time-dependence of cellular uptake and 
+intracellular distribution, in evaluating and advancing stapled peptides for 
+clinical translation.
+
+DOI: 10.1038/onc.2016.361
+PMCID: PMC5386833
+PMID: 27721413 [Indexed for MEDLINE]
+
+
+3. Bioorg Med Chem Lett. 2017 Oct 15;27(20):4678-4681. doi: 
+10.1016/j.bmcl.2017.09.014. Epub 2017 Sep 7.
+
+d-Amino acid mutation of PMI as potent dual peptide inhibitors of p53-MDM2/MDMX 
+interactions.
+
+Li X(1), Liu C(2), Chen S(2), Hu H(2), Su J(3), Zou Y(4).
+
+Author information:
+(1)Department of Organic Chemistry, College of Pharmacy, Second Military Medical 
+University, Shanghai 200433, People's Republic of China; Institute of Human 
+Virology, University of Maryland School of Medicine, 725 West Lombard Street, 
+Baltimore, MD 21201, United States.
+(2)Department of Organic Chemistry, College of Pharmacy, Second Military Medical 
+University, Shanghai 200433, People's Republic of China.
+(3)Changhai Hospital, Second Military Medical University, Shanghai 200433, 
+People's Republic of China. Electronic address: drsujiacan@163.com.
+(4)Department of Organic Chemistry, College of Pharmacy, Second Military Medical 
+University, Shanghai 200433, People's Republic of China. Electronic address: 
+zouyan@smmu.edu.cn.
+
+According to the previously reported potent dual l-peptide PMI of p53-MDM2/MDMX 
+interactions, a series of d-amino acid mutational PMI analogues, PMI-1-4, with 
+enhanced proteolytic resistence and in vitro tumor cell inhibitory activities 
+were reported, of which Liposome-PMI-1 showed a stronger inhibitory activity 
+against the U87 cell lines than Nutlin-3. This d-amino acid mutation strategy 
+may give a hand for enhancing the potential of peptide drugs.
+
+Copyright © 2017 Elsevier Ltd. All rights reserved.
+
+DOI: 10.1016/j.bmcl.2017.09.014
+PMID: 28916339 [Indexed for MEDLINE]
+
+
+4. J Biol Chem. 2010 Jan 15;285(3):2174-83. doi: 10.1074/jbc.M109.073056. Epub
+2009  Nov 12.
+
+Structure-based design of high affinity peptides inhibiting the interaction of 
+p53 with MDM2 and MDMX.
+
+Phan J(1), Li Z, Kasprzak A, Li B, Sebti S, Guida W, Schönbrunn E, Chen J.
+
+Author information:
+(1)Molecular Oncology, H. Lee Moffitt Cancer Center and Research Institute, 
+Tampa, Florida 33612, USA.
+
+MDM2 and MDMX function as key regulators of p53 by binding to its N terminus, 
+inhibiting its transcriptional activity, and promoting degradation. MDM2 and 
+MDMX overexpression or hyperactivation directly contributes to the loss of p53 
+function during the development of nearly 50% of human cancers. Recent studies 
+showed that disrupting p53-MDM2 and p53-MDMX interactions can lead to robust 
+activation of p53 but also revealed a need to develop novel dual specific or 
+MDMX-specific inhibitors. Using phage display we identified a 12-residue peptide 
+(pDI) with inhibitory activity against MDM2 and MDMX. The co-crystal structures 
+of the pDI and a single mutant derivative (pDI6W) liganded with the N-terminal 
+domains of human MDMX and MDM2 served as the basis for the design of 11 distinct 
+pDI-derivative peptides that were tested for inhibitory potential. The best 
+derivative (termed pDIQ) contained four amino acid substitutions and exhibited a 
+5-fold increase in potency over the parent peptide against both MDM2 (IC(50) = 8 
+nm) and MDMX (IC(50) = 110 nm). Further structural studies revealed key 
+molecular features enabling the high affinity binding of the pDIQ to these 
+proteins. These include large conformational changes of the pDIQ to reach into a 
+hydrophobic site unique to MDMX. The findings suggest new strategies toward the 
+rational design of small molecule inhibitors efficiently targeting MDMX.
+
+DOI: 10.1074/jbc.M109.073056
+PMCID: PMC2804373
+PMID: 19910468 [Indexed for MEDLINE]
+
+
+5. Bioorg Med Chem Lett. 2011 Mar 1;21(5):1472-5. doi:
+10.1016/j.bmcl.2011.01.004.  Epub 2011 Jan 7.
+
+Synthesis of cell-permeable stapled peptide dual inhibitors of the p53-Mdm2/Mdmx 
+interactions via photoinduced cycloaddition.
+
+Madden MM(1), Muppidi A, Li Z, Li X, Chen J, Lin Q.
+
+Author information:
+(1)Department of Chemistry, State University of New York at Buffalo, Buffalo, NY 
+14260, USA.
+
+We report the first application of a photoinduced 1,3-dipolar cycloaddition 
+reaction to 'staple' a peptide dual inhibitor of the p53-Mdm2/Mdmx interactions. 
+A series of stapled peptide inhibitors were efficiently synthesized and showed 
+excellent dual inhibitory activity in ELISA assay. Furthermore, the positively 
+charged, stapled peptides showed enhanced cellular uptake along with modest in 
+vivo activity.
+
+Copyright © 2011 Elsevier Ltd. All rights reserved.
+
+DOI: 10.1016/j.bmcl.2011.01.004
+PMCID: PMC3057119
+PMID: 21277201 [Indexed for MEDLINE]
+
+
+6. Life Sci. 2020 Mar 15;245:117358. doi: 10.1016/j.lfs.2020.117358. Epub 2020
+Jan  27.
+
+Design and development of high affinity dual anticancer peptide-inhibitors 
+against p53-MDM2/X interaction.
+
+Rasafar N(1), Barzegar A(2), Mehdizadeh Aghdam E(3).
+
+Author information:
+(1)Research Institute of Bioscience and Biotechnology, University of Tabriz, 
+Tabriz, Iran.
+(2)Research Institute of Bioscience and Biotechnology, University of Tabriz, 
+Tabriz, Iran. Electronic address: barzegar@tabrizu.ac.ir.
+(3)Molecular Medicine Research Center, Biomedicine Institute, Tabriz University 
+of Medical Sciences, Tabriz, Iran; Department of Pharmaceutical Biotechnology, 
+Faculty of Pharmacy, Tabriz University of Medical Sciences, Tabriz, Iran. 
+Electronic address: mehdizadehe@tbzmed.ac.ir.
+
+AIMS: Inhibition of P53-MDM2/X interaction is known as an effective cancer 
+therapy strategy. In this regard, pDI peptide was introduced previously with the 
+potential of targeting MDM2. In this research, the large-scale peptide mutation 
+screening was used to achieve the best sequence of pDI with the highest affinity 
+for inhibition activity against MDM2/X.
+MAIN METHODS: Three mutant peptides of pDI as dual inhibitor peptides including 
+single mutations of pDIm/4W, pDIm/11M and double mutations of pDIdm/4W11M were 
+presented with the high affinities to inhibit both MDM2/X. The selected mutants 
+were then evaluated comprehensively to confirm their ability as potent MDM2/X 
+inhibitors, using a theoretical simulation approach.
+KEY FINDINGS: MD simulations analyses confirmed their dual inhibition potential 
+against both MDM2/X interactions with p53 protein. The developed pDIm and mainly 
+pDIdm peptides showed stable conformations over the simulation time with 
+conserved secondary structure and effective interaction with MDM2/X by physical 
+binding such as hydrogen bonding. Besides, umbrella sampling free energy 
+calculation indicated higher binding energy, ΔGbinding, of pDIm-MDM2/X and 
+pDIdm-MDM2/X compared to pDI-MDM2/X.
+SIGNIFICANCE: The optimized and improved mutant pDI, pDIdm, with more effective 
+ΔGbinding values of -30 and -25 kcal/mol to MDMX and MDM2, respectively, is 
+recommended as a promising anticancer agent and suitable candidate for 
+experimental evaluations.
+
+Copyright © 2020 Elsevier Inc. All rights reserved.
+
+DOI: 10.1016/j.lfs.2020.117358
+PMID: 32001262 [Indexed for MEDLINE]
+
+Conflict of interest statement: Declaration of competing interest The authors 
+declare that they have no competing interests.

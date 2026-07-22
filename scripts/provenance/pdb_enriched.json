@@ -1,0 +1,4273 @@
+{
+  "MDM2": [
+    {
+      "pdb": "1RV1",
+      "resolution": 2.3,
+      "title": "CRYSTAL STRUCTURE OF HUMAN MDM2 WITH AN IMIDAZOLINE INHIBITOR",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "1RV1_1",
+          "length": 85,
+          "auth_chains": [
+            "A",
+            "B",
+            "C"
+          ],
+          "desc": "Ubiquitin-protein ligase E3 Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "ETLVRPKPELLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "1T4E",
+      "resolution": 2.6,
+      "title": "Structure of Human MDM2 in complex with a Benzodiazepine Inhibitor",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "1T4E_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "Ubiquitin-protein ligase E3 Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "1T4F",
+      "resolution": 1.9,
+      "title": "Structure of human MDM2 in complex with an optimized p53 peptide",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "1T4F_1",
+          "length": 110,
+          "auth_chains": [
+            "M"
+          ],
+          "desc": "Ubiquitin-protein ligase E3 Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "1T4F_2",
+          "length": 9,
+          "auth_chains": [
+            "P"
+          ],
+          "desc": "optimized p53 peptide",
+          "accs": [],
+          "seq": "RFMDYWEGL"
+        }
+      ]
+    },
+    {
+      "pdb": "1YCR",
+      "resolution": 2.6,
+      "title": "MDM2 BOUND TO THE TRANSACTIVATION DOMAIN OF P53",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "1YCR_1",
+          "length": 109,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "MDM2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "1YCR_2",
+          "length": 15,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "P53",
+          "accs": [
+            "P04637"
+          ],
+          "seq": "SQETFSDLWKLLPEN"
+        }
+      ]
+    },
+    {
+      "pdb": "2GV2",
+      "resolution": 1.8,
+      "title": "MDM2 in complex with an 8-mer p53 peptide analogue",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "2GV2_1",
+          "length": 110,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "2GV2_2",
+          "length": 9,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "8-MER P53 PEPTIDE ANALOGUE",
+          "accs": [],
+          "seq": "XFMAFWEXL"
+        }
+      ]
+    },
+    {
+      "pdb": "2VJE",
+      "resolution": 2.2,
+      "title": "Crystal Structure of the MDM2-MDMX RING Domain Heterodimer",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "2VJE_1",
+          "length": 64,
+          "auth_chains": [
+            "A",
+            "C"
+          ],
+          "desc": "E3 UBIQUITIN-PROTEIN LIGASE MDM2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SSLPLNAIEPCVICQGRPKNGCIVHGKTGHLMACFTCAKKLKKRNKPCPVCRQPIQMIVLTYFP"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "2VJF",
+      "resolution": 2.3,
+      "title": "Crystal Structure of the MDM2-MDMX RING Domain Heterodimer",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "2VJF_1",
+          "length": 64,
+          "auth_chains": [
+            "A",
+            "C"
+          ],
+          "desc": "E3 UBIQUITIN-PROTEIN LIGASE MDM2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SSLPLNAIEPCVICQGRPKNGCIVHGKTGHLMACFTCAKKLKKRNKPCPVCRQPIQMIVLTYFP"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "3EQS",
+      "resolution": 1.65,
+      "title": "Crystal structure of human MDM2 in complex with a 12-mer peptide inhibitor",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3EQS_1",
+          "length": 85,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "ETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3EQS_2",
+          "length": 12,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "12-mer peptide inhibitor",
+          "accs": [],
+          "seq": "TSFAEYWNLLSP"
+        }
+      ]
+    },
+    {
+      "pdb": "3G03",
+      "resolution": 1.8,
+      "title": "Structure of human MDM2 in complex with high affinity peptide",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3G03_1",
+          "length": 109,
+          "auth_chains": [
+            "A",
+            "C"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3G03_2",
+          "length": 12,
+          "auth_chains": [
+            "B",
+            "D"
+          ],
+          "desc": "High affinity synthetic peptide",
+          "accs": [],
+          "seq": "LTFEHYWAQLTS"
+        }
+      ]
+    },
+    {
+      "pdb": "3IUX",
+      "resolution": 1.65,
+      "title": "Crystal structure of human MDM2 in complex with a potent miniature protein inhibitor (18-residues)",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3IUX_1",
+          "length": 85,
+          "auth_chains": [
+            "A",
+            "C"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "ETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3IUX_2",
+          "length": 18,
+          "auth_chains": [
+            "B",
+            "D"
+          ],
+          "desc": "miniature protein inhibitor",
+          "accs": [],
+          "seq": "CNCKAPETFLCYWRCLQH"
+        }
+      ]
+    },
+    {
+      "pdb": "3IWY",
+      "resolution": 1.93,
+      "title": "Crystal structure of human MDM2 complexed with D-peptide (12 residues)",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3IWY_2",
+          "length": 85,
+          "auth_chains": [
+            "A",
+            "C"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "ETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3IWY_1",
+          "length": 12,
+          "auth_chains": [
+            "B",
+            "D"
+          ],
+          "desc": "D-peptide inhibitor",
+          "accs": [],
+          "seq": "DWWPLAFEALLR"
+        }
+      ]
+    },
+    {
+      "pdb": "3JZR",
+      "resolution": 2.1,
+      "title": "Human MDM2 liganded with a 12mer peptide inhibitor (pDI6W)",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3JZR_1",
+          "length": 110,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3JZR_2",
+          "length": 12,
+          "auth_chains": [
+            "P"
+          ],
+          "desc": "pDI6W peptide (12mer)",
+          "accs": [],
+          "seq": "LTFEHWWAQLTS"
+        }
+      ]
+    },
+    {
+      "pdb": "3LBK",
+      "resolution": 2.3,
+      "title": "Structure of human MDM2 protein in complex with a small molecule inhibitor",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "3LBK_1",
+          "length": 95,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MQIPASEQETLVRPKPELLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "3LBL",
+      "resolution": 1.6,
+      "title": "Structure of human MDM2 protein in complex with Mi-63-analog",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "3LBL_1",
+          "length": 95,
+          "auth_chains": [
+            "A",
+            "C",
+            "E"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "3LNZ",
+      "resolution": 1.95,
+      "title": "Crystal structure of human MDM2 with a 12-mer peptide inhibitor PMI (N8A mutant)",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3LNZ_1",
+          "length": 85,
+          "auth_chains": [
+            "A",
+            "C",
+            "E",
+            "G",
+            "I",
+            "K",
+            "M",
+            "O"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "ETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3LNZ_2",
+          "length": 12,
+          "auth_chains": [
+            "B",
+            "D",
+            "F",
+            "H",
+            "J",
+            "L",
+            "N",
+            "P"
+          ],
+          "desc": "12-mer peptide inhibitor",
+          "accs": [],
+          "seq": "TSFAEYWALLSP"
+        }
+      ]
+    },
+    {
+      "pdb": "3MQS",
+      "resolution": 2.4,
+      "title": "Crystal Structure of the USP7:Hdm2(PSTS) complex",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "3MQS_2",
+          "length": 10,
+          "auth_chains": [
+            "D"
+          ],
+          "desc": "Hdm2 peptide",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "YSQPSTSSSI"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "3TJ2",
+      "resolution": 2.1,
+      "title": "Structure of a novel submicromolar MDM2 inhibitor",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "3TJ2_1",
+          "length": 95,
+          "auth_chains": [
+            "A",
+            "C"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "3TPX",
+      "resolution": 1.8,
+      "title": "Crystal structure of human MDM2 in complex with a trifluoromethylated D-peptide inhibitor",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3TPX_1",
+          "length": 85,
+          "auth_chains": [
+            "A",
+            "C",
+            "E"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "ETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3TPX_2",
+          "length": 12,
+          "auth_chains": [
+            "B",
+            "D",
+            "F"
+          ],
+          "desc": "D-peptide inhibitor DPMI-delta",
+          "accs": [],
+          "seq": "TAWYANXEKLLR"
+        }
+      ]
+    },
+    {
+      "pdb": "3TU1",
+      "resolution": 1.603,
+      "title": "Exhaustive Fluorine Scanning towards Potent p53-MDM2 Antagonist",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "3TU1_1",
+          "length": 108,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "QIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "3V3B",
+      "resolution": 2.0,
+      "title": "Structure of the Stapled p53 Peptide Bound to Mdm2",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3V3B_1",
+          "length": 88,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3V3B_2",
+          "length": 16,
+          "auth_chains": [
+            "C",
+            "D"
+          ],
+          "desc": "SAH-p53-8 stapled-peptide",
+          "accs": [],
+          "seq": "QSQQTFXNLWRLLLQN"
+        }
+      ]
+    },
+    {
+      "pdb": "3VBG",
+      "resolution": 2.8,
+      "title": "Structure of hDM2 with Dimer Inducing Indolyl Hydantoin RO-2443",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "3VBG_1",
+          "length": 85,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "ETLVRPKPELLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4DIJ",
+      "resolution": 1.9,
+      "title": "The Central Valine Concept Provides an Entry in a New Class of Non Peptide Inhibitors of the P53-MDM2 Interaction",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4DIJ_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPELLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4ERE",
+      "resolution": 1.8,
+      "title": "crystal structure of MDM2 (17-111) in complex with compound 23",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4ERE_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4ERF",
+      "resolution": 2.0,
+      "title": "crystal structure of MDM2 (17-111) in complex with compound 29 (AM-8553)",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4ERF_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "C",
+            "E"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4HBM",
+      "resolution": 1.9,
+      "title": "Ordering of the N Terminus of Human MDM2 by Small Molecule Inhibitors",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4HBM_1",
+          "length": 120,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D",
+            "E",
+            "F",
+            "G",
+            "H"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MSVPTDGAVTTSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4HFZ",
+      "resolution": 2.694,
+      "title": "Crystal Structure of an MDM2/P53 Peptide Complex",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "4HFZ_1",
+          "length": 109,
+          "auth_chains": [
+            "A",
+            "C"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDAAQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "4HFZ_2",
+          "length": 15,
+          "auth_chains": [
+            "B",
+            "D"
+          ],
+          "desc": "Cellular tumor antigen p53",
+          "accs": [
+            "P04637"
+          ],
+          "seq": "SQETFSDLWKLLPEN"
+        }
+      ]
+    },
+    {
+      "pdb": "4HG7",
+      "resolution": 1.6,
+      "title": "Crystal Structure of an MDM2/Nutlin-3a complex",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4HG7_1",
+          "length": 97,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPLGSSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDAAQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4JV7",
+      "resolution": 2.2,
+      "title": "Co-crystal structure of MDM2 with inhibitor (2S,5R,6S)-2-benzyl-5,6-bis(4-bromophenyl)-4-methylmorpholin-3-one",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4JV7_1",
+          "length": 96,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "QIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNGS"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4JV9",
+      "resolution": 2.5,
+      "title": "Co-crystal structure of MDM2 with inhibitor (2S,5R,6S)-2-benzyl-5,6-bis(4-chlorophenyl)-4-methylmorpholin-3-one",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4JV9_1",
+          "length": 96,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "QIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNGS"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4JVE",
+      "resolution": 2.3,
+      "title": "Co-crystal structure of MDM2 with inhibitor (2R,3E)-2-[(2S,3R,6S)-2,3-bis(4-chlorophenyl)-6-(4-fluorobenzyl)-5-oxomorpholin-4-yl]pent-3-enoic acid",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4JVE_1",
+          "length": 96,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "QIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNGS"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4JVR",
+      "resolution": 1.7,
+      "title": "Co-crystal structure of MDM2 with inhibitor (2'S,3R,4'S,5'R)-N-(2-aminoethyl)-6-chloro-4'-(3-chloro-2-fluorophenyl)-2'-(2,2-dimethylpropyl)-2-oxo-1,2-dihydrospiro[indole-3,3'-pyrrolidine]-5'-carboxamide",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4JVR_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "C",
+            "E"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "QIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNGS"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4JWR",
+      "resolution": 2.35,
+      "title": "Co-crystal structure of MDM2 with inhibitor {(2S,5R,6S)-6-(3-chlorophenyl)-5-(4-chlorophenyl)-4-[(2S)-1-hydroxybutan-2-yl]-3-oxomorpholin-2-yl}acetic acid",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4JWR_1",
+          "length": 95,
+          "auth_chains": [
+            "A",
+            "B",
+            "C"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4MDN",
+      "resolution": 1.905,
+      "title": "Structure of a novel submicromolar MDM2 inhibitor",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4MDN_1",
+          "length": 94,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "3W69",
+      "resolution": 1.9,
+      "title": "Crystal structure of human mdm2 with a dihydroimidazothiazole inhibitor",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "3W69_1",
+          "length": 87,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSETLVRPKPELLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "3VZV",
+      "resolution": 2.8,
+      "title": "Crystal structure of human mdm2 with a dihydroimidazothiazole inhibitor",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "3VZV_1",
+          "length": 87,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSETLVRPKPELLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "3LNJ",
+      "resolution": 2.4,
+      "title": "Crystal structure of human MDM2 in complex with D-peptide inhibitor (DPMI-alpha)",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3LNJ_1",
+          "length": 85,
+          "auth_chains": [
+            "A",
+            "C",
+            "E"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "ETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3LNJ_2",
+          "length": 12,
+          "auth_chains": [
+            "B",
+            "D",
+            "F"
+          ],
+          "desc": "D-peptide inhibitor",
+          "accs": [],
+          "seq": "TNWYANLEKLLR"
+        }
+      ]
+    },
+    {
+      "pdb": "3JZS",
+      "resolution": 1.78,
+      "title": "Human MDM2 liganded with a 12mer peptide inhibitor (pDIQ)",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3JZS_1",
+          "length": 86,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "QETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3JZS_2",
+          "length": 12,
+          "auth_chains": [
+            "P"
+          ],
+          "desc": "pDIQ peptide (12mer)",
+          "accs": [],
+          "seq": "ETFEHWWSQLLS"
+        }
+      ]
+    },
+    {
+      "pdb": "3JZK",
+      "resolution": 2.1,
+      "title": "crystal structure of MDM2 with chromenotriazolopyrimidine 1",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "3JZK_1",
+          "length": 96,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "2FOP",
+      "resolution": 2.1,
+      "title": "The Crystal Structure of the N-terminal domain of HAUSP/USP7 complexed with mdm2 peptide 147-150",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "2FOP_2",
+          "length": 6,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "mdm2 peptide",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "EKPSSS"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "2AXI",
+      "resolution": 1.4,
+      "title": "HDM2 in complex with a beta-hairpin",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "2AXI_1",
+          "length": 115,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Ubiquitin-protein ligase E3 Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSENHHHHHH"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "2AXI_2",
+          "length": 10,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "cyclic 8-mer peptide",
+          "accs": [],
+          "seq": "PFEWLDWEFP"
+        }
+      ]
+    },
+    {
+      "pdb": "4MDQ",
+      "resolution": 2.119,
+      "title": "Structure of a novel submicromolar MDM2 inhibitor",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4MDQ_1",
+          "length": 86,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "ETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4ODF",
+      "resolution": 2.2006,
+      "title": "Co-Crystal Structure of MDM2 with Inhibitor Compound 47",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4ODF_1",
+          "length": 105,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MSVPTDGAVTTSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4OGN",
+      "resolution": 1.377,
+      "title": "Co-Crystal Structure of MDM2 with Inhbitor Compound 3",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4OGN_1",
+          "length": 105,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MSVPTDGAVTTSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4OGT",
+      "resolution": 1.5361,
+      "title": "Co-Crystal Structure of MDM2 with Inhbitor Compound 46",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4OGT_1",
+          "length": 105,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MSVPTDGAVTTSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4OGV",
+      "resolution": 2.197,
+      "title": "Co-Crystal Structure of MDM2 with Inhibitor Compound 49",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4OGV_1",
+          "length": 95,
+          "auth_chains": [
+            "A",
+            "B",
+            "C"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4OQ3",
+      "resolution": 2.3,
+      "title": "Tetra-substituted imidazoles as a new class of inhibitors of the p53-MDM2 interaction",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4OQ3_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPELLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4QO4",
+      "resolution": 1.7,
+      "title": "co-crystal structure of MDM2 (17-111) with compound 16, {(3R,5R,6S)-5-(3-CHLOROPHENYL)-6-(4-CHLOROPHENYL)-1-[(1S)-1-(6-CYCLOPROPYLPYRIDIN-2-YL)PROPYL]-3-METHYL-2-OXOPIPERIDIN-3-YL}ACETIC ACID",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4QO4_1",
+          "length": 96,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4QOC",
+      "resolution": 1.7,
+      "title": "crystal structure of compound 16 bound to MDM2(17-111), {(3R,5R,6S)-5-(3-CHLOROPHENYL)-6-(4-CHLOROPHENYL)-1-[(1S)-1-CYCLOPROPYL-2-(PYRROLIDIN-1-YLSULFONYL)ETHYL]-3-METHYL-2-OXOPIPERIDIN-3-YL}ACETIC ACID",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4QOC_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "C",
+            "E",
+            "G",
+            "I",
+            "K"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4UD7",
+      "resolution": 1.6,
+      "title": "Structure of the stapled peptide YS-02 bound to MDM2",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "4UD7_1",
+          "length": 114,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "desc": "MDM2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPLGSSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDAAQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "4UD7_2",
+          "length": 16,
+          "auth_chains": [
+            "F",
+            "G",
+            "H",
+            "I"
+          ],
+          "desc": "YS-02",
+          "accs": [],
+          "seq": "XTSFXEYWXLLPENYX"
+        }
+      ]
+    },
+    {
+      "pdb": "4UE1",
+      "resolution": 1.45,
+      "title": "Structure of the stapled peptide YS-01 bound to MDM2",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "4UE1_1",
+          "length": 114,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "desc": "E3 UBIQUITIN-PROTEIN LIGASE MDM2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPLGSSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDAAQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "4UE1_2",
+          "length": 16,
+          "auth_chains": [
+            "F",
+            "G",
+            "H",
+            "I"
+          ],
+          "desc": "YS-01",
+          "accs": [],
+          "seq": "XTSFXEYWXLLPENFX"
+        }
+      ]
+    },
+    {
+      "pdb": "4UMN",
+      "resolution": 1.99,
+      "title": "Structure of a stapled peptide antagonist bound to Nutlin-resistant Mdm2.",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "4UMN_1",
+          "length": 120,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MSVPTDGAVTTSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIATKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "4UMN_2",
+          "length": 13,
+          "auth_chains": [
+            "C",
+            "D"
+          ],
+          "desc": "M06",
+          "accs": [],
+          "seq": "XTSFXEYWYLLLX"
+        }
+      ]
+    },
+    {
+      "pdb": "4WT2",
+      "resolution": 1.42,
+      "title": "Co-crystal Structure of MDM2 in Complex with AM-7209",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4WT2_1",
+          "length": 105,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MSVPTDGAVTTSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4XXB",
+      "resolution": 2.4,
+      "title": "Crystal structure of human MDM2-RPL11",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4XXB_2",
+          "length": 148,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SFEEDPEISLADYWKCTSCNEMNPPLPSHCNRCWALRENWLPEDKGKDKGEISEKAKLENSTQAEEGFDVPDCKKTIVNDSRESCVEENDDKITQASQSQESEDYSQPSTSSSIIYSSQEDVKEFEREETQDKEESVESSLPLNAIEP"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4ZGK",
+      "resolution": 2.0,
+      "title": "Structure of Mdm2 with low molecular weight inhibitor.",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4ZGK_1",
+          "length": 98,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQE"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4ZYF",
+      "resolution": 1.8,
+      "title": "Discovery of NVP-CGM097 - a highly potent and selective MDM2 inhibitor undergoing phase 1 clinical trials in p53wt tumors: Hdm2 (MDM2) complexed with NVP-CGM097",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4ZYF_1",
+          "length": 96,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4ZYI",
+      "resolution": 1.67,
+      "title": "Discovery of NVP-CGM097 - a highly potent and selective MDM2 inhibitor undergoing phase 1 clinical trials in p53wt tumors: Hdm2 (MDM2) complexed with cpd2",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4ZYI_1",
+          "length": 96,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5AFG",
+      "resolution": 1.9,
+      "title": "Structure of the Stapled Peptide Bound to Mdm2",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "5AFG_1",
+          "length": 97,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 UBIQUITIN-PROTEIN LIGASE MDM2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPLGSSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDAAQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "5AFG_2",
+          "length": 12,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "STAPLED PEPTIDE",
+          "accs": [],
+          "seq": "LTFAEYWAQLAS"
+        }
+      ]
+    },
+    {
+      "pdb": "5C5A",
+      "resolution": 1.146,
+      "title": "Crystal Structure of HDM2 in complex with Nutlin-3a",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5C5A_1",
+          "length": 92,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "PASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5HMI",
+      "resolution": 1.74,
+      "title": "HDM2 in complex with a 3,3-Disubstituted Piperidine",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5HMI_1",
+          "length": 104,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "QIQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLYYLGQYIMTKRLYDEKQQHIVHCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSAGA"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5HMK",
+      "resolution": 2.17,
+      "title": "HDM2 in complex with a 3,3-Disubstituted Piperidine",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5HMK_1",
+          "length": 109,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLYYLGQYIMTKRLYDEKQQHIVHCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5J7F",
+      "resolution": 2.0,
+      "title": "Structure of MDM2 with low molecular weight inhibitor with aliphatic linker.",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5J7F_1",
+          "length": 125,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MCNTNMSVPTDGAVTTSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5J7G",
+      "resolution": 1.85,
+      "title": "Structure of MDM2 with low molecular weight inhibitor with aliphatic linker.",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5J7G_1",
+          "length": 109,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5LAW",
+      "resolution": 1.64,
+      "title": "Novel Spiro[3H-indole-3,2 -pyrrolidin]-2(1H)-one Inhibitors of the MDM2-p53 Interaction: HDM2 (MDM2) IN COMPLEX WITH COMPOUND 14",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5LAW_1",
+          "length": 94,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "QIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5LAY",
+      "resolution": 2.71,
+      "title": "Discovery of New Natural-product-inspired Spiro-oxindole Compounds as Orally Active Inhibitors of the MDM2-p53 Interaction: HDM2 (MDM2) IN COMPLEX WITH COMPOUND 6g",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5LAY_1",
+          "length": 95,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D",
+            "E",
+            "F"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5MNJ",
+      "resolution": 2.16,
+      "title": "Structure of MDM2-MDMX-UbcH5B-ubiquitin complex",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5MNJ_3",
+          "length": 86,
+          "auth_chains": [
+            "C",
+            "G"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MGSSHHHHHHSQDLENLYFQGSSSLPLNAIEPCVICQGRPKNGCIVHGKTGHLMACFTCAKKLKKRNKPCPVCRQPIQMIVLTYFP"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5OAI",
+      "resolution": 2.0,
+      "title": "Structure of MDM2 with low molecular weight inhibitor",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5OAI_1",
+          "length": 97,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQ"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5OC8",
+      "resolution": 1.56,
+      "title": "HDM2 (17-111, WILD TYPE) COMPLEXED WITH NVP-HDM201 AT 1.56A",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5OC8_1",
+          "length": 96,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5TRF",
+      "resolution": 2.1,
+      "title": "MDM2 in complex with SAR405838",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5TRF_1",
+          "length": 109,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D",
+            "E"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "TDGAVTTSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDS"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5UMM",
+      "resolution": 1.65,
+      "title": "CRYSTAL STRUCTURE OF HUMAN MDM2 IN COMPLEX WITH 12-MER PEPTIDE INHIBITOR M3",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "5UMM_1",
+          "length": 85,
+          "auth_chains": [
+            "A",
+            "C"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "ETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "5UMM_2",
+          "length": 12,
+          "auth_chains": [
+            "B",
+            "D"
+          ],
+          "desc": "PEPTIDE INHIBITOR M3",
+          "accs": [],
+          "seq": "LTFLEYWAQLMQ"
+        }
+      ]
+    },
+    {
+      "pdb": "5SWK",
+      "resolution": 1.923,
+      "title": "Crystal structure of p53 epitope-scaffold based on a inhibitor of cysteine proteases in complex with human MDM2",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5SWK_1",
+          "length": 153,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPHMCNTNMSVPTDGAVTTSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSENRCHLEGGSDQKDLVQELQEEKPSSS"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5LN2",
+      "resolution": 1.58,
+      "title": "Discovery of a novel class of highly potent inhibitors of the p53-MDM2 interaction by structure-based design starting from a conformational argument",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5LN2_1",
+          "length": 96,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5LAZ",
+      "resolution": 1.66,
+      "title": "Novel Spiro[3H-indole-3,2 -pyrrolidin]-2(1H)-one Inhibitors of the MDM2-p53 Interaction: HDM2 (MDM2) IN COMPLEX WITH COMPOUND BI-0252",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5LAZ_1",
+          "length": 94,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "QIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5LAV",
+      "resolution": 1.73,
+      "title": "Novel Spiro[3H-indole-3,2 -pyrrolidin]-2(1H)-one Inhibitors of the MDM2-p53 Interaction: HDM2 (MDM2) in complex with compound 6b",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5LAV_1",
+          "length": 93,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "IPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5HMH",
+      "resolution": 1.79,
+      "title": "HDM2 in complex with a 3,3-Disubstituted Piperidine",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5HMH_1",
+          "length": 101,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "ASASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLYYLGQYIMTKRLYDEKQQHIVHCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSAGA"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4ZYC",
+      "resolution": 1.95,
+      "title": "Discovery of dihydroisoquinolinone derivatives as novel inhibitors of the p53-MDM2 interaction with a distinct binding mode: Hdm2 (MDM2) complexed with cpd5",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4ZYC_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "B",
+            "C"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPELLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4ZFI",
+      "resolution": 2.0,
+      "title": "Structure of Mdm2 with low molecular weight inhibitor",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4ZFI_1",
+          "length": 97,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQ"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4ODE",
+      "resolution": 1.8,
+      "title": "Co-Crystal Structure of MDM2 with Inhibitor Compound 4",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4ODE_1",
+          "length": 105,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MSVPTDGAVTTSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4OCC",
+      "resolution": 1.8,
+      "title": "co-crystal structure of MDM2(17-111) in complex with compound 48",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4OCC_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "C",
+            "E"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4OBA",
+      "resolution": 1.602,
+      "title": "Co-crystal structure of MDM2 with Inhibitor Compound 4",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4OBA_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "B",
+            "C"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4OAS",
+      "resolution": 1.7,
+      "title": "co-crystal structure of MDM2 (17-111) in complex with compound 25",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "4OAS_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "C",
+            "E"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5VK0",
+      "resolution": 1.8,
+      "title": "Crystal structure of human MDM2 in complex with a 12-mer lysine-cysteine side chain dithiocarbamate stapled peptide inhibitor PMI",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "5VK0_1",
+          "length": 85,
+          "auth_chains": [
+            "A",
+            "C",
+            "E",
+            "G",
+            "I",
+            "K",
+            "M",
+            "O",
+            "Q",
+            "S",
+            "U",
+            "W"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "ETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "5VK0_2",
+          "length": 14,
+          "auth_chains": [
+            "B",
+            "D",
+            "F",
+            "H",
+            "J",
+            "L",
+            "N",
+            "P",
+            "R",
+            "T",
+            "V",
+            "X"
+          ],
+          "desc": "Lysine-cysteine side chain dithiocarbamate stapled peptide inhibitor PMI",
+          "accs": [],
+          "seq": "XTSFAEYWKLLSCX"
+        }
+      ]
+    },
+    {
+      "pdb": "5XXK",
+      "resolution": 1.66,
+      "title": "Structure-activity studies of Mdm2/Mdm4-binding stapled peptides comprising non-natural amino acids",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "5XXK_1",
+          "length": 122,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPMSVPTDGAVTTSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIATKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "5XXK_2",
+          "length": 12,
+          "auth_chains": [
+            "C",
+            "D"
+          ],
+          "desc": "Hydrocarbon stapled peptide THC-SER-PHE-0EH-GLU-TYR-6CW-ALA-LEU-LEU-MK8-NH2",
+          "accs": [],
+          "seq": "TSFXEYWALLLX"
+        }
+      ]
+    },
+    {
+      "pdb": "5Z02",
+      "resolution": 1.35,
+      "title": "Crystal structure of HIS6-tagged Mdm2 with nutlin-3a",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5Z02_1",
+          "length": 110,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSSHHHHHHSQDLENLYFQGSQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQ"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5ZXF",
+      "resolution": 1.25,
+      "title": "The 1.25A Crystal structure of His6-tagged Mdm2 in complex with nutlin-3a",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5ZXF_1",
+          "length": 87,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "QETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "6AAW",
+      "resolution": 2.0,
+      "title": "Mdm2 in complex with a D amino Acid Containing Stapled Peptide",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "6AAW_1",
+          "length": 122,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPMSVPTDGAVTTSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "6AAW_2",
+          "length": 16,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "ACE-LEU-THR-PHE-STQ-GLU-TYR-DTR-GLN-LEU-CBA-MK8-SER-ALA-ALA",
+          "accs": [],
+          "seq": "XLTFXEYWQLXLSAAX"
+        }
+      ]
+    },
+    {
+      "pdb": "6I29",
+      "resolution": 2.1,
+      "title": "X-ray structure of the p53-MDM2 inhibitor NMI801 bound to HDM2 at 2.1A resolution",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6I29_1",
+          "length": 96,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Human E3 Ubiquitin-Protein Ligase MDM2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "6I3S",
+      "resolution": 1.77,
+      "title": "Crystal structure of MDM2 in complex with compound 13.",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6I3S_1",
+          "length": 94,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "QIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "6KZU",
+      "resolution": 1.79,
+      "title": "Macrocyclization of an all-D linear peptide improves target affinity and imparts cellular activity: A novel stapled alpha-helical peptide modality",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "6KZU_1",
+          "length": 122,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPMSVPTDGAVTTSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "6KZU_2",
+          "length": 12,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "2JN-DAL-E03-DTY-2JN-DSG-TDF-DGL-MK8-DLE-DLE-2JN",
+          "accs": [],
+          "seq": "XAXYXNXELLLX"
+        }
+      ]
+    },
+    {
+      "pdb": "6Q96",
+      "resolution": 1.8,
+      "title": "HDM2 (17-111, WILD TYPE) COMPLEXED WITH COMPOUND 12 AT 1.8A; Structural states of Hdm2 and HdmX: X-ray elucidation of adaptations and binding interactions for different chemical compound classes",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6Q96_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "6Q9H",
+      "resolution": 2.0,
+      "title": "HDM2 (17-111, WILD TYPE) COMPLEXED WITH COMPOUND 11 AT 2.0A; Structural states of Hdm2 and HdmX: X-ray elucidation of adaptations and binding interactions for different chemical compound classes",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6Q9H_1",
+          "length": 96,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "6Q9L",
+      "resolution": 1.13,
+      "title": "HDM2 (17-111, WILDTYPE) COMPLEXED WITH COMPOUND 9 AT 1.13A; Structural states of Hdm2 and HdmX: X-ray elucidation of adaptations and binding interactions for different chemical compound classes",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6Q9L_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "6Q9O",
+      "resolution": 1.21,
+      "title": "HDM2 (17-111, WILDTYPE) COMPLEXED WITH COMPOUND 10 AT 1.21A; Structural states of Hdm2 and HdmX: X-ray elucidation of adaptations and binding interactions for different chemical compound classes",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6Q9O_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "6T2E",
+      "resolution": 2.4,
+      "title": "Multicomponent Peptide Stapling as a Diversity-Driven Tool for the Development of Inhibitors of Protein-Protein Interactions",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "6T2E_1",
+          "length": 86,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "METLVRPKPELLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "6T2E_2",
+          "length": 14,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "Stapled peptide GAR300-Gm",
+          "accs": [],
+          "seq": "LTFEQYWAQLESAA"
+        }
+      ]
+    },
+    {
+      "pdb": "6T2F",
+      "resolution": 2.09,
+      "title": "Multicomponent Peptide Stapling as a Diversity-Driven Tool for the Development of Inhibitors of Protein-Protein Interactions",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "6T2F_1",
+          "length": 86,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "METLVRPKPELLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "6T2F_2",
+          "length": 14,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "MDM2 in complex with GAR300-Am",
+          "accs": [],
+          "seq": "LTFDQYWAQLDSAA"
+        }
+      ]
+    },
+    {
+      "pdb": "6Y4Q",
+      "resolution": 1.63,
+      "title": "Structure of a stapled peptide bound to MDM2",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "6Y4Q_1",
+          "length": 92,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDAAQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "6Y4Q_2",
+          "length": 13,
+          "auth_chains": [
+            "C",
+            "D"
+          ],
+          "desc": "ACE-LEU-THR-PHE-GLY-GLU-TYR-TRP-ALA-GLN-LEU-ALA-SER",
+          "accs": [],
+          "seq": "XLTFGEYWAQLAS"
+        }
+      ]
+    },
+    {
+      "pdb": "6YR6",
+      "resolution": 1.75,
+      "title": "14-3-3 sigma in complex with hDM2-186 peptide",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6YR6_2",
+          "length": 13,
+          "auth_chains": [
+            "B",
+            "D",
+            "F",
+            "H"
+          ],
+          "desc": "hDM2-186",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "QRKRHKSDSISLS"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7AD0",
+      "resolution": 2.07,
+      "title": "X-ray structure of Mdm2 with modified p53 peptide",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "7AD0_1",
+          "length": 90,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D",
+            "E",
+            "F"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "QETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQ"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "7AD0_2",
+          "length": 14,
+          "auth_chains": [
+            "H",
+            "I",
+            "J",
+            "K",
+            "L",
+            "M"
+          ],
+          "desc": "Modified p53 peptide",
+          "accs": [],
+          "seq": "ATSFAEYWALLXPA"
+        }
+      ]
+    },
+    {
+      "pdb": "7AI0",
+      "resolution": 1.559,
+      "title": "Crystal structure of human MDM2-G443T RING domain homodimer bound to UbcH5B-Ub (Crystal form 1)",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7AI0_1",
+          "length": 75,
+          "auth_chains": [
+            "AAA",
+            "DDD"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSTQDKEESVESSLPLNAIEPCVICQTRPKNGCIVHGKTGHLMACFTCAKKLKKRNKPCPVCRQPIQMIVLTYFP"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7BIR",
+      "resolution": 2.02,
+      "title": "Inhibitor of MDM2-p53 Interaction",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7BIR_1",
+          "length": 98,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPLGSSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDAAQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7BJ0",
+      "resolution": 2.0,
+      "title": "Inhibitor of MDM2-p53 Interaction",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7BJ0_1",
+          "length": 114,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPLGSSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMAEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7KJM",
+      "resolution": 1.4,
+      "title": "CRYSTAL STRUCTURE OF HUMAN MDM2 IN COMPLEX WITH D-PEPTIDE INHIBITOR (DPMI-OMEGA)",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "7KJM_1",
+          "length": 85,
+          "auth_chains": [
+            "A",
+            "C"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "ETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "7KJM_2",
+          "length": 12,
+          "auth_chains": [
+            "B",
+            "D"
+          ],
+          "desc": "D-PMI-omega",
+          "accs": [],
+          "seq": "EFWYVEXEKLLR"
+        }
+      ]
+    },
+    {
+      "pdb": "7NA2",
+      "resolution": 1.86,
+      "title": "HDM2 in complex with compound 56",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7NA2_1",
+          "length": 110,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "Isoform 11 of E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7NA3",
+      "resolution": 2.21,
+      "title": "HDM2 in complex with compound 62",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7NA3_1",
+          "length": 110,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Isoform 11 of E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7NA4",
+      "resolution": 1.84,
+      "title": "HDM2 in complex with compound 63",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7NA4_1",
+          "length": 110,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Isoform 11 of E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7NUS",
+      "resolution": 1.45,
+      "title": "X-RAY STRUCTURE OF HDM2/CMR19 AT 1.45A: Discovery, X-ray structure and CPP-conjugation enabled uptake of p53/MDM2 macrocyclic peptide inhibitors",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "7NUS_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "B",
+            "C"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "7NUS_2",
+          "length": 15,
+          "auth_chains": [
+            "D",
+            "E",
+            "F"
+          ],
+          "desc": "p53/MDM2 macrocyclic peptide inhibitor",
+          "accs": [],
+          "seq": "FSDXSSVPNFFRNCX"
+        }
+      ]
+    },
+    {
+      "pdb": "8AEU",
+      "resolution": 2.0,
+      "title": "Structure of hMDM2 in complex with Nutlin-3a-aa",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "8AEU_1",
+          "length": 97,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQ"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "8EIC",
+      "resolution": 2.62,
+      "title": "Crystal structure of beta-catenin and the MDM2 p53-binding domain in complex with H330, a Helicon Polypeptide",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "8EIC_2",
+          "length": 95,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "8EIC_3",
+          "length": 23,
+          "auth_chains": [
+            "C"
+          ],
+          "desc": "H330",
+          "accs": [],
+          "seq": "XPWKYEQVCYQAAWQCLSDDWDX"
+        }
+      ]
+    },
+    {
+      "pdb": "8F0Z",
+      "resolution": 1.61,
+      "title": "Structure of the MDM2 P53 binding domain in complex with H101, an all-D Helicon Polypeptide",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "8F0Z_1",
+          "length": 95,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "8F0Z_2",
+          "length": 19,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "H101",
+          "accs": [],
+          "seq": "XDPAHWYCDFAAQVCNFSX"
+        }
+      ]
+    },
+    {
+      "pdb": "7QDQ",
+      "resolution": 1.26,
+      "title": "Crystal Structure of HDM2 in complex with Caylin-1",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7QDQ_1",
+          "length": 92,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "PASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7NA1",
+      "resolution": 2.3,
+      "title": "HDM2 in complex with compound 2",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7NA1_1",
+          "length": 109,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLYYLGQYIMTKRLYDEKQQHIVHCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7BMG",
+      "resolution": 1.83,
+      "title": "Inhibitor of MDM2-p53 Interaction",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7BMG_1",
+          "length": 98,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPLGSSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDAAQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7BJ6",
+      "resolution": 1.59,
+      "title": "Inhibitor of MDM2-p53 Interaction",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7BJ6_1",
+          "length": 98,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPLGSSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDAAQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7BIV",
+      "resolution": 1.64,
+      "title": "Inhibitor of MDM2-p53 Interaction",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7BIV_1",
+          "length": 98,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPLGSSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDAAQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7BIT",
+      "resolution": 2.13,
+      "title": "Inhibitor of MDM2-p53 Interaction",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7BIT_1",
+          "length": 114,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPLGSSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDAAQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7AI1",
+      "resolution": 2.07,
+      "title": "Crystal structure of human MDM2-G443T RING domain homodimer bound to UbcH5B-Ub (Crystal form 2)",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7AI1_1",
+          "length": 75,
+          "auth_chains": [
+            "AAA",
+            "DDD"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSTQDKEESVESSLPLNAIEPCVICQTRPKNGCIVHGKTGHLMACFTCAKKLKKRNKPCPVCRQPIQMIVLTYFP"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "6T2D",
+      "resolution": 1.8,
+      "title": "Multicomponent Peptide Stapling as a Diversity-Driven Tool for the Development of Inhibitors of Protein-Protein Interactions",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "6T2D_1",
+          "length": 86,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "METLVRPKPELLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "6T2D_2",
+          "length": 14,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "Stapled peptide GAR300-Gp",
+          "accs": [],
+          "seq": "LTFEQYWAQLESAA"
+        }
+      ]
+    },
+    {
+      "pdb": "6SQO",
+      "resolution": 1.41,
+      "title": "Crystal structure of human MDM2 RING domain homodimer bound to UbcH5B-Ub",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6SQO_1",
+          "length": 62,
+          "auth_chains": [
+            "A",
+            "D"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "LPLNAIEPCVICQGRPKNGCIVHGKTGHLMACFTCAKKLKKRNKPCPVCRQPIQMIVLTYFP"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "6HFA",
+      "resolution": 1.79,
+      "title": "Crystal structure of hDM2 in complex with a C-terminal triurea capped peptide chimera foldamer.",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "6HFA_1",
+          "length": 98,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GHMSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGAPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "6HFA_2",
+          "length": 11,
+          "auth_chains": [
+            "C",
+            "D"
+          ],
+          "desc": "LM266, 1-[(2~{S})-2-azanyl-3-methyl-butyl]urea",
+          "accs": [],
+          "seq": "TSFAEYWXXXX"
+        }
+      ]
+    },
+    {
+      "pdb": "6H22",
+      "resolution": 2.006,
+      "title": "Crystal structure of Mdm2 bound to a stapled peptide",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "6H22_1",
+          "length": 97,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPLGSSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDAAQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "6H22_2",
+          "length": 14,
+          "auth_chains": [
+            "C",
+            "D"
+          ],
+          "desc": "Stapled peptide",
+          "accs": [],
+          "seq": "XLTFAEYWAQLASX"
+        }
+      ]
+    },
+    {
+      "pdb": "6GGN",
+      "resolution": 2.0,
+      "title": "In vitro and in vivo characterization of a novel, highly potent p53-MDM2 inhibitor",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6GGN_1",
+          "length": 96,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "8F10",
+      "resolution": 1.28,
+      "title": "Structure of the MDM2 P53 binding domain in complex with H102, an all-D Helicon Polypeptide",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "8F10_1",
+          "length": 95,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "8F10_2",
+          "length": 19,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "H102",
+          "accs": [],
+          "seq": "XDPAWNHCEYAAFVCSEVX"
+        }
+      ]
+    },
+    {
+      "pdb": "8F12",
+      "resolution": 1.86,
+      "title": "Structure of the MDM2 P53 binding domain in complex with H103, an all-D Helicon Polypeptide",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "8F12_1",
+          "length": 95,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "8F12_2",
+          "length": 19,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "H103",
+          "accs": [],
+          "seq": "XDPAWYECLEAALLCQQVX"
+        }
+      ]
+    },
+    {
+      "pdb": "8F13",
+      "resolution": 1.4,
+      "title": "Structure of the MDM2 P53 binding domain in complex with H103, an all-D Helicon Polypeptide, alternative C-terminus",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "8F13_1",
+          "length": 95,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "8F13_2",
+          "length": 19,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "H103",
+          "accs": [],
+          "seq": "XDPAWYECLEAALLCQQVX"
+        }
+      ]
+    },
+    {
+      "pdb": "8GCG",
+      "resolution": 1.47,
+      "title": "MDM2 bound to inhibitor",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "8GCG_1",
+          "length": 109,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "SQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "8GCG_2",
+          "length": 9,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "macrocyclic peptide inhibitor",
+          "accs": [],
+          "seq": "VWFGXFXXX"
+        }
+      ]
+    },
+    {
+      "pdb": "8J81",
+      "resolution": 1.35,
+      "title": "MDM2 bound with a peptoid",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "8J81_1",
+          "length": 100,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GPLGSSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "8P0D",
+      "resolution": 1.31,
+      "title": "Human 14-3-3 sigma in complex with human MDM2 peptide",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "8P0D_2",
+          "length": 31,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "RRRAISETEENSDELSGERQRKRHKSDSISL"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "8PWC",
+      "resolution": 1.461,
+      "title": "Crystal structure of MDM2 with Brigimadlin",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "8PWC_1",
+          "length": 110,
+          "auth_chains": [
+            "A",
+            "B",
+            "C"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "GSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "9CDZ",
+      "resolution": 1.72,
+      "title": "Crystal Structure of MDM2-Peptide Complex",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "9CDZ_1",
+          "length": 108,
+          "auth_chains": [
+            "A",
+            "C"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "QIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDAAQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVNQQESSDSGTSVSEN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "9CDZ_2",
+          "length": 16,
+          "auth_chains": [
+            "B",
+            "D"
+          ],
+          "desc": "Peptide",
+          "accs": [],
+          "seq": "GLIDGTEGTDFESMWR"
+        }
+      ]
+    },
+    {
+      "pdb": "9FQL",
+      "resolution": 2.0,
+      "title": "Crystal structure of hDM2 in complex with a peptidic ligand containing a di-urea insert.",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "9FQL_1",
+          "length": 86,
+          "auth_chains": [
+            "A",
+            "B",
+            "E",
+            "F",
+            "I",
+            "J"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "ETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGAPSFSVKEHRKIYTMIYRNLVVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "9FQL_2",
+          "length": 11,
+          "auth_chains": [
+            "C",
+            "D",
+            "G",
+            "H",
+            "K",
+            "L"
+          ],
+          "desc": "p25Lp26A",
+          "accs": [],
+          "seq": "TSFAEYWAXXP"
+        }
+      ]
+    },
+    {
+      "pdb": "9GFC",
+      "resolution": 2.501,
+      "title": "HDM2 complexed with stapled peptide-like ligand",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "9GFC_1",
+          "length": 86,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "ETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVV"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "9GFC_2",
+          "length": 14,
+          "auth_chains": [
+            "E",
+            "F",
+            "G"
+          ],
+          "desc": "Stapled peptide-like ligand",
+          "accs": [],
+          "seq": "XTSFLEYWRLLSPX"
+        }
+      ]
+    },
+    {
+      "pdb": "9GFK",
+      "resolution": 1.841,
+      "title": "human MDM2 complex with stapled foldamer",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "9GFK_1",
+          "length": 96,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "desc": "E3 ubiquitin-protein ligase Mdm2",
+          "accs": [
+            "Q00987"
+          ],
+          "seq": "MSQIPASEQETLVRPKPLLLKLLKSVGAQKDTYTMKEVLFYLGQYIMTKRLYDEKQQHIVYCSNDLLGDLFGVPSFSVKEHRKIYTMIYRNLVVVN"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "9GFK_2",
+          "length": 12,
+          "auth_chains": [
+            "F",
+            "G",
+            "H",
+            "J"
+          ],
+          "desc": "Stapled foldamer",
+          "accs": [],
+          "seq": "TSFCEYWAXXPX"
+        }
+      ]
+    }
+  ],
+  "MDMX": [
+    {
+      "pdb": "2VJE",
+      "resolution": 2.2,
+      "title": "Crystal Structure of the MDM2-MDMX RING Domain Heterodimer",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "2VJE_2",
+          "length": 63,
+          "auth_chains": [
+            "B",
+            "D"
+          ],
+          "desc": "MDM4 PROTEIN",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "EDCQNLLKPCSLCEKRPRDGNIIHGRTGHLVTCFHCARRLKKAGASCPICKKEIQLVIKVFIA"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "2VJF",
+      "resolution": 2.3,
+      "title": "Crystal Structure of the MDM2-MDMX RING Domain Heterodimer",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "2VJF_2",
+          "length": 63,
+          "auth_chains": [
+            "B",
+            "D"
+          ],
+          "desc": "MDM4 PROTEIN",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "EDCQNLLKPCSLCEKRPRDGNIIHGRTGHLVTCFHCARRLKKAGASCPICKKEIQLVIKVFIA"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "2VYR",
+      "resolution": 2.0,
+      "title": "Structure of human MDM4 N-terminal domain bound to a single domain antibody",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "2VYR_1",
+          "length": 101,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "desc": "MDM4 PROTEIN",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "ACRISPGQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLATATTDA"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "3DAB",
+      "resolution": 1.9,
+      "title": "Structure of the human Mdmx protein bound to the p53 tumor suppressor transactivation domain",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3DAB_1",
+          "length": 90,
+          "auth_chains": [
+            "A",
+            "C",
+            "E",
+            "G"
+          ],
+          "desc": "Mdm4 protein",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "IQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3DAB_2",
+          "length": 15,
+          "auth_chains": [
+            "B",
+            "D",
+            "F",
+            "H"
+          ],
+          "desc": "Cellular tumor antigen p53",
+          "accs": [
+            "P04637"
+          ],
+          "seq": "SQETFSDLWKLLPEN"
+        }
+      ]
+    },
+    {
+      "pdb": "3EQY",
+      "resolution": 1.63,
+      "title": "Crystal structure of human MDMX in complex with a 12-mer peptide inhibitor",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3EQY_1",
+          "length": 85,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "Mdm4 protein",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "INQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDAAAQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVT"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3EQY_2",
+          "length": 12,
+          "auth_chains": [
+            "C",
+            "D"
+          ],
+          "desc": "12-mer peptide inhibitor",
+          "accs": [],
+          "seq": "TSFAEYWNLLSP"
+        }
+      ]
+    },
+    {
+      "pdb": "3FDO",
+      "resolution": 1.4,
+      "title": "Structure of human MDMX in complex with high affinity peptide",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3FDO_1",
+          "length": 90,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "IQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3FDO_2",
+          "length": 12,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "Synthetic high affinity peptide",
+          "accs": [],
+          "seq": "LTFEHYWAQLTS"
+        }
+      ]
+    },
+    {
+      "pdb": "3FE7",
+      "resolution": 1.35,
+      "title": "Crystal Structure of HdmX bound to the p53-peptidomimetic Ac-Phe-Met-Aib-Pmp-Trp-Glu-Ac3c-Leu-NH2 at 1.35A",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3FE7_1",
+          "length": 100,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Mdm4 protein",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "GPDSASRISPGQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3FE7_2",
+          "length": 10,
+          "auth_chains": [
+            "L"
+          ],
+          "desc": "p53-peptidomimetic Ac-Phe-Met-Aib-Pmp-Trp-Glu-Ac3c-Leu-NH2",
+          "accs": [],
+          "seq": "XFMAFWEXLX"
+        }
+      ]
+    },
+    {
+      "pdb": "3FEA",
+      "resolution": 1.33,
+      "title": "Crystal Structure of HdmX bound to the p53-peptidomimetic Ac-Phe-Met-Aib-Pmp-6-Cl-Trp-Glu-Ac3c-Leu-NH2 at 1.33A",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3FEA_1",
+          "length": 100,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Mdm4 protein",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "GPDSASRISPGQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3FEA_2",
+          "length": 10,
+          "auth_chains": [
+            "L",
+            "M"
+          ],
+          "desc": "p53-peptidomimetic Ac-Phe-Met-Aib-Pmp-6-Cl-Trp-Glu-Ac3c-Leu-NH2",
+          "accs": [],
+          "seq": "XFMAFWEXLX"
+        }
+      ]
+    },
+    {
+      "pdb": "3JZO",
+      "resolution": 1.8,
+      "title": "Human MDMX liganded with a 12mer peptide (pDI)",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3JZO_1",
+          "length": 89,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "QINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3JZO_2",
+          "length": 12,
+          "auth_chains": [
+            "P"
+          ],
+          "desc": "pDI peptide (12mer)",
+          "accs": [],
+          "seq": "LTFEHYWAQLTS"
+        }
+      ]
+    },
+    {
+      "pdb": "3JZP",
+      "resolution": 1.74,
+      "title": "Human MDMX liganded with a 12mer peptide inhibitor (pDI6W)",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3JZP_1",
+          "length": 89,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "QINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3JZP_2",
+          "length": 12,
+          "auth_chains": [
+            "P"
+          ],
+          "desc": "pDI6W peptide (12mer)",
+          "accs": [],
+          "seq": "LTFEHWWAQLTS"
+        }
+      ]
+    },
+    {
+      "pdb": "3MQR",
+      "resolution": 1.8,
+      "title": "Crystal Structure of the USP7:HdmX(AHSS) complex",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "3MQR_2",
+          "length": 10,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "HdmX Peptide",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "LDLAHSSESQ"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "4RXZ",
+      "resolution": 1.55,
+      "title": "Crystal Structure of MDMX phosporylated Tyr99 in complex with a 12-mer peptide",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "4RXZ_1",
+          "length": 85,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "INQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVT"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "4RXZ_2",
+          "length": 12,
+          "auth_chains": [
+            "C",
+            "D"
+          ],
+          "desc": "12-MER PEPTIDE INHIBITOR",
+          "accs": [],
+          "seq": "TSFAEYWNLLSP"
+        }
+      ]
+    },
+    {
+      "pdb": "5MNJ",
+      "resolution": 2.16,
+      "title": "Structure of MDM2-MDMX-UbcH5B-ubiquitin complex",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "5MNJ_4",
+          "length": 64,
+          "auth_chains": [
+            "D",
+            "H"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "MEDCQNLLKPCSLCEKRPRDGNIIHGRTGHLVTCFHCARRLKKAGASCPICKKEIQLVIKVFIA"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "5VK1",
+      "resolution": 2.69,
+      "title": "Crystal structure of human MDM4 in complex with a 12-mer lysine-cysteine side chain dithiocarbamate stapled peptide inhibitor PMI",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "5VK1_1",
+          "length": 85,
+          "auth_chains": [
+            "A",
+            "C",
+            "E",
+            "G",
+            "I",
+            "K",
+            "M",
+            "O"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "INQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDAAAQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVT"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "5VK1_2",
+          "length": 14,
+          "auth_chains": [
+            "B",
+            "D",
+            "F",
+            "H",
+            "J",
+            "L",
+            "N",
+            "P"
+          ],
+          "desc": "Lysine-cysteine side chain dithiocarbamate stapled peptide inhibitor PMI",
+          "accs": [],
+          "seq": "XTSFKEYWCLLSPX"
+        }
+      ]
+    },
+    {
+      "pdb": "6Q9Q",
+      "resolution": 2.1,
+      "title": "HDMX (14-111; C17S) COMPLEXED WITH COMPOUND 13 AT 2.1A; Structural states of Hdm2 and HdmX: X-ray elucidation of adaptations and binding interactions for different chemical compound classes",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6Q9Q_1",
+          "length": 100,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "GPDSASRISPGQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "6Q9S",
+      "resolution": 2.4,
+      "title": "HDMX (14-111; C17S) COMPLEXED WITH COMPOUND 14 AT 2.4A: Structural states of Hdm2 and HdmX: X-ray elucidation of adaptations and binding interactions for different chemical compound classes",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6Q9S_1",
+          "length": 100,
+          "auth_chains": [
+            "A",
+            "B",
+            "C"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "GPDSASRISPGQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "6Q9U",
+      "resolution": 2.4,
+      "title": "HDMX (14-111; C17S) COMPLEXED WITH COMPOUND 12 AT 2.4A; Structural states of Hdm2 and HdmX: X-ray elucidation of adaptations and binding interactions for different chemical compound classes",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6Q9U_1",
+          "length": 100,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "GPDSASRISPGQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "6Q9W",
+      "resolution": 1.55,
+      "title": "X-ray structure of compound 15 bound to HdmX: Structural states of Hdm2 and HdmX: X-ray elucidation of adaptations and binding interactions for different chemical compound classes",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6Q9W_1",
+          "length": 100,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "GPDSASRISPGQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "6Q9Y",
+      "resolution": 1.2,
+      "title": "HDMX (14-111; C17S) COMPLEXED WITH COMPOUND 16 AT 1.20A; Structural states of Hdm2 and HdmX: X-ray elucidation of adaptations and binding interactions for different chemical compound classes",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6Q9Y_1",
+          "length": 100,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "GPDSASRISPGQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "6YR7",
+      "resolution": 2.105,
+      "title": "14-3-3 sigma in complex with hDMX-342+367 peptide",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6YR7_2",
+          "length": 40,
+          "auth_chains": [
+            "C",
+            "Q"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "SKLTHSLSTSDITAIPEKENEGNDVPDCRRTISAPVVRPK"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7C3Q",
+      "resolution": 1.801,
+      "title": "Human MdmX protein in complex with Nutlin3a",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7C3Q_1",
+          "length": 96,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "DLENLYFQGSQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVT"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7C3Y",
+      "resolution": 1.632,
+      "title": "Crystal structure of the N-terminal domain of human MdmX protein in complex with Nutlin3a",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7C3Y_1",
+          "length": 96,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "DLENLYFQGSQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVT"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7C44",
+      "resolution": 1.65,
+      "title": "Crystal structure of the p53-binding domain of human MdmX protein in complex with Nutlin3a",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7C44_1",
+          "length": 96,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "DLENLYFQGSQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVT"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7EL4",
+      "resolution": 2.11,
+      "title": "The crystal structure of p53p peptide fragment in complex with the N-terminal domain of MdmX",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "7EL4_1",
+          "length": 130,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Cellular tumor antigen p53,Protein Mdm4",
+          "accs": [
+            "O15151",
+            "P04637"
+          ],
+          "seq": "GSSHHHHHHSQDLENLYFQGSWKLLPENGSGSSENSGFSGSQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "7KJN",
+      "resolution": 2.8,
+      "title": "CRYSTAL STRUCTURE OF HUMAN MDMX IN COMPLEX WITH D-PEPTIDE INHIBITOR (DPMI-OMEGA)",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "7KJN_1",
+          "length": 85,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "INQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDAAAQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVT"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "7KJN_2",
+          "length": 12,
+          "auth_chains": [
+            "B",
+            "C"
+          ],
+          "desc": "D-PMI-omega",
+          "accs": [],
+          "seq": "EFWYVEXEKLLR"
+        }
+      ]
+    },
+    {
+      "pdb": "8HDG",
+      "resolution": 1.73,
+      "title": "Small peptide enhances the binding of nutline-3a to MdmX",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "8HDG_1",
+          "length": 111,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "desc": "Uncharacterized protein DKFZp686B01123",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "MGSSHHHHHHSQDLENLYFQGSQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "8IA5",
+      "resolution": 1.93,
+      "title": "Small peptide enhances the binding of nutline-3a to N-terminal domain of MdmX",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "8IA5_1",
+          "length": 90,
+          "auth_chains": [
+            "A"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "SQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "8IA5_2",
+          "length": 9,
+          "auth_chains": [
+            "B"
+          ],
+          "desc": "9-mer peptide",
+          "accs": [],
+          "seq": "DLENLYFQG"
+        }
+      ]
+    },
+    {
+      "pdb": "6YR5",
+      "resolution": 2.25,
+      "title": "14-3-3 sigma in complex with hDMX-367 peptide",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "6YR5_2",
+          "length": 14,
+          "auth_chains": [
+            "O",
+            "P",
+            "Q",
+            "R"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "DCRRTISAPVVRPK"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "3U15",
+      "resolution": 1.8,
+      "title": "Structure of hDMX with Dimer Inducing Indolyl Hydantoin RO-2443",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "3U15_1",
+          "length": 100,
+          "auth_chains": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "GPDSASRISPGQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "3LBJ",
+      "resolution": 1.5,
+      "title": "Structure of human MDMX protein in complex with a small molecule inhibitor",
+      "is_peptide_complex": false,
+      "domain_entities": [
+        {
+          "entity": "3LBJ_1",
+          "length": 90,
+          "auth_chains": [
+            "E"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "MQINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": []
+    },
+    {
+      "pdb": "3JZQ",
+      "resolution": 1.8,
+      "title": "Human MDMX liganded with a 12mer peptide inhibitor (pDIQ)",
+      "is_peptide_complex": true,
+      "domain_entities": [
+        {
+          "entity": "3JZQ_1",
+          "length": 89,
+          "auth_chains": [
+            "A",
+            "B"
+          ],
+          "desc": "Protein Mdm4",
+          "accs": [
+            "O15151"
+          ],
+          "seq": "QINQVRPKLPLLKILHAAGAQGEMFTVKEVMHYLGQYIMVKQLYDQQEQHMVYCGGDLLGELLGRQSFSVKDPSPLYDMLRKNLVTLAT"
+        }
+      ],
+      "peptide_entities": [
+        {
+          "entity": "3JZQ_2",
+          "length": 12,
+          "auth_chains": [
+            "P",
+            "Q"
+          ],
+          "desc": "pDIQ peptide (12mer)",
+          "accs": [],
+          "seq": "ETFEHWWSQLLS"
+        }
+      ]
+    }
+  ]
+}

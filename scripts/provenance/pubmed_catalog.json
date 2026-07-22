@@ -1,0 +1,837 @@
+{
+  "queries": {
+    "MDM2 MDMX dual peptide inhibitor": [
+      "40824889",
+      "29866007",
+      "36185610",
+      "29643228",
+      "30462562",
+      "32001262",
+      "34589387",
+      "42189874",
+      "27603098",
+      "27287767",
+      "28916339",
+      "41385030",
+      "23946421",
+      "34301750",
+      "28425639",
+      "32359398",
+      "36190455",
+      "40827233",
+      "24126697",
+      "22408446",
+      "21277201",
+      "30169723",
+      "20226197",
+      "20190571",
+      "19910468",
+      "30761293",
+      "34458771",
+      "32651397",
+      "21773579",
+      "28048940",
+      "29571049",
+      "31944488",
+      "27373663",
+      "26957954",
+      "21171592",
+      "21088491"
+    ],
+    "cyclic peptide MDM2 p53": [
+      "26764190",
+      "32448094",
+      "36903628",
+      "24281001",
+      "37312849",
+      "34977581",
+      "33533253",
+      "37686057",
+      "37451662",
+      "24525337",
+      "35758642",
+      "25482947",
+      "31847417",
+      "23946421",
+      "38174919",
+      "21490429",
+      "20660730",
+      "34458771",
+      "29789628",
+      "42017321",
+      "33905247",
+      "35736182",
+      "37997385",
+      "30045945",
+      "34827693",
+      "26115576",
+      "24658419",
+      "31390185",
+      "28425639",
+      "21561866",
+      "26428461",
+      "36585955",
+      "27721413",
+      "22262176",
+      "20542919",
+      "31944488",
+      "28754949",
+      "23880345",
+      "33539064",
+      "22233211"
+    ],
+    "stapled peptide MDMX p53": [
+      "41138151",
+      "36185610",
+      "26858935",
+      "39300610",
+      "29866007",
+      "27327543",
+      "30026328",
+      "27287767",
+      "42189874",
+      "23946421",
+      "32359398",
+      "31847417",
+      "28673313",
+      "41385030",
+      "29643228",
+      "33140956",
+      "36190455",
+      "29789628",
+      "21277201",
+      "37439511",
+      "28048940",
+      "26428461",
+      "30809370",
+      "28425639",
+      "38784022",
+      "39830683",
+      "30255959",
+      "42323176",
+      "26957954",
+      "31944488",
+      "31226791",
+      "21088491"
+    ],
+    "ATSP-7041": [
+      "37371582",
+      "33536467",
+      "41618596",
+      "30045945",
+      "30755442",
+      "37688780",
+      "28048940",
+      "31847417",
+      "31226791",
+      "23946421",
+      "31795143",
+      "27721413",
+      "28425639"
+    ],
+    "ALRN-6924": [
+      "42189874",
+      "34301750",
+      "34286973",
+      "37036091",
+      "35986858",
+      "29789628",
+      "36715830",
+      "37439511",
+      "41385030",
+      "29643228",
+      "42065249",
+      "33423844",
+      "33663585",
+      "35045962",
+      "37509518",
+      "40626562",
+      "30253242",
+      "31795143",
+      "41618596",
+      "35269477",
+      "38784022",
+      "42474647",
+      "37371582",
+      "33667384",
+      "42065241",
+      "32924682",
+      "34230007"
+    ],
+    "dual MDM2 MDMX stapled peptide p53": [
+      "29866007",
+      "36185610",
+      "29643228",
+      "42189874",
+      "23946421",
+      "27287767",
+      "41385030",
+      "32359398",
+      "21277201",
+      "28425639",
+      "36190455",
+      "28048940",
+      "31944488",
+      "42323176",
+      "26957954",
+      "31226791",
+      "21088491"
+    ]
+  },
+  "catalog": [
+    {
+      "pmid": "40824889",
+      "title": "A Dual-Specificity d-Peptide Antagonist of MDM2 and MDMX for Antitumor Immunotherapy.",
+      "year": "2025",
+      "journal": "Journal of medicinal chemistry"
+    },
+    {
+      "pmid": "29866007",
+      "title": "An Update on MDMX and Dual MDM2/X Inhibitors.",
+      "year": "2018",
+      "journal": "Current topics in medicinal chemistry"
+    },
+    {
+      "pmid": "36185610",
+      "title": "Design of stapled peptide-based PROTACs for MDM2/MDMX atypical degradation and tumor suppression.",
+      "year": "2022",
+      "journal": "Theranostics"
+    },
+    {
+      "pmid": "29643228",
+      "title": "Dual inhibition of MDMX and MDM2 as a therapeutic strategy in leukemia.",
+      "year": "2018",
+      "journal": "Science translational medicine"
+    },
+    {
+      "pmid": "30462562",
+      "title": "Dual-target MDM2/MDMX inhibitor increases the sensitization of doxorubicin and inhibits migration and invasion abilities of triple-negative breast cancer cells through activation of TAB1/TAK1/p38 MAPK pathway.",
+      "year": "2019",
+      "journal": "Cancer biology & therapy"
+    },
+    {
+      "pmid": "32001262",
+      "title": "Design and development of high affinity dual anticancer peptide-inhibitors against p53-MDM2/X interaction.",
+      "year": "2020",
+      "journal": "Life sciences"
+    },
+    {
+      "pmid": "34589387",
+      "title": "Design of ultrahigh-affinity and dual-specificity peptide antagonists of MDM2 and MDMX for P53 activation and tumor suppression.",
+      "year": "2021",
+      "journal": "Acta pharmaceutica Sinica. B"
+    },
+    {
+      "pmid": "42189874",
+      "title": "A first-in-pediatric study of ALRN-6924, a novel stapled-peptide dual MDM2/MDMX inhibitor, for children with advanced hematologic and solid malignancies.",
+      "year": "2026",
+      "journal": "Clinical cancer research : an official journal of the American Association for Cancer Research"
+    },
+    {
+      "pmid": "27603098",
+      "title": "Peptides and peptidomimetics in the p53/MDM2/MDM4 circuitry - a patent review.",
+      "year": "2016",
+      "journal": "Expert opinion on therapeutic patents"
+    },
+    {
+      "pmid": "27287767",
+      "title": "Development of cell-penetrating peptide-based drug leads to inhibit MDMX:p53 and MDM2:p53 interactions.",
+      "year": "2016",
+      "journal": "Biopolymers"
+    },
+    {
+      "pmid": "28916339",
+      "title": "d-Amino acid mutation of PMI as potent dual peptide inhibitors of p53-MDM2/MDMX interactions.",
+      "year": "2017",
+      "journal": "Bioorganic & medicinal chemistry letters"
+    },
+    {
+      "pmid": "41385030",
+      "title": "A new approach for elimination of apoptotic resistance caused by MDM2/MDMX amplification in chronic lymphocytic leukemia: combination of ALRN-6924 and radiofrequency exposure.",
+      "year": "2025",
+      "journal": "Medical oncology (Northwood, London, England)"
+    },
+    {
+      "pmid": "23946421",
+      "title": "Stapled \u03b1-helical peptide drug development: a potent dual inhibitor of MDM2 and MDMX for p53-dependent cancer therapy.",
+      "year": "2013",
+      "journal": "Proceedings of the National Academy of Sciences of the United States of America"
+    },
+    {
+      "pmid": "34301750",
+      "title": "Phase 1 Trial of ALRN-6924, a Dual Inhibitor of MDMX and MDM2, in Patients with Solid Tumors and Lymphomas Bearing Wild-type TP53.",
+      "year": "2021",
+      "journal": "Clinical cancer research : an official journal of the American Association for Cancer Research"
+    },
+    {
+      "pmid": "28425639",
+      "title": "Designing dual inhibitors of Mdm2/MdmX: Unexpected coupling of water with gatekeeper Y100/99.",
+      "year": "2017",
+      "journal": "Proteins"
+    },
+    {
+      "pmid": "32359398",
+      "title": "Identification of a Structural Determinant for Selective Targeting of HDMX.",
+      "year": "2020",
+      "journal": "Structure (London, England : 1993)"
+    },
+    {
+      "pmid": "36190455",
+      "title": "Synthesis and biological evaluation of novel all-hydrocarbon cross-linked aza-stapled peptides.",
+      "year": "2022",
+      "journal": "Organic & biomolecular chemistry"
+    },
+    {
+      "pmid": "40827233",
+      "title": "Bionic Power Play: Dual-Targeting MDMX/MDM2 to Reboot p53 to Beat Lung Adenocarcinoma's Immune Tricks.",
+      "year": "2025",
+      "journal": "International journal of nanomedicine"
+    },
+    {
+      "pmid": "24126697",
+      "title": "Induction of p53 expression and apoptosis by a recombinant dual-target MDM2/MDMX inhibitory protein in wild-type p53 breast cancer cells.",
+      "year": "2013",
+      "journal": "International journal of oncology"
+    },
+    {
+      "pmid": "22408446",
+      "title": "Computational studies of difference in binding modes of peptide and non-peptide inhibitors to MDM2/MDMX based on molecular dynamics simulations.",
+      "year": "2012",
+      "journal": "International journal of molecular sciences"
+    },
+    {
+      "pmid": "21277201",
+      "title": "Synthesis of cell-permeable stapled peptide dual inhibitors of the p53-Mdm2/Mdmx interactions via photoinduced cycloaddition.",
+      "year": "2011",
+      "journal": "Bioorganic & medicinal chemistry letters"
+    },
+    {
+      "pmid": "30169723",
+      "title": "Synthetic 10FN3-based mono- and bivalent inhibitors of MDM2/X function.",
+      "year": "2018",
+      "journal": "Protein engineering, design & selection : PEDS"
+    },
+    {
+      "pmid": "20226197",
+      "title": "Systematic mutational analysis of peptide inhibition of the p53-MDM2/MDMX interactions.",
+      "year": "2010",
+      "journal": "Journal of molecular biology"
+    },
+    {
+      "pmid": "20190571",
+      "title": "Differential binding of p53 and nutlin to MDM2 and MDMX: computational studies.",
+      "year": "2010",
+      "journal": "Cell cycle (Georgetown, Tex.)"
+    },
+    {
+      "pmid": "19910468",
+      "title": "Structure-based design of high affinity peptides inhibiting the interaction of p53 with MDM2 and MDMX.",
+      "year": "2010",
+      "journal": "The Journal of biological chemistry"
+    },
+    {
+      "pmid": "30761293",
+      "title": "Insight Into the Binding Mechanism of p53/pDIQ-MDMX/MDM2 With the Interaction Entropy Method.",
+      "year": "2019",
+      "journal": "Frontiers in chemistry"
+    },
+    {
+      "pmid": "34458771",
+      "title": "Cyclic peptide scaffold with ability to stabilize and deliver a helical cell-impermeable cargo across membranes of cultured cancer cells.",
+      "year": "2020",
+      "journal": "RSC chemical biology"
+    },
+    {
+      "pmid": "32651397",
+      "title": "Structure-based designing efficient peptides based on p53 binding site residues to disrupt p53-MDM2/X interaction.",
+      "year": "2020",
+      "journal": "Scientific reports"
+    },
+    {
+      "pmid": "21773579",
+      "title": "Achieving cell penetration with distance-matching cysteine cross-linkers: a facile route to cell-permeable peptide dual inhibitors of Mdm2/Mdmx.",
+      "year": "2011",
+      "journal": "Chemical communications (Cambridge, England)"
+    },
+    {
+      "pmid": "28048940",
+      "title": "Toward Understanding the Molecular Recognition of Albumin by p53-Activating Stapled Peptide ATSP-7041.",
+      "year": "2017",
+      "journal": "The journal of physical chemistry. B"
+    },
+    {
+      "pmid": "29571049",
+      "title": "Lanthanide-doped nanoparticles conjugated with an anti-CD33 antibody and a p53-activating peptide for acute myeloid leukemia therapy.",
+      "year": "2018",
+      "journal": "Biomaterials"
+    },
+    {
+      "pmid": "31944488",
+      "title": "Multicomponent Peptide Stapling as a Diversity-Driven Tool for the Development of Inhibitors of Protein-Protein Interactions.",
+      "year": "2020",
+      "journal": "Angewandte Chemie (International ed. in English)"
+    },
+    {
+      "pmid": "27373663",
+      "title": "Functional Interrogation of the N-Terminal Lid of MDMX in p53 Binding via Native Chemical Ligation.",
+      "year": "2016",
+      "journal": "Chemical & pharmaceutical bulletin"
+    },
+    {
+      "pmid": "26957954",
+      "title": "Bridged Analogues for p53-Dependent Cancer Therapy Obtained by S-Alkylation.",
+      "year": "2016",
+      "journal": "International journal of peptide research and therapeutics"
+    },
+    {
+      "pmid": "21171592",
+      "title": "Novel pyrrolopyrimidine-based \u03b1-helix mimetics: cell-permeable inhibitors of protein\u2212protein interactions.",
+      "year": "2011",
+      "journal": "Journal of the American Chemical Society"
+    },
+    {
+      "pmid": "21088491",
+      "title": "Stapled peptides in the p53 pathway: computer simulations reveal novel interactions of the staples with the target protein.",
+      "year": "2010",
+      "journal": "Cell cycle (Georgetown, Tex.)"
+    },
+    {
+      "pmid": "26764190",
+      "title": "Peptide-based inhibitors of protein-protein interactions.",
+      "year": "2016",
+      "journal": "Bioorganic & medicinal chemistry letters"
+    },
+    {
+      "pmid": "32448094",
+      "title": "Computational modeling of cyclic peptide inhibitor-MDM2/MDMX binding through global docking and Gaussian accelerated molecular dynamics simulations.",
+      "year": "2021",
+      "journal": "Journal of biomolecular structure & dynamics"
+    },
+    {
+      "pmid": "36903628",
+      "title": "Molecular Peptide Grafting as a Tool to Create Novel Protein Therapeutics.",
+      "year": "2023",
+      "journal": "Molecules (Basel, Switzerland)"
+    },
+    {
+      "pmid": "24281001",
+      "title": "p53-dependent and p53-independent anticancer effects of different histone deacetylase inhibitors.",
+      "year": "2014",
+      "journal": "British journal of cancer"
+    },
+    {
+      "pmid": "37312849",
+      "title": "DNA-Encoded Macrocyclic Peptide Libraries Enable the Discovery of a Neutral MDM2-p53 Inhibitor.",
+      "year": "2023",
+      "journal": "ACS medicinal chemistry letters"
+    },
+    {
+      "pmid": "34977581",
+      "title": "Discovery, X-ray structure and CPP-conjugation enabled uptake of p53/MDM2 macrocyclic peptide inhibitors.",
+      "year": "2021",
+      "journal": "RSC chemical biology"
+    },
+    {
+      "pmid": "33533253",
+      "title": "Angler Peptides: Macrocyclic Conjugates Inhibit p53:MDM2/X Interactions and Activate Apoptosis in Cancer Cells.",
+      "year": "2021",
+      "journal": "ACS chemical biology"
+    },
+    {
+      "pmid": "37686057",
+      "title": "Design of Cyclic Peptides Targeting Protein-Protein Interactions Using AlphaFold.",
+      "year": "2023",
+      "journal": "International journal of molecular sciences"
+    },
+    {
+      "pmid": "37451662",
+      "title": "Small-molecular cyclic peptide exerts viability suppression effects on HepG2 cells via triggering p53 apoptotic pathways.",
+      "year": "2023",
+      "journal": "Chemico-biological interactions"
+    },
+    {
+      "pmid": "24525337",
+      "title": "AKT mediates actinomycin D-induced p53 expression.",
+      "year": "2014",
+      "journal": "Oncotarget"
+    },
+    {
+      "pmid": "35758642",
+      "title": "Targeting Protein Interaction Hotspots Using Structured and Disordered Chimeric Peptide Inhibitors.",
+      "year": "2022",
+      "journal": "ACS chemical biology"
+    },
+    {
+      "pmid": "25482947",
+      "title": "mTOR inhibitors blunt the p53 response to nucleolar stress by regulating RPL11 and MDM2 levels.",
+      "year": "2014",
+      "journal": "Cancer biology & therapy"
+    },
+    {
+      "pmid": "31847417",
+      "title": "Rigorous Computational and Experimental Investigations on MDM2/MDMX-Targeted Linear and Macrocyclic Peptides.",
+      "year": "2019",
+      "journal": "Molecules (Basel, Switzerland)"
+    },
+    {
+      "pmid": "38174919",
+      "title": "Delivery to, and Reactivation of, the p53 Pathway in Cancer Cells Using a Grafted Cyclotide Conjugated with a Cell-Penetrating Peptide.",
+      "year": "2024",
+      "journal": "Journal of medicinal chemistry"
+    },
+    {
+      "pmid": "21490429",
+      "title": "Mechanism-specific signatures for small-molecule p53 activators.",
+      "year": "2011",
+      "journal": "Cell cycle (Georgetown, Tex.)"
+    },
+    {
+      "pmid": "20660730",
+      "title": "D-peptide inhibitors of the p53-MDM2 interaction for targeted molecular therapy of malignant neoplasms.",
+      "year": "2010",
+      "journal": "Proceedings of the National Academy of Sciences of the United States of America"
+    },
+    {
+      "pmid": "29789628",
+      "title": "Targetable vulnerabilities in T- and NK-cell lymphomas identified through preclinical models.",
+      "year": "2018",
+      "journal": "Nature communications"
+    },
+    {
+      "pmid": "42017321",
+      "title": "Macrocyclic peptides as protein-protein interaction modulators: a review.",
+      "year": "2026",
+      "journal": "Organic & biomolecular chemistry"
+    },
+    {
+      "pmid": "33905247",
+      "title": "Solution-State Preorganization of Cyclic \u03b2-Hairpin Ligands Determines Binding Mechanism and Affinities for MDM2.",
+      "year": "2021",
+      "journal": "Journal of chemical information and modeling"
+    },
+    {
+      "pmid": "35736182",
+      "title": "Photoinduced Synthesis of Methylated Marine Cyclopeptide Galaxamide Analogs with Isoindolinone as Anticancer Agents.",
+      "year": "2022",
+      "journal": "Marine drugs"
+    },
+    {
+      "pmid": "37997385",
+      "title": "Actinomycin D synergizes with Doxorubicin in triple-negative breast cancer by inducing P53-dependent cell apoptosis.",
+      "year": "2024",
+      "journal": "Carcinogenesis"
+    },
+    {
+      "pmid": "30045945",
+      "title": "Genome-scale CRISPR-Cas9 screen identifies druggable dependencies in TP53 wild-type Ewing sarcoma.",
+      "year": "2018",
+      "journal": "The Journal of experimental medicine"
+    },
+    {
+      "pmid": "34827693",
+      "title": "p53-Mediated Radiosensitization of (177)Lu-DOTATATE in Neuroblastoma Tumor Spheroids.",
+      "year": "2021",
+      "journal": "Biomolecules"
+    },
+    {
+      "pmid": "26115576",
+      "title": "Identification of a new p53/MDM2 inhibitor motif inspired by studies of chlorofusin.",
+      "year": "2015",
+      "journal": "Bioorganic & medicinal chemistry letters"
+    },
+    {
+      "pmid": "24658419",
+      "title": "Dissecting the p53-Mdm2 feedback loop in vivo: uncoupling the role in p53 stability and activity.",
+      "year": "2014",
+      "journal": "Oncotarget"
+    },
+    {
+      "pmid": "31390185",
+      "title": "Cell Membrane Composition Drives Selectivity and Toxicity of Designed Cyclic Helix-Loop-Helix Peptides with Cell Penetrating and Tumor Suppressor Properties.",
+      "year": "2019",
+      "journal": "ACS chemical biology"
+    },
+    {
+      "pmid": "21561866",
+      "title": "Interplay between ribosomal protein S27a and MDM2 protein in p53 activation in response to ribosomal stress.",
+      "year": "2011",
+      "journal": "The Journal of biological chemistry"
+    },
+    {
+      "pmid": "26428461",
+      "title": "A stapled peptide antagonist of MDM2 carried by polymeric micelles sensitizes glioblastoma to temozolomide treatment through p53 activation.",
+      "year": "2015",
+      "journal": "Journal of controlled release : official journal of the Controlled Release Society"
+    },
+    {
+      "pmid": "36585955",
+      "title": "Cyclo-glycylproline attenuates hydrogen peroxide-induced cellular damage mediated by the MDM2-p53 pathway in human neural stem cells.",
+      "year": "2023",
+      "journal": "Journal of cellular physiology"
+    },
+    {
+      "pmid": "27721413",
+      "title": "Mechanistic validation of a clinical lead stapled peptide that reactivates p53 by dual HDM2 and HDMX targeting.",
+      "year": "2017",
+      "journal": "Oncogene"
+    },
+    {
+      "pmid": "22262176",
+      "title": "Ribosomal stress induces L11- and p53-dependent apoptosis in mouse pluripotent stem cells.",
+      "year": "2012",
+      "journal": "Cell cycle (Georgetown, Tex.)"
+    },
+    {
+      "pmid": "20542919",
+      "title": "Negative regulation of HDM2 to attenuate p53 degradation by ribosomal protein L26.",
+      "year": "2010",
+      "journal": "Nucleic acids research"
+    },
+    {
+      "pmid": "28754949",
+      "title": "Cell-permeable nanobodies for targeted immunolabelling and antigen manipulation in living cells.",
+      "year": "2017",
+      "journal": "Nature chemistry"
+    },
+    {
+      "pmid": "23880345",
+      "title": "TXNIP interacts with hEcd to increase p53 stability and activity.",
+      "year": "2013",
+      "journal": "Biochemical and biophysical research communications"
+    },
+    {
+      "pmid": "33539064",
+      "title": "NanoClick: A High Throughput, Target-Agnostic Peptide Cell Permeability Assay.",
+      "year": "2021",
+      "journal": "ACS chemical biology"
+    },
+    {
+      "pmid": "22233211",
+      "title": "Targeted delivery of a novel palmitylated D-peptide for antiglioblastoma molecular therapy.",
+      "year": "2012",
+      "journal": "Journal of drug targeting"
+    },
+    {
+      "pmid": "41138151",
+      "title": "(64)Cu-Labeled Stapled Peptide-Based Radiopharmaceuticals Targeting MDM2/MDMX for Pan-p53 Tumors.",
+      "year": "2025",
+      "journal": "Journal of medicinal chemistry"
+    },
+    {
+      "pmid": "26858935",
+      "title": "Clinical Overview of MDM2/X-Targeted Therapies.",
+      "year": "2016",
+      "journal": "Frontiers in oncology"
+    },
+    {
+      "pmid": "39300610",
+      "title": "Design, Synthesis, and Biological Evaluation of Lysine-Stapled Peptide Inhibitors of p53-MDM2/MDMX Interactions with Potent Antitumor Activity In Vivo.",
+      "year": "2024",
+      "journal": "Journal of medicinal chemistry"
+    },
+    {
+      "pmid": "27327543",
+      "title": "Pharmacological activation of wild-type p53 in the therapy of leukemia.",
+      "year": "2016",
+      "journal": "Experimental hematology"
+    },
+    {
+      "pmid": "30026328",
+      "title": "The MDM2/MDMX-p53 Antagonist PM2 Radiosensitizes Wild-Type p53 Tumors.",
+      "year": "2018",
+      "journal": "Cancer research"
+    },
+    {
+      "pmid": "28673313",
+      "title": "MDM2/X inhibitors under clinical evaluation: perspectives for the management of hematological malignancies and pediatric cancer.",
+      "year": "2017",
+      "journal": "Journal of hematology & oncology"
+    },
+    {
+      "pmid": "33140956",
+      "title": "Rational Design of Right-Handed Heterogeneous Peptidomimetics as Inhibitors of Protein-Protein Interactions.",
+      "year": "2020",
+      "journal": "Journal of medicinal chemistry"
+    },
+    {
+      "pmid": "37439511",
+      "title": "Discovery of Sulanemadlin (ALRN-6924), the First Cell-Permeating, Stabilized \u03b1-Helical Peptide in Clinical Development.",
+      "year": "2023",
+      "journal": "Journal of medicinal chemistry"
+    },
+    {
+      "pmid": "30809370",
+      "title": "Dithiocarbamate-inspired side chain stapling chemistry for peptide drug design.",
+      "year": "2019",
+      "journal": "Chemical science"
+    },
+    {
+      "pmid": "38784022",
+      "title": "MDM2/MDMX inhibition by Sulanemadlin synergizes with anti-Programmed Death 1 immunotherapy in wild-type p53 tumors.",
+      "year": "2024",
+      "journal": "iScience"
+    },
+    {
+      "pmid": "39830683",
+      "title": "Raman active diyne-girder conformationally constrained p53 stapled peptides bind to MDM2 for visualisation without fluorophores.",
+      "year": "2025",
+      "journal": "RSC chemical biology"
+    },
+    {
+      "pmid": "30255959",
+      "title": "Tuning the Binding Affinity and Selectivity of Perfluoroaryl-Stapled Peptides by Cysteine-Editing.",
+      "year": "2019",
+      "journal": "Chemistry (Weinheim an der Bergstrasse, Germany)"
+    },
+    {
+      "pmid": "42323176",
+      "title": "PET radiotracers targeting MDM2 protein interaction: From preclinical validation to first-in-human studies.",
+      "year": "2026",
+      "journal": "Pharmacological research"
+    },
+    {
+      "pmid": "31226791",
+      "title": "Incorporation of Putative Helix-Breaking Amino Acids in the Design of Novel Stapled Peptides: Exploring Biophysical and Cellular Permeability Properties.",
+      "year": "2019",
+      "journal": "Molecules (Basel, Switzerland)"
+    },
+    {
+      "pmid": "37371582",
+      "title": "Identification of the Stapled \u03b1-Helical Peptide ATSP-7041 as a Substrate and Strong Inhibitor of OATP1B1 In Vitro.",
+      "year": "2023",
+      "journal": "Biomolecules"
+    },
+    {
+      "pmid": "33536467",
+      "title": "MDM4 inhibition: a novel therapeutic strategy to reactivate p53 in hepatoblastoma.",
+      "year": "2021",
+      "journal": "Scientific reports"
+    },
+    {
+      "pmid": "41618596",
+      "title": "Delivery of ATSP-7041 by Minimally Invasive Nasal Depot (MIND) to Target Diffuse Intrinsic Pontine Glioma.",
+      "year": "2026",
+      "journal": "Molecular cancer therapeutics"
+    },
+    {
+      "pmid": "30755442",
+      "title": "MDM2 and MDM4 Are Therapeutic Vulnerabilities in Malignant Rhabdoid Tumors.",
+      "year": "2019",
+      "journal": "Cancer research"
+    },
+    {
+      "pmid": "37688780",
+      "title": "Targeted Polymersome Delivery of a Stapled Peptide for Drugging the Tumor Protein p53:BCL-2-Family Axis in Diffuse Large B-Cell Lymphoma.",
+      "year": "2023",
+      "journal": "ACS nano"
+    },
+    {
+      "pmid": "31795143",
+      "title": "The Dual Interactions of p53 with MDM2 and p300: Implications for the Design of MDM2 Inhibitors.",
+      "year": "2019",
+      "journal": "International journal of molecular sciences"
+    },
+    {
+      "pmid": "34286973",
+      "title": "Recent Progress and Clinical Development of Inhibitors that Block MDM4/p53 Protein-Protein Interactions.",
+      "year": "2021",
+      "journal": "Journal of medicinal chemistry"
+    },
+    {
+      "pmid": "37036091",
+      "title": "Cell cycle arrest: A breakthrough in the supportive care of older cancer patients.",
+      "year": "2023",
+      "journal": "Journal of the American Geriatrics Society"
+    },
+    {
+      "pmid": "35986858",
+      "title": "New Advances in Supportive Care: Chemoprotective Agents as Novel Opportunities in Geriatric Oncology.",
+      "year": "2022",
+      "journal": "Current oncology reports"
+    },
+    {
+      "pmid": "36715830",
+      "title": "A Proactive Approach to Prevent Hematopoietic Exhaustion During Cancer Chemotherapy in Older Patients: Temporary Cell-Cycle Arrest.",
+      "year": "2023",
+      "journal": "Drugs & aging"
+    },
+    {
+      "pmid": "42065249",
+      "title": "Transient p53/p21 activation selectively protects healthy human hair follicles and their stem cells from chemotherapy.",
+      "year": "2026",
+      "journal": "The Journal of clinical investigation"
+    },
+    {
+      "pmid": "33423844",
+      "title": "Current and emerging strategies for management of myelodysplastic syndromes.",
+      "year": "2021",
+      "journal": "Blood reviews"
+    },
+    {
+      "pmid": "33663585",
+      "title": "First in class dual MDM2/MDMX inhibitor ALRN-6924 enhances antitumor efficacy of chemotherapy in TP53 wild-type hormone receptor-positive breast cancer models.",
+      "year": "2021",
+      "journal": "Breast cancer research : BCR"
+    },
+    {
+      "pmid": "35045962",
+      "title": "Correction: Phase I Trial of ALRN-6924, a Dual Inhibitor of MDMX and MDM2, in Patients with Solid Tumors and Lymphomas Bearing Wild-type TP53.",
+      "year": "2022",
+      "journal": "Clinical cancer research : an official journal of the American Association for Cancer Research"
+    },
+    {
+      "pmid": "37509518",
+      "title": "MDM2 Inhibition in the Treatment of Glioblastoma: From Concept to Clinical Investigation.",
+      "year": "2023",
+      "journal": "Biomedicines"
+    },
+    {
+      "pmid": "40626562",
+      "title": "A cancer persistent DNA repair circuit driven by MDM2, MDM4 (MDMX), and mutant p53 for recruitment of MDC1 and 53BP1 on chromatin.",
+      "year": "2025",
+      "journal": "Nucleic acids research"
+    },
+    {
+      "pmid": "30253242",
+      "title": "The development of piperidinones as potent MDM2-P53 protein-protein interaction inhibitors for cancer therapy.",
+      "year": "2018",
+      "journal": "European journal of medicinal chemistry"
+    },
+    {
+      "pmid": "35269477",
+      "title": "RNAi-Mediated Screen of Primary AML Cells Nominates MDM4 as a Therapeutic Target in NK-AML with DNMT3A Mutations.",
+      "year": "2022",
+      "journal": "Cells"
+    },
+    {
+      "pmid": "42474647",
+      "title": "Correction: A new approach for elimination of apoptotic resistance caused by MDM2/MDMX amplification in chronic lymphocytic leukemia: combination of ALRN-6924 and radiofrequency exposure.",
+      "year": "2026",
+      "journal": "Medical oncology (Northwood, London, England)"
+    },
+    {
+      "pmid": "33667384",
+      "title": "MDMX acts as a pervasive preleukemic-to-acute myeloid leukemia transition mechanism.",
+      "year": "2021",
+      "journal": "Cancer cell"
+    },
+    {
+      "pmid": "42065241",
+      "title": "Hitting pause on chemotherapy-induced alopecia: transient p53 activation as a guardian of the hair follicle.",
+      "year": "2026",
+      "journal": "The Journal of clinical investigation"
+    },
+    {
+      "pmid": "32924682",
+      "title": "The expression of MDM2, MDM4, p53 and p21 in myeloid neoplasms and the effect of MDM2/MDM4 dual inhibitor.",
+      "year": "2021",
+      "journal": "Leukemia & lymphoma"
+    },
+    {
+      "pmid": "34230007",
+      "title": "Pharmacologic Activation of p53 Triggers Viral Mimicry Response Thereby Abolishing Tumor Immune Evasion and Promoting Antitumor Immunity.",
+      "year": "2021",
+      "journal": "Cancer discovery"
+    }
+  ]
+}
