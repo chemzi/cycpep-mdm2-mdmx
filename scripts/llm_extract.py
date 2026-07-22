@@ -174,7 +174,7 @@ def main() -> int:
     seen = set()
     unique = []
     for b in all_binders:
-        key = b.get("name", "")[:30].lower()
+        key = (b.get("name") or "")[:30].lower()
         if key and key not in seen:
             seen.add(key)
             unique.append(b)
