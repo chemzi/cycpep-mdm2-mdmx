@@ -154,17 +154,21 @@ def _run_pipeline():
         "stdout_snippet": f"n_papers={pmr.get('n_total',0)}",
     }, targets=["both"], phase="research")
 
-    # Step 7: LLM extract
-    print("[research] Step 7/7: LLM extract...")
+    # Step 7: LLM extract (逐篇并发)
+    print("[research] Step 7/7: LLM extract (concurrent, one paper per call)...")
     llm_binders = KNOWN_DUAL_BINDERS
     try:
         lr, le, lc, ld_, lh = _run_script("llm_extract.py", pmr)
         if lr and "error" not in lr:
-            llm_binders = lr.get("known_binders", llm_binders)
+            extracted = lr.get("known_binders", [])
+            if extracted:
+                llm_binders = extracted
+                print(f"[research] LLM found {len(extracted)} binders from {lr.get('n_papers_processed',0)} papers")
         EvidenceLogger.log("research", "tool_call", {
-            "tool_name": "llm_extract",
+            "tool_name": "llm_extract_concurrent",
             "tool_version": lr.get("llm_model", "unknown") if isinstance(lr, dict) else "unknown",
             "output_hash": lh, "exit_code": lc, "duration_sec": round(ld_, 1),
+            "stdout_snippet": f"binders={len(llm_binders)} papers={lr.get('n_papers_processed',0) if isinstance(lr, dict) else '?'}",
         }, targets=["both"], phase="research")
     except Exception as e:
         EvidenceLogger.error("research", "tool_failure", f"LLM: {e}", recovery="fallback to constants")
