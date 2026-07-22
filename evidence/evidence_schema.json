@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "环肽Agent证据日志",
+  "description": "每位Agent每次操作的完整记录，可追溯可复现",
+  "definitions": {
+    "base_entry": {
+      "type": "object",
+      "required": ["timestamp", "event_id", "agent", "event_type"],
+      "properties": {
+        "timestamp":    {"type": "string", "format": "date-time", "description": "ISO 8601"},
+        "event_id":     {"type": "string", "description": "UUID，本条目全局唯一标识"},
+        "agent":        {"type": "string", "enum": ["planner","research","design","prediction","critic","reporter","system"]},
+        "event_type":   {"type": "string", "description": "见下方枚举"},
+        "phase":        {"type": "string", "enum": ["research","design","evaluate","critic","iterate","report"]},
+        "round":        {"type": "integer", "minimum": 1},
+        "blocks":       {"type": "array", "items": {"type": "string"}, "description": "依赖的前置event_id列表"},
+        "targets":      {"type": "array", "items": {"type": "string", "enum": ["MDM2","MDMX","both"]}},
+        "notes":        {"type": "string"}
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "required": ["candidate_id", "sequence"],
+      "properties": {
+        "candidate_id":   {"type": "string", "pattern": "^C\\d{4}$"},
+        "sequence":       {"type": "string", "description": "单字母氨基酸序列"},
+        "length":         {"type": "integer", "minimum": 6, "maximum": 20},
+        "source_route":   {"type": "string", "enum": ["route_A_mdm2_first","route_A_mdmx_first","route_B_motif_graft","route_C_atsp"]},
+        "source_batch":   {"type": "string"},
+        "smiles":         {"type": "string", "description": "环肽SMILES（可选）"}
+      }
+    },
+    "scores": {
+      "type": "object",
+      "properties": {
+        "iptm_mdm2":      {"type": "number", "minimum": 0, "maximum": 1},
+        "iptm_mdmx":      {"type": "number", "minimum": 0, "maximum": 1},
+        "dual_score":     {"type": "number", "description": "combined - 0.5 * asymmetry"},
+        "asymmetry":      {"type": "number", "minimum": 0, "maximum": 1, "description": "|iptm_mdm2 - iptm_mdmx|"},
+        "monomer_plddt":  {"type": "number", "minimum": 0, "maximum": 1},
+        "self_rmsd":      {"type": "number", "minimum": 0, "description": "骨架RMSD (Å)"},
+        "colab_iptm_mdm2":{"type": "number", "minimum": 0, "maximum": 1},
+        "colab_iptm_mdmx":{"type": "number", "minimum": 0, "maximum": 1},
+        "haddock_mdm2":   {"type": "number", "description": "HADDOCK score"},
+        "haddock_mdmx":   {"type": "number", "description": "HADDOCK score"},
+        "hotspot_cov_mdm2":{"type": "number", "minimum": 0, "maximum": 1, "description": "F/W/L热点覆盖率"},
+        "hotspot_cov_mdmx":{"type": "number", "minimum": 0, "maximum": 1, "description": "F/W/L热点覆盖率"},
+        "layer":          {"type": "integer", "minimum": 1, "maximum": 4}
+      }
+    },
+    "tool_trace": {
+      "type": "object",
+      "required": ["tool_name", "tool_version", "input_params", "exit_code"],
+      "properties": {
+        "tool_name":      {"type": "string", "enum": ["afcycdesign_monomer","afcycdesign_complex","afcycdesign_binder","colabfold","haddock","biotite","proteinmpnn","pubmed_api","rcsb_api"]},
+        "tool_version":   {"type": "string"},
+        "input_params":   {"type": "object"},
+        "output_path":    {"type": "string"},
+        "output_hash":    {"type": "string", "description": "MD5 of output file"},
+        "exit_code":      {"type": "integer"},
+        "stdout_snippet": {"type": "string", "description": "关键输出行（截断到200字符）"},
+        "duration_sec":   {"type": "number"}
+      }
+    }
+  },
+  "event_types": {
+    "research_targets": {
+      "extends": "base_entry",
+      "description": "Research Agent完成靶点调研",
+      "additional": ["pdb_complexes","hotspot_analysis","known_binders","literature_refs"]
+    },
+    "design_batch": {
+      "extends": "base_entry",
+      "description": "Design Agent产出一批候选",
+      "additional": ["route","n_generated","n_valid","tool_trace"]
+    },
+    "candidate_registered": {
+      "extends": "base_entry",
+      "description": "一条新候选进入评估系统",
+      "additional": ["candidate"]
+    },
+    "evaluate_layer_start": {
+      "extends": "base_entry",
+      "description": "开始评估某一层",
+      "additional": ["layer","n_candidates_in","thresholds"]
+    },
+    "candidate_scored": {
+      "extends": "base_entry",
+      "description": "单条候选在某层的评分结果",
+      "additional": ["candidate","scores","tool_trace","passed"]
+    },
+    "candidate_eliminated": {
+      "extends": "base_entry",
+      "description": "候选被淘汰",
+      "additional": ["candidate_id","reason","layer","actual_score","threshold"]
+    },
+    "evaluate_layer_complete": {
+      "extends": "base_entry",
+      "description": "某一层评估完成",
+      "additional": ["layer","n_in","n_pass","n_fail","pass_rate"]
+    },
+    "critic_review": {
+      "extends": "base_entry",
+      "description": "Critic Agent出评审报告",
+      "additional": ["issues","pass","summary","recommendation","metrics_snapshot"]
+    },
+    "planner_adjust": {
+      "extends": "base_entry",
+      "description": "Planner根据Critic调整策略",
+      "additional": ["trigger_event_id","old_strategy","new_strategy","reason"]
+    },
+    "candidate_finalized": {
+      "extends": "base_entry",
+      "description": "候选进入最终交付列表",
+      "additional": ["candidate","final_scores","rank","evidence_summary"]
+    },
+    "error": {
+      "extends": "base_entry",
+      "description": "任何错误或异常",
+      "additional": ["error_type","error_message","stack_trace","recovery_action"]
+    }
+  }
+}

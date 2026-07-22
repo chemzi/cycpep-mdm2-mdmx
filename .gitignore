@@ -1,0 +1,33 @@
+# 运行时数据（Agent 自动生成，不进版本控制）
+data/
+outputs/
+batch/
+targets/*.pdb
+targets/*.cif
+
+# 证据日志（运行时产出）
+evidence/evidence_log.jsonl
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 虚拟环境
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 临时文件
+*.tmp
+*.log
+*.pkl
