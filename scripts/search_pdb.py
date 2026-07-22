@@ -4,7 +4,8 @@ Step 1: RCSB Search API v2 — 检索 MDM2/MDMX 人源肽段复合物。
 调用方式:
     python -m scripts.search_pdb > data/search_results.json
 
-输出: JSON 数组, 每个元素 {pdb_id, title, resolution, organism, polymer_count, ...}
+策略: 用 structure_title 搜靶点名 + 分辨率/物种过滤 → 下载后 Python 侧筛 UniProt。
+       (RCSB text 服务不支持直接搜 uniprot_ids 字段)
 """
 
 import json, sys, time, urllib.request, urllib.error
@@ -12,8 +13,13 @@ from pathlib import Path
 
 RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
 
-def search_mdm2_peptide_complexes() -> list[dict]:
-    """搜 MDM2 (Q00987) 的人源肽段复合物, ≤2.8Å。"""
+
+def _search_target(target_name: str, uniprot: str) -> list[dict]:
+    """搜索某一靶点的结构。
+
+    先按 structure_title 搜靶点名，再按分辨率/物种/多链过滤。
+    返回原始结果，UniProt 筛选在 enrich 阶段做。
+    """
     query = {
         "query": {
             "type": "group",
@@ -21,11 +27,9 @@ def search_mdm2_peptide_complexes() -> list[dict]:
             "nodes": [
                 {
                     "type": "terminal",
-                    "service": "text",
+                    "service": "full_text",
                     "parameters": {
-                        "attribute": "rcsb_polymer_entity.rcsb_entity_source_organism.taxonomy_lineage.name",
-                        "operator": "exact_match",
-                        "value": "Homo sapiens",
+                        "value": target_name,
                     },
                 },
                 {
@@ -41,53 +45,7 @@ def search_mdm2_peptide_complexes() -> list[dict]:
                     "type": "terminal",
                     "service": "text",
                     "parameters": {
-                        "attribute": "rcsb_polymer_entity.rcsb_entity_poly_type",
-                        "operator": "exact_match",
-                        "value": "Polypeptide(L)",
-                    },
-                },
-                {
-                    "type": "terminal",
-                    "service": "text",
-                    "parameters": {
-                        "attribute": "rcsb_polymer_entity_container_identifiers.uniprot_ids",
-                        "operator": "contains_phrase",
-                        "value": "Q00987",
-                    },
-                },
-                {
-                    "type": "terminal",
-                    "service": "text",
-                    "parameters": {
-                        "attribute": "rcsb_entry_info.polymer_entity_count_protein",
-                        "operator": "greater_or_equal",
-                        "value": 2,
-                    },
-                },
-            ],
-        },
-        "return_type": "entry",
-        "request_options": {
-            "paginate": {"start": 0, "rows": 500},
-            "results_content_type": ["experimental"],
-            "sort": [{"sort_by": "score", "direction": "desc"}],
-        },
-    }
-    return _execute(query, "MDM2")
-
-
-def search_mdmx_peptide_complexes() -> list[dict]:
-    """搜 MDMX (O15151) 的人源肽段复合物, ≤2.8Å。"""
-    query = {
-        "query": {
-            "type": "group",
-            "logical_operator": "and",
-            "nodes": [
-                {
-                    "type": "terminal",
-                    "service": "text",
-                    "parameters": {
-                        "attribute": "rcsb_polymer_entity.rcsb_entity_source_organism.taxonomy_lineage.name",
+                        "attribute": "rcsb_entity_source_organism.taxonomy_lineage.name",
                         "operator": "exact_match",
                         "value": "Homo sapiens",
                     },
@@ -96,33 +54,6 @@ def search_mdmx_peptide_complexes() -> list[dict]:
                     "type": "terminal",
                     "service": "text",
                     "parameters": {
-                        "attribute": "rcsb_entry_info.resolution_combined",
-                        "operator": "less_or_equal",
-                        "value": 2.8,
-                    },
-                },
-                {
-                    "type": "terminal",
-                    "service": "text",
-                    "parameters": {
-                        "attribute": "rcsb_polymer_entity.rcsb_entity_poly_type",
-                        "operator": "exact_match",
-                        "value": "Polypeptide(L)",
-                    },
-                },
-                {
-                    "type": "terminal",
-                    "service": "text",
-                    "parameters": {
-                        "attribute": "rcsb_polymer_entity_container_identifiers.uniprot_ids",
-                        "operator": "contains_phrase",
-                        "value": "O15151",
-                    },
-                },
-                {
-                    "type": "terminal",
-                    "service": "text",
-                    "parameters": {
                         "attribute": "rcsb_entry_info.polymer_entity_count_protein",
                         "operator": "greater_or_equal",
                         "value": 2,
@@ -132,16 +63,16 @@ def search_mdmx_peptide_complexes() -> list[dict]:
         },
         "return_type": "entry",
         "request_options": {
-            "paginate": {"start": 0, "rows": 500},
+            "paginate": {"start": 0, "rows": 50},
             "results_content_type": ["experimental"],
             "sort": [{"sort_by": "score", "direction": "desc"}],
         },
     }
-    return _execute(query, "MDMX")
+    return _execute(query, target_name)
 
 
 def _execute(query: dict, label: str) -> list[dict]:
-    """发 RCSB Search API 请求，返回解析后的结果列表。"""
+    """发 RCSB Search API 请求。"""
     data = json.dumps(query).encode("utf-8")
     req = urllib.request.Request(
         RCSB_SEARCH_URL,
@@ -151,33 +82,40 @@ def _execute(query: dict, label: str) -> list[dict]:
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()[:300]
+        print(f"[search_pdb] HTTP {e.code} ({label}): {body}", file=sys.stderr)
+        return []
     except urllib.error.URLError as e:
-        print(f"[search_pdb] RCSB API 请求失败 ({label}): {e}", file=sys.stderr)
+        print(f"[search_pdb] 网络错误 ({label}): {e}", file=sys.stderr)
         return []
 
     results = []
     for entry in raw.get("result_set", []):
-        pdb_id = entry.get("identifier", "")
-        title = entry.get("title", "")
-        resolution = None
-        polymer_count = None
-        for attr in entry.get("rcsb_entry_info", []):
-            if attr.get("name") == "resolution_combined":
-                resolution = attr.get("value")
-            if attr.get("name") == "polymer_entity_count_protein":
-                polymer_count = attr.get("value")
         results.append({
-            "pdb_id": pdb_id,
-            "title": title,
-            "resolution": resolution,
-            "polymer_count": polymer_count,
+            "pdb_id": entry.get("identifier", ""),
+            "title": entry.get("title", ""),
+            "target_search": label,
         })
+
+    # 补充 resolution 信息
+    for entry in raw.get("result_set", []):
+        pdb_id = entry.get("identifier", "")
+        for r in results:
+            if r["pdb_id"] == pdb_id:
+                for attr in entry.get("rcsb_entry_info", []):
+                    if attr.get("name") == "resolution_combined":
+                        r["resolution"] = attr.get("value")
+                    if attr.get("name") == "polymer_entity_count_protein":
+                        r["polymer_count"] = attr.get("value")
+                break
+
     return results
 
 
 def main() -> int:
-    mdm2 = search_mdm2_peptide_complexes()
-    mdmx = search_mdmx_peptide_complexes()
+    mdm2 = _search_target("MDM2", "Q00987")
+    mdmx = _search_target("MDMX", "O15151")
 
     output = {
         "MDM2": mdm2,

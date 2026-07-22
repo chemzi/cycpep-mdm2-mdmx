@@ -69,19 +69,28 @@ def call_openai(prompt: str, model: str = "gpt-4o") -> dict:
         raise RuntimeError("OPENAI_API_KEY 未设置")
 
     import urllib.request
-    payload = json.dumps({
+    # Step 3.7 Flash 是推理模型：max_tokens 要给够，否则 content 为空
+    # 推理模型不支持 response_format json_object，改用 system prompt 约束
+    is_stepfun = "stepfun" in base_url or "step_plan" in base_url
+    payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "你是一个蛋白质结构生物学专家。只输出 JSON，不要额外解释。"},
+            {"role": "system", "content": "你是一个蛋白质结构生物学专家。只输出合法 JSON，不要额外解释，不要 markdown 代码块。"},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.1,
-        "response_format": {"type": "json_object"},
-    }).encode("utf-8")
+        "max_tokens": 4096,
+    }
+    if not is_stepfun:
+        payload["response_format"] = {"type": "json_object"}
+    if "step-3.7" in model:
+        payload["reasoning_effort"] = "low"  # 降低推理 token 消耗
+
+    payload_bytes = json.dumps(payload).encode("utf-8")
 
     req = urllib.request.Request(
         f"{base_url}/chat/completions",
-        data=payload,
+        data=payload_bytes,
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
@@ -142,7 +151,7 @@ def main() -> int:
     # 调 LLM
     try:
         if args.provider == "openai":
-            model = args.model or os.environ.get("LLM_MODEL", "gpt-4o")
+            model = args.model or os.environ.get("LLM_MODEL", "step-3.7-flash")
             llm_result = call_openai(full_prompt, model=model)
             raw_content = llm_result["choices"][0]["message"]["content"]
         elif args.provider == "anthropic":

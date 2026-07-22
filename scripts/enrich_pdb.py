@@ -100,9 +100,10 @@ def enrich(pdb_id: str) -> dict | None:
 def main() -> int:
     input_data = json.loads(sys.stdin.read())
     all_results = []
+    MAX_PER_TARGET = 100  # 限制每个靶点最多处理 100 条，避免超时
     for target_name in ["MDM2", "MDMX"]:
-        entries = input_data.get(target_name, [])
-        for e in entries:
+        entries = input_data.get(target_name, [])[:MAX_PER_TARGET]
+        for i, e in enumerate(entries):
             pdb_id = e["pdb_id"]
             enriched = enrich(pdb_id)
             if enriched:
@@ -111,7 +112,9 @@ def main() -> int:
                 enriched["polymer_count"] = e.get("polymer_count")
                 enriched["target"] = target_name
                 all_results.append(enriched)
-            time.sleep(0.3)  # RCSB rate limit 友情限速
+            if (i + 1) % 20 == 0:
+                print(f"[enrich] {target_name} progress: {i+1}/{min(len(entries), MAX_PER_TARGET)}", file=sys.stderr)
+            time.sleep(0.1)  # RCSB rate limit
 
     # 只保留肽段复合物
     peptide_complexes = [r for r in all_results if r.get("is_peptide_complex")]

@@ -98,9 +98,11 @@ def compute_interface(pdb_id: str, pdb_path: Path, peptide_chain_ids: list[str])
     }
 
 
+MAX_PDBS = 10  # 测试用：最多处理 10 个 PDB
+
 def main() -> int:
     input_data = json.loads(sys.stdin.read())
-    peptide_complexes = input_data.get("peptide_complexes", [])
+    peptide_complexes = input_data.get("peptide_complexes", [])[:MAX_PDBS]
 
     pdb_dir = Path("targets")
     results = []
