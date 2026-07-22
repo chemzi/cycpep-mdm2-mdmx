@@ -20,19 +20,23 @@ from data_layer import State, EvidenceLogger, CandidateIndex
 ## 目录
 
 ```
+cycpep-mdm2-mdmx/
 ├── data_layer.py              ← 共享数据模块（只有我改）
-├── test_data_layer.py         ← 测试
+├── test_data_layer.py         ← 测试，96项
 ├── 数据层使用手册.md           ← 必读
-├── evidence/
-│   └── evidence_schema.json   ← 11种事件格式定义
-├── agents/                    ← 每人改自己的文件
-│   ├── planner.py             ← 赵嘉策
-│   ├── design.py              ← 于嘉乐
-│   ├── prediction.py          ← 王修远
-│   ├── research.py            ← 刘函赫
-│   └── critic.py              ← 赵嘉策
 ├── .gitignore
-└── README.md
+├── README.md
+├── evidence/
+│   ├── evidence_schema.json   ← 11种事件格式定义
+│   └── .gitkeep
+├── data/
+│   └── .gitkeep               ← 运行时产出目录，不进Git
+└── agents/                    ← 每人改自己的文件
+    ├── planner.py             ← 赵嘉策：Planner + Critic
+    ├── critic.py              ← 赵嘉策：审查报告
+    ├── design.py              ← 于嘉乐：三条设计路线
+    ├── prediction.py          ← 王修远：四层评估漏斗
+    └── research.py            ← 刘函赫：PDB/PubMed 调研
 ```
 
 ## 协作约定
