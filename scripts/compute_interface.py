@@ -14,7 +14,6 @@ from hashlib import md5
 try:
     import numpy as np
     from biotite.structure.io.pdb import PDBFile
-    from biotite.structure import get_residues, filter_backbone
 except ImportError:
     print("[compute_interface] biotite 未安装。pip install biotite numpy", file=sys.stderr)
     sys.exit(1)

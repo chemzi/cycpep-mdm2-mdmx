@@ -17,7 +17,7 @@ from hashlib import md5
 try:
     import numpy as np
     from biotite.structure.io.pdb import PDBFile
-    from biotite.structure import filter_backbone, filter_amino_acids, sasa
+    from biotite.structure import filter_amino_acids, sasa
     from biotite.structure.superimpose import superimpose
 except ImportError:
     print("[superpose_analyze] biotite 未安装。pip install biotite numpy", file=sys.stderr)
