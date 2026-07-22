@@ -92,11 +92,13 @@ def extract_one_paper(paper: dict, model: str) -> dict | None:
     """对一篇论文调用 LLM 提取。返回结构化 dict 或 None（失败时）。"""
     pmid = paper.get("pmid", "?")
     title = paper.get("title", "")
-    abstract = paper.get("abstract", "")
+    content = paper.get("content", paper.get("abstract", ""))[:5000]  # PMC 全文或摘要
     source = paper.get("source", "")
+    source_type = paper.get("source_type", "abstract")
 
-    # 构建用户内容：标题 + 摘要 + PMID
-    user_content = f"PMID: {pmid}\nTitle: {title}\nSource: {source}\nAbstract: {abstract}"
+    # 构建用户内容
+    type_label = "Full Text" if source_type == "pmc_fulltext" else "Abstract"
+    user_content = f"PMID: {pmid}\nTitle: {title}\nSource: {source}\n{type_label}: {content}"
 
     try:
         raw = call_openai(
