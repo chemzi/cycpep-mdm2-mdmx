@@ -127,7 +127,7 @@ def design_afcyc(target: str, n: int = 10,
             valid = False
             pdb_hash = ""
             if result.returncode == 0 and os.path.exists(output_path):
-                seq = _extract_sequence_from_pdb(output_path)
+                seq = _extract_sequence_from_pdb(output_path, binder_len=L)
                 pdb_hash = file_hash(output_path)
                 valid = len(seq) == L
                 total_valid += 1
@@ -234,10 +234,12 @@ def design_motif_graft(n: int = 400) -> list[dict]:
     t0 = time.time()
 
     # 每个模板平均分配 candidates
-    per_template = max(1, n // len(MOTIF_TEMPLATES))
+    base = n // len(MOTIF_TEMPLATES)
+    remainder = n % len(MOTIF_TEMPLATES)
+    quotas = [base + 1 if idx < remainder else base for idx in range(len(MOTIF_TEMPLATES))]
 
-    for tmpl in MOTIF_TEMPLATES:
-        for i in range(per_template):
+    for idx, tmpl in enumerate(MOTIF_TEMPLATES):
+        for i in range(quotas[idx]):
             if len(candidates) >= n:
                 break
 
@@ -433,10 +435,10 @@ def _validate_sequence(seq: str) -> bool:
             all(c in valid_aas for c in seq_clean))
 
 
-def _extract_sequence_from_pdb(pdb_path: str) -> str:
+def _extract_sequence_from_pdb(pdb_path: str, binder_len: int = None) -> str:
     """
     从 PDB 提取 CA 原子序列（单字母）。
-    去重：同一 (chain, resid) 只取一次。
+    binder_len：若给定，只取末尾 N 个唯一残基（fixbb 模式 binder 在靶点之后）。
     """
     three_to_one = {
         'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C',
@@ -449,15 +451,17 @@ def _extract_sequence_from_pdb(pdb_path: str) -> str:
         with open(pdb_path) as f:
             for line in f:
                 if line.startswith("ATOM") and line[12:16].strip() == "CA":
-                    resname = line[17:20].strip()
                     chain = line[21].strip()
                     resid = line[22:26].strip()
                     key = (chain, resid)
                     if key not in seen:
                         seen.add(key)
-                        seq.append(three_to_one.get(resname, "X"))
+                        seq.append(three_to_one.get(line[17:20].strip(), "X"))
     except FileNotFoundError:
         return ""
+
+    if binder_len and len(seq) >= binder_len:
+        seq = seq[-binder_len:]
     return "".join(seq)
 
 
