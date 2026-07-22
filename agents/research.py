@@ -64,14 +64,17 @@ VERIFIED_PEPTIDE_COMPLEXES = {
 DATA_QUALITY_ALERT = "4HG7/3LBK are small-molecule complexes, not peptide. Verified: 1YCR/3V3B(MDM2), 3DAB(MDMX)."
 
 
-def _run_script(script_name, input_data=None):
+def _run_script(script_name, input_data=None, extra_args=None):
     script_path = SCRIPTS_DIR / script_name
     if not script_path.exists():
         raise FileNotFoundError(f"Script not found: {script_path}")
     python_exe = sys.executable
     t0 = time.time()
+    cmd = [python_exe, "-m", f"scripts.{script_name.replace('.py', '')}"]
+    if extra_args:
+        cmd.extend(extra_args)
     proc = subprocess.run(
-        [python_exe, "-m", f"scripts.{script_name.replace('.py', '')}"],
+        cmd,
         input=json.dumps(input_data) if input_data else None,
         capture_output=True, text=True, timeout=600, cwd=str(ROOT),
         env={**os.environ},
@@ -158,7 +161,7 @@ def _run_pipeline():
     print("[research] Step 7/7: LLM extract (concurrent, one paper per call)...")
     llm_binders = KNOWN_DUAL_BINDERS
     try:
-        lr, le, lc, ld_, lh = _run_script("llm_extract.py", pmr)
+        lr, le, lc, ld_, lh = _run_script("llm_extract.py", pmr, extra_args=["--concurrency", "3"])
         if lr and "error" not in lr:
             extracted = lr.get("known_binders", [])
             if extracted:
