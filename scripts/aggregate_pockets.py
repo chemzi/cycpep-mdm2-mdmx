@@ -59,7 +59,7 @@ def aggregate(target_name: str, interface_entries: list[dict]) -> dict:
         pocket_consensus[pocket_name] = []
         for ref in reference_residues:
             for res_key in consensus:
-                if ref in res_key:
+                if ref.lower() in res_key.lower():
                     pocket_consensus[pocket_name].append(res_key)
                     break
 
