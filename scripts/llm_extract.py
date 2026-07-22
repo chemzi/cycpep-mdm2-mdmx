@@ -162,7 +162,7 @@ def main() -> int:
             try:
                 result = future.result(timeout=120)
                 n_processed += 1
-                if result and result.get("name"):
+                if result and (result.get("name") or result.get("type") or result.get("sequence")):
                     all_binders.append(result)
                     print(f"[llm_extract] {n_processed}/{len(papers)}: found '{result['name']}' from PMID {pmid}", file=sys.stderr)
                 else:
