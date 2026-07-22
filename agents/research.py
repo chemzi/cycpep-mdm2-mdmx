@@ -2,7 +2,7 @@
 Research Agent - MDM2/MDMX 靶点调研管线
 7 步: RCSB Search -> GraphQL Enrich -> biotite interface -> aggregate pockets ->
       superpose analyze -> PubMed -> LLM extract
-每步挂 EvidenceLogger tool_trace。支持 SKIP_BIOTITE=1 跳过步骤 3-5。
+每步挂 EvidenceLogger tool_trace。biotite 失败时自动回退到预置常量。
 """
 
 import json, os, subprocess, sys, time, hashlib
@@ -16,16 +16,14 @@ CACHE_PATH = DATA_DIR / "_research_cache.json"
 
 from data_layer import State, EvidenceLogger
 
-# 预置常量（管线失败时兜底）
+# ===== 预置常量（biotite 失败时兜底）=====
 TARGETS = {
     "MDM2": {"uniprot": "Q00987", "reference_pdb": ["1YCR", "4HG7", "3V3B"],
-             "verified_peptide_pdb": ["1YCR", "3V3B"], "n_peptide_complexes": 43,
              "pocket_residues": {
                  "Phe19_pocket": ["Gly58","Ile61","Met62","Tyr67","Gln72","Val75","Val93"],
                  "Trp23_pocket": ["Leu54","Leu57","Gly58","Ile61","Val93"],
                  "Leu26_pocket": ["Leu54","Val93","His96","Ile99","Tyr100"]}},
     "MDMX": {"uniprot": "O15151", "reference_pdb": ["3DAB", "3LBK"],
-             "verified_peptide_pdb": ["3DAB"], "n_peptide_complexes": 12,
              "pocket_residues": {
                  "Phe19_pocket": ["Gly57","Ile60","Met61","Tyr66","Gln71","Val74","Val92"],
                  "Trp23_pocket": ["Met53","Leu56","Gly57","Ile60","Val92","Leu98"],
@@ -84,7 +82,6 @@ def _run_script(script_name, input_data=None, extra_args=None):
     stderr = proc.stderr.strip()[:500]
     exit_code = proc.returncode
     output_hash = hashlib.md5(stdout.encode()).hexdigest()[:12] if stdout else ""
-    result = None
     try:
         result = json.loads(stdout) if stdout else {}
     except json.JSONDecodeError:
@@ -92,10 +89,78 @@ def _run_script(script_name, input_data=None, extra_args=None):
     return result, stderr, exit_code, duration, output_hash
 
 
+def _build_dynamic_pockets(aggregate_result, superpose_result):
+    """从 aggregate + superpose 输出构建 pocket_differences。
+    
+    如果 biotite 成功计算了界面残基，用动态数据；
+    否则返回 None（调用方回退到常量）。
+    """
+    n_mdm2 = aggregate_result.get("n_mdm2_structures", 0)
+    n_mdmx = aggregate_result.get("n_mdmx_structures", 0)
+    if n_mdm2 == 0 and n_mdmx == 0:
+        return None  # biotite 没产出，回退常量
+
+    # 从 aggregate 提取每靶点的口袋残基
+    mdm2_agg = aggregate_result.get("MDM2", {})
+    mdmx_agg = aggregate_result.get("MDMX", {})
+    
+    # 用 consensus 残基（如果有的话），否则用 pocket_residues 参考
+    def _extract_residues(agg, pocket_name):
+        consensus = agg.get("pocket_consensus", {}).get(pocket_name, [])
+        if consensus:
+            # 格式 "A:58GLY" -> "Gly58"
+            cleaned = []
+            for r in consensus:
+                # "A:58GLY" -> res_name="GLY", res_id=58 -> "Gly58"
+                parts = r.split(":")
+                if len(parts) == 2:
+                    res_info = parts[1]  # "58GLY"
+                    # 分离数字和字母
+                    import re
+                    m = re.match(r'(\d+)([A-Z]+)', res_info)
+                    if m:
+                        res_id, res_name = m.group(1), m.group(2)
+                        # 三字母转首字母大写
+                        clean_name = res_name.capitalize()
+                        cleaned.append(f"{clean_name}{res_id}")
+            return cleaned if cleaned else agg.get("pocket_residues", {}).get(pocket_name, [])
+        return agg.get("pocket_residues", {}).get(pocket_name, [])
+
+    # 从 superpose 提取方法信息
+    rmsd = superpose_result.get("ca_rmsd_A", "?") if superpose_result else "?"
+    n_ca = superpose_result.get("n_ca_atoms_superposed", "?") if superpose_result else "?"
+    method = f"biotite heavy-atom<4A, {n_mdm2}+{n_mdmx} structures, CA RMSD {rmsd}A/{n_ca} residues"
+
+    return {
+        "_method": method,
+        "_source": "dynamic_biotite",
+        "Phe19_pocket": {
+            "MDM2_residues": _extract_residues(mdm2_agg, "Phe19_pocket"),
+            "MDMX_residues": _extract_residues(mdmx_agg, "Phe19_pocket"),
+            "design_rule": "Phe volume or smaller, avoid bulky aromatics (Met53 gate).",
+        },
+        "Trp23_pocket": {
+            "MDM2_residues": _extract_residues(mdm2_agg, "Trp23_pocket"),
+            "MDMX_residues": _extract_residues(mdmx_agg, "Trp23_pocket"),
+            "design_rule": "L-Trp invariant shared anchor, preserve NE1 H-bond.",
+        },
+        "Leu26_pocket": {
+            "MDM2_residues": _extract_residues(mdm2_agg, "Leu26_pocket"),
+            "MDMX_residues": _extract_residues(mdmx_agg, "Leu26_pocket"),
+            "design_rule": "Downsize to small aliphatic (Leu/Val/Abu/cyclobutyl-Ala).",
+        },
+        "_superpose": {
+            "rmsd_A": rmsd,
+            "n_ca_atoms": n_ca,
+            "sasa": superpose_result.get("sasa", {}) if superpose_result else {},
+        } if superpose_result else {},
+    }
+
+
 def _run_pipeline():
     skip_heavy = os.environ.get("SKIP_BIOTITE", "").lower() in ("1", "true", "yes")
 
-    # Step 1: RCSB Search
+    # ===== Step 1: RCSB Search =====
     print("[research] Step 1/7: RCSB Search API...")
     sr, se, sc, sd, sh = _run_script("search_pdb.py")
     EvidenceLogger.log("research", "tool_call", {
@@ -104,51 +169,84 @@ def _run_pipeline():
         "stdout_snippet": f"MDM2={sr.get('n_mdm2',0)} MDMX={sr.get('n_mdmx',0)}",
     }, targets=["both"], phase="research")
 
-    # Step 2: GraphQL Enrich
+    # ===== Step 2: GraphQL Enrich =====
     print("[research] Step 2/7: RCSB GraphQL...")
     er, ee, ec, ed, eh = _run_script("enrich_pdb.py", sr)
+    n_peptide = er.get("n_peptide_complexes", 0)
     EvidenceLogger.log("research", "tool_call", {
         "tool_name": "rcsb_graphql_api", "output_hash": eh, "exit_code": ec,
         "duration_sec": round(ed, 1),
-        "stdout_snippet": f"peptide_complexes={er.get('n_peptide_complexes',0)}",
+        "stdout_snippet": f"peptide_complexes={n_peptide}",
     }, targets=["both"], phase="research")
 
-    # Steps 3-5: biotite (可跳过)
+    # ===== Steps 3-5: biotite =====
+    pocket_differences = POCKET_DIFFERENCES  # 默认常量
+    dynamic_pdb_list = []  # 动态 PDB 列表（来自 enrich）
+    n_mdm2_structures = 0
+    n_mdmx_structures = 0
+
+    # 从 enrich 提取动态 PDB 列表
+    for entry in er.get("peptide_complexes", []):
+        dynamic_pdb_list.append(entry["pdb_id"])
+        if entry.get("target") == "MDM2":
+            n_mdm2_structures += 1
+        elif entry.get("target") == "MDMX":
+            n_mdmx_structures += 1
+
     if skip_heavy:
         print("[research] Steps 3-5: skipped (SKIP_BIOTITE=1)")
-        iface_result = {"with_interface": []}
     else:
+        # Step 3: biotite interface
         print("[research] Step 3/7: biotite interface...")
+        iface_result = {"with_interface": []}
         try:
-            ir, ie, ic, id_, ih = _run_script("compute_interface.py", er)
+            ir, ie2, ic, id_, ih = _run_script("compute_interface.py", er)
+            n_iface = ir.get("n_with_interface", 0)
             EvidenceLogger.log("research", "tool_call", {
                 "tool_name": "biotite", "output_hash": ih, "exit_code": ic,
                 "duration_sec": round(id_, 1),
-                "stdout_snippet": f"with_interface={ir.get('n_with_interface',0)}",
+                "stdout_snippet": f"with_interface={n_iface}",
             }, targets=["both"], phase="research")
+            iface_result = ir
         except Exception as e:
             EvidenceLogger.error("research", "tool_failure", f"biotite: {e}", recovery="fallback")
-            ir = {"with_interface": []}
-        iface_result = ir
+            iface_result = {"with_interface": []}
 
+        # Step 4: aggregate pockets
         print("[research] Step 4/7: aggregate pockets...")
-        pr, pe, pc, pd_, ph = _run_script("aggregate_pockets.py", iface_result)
+        pr, pe2, pc, pd_, ph = _run_script("aggregate_pockets.py", iface_result)
+        n_agg_mdm2 = pr.get("n_mdm2_structures", 0)
+        n_agg_mdmx = pr.get("n_mdmx_structures", 0)
         EvidenceLogger.log("research", "tool_call", {
             "tool_name": "aggregate_pockets", "output_hash": ph, "exit_code": pc,
             "duration_sec": round(pd_, 1),
+            "stdout_snippet": f"MDM2={n_agg_mdm2}struct MDMX={n_agg_mdmx}struct",
         }, targets=["both"], phase="research")
 
+        # Step 5: superpose
         print("[research] Step 5/7: superposition...")
+        spr = {}
         try:
-            spr, spe, spc, spd_, sph = _run_script("superpose_analyze.py", pr)
+            spr, spe2, spc, spd_, sph = _run_script("superpose_analyze.py", pr)
             EvidenceLogger.log("research", "tool_call", {
                 "tool_name": "biotite_superimpose", "output_hash": sph, "exit_code": spc,
                 "duration_sec": round(spd_, 1),
+                "stdout_snippet": f"rmsd={spr.get('ca_rmsd_A','?')}A n_ca={spr.get('n_ca_atoms_superposed','?')}",
             }, targets=["both"], phase="research")
         except Exception as e:
             EvidenceLogger.error("research", "tool_failure", f"superpose: {e}", recovery="fallback")
 
-    # Step 6: PubMed
+        # 用动态数据构建 pocket_differences
+        dynamic = _build_dynamic_pockets(pr, spr)
+        if dynamic:
+            pocket_differences = dynamic
+            n_mdm2_structures = n_agg_mdm2
+            n_mdmx_structures = n_agg_mdmx
+            print(f"[research] Using dynamic pockets: MDM2={n_mdm2_structures}struct MDMX={n_mdmx_structures}struct")
+        else:
+            print("[research] biotite produced no interface data, using constant pockets")
+
+    # ===== Step 6: PubMed =====
     print("[research] Step 6/7: PubMed...")
     pmr, pme, pmc, pmd_, pmh = _run_script("pubmed_search.py")
     EvidenceLogger.log("research", "tool_call", {
@@ -157,11 +255,11 @@ def _run_pipeline():
         "stdout_snippet": f"n_papers={pmr.get('n_total',0)}",
     }, targets=["both"], phase="research")
 
-    # Step 7: LLM extract (逐篇并发)
-    print("[research] Step 7/7: LLM extract (concurrent, one paper per call)...")
+    # ===== Step 7: LLM extract =====
+    print("[research] Step 7/7: LLM extract (concurrent)...")
     llm_binders = KNOWN_DUAL_BINDERS
     try:
-        lr, le, lc, ld_, lh = _run_script("llm_extract.py", pmr, extra_args=["--concurrency", "3"])
+        lr, le2, lc, ld_, lh = _run_script("llm_extract.py", pmr, extra_args=["--concurrency", "3"])
         if lr and "error" not in lr:
             extracted = lr.get("known_binders", [])
             if extracted:
@@ -176,18 +274,26 @@ def _run_pipeline():
     except Exception as e:
         EvidenceLogger.error("research", "tool_failure", f"LLM: {e}", recovery="fallback to constants")
 
+    # ===== 组装结果 =====
     result = {
         "targets": TARGETS.copy(),
-        "pocket_differences": POCKET_DIFFERENCES,
+        "pocket_differences": pocket_differences,
         "known_dual_binders": llm_binders,
         "design_strategy_summary": DESIGN_STRATEGY_SUMMARY,
         "data_quality_alert": DATA_QUALITY_ALERT,
         "literature_refs": LITERATURE_REFS,
-        "_pipeline_meta": {"last_run": datetime.now(timezone.utc).isoformat()},
+        "_pipeline_meta": {
+            "last_run": datetime.now(timezone.utc).isoformat(),
+            "pocket_source": pocket_differences.get("_source", "constant"),
+            "n_pdb_complexes": len(dynamic_pdb_list),
+            "n_mdm2_structures": n_mdm2_structures,
+            "n_mdmx_structures": n_mdmx_structures,
+            "dynamic_pdb_list": dynamic_pdb_list[:20],
+        },
     }
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     CACHE_PATH.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[research] Pipeline done. Cache: {CACHE_PATH}")
+    print(f"[research] Pipeline done. pocket_source={result['_pipeline_meta']['pocket_source']}")
     return result
 
 
@@ -219,12 +325,20 @@ def run(state=None, force_recompute=False, skip_pipeline=False):
     }
     State.update(result)
 
+    # 用动态数据构建 hotspot_analysis
+    meta = pipeline_result.get("_pipeline_meta", {})
+    pocket_diff = result["pocket_differences"]
+    pdb_list = meta.get("dynamic_pdb_list", [])
+    if not pdb_list:
+        pdb_list = VERIFIED_PEPTIDE_COMPLEXES["MDM2"] + VERIFIED_PEPTIDE_COMPLEXES["MDMX"]
+
     hotspot_analysis = {
-        "pdb_list": VERIFIED_PEPTIDE_COMPLEXES["MDM2"] + VERIFIED_PEPTIDE_COMPLEXES["MDMX"],
-        "n_mdm2_peptide_complexes": len(VERIFIED_PEPTIDE_COMPLEXES["MDM2"]),
-        "n_mdmx_peptide_complexes": len(VERIFIED_PEPTIDE_COMPLEXES["MDMX"]),
-        "method": POCKET_DIFFERENCES["_method"],
-        "pockets": POCKET_DIFFERENCES,
+        "pdb_list": pdb_list,
+        "n_mdm2_peptide_complexes": meta.get("n_mdm2_structures", len(VERIFIED_PEPTIDE_COMPLEXES["MDM2"])),
+        "n_mdmx_peptide_complexes": meta.get("n_mdmx_structures", len(VERIFIED_PEPTIDE_COMPLEXES["MDMX"])),
+        "method": pocket_diff.get("_method", ""),
+        "pocket_source": meta.get("pocket_source", "constant"),
+        "pockets": pocket_diff,
         "data_quality_alert": DATA_QUALITY_ALERT,
     }
     EvidenceLogger.research_complete(
