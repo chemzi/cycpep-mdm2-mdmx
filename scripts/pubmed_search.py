@@ -42,6 +42,37 @@ def fetch_metadata(pmids: list[str]) -> dict:
         return {}
 
 
+def fetch_pubmed_abstracts(pmids: list[str]) -> dict[str, str]:
+    """用 EFetch XML 获取 PMID 对应摘要；ESummary 本身不返回 abstract。"""
+    texts = {}
+    for i in range(0, len(pmids), 20):
+        batch = pmids[i:i + 20]
+        try:
+            params = urllib.parse.urlencode({
+                "db": "pubmed",
+                "id": ",".join(batch),
+                "rettype": "abstract",
+                "retmode": "xml",
+            })
+            with urllib.request.urlopen(f"{PUBMED_FETCH_URL}?{params}", timeout=60) as resp:
+                root = ET.fromstring(resp.read().decode("utf-8"))
+            for article in root.findall(".//PubmedArticle"):
+                pmid_elem = article.find(".//MedlineCitation/PMID")
+                if pmid_elem is None or not pmid_elem.text:
+                    continue
+                sections = []
+                for abstract in article.findall(".//Abstract/AbstractText"):
+                    text = " ".join("".join(abstract.itertext()).split())
+                    label = abstract.attrib.get("Label")
+                    if text:
+                        sections.append(f"{label}: {text}" if label else text)
+                texts[pmid_elem.text] = " ".join(sections)
+        except Exception as e:
+            print(f"[pubmed] 摘要获取失败 (batch {i}): {e}", file=sys.stderr)
+        time.sleep(0.35)
+    return texts
+
+
 def fetch_pmc_ids(pmids: list[str]) -> dict[str, str]:
     """PMID -> PMCID 映射。"""
     pmc_map = {}
@@ -103,6 +134,7 @@ def main() -> int:
     print(f"[pubmed] 搜索到 {len(pmids)} 篇", file=sys.stderr)
 
     meta = fetch_metadata(pmids)
+    abstracts = fetch_pubmed_abstracts(pmids)
     print(f"[pubmed] 获取 PMC 映射...", file=sys.stderr)
     pmc_map = fetch_pmc_ids(pmids)
     print(f"[pubmed] PMC 可用: {len(pmc_map)}/{len(pmids)}", file=sys.stderr)
@@ -122,9 +154,7 @@ def main() -> int:
 
         # 尝试用 PMC 全文，没有则用摘要
         full_text = pmc_texts.get(pmid, "")
-        abstract_text = ""
-        if not full_text:
-            abstract_text = paper.get("abstract", "")
+        abstract_text = abstracts.get(pmid, "")
 
         papers.append({
             "pmid": pmid,
@@ -133,18 +163,29 @@ def main() -> int:
             "source": paper.get("source", ""),
             "authors": [a.get("name", "") for a in paper.get("authors", [])[:5]],
             "doi": paper.get("elocationid", ""),
-            "content": full_text if full_text else abstract_text[:3000],
-            "source_type": "pmc_fulltext" if full_text else "pubmed_abstract",
+            "content": full_text if full_text else abstract_text[:8000],
+            "source_type": (
+                "pmc_fulltext" if full_text
+                else "pubmed_abstract" if abstract_text
+                else "metadata_only"
+            ),
         })
 
     n_pmc = sum(1 for p in papers if p["source_type"] == "pmc_fulltext")
-    print(f"[pubmed] {len(papers)} 篇: {n_pmc} PMC 全文 + {len(papers)-n_pmc} 摘要", file=sys.stderr)
+    n_abstract = sum(1 for p in papers if p["source_type"] == "pubmed_abstract")
+    n_metadata = sum(1 for p in papers if p["source_type"] == "metadata_only")
+    print(
+        f"[pubmed] {len(papers)} 篇: {n_pmc} PMC 全文 + "
+        f"{n_abstract} 摘要 + {n_metadata} 仅元数据",
+        file=sys.stderr,
+    )
 
     output = {
         "search_term": SEARCH_TERM,
         "pmids": pmids,
         "papers": papers,
         "n_total": len(papers),
+        "run_status": "complete" if papers else "failed_or_empty",
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0

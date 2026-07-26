@@ -2,21 +2,23 @@
 data_layer.py 完整集成测试
 覆盖所有 Agent 使用场景 + 边界情况
 """
-import json, sys, os, csv
+import json, sys, os, csv, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"
-EVIDENCE_DIR = ROOT / "evidence"
-
-# 清理上次测试残留
-for p in [DATA_DIR / "state.json", EVIDENCE_DIR / "evidence_log.jsonl", DATA_DIR / "candidate_index.csv"]:
-    if p.exists():
-        p.unlink()
+TEST_ROOT = Path(tempfile.mkdtemp(prefix="cycpep-data-layer-test-"))
+DATA_DIR = TEST_ROOT / "data"
+EVIDENCE_DIR = TEST_ROOT / "evidence"
+os.environ["CYCPEP_DATA_DIR"] = str(DATA_DIR)
+os.environ["CYCPEP_EVIDENCE_DIR"] = str(EVIDENCE_DIR)
 
 os.chdir(str(ROOT))
 
-from data_layer import State, EvidenceLogger, CandidateIndex, file_hash, sanitize_id, evaluate_battery, INDEX_COLUMNS
+import data_layer
+from data_layer import (
+    State, EvidenceLogger, CandidateIndex, file_hash, sanitize_id,
+    evaluate_battery, compute_pareto_front, INDEX_COLUMNS,
+)
 
 passed = 0
 failed = 0
@@ -166,18 +168,21 @@ check("find('C9999') 返回 None", CandidateIndex.find("C9999") is None)
 # update_score（v5: 旧字段名通过 alias 自动落到新列）
 CandidateIndex.update_score("C0042", {
     "monomer_plddt": 0.88, "self_rmsd": 1.1, "layer1_pass": "True",
+    "l1_pass": "True", "scrmsd": 0.9,
     "iptm_mdm2": 0.84, "iptm_mdmx": 0.72, "dual_score": 0.72, "asymmetry": 0.12,
-    "layer2_3_pass": "True"
+    "layer2_3_pass": "True", "l2_pass": "True",
 })
 r2 = CandidateIndex.find("C0042")
 check("update_score 后 iptm_mdm2=0.84", r2["iptm_mdm2"] == "0.84")
-# v5: layer2_3_pass 已 alias 到 l2_pass
-check("update_score 后 l2_pass=True (旧名 layer2_3_pass alias)", r2["l2_pass"] == "True")
+# 旧 pass 字段只进入 legacy 列，新版 pass 由 Prediction 明确写入
+check("update_score 后 l2_pass=True (新版显式字段)", r2["l2_pass"] == "True")
 check("update_score 后 plddt=0.88 (旧名 monomer_plddt alias)", r2["plddt"] == "0.88")
-check("update_score 后 scrmsd=1.1 (旧名 self_rmsd alias)", r2["scrmsd"] == "1.1")
+check("旧 self_rmsd 保存在 legacy 列", r2["legacy_self_rmsd"] == "1.1")
+check("旧 layer2_3_pass 保存在 legacy 列", r2["legacy_layer2_3_pass"] == "True")
+check("显式 scRMSD 不受旧 self_rmsd 覆盖", r2["scrmsd"] == "0.9")
 
 CandidateIndex.update_score("C0088", {
-    "monomer_plddt": 0.79, "layer1_pass": "True",
+    "monomer_plddt": 0.79, "layer1_pass": "True", "l1_pass": "True",
     "iptm_mdm2": 0.61, "iptm_mdmx": 0.79, "dual_score": 0.64, "asymmetry": 0.18
 })
 
@@ -223,7 +228,7 @@ stats = CandidateIndex.stats()
 check("stats total_candidates=12", stats["total_candidates"] == 12)
 check("stats finalized=1", stats["finalized"] == 1)
 # v5: 保留 iptm_mdm2_median 作参考字段
-check("stats iptm_mdm2_median=0.84", stats["iptm_mdm2_median"] == 0.84)
+check("stats iptm_mdm2_median=0.725", stats["iptm_mdm2_median"] == 0.725)
 # v5: 新主指标字段为 ipsae_*_median
 check("stats 包含 ipsae_mdm2_median", "ipsae_mdm2_median" in stats)
 check("stats 包含 all_layers_pass", "all_layers_pass" in stats)
@@ -268,15 +273,19 @@ check("CSV 以 UTF-8 BOM 开头", csv_content[:3] == b"\xef\xbb\xbf")
 reader = csv.DictReader(csv_content.decode("utf-8-sig").splitlines())
 rows = list(reader)
 check(f"CSV 有 {'>=' if len(rows) >= 12 else ''}12+ 行数据", len(rows) >= 12)
-# v5: INDEX_COLUMNS 已扩展为七层电池 schema（~48 列），直接用源定义做校验
+# v5: INDEX_COLUMNS 已扩展为七层电池和交接 schema，直接用源定义做校验
 check(f"CSV 所有 {len(INDEX_COLUMNS)} 列存在", all(col in reader.fieldnames for col in INDEX_COLUMNS))
 # 抽查关键新列
 for must_col in ["plddt","l1_pass","ipsae_mdm2","ipsae_mdmx","dg_mdm2","sc_mdm2",
-                 "dsasa_mdm2","ring_closure_pre","ring_closure_post","l4_pass",
-                 "site_consistency","l5_pass","pose_rmsd","seed_convergence",
+                 "dsasa_mdm2","nc_distance_pre","nc_distance_post",
+                 "ring_closure_pre","ring_closure_post","l4_pass",
+                 "site_consistency_mdm2","site_consistency_mdmx","l5_pass",
+                 "pose_rmsd_mdm2","pose_rmsd_mdmx",
+                 "seed_convergence_mdm2","seed_convergence_mdmx",
                  "l6_pass","scrmsd","l7_pass","all_layers_pass","pareto_front",
                  "synth_pass","adme_net_charge","adme_tpsa","adme_clogp",
-                 "adme_chameleonicity","novelty_score"]:
+                 "adme_chameleonicity","novelty_score","cyclization_type",
+                 "cyclization_bonds","manifest_path","legacy_haddock_mdm2"]:
     check(f"  CSV 含新列 {must_col}", must_col in reader.fieldnames)
 
 # ============================================================
@@ -289,8 +298,10 @@ test_thresholds = {
     "L3_dg":             {"value": -10.0, "operator": "<",  "source": "PRODIGY estimate",        "grade": "estimate"},
     "L3_sc":             {"value": 0.60, "operator": ">",  "source": "field consensus",         "grade": "field_consensus"},
     "L3_dsasa":          {"value": 400,  "operator": ">",  "source": "field consensus",         "grade": "field_consensus"},
+    "L4_nc_term_dist":   {"value": 2.0,  "operator": "<",  "source": "geometry calibration",     "grade": "estimate"},
     "L5_hotspot_coverage":{"value": 0.67, "operator": ">=", "source": "1YCR hotspot analysis", "grade": "paper_explicit"},
-    "L6_pose_rmsd":      {"value": 2.0,  "operator": "<",  "source": "field consensus",         "grade": "field_consensus"},
+    "L6_pose_rmsd":      {"value": 2.0,  "operator": "<",  "min_seed_fraction": 0.67,
+                           "source": "field consensus", "grade": "field_consensus"},
     "L7_scrmsd":         {"value": 2.0,  "operator": "<",  "source": "RFpeptides PMID:40542165", "grade": "paper_explicit"},
 }
 
@@ -298,12 +309,16 @@ test_thresholds = {
 full_pass_candidate = {
     "candidate_id": "C_TEST_PASS", "sequence": "GFEWALAAK",
     "plddt": 0.92,                       # L1 > 0.80 ✓
-    "ipsae_mdm2": 0.68,                  # L2 > 0.50 ✓
+    "ipsae_mdm2": 0.68, "ipsae_mdmx": 0.64,  # L2 双靶均 > 0.50 ✓
     "iptm_mdm2": 0.85,                   # 参考
     "dg_mdm2": -15.3, "sc_mdm2": 0.72, "dsasa_mdm2": 580,  # L3 ✓
-    "ring_closure_pre": "True", "ring_closure_post": "True",  # L4 ✓
-    "hotspot_cov_mdm2": 0.85, "site_consistency": "True",     # L5 ✓
-    "pose_rmsd": 1.2, "seed_convergence": 0.80,               # L6 ✓
+    "dg_mdmx": -13.1, "sc_mdmx": 0.68, "dsasa_mdmx": 520,
+    "nc_distance_pre": 1.35, "nc_distance_post": 1.38,         # L4 ✓
+    "ring_closure_pre": "True", "ring_closure_post": "True",
+    "hotspot_cov_mdm2": 0.85, "hotspot_cov_mdmx": 0.75,
+    "site_consistency_mdm2": "True", "site_consistency_mdmx": "True",  # L5 ✓
+    "pose_rmsd_mdm2": 1.2, "pose_rmsd_mdmx": 1.5,
+    "seed_convergence_mdm2": 0.80, "seed_convergence_mdmx": 0.75,       # L6 ✓
     "scrmsd": 0.8,                                            # L7 < 2.0 ✓
 }
 r = evaluate_battery(full_pass_candidate, test_thresholds)
@@ -327,7 +342,7 @@ check("L3 失败 layer_values 记录 dg_mdm2", r2["layer_values"]["L3_dg_mdm2"] 
 
 # 11c: L4 环化 QC 一步不过（relax 后断键）
 fail_l4 = dict(full_pass_candidate)
-fail_l4["ring_closure_post"] = "False"  # FastRelax 破坏了环化
+fail_l4["nc_distance_post"] = 3.2  # FastRelax 后 N-C 几何不再闭合
 r3 = evaluate_battery(fail_l4, test_thresholds)
 check("L4 post 失败 all_layers_pass=False", r3["all_layers_pass"] is False)
 check("L4 失败 failed_layers 含 l4_pass", "l4_pass" in r3["failed_layers"])
@@ -340,19 +355,23 @@ check("无 thresholds 时 failed_layers 有7层", len(r4["failed_layers"]) == 7)
 # 11e: 旧字段名 alias 兼容（monomer_plddt → plddt 等）
 old_name_cand = {
     "candidate_id": "C_ALIAS",
-    "monomer_plddt": 0.91, "self_rmsd": 0.9,
+    "monomer_plddt": 0.91, "self_rmsd": 0.9, "scrmsd": 0.8,
     "layer1_pass": "True",
     "ipsae_mdm2": 0.65,
     "dg_mdm2": -12.0, "sc_mdm2": 0.68, "dsasa_mdm2": 500,
-    "ring_closure_pre": "True", "ring_closure_post": "True",
+    "nc_distance_pre": 1.34, "nc_distance_post": 1.37,
     "hotspot_cov_mdm2": 0.75, "site_consistency": "True",
     "pose_rmsd": 1.5, "seed_convergence": 0.75,
-    # 注意：不显式放 scrmsd，让 self_rmsd 走 alias
 }
-r5 = evaluate_battery(old_name_cand, test_thresholds)
-check("旧名 alias 全清 all_layers_pass=True", r5["all_layers_pass"] is True)
+r5 = evaluate_battery(old_name_cand, test_thresholds, required_targets=("MDM2",))
+check("单靶正对照模式全清 all_layers_pass=True", r5["all_layers_pass"] is True)
 check("旧名 alias layer_values L1_plddt=0.91", r5["layer_values"]["L1_plddt"] == 0.91)
-check("旧名 alias layer_values L7_scrmsd=0.9 (self_rmsd→scrmsd)", r5["layer_values"]["L7_scrmsd"] == 0.9)
+check("旧 self_rmsd 不冒充 scRMSD", r5["layer_values"]["L7_scrmsd"] == 0.8)
+
+legacy_only = dict(old_name_cand)
+legacy_only.pop("scrmsd")
+r5b = evaluate_battery(legacy_only, test_thresholds, required_targets=("MDM2",))
+check("只有旧 self_rmsd 时 L7 不通过", r5b["l7_pass"] is False)
 
 # ============================================================
 section("12. 实际场景模拟 — 完整 Agent 工作流")
@@ -395,6 +414,36 @@ trace = EvidenceLogger.trace_candidate("C0100")
 check("C0100 trace >= 1 (candidate_scored)", len(trace) >= 1)
 
 check("完整工作流场景成功", True)
+
+# ============================================================
+section("13. Pareto front 与旧 CSV schema 迁移")
+# ============================================================
+front = compute_pareto_front([
+    {"candidate_id": "P1", "ipsae_mdm2": 0.90, "ipsae_mdmx": 0.60},
+    {"candidate_id": "P2", "ipsae_mdm2": 0.75, "ipsae_mdmx": 0.82},
+    {"candidate_id": "P3", "ipsae_mdm2": 0.70, "ipsae_mdmx": 0.55},
+])
+check("Pareto front 保留两条互有取舍的候选", set(front) == {"P1", "P2"})
+
+original_index_path = data_layer.INDEX_PATH
+migration_dir = TEST_ROOT / "migration"
+migration_dir.mkdir(parents=True, exist_ok=True)
+legacy_index = migration_dir / "candidate_index.csv"
+legacy_index.write_text(
+    "candidate_id,sequence,monomer_plddt,self_rmsd,haddock_mdm2,layer2_3_pass\n"
+    "C9001,GFEWALAAK,0.91,1.2,-88.4,True\n",
+    encoding="utf-8-sig",
+)
+data_layer.INDEX_PATH = legacy_index
+CandidateIndex._ensure_exists()
+migrated = CandidateIndex.load()[0]
+check("旧 CSV 自动迁移为当前完整表头", list(migrated) == INDEX_COLUMNS)
+check("语义一致的 monomer_plddt 迁移到 plddt", migrated["plddt"] == "0.91")
+check("HADDOCK score 保存在 legacy 列", migrated["legacy_haddock_mdm2"] == "-88.4")
+check("旧 self_rmsd 保存在 legacy 列", migrated["legacy_self_rmsd"] == "1.2")
+check("旧 layer2_3_pass 不冒充新版 L2", migrated["l2_pass"] == "")
+check("迁移前 CSV 备份已生成", len(list(migration_dir.glob("candidate_index.pre_v5_*.csv"))) == 1)
+data_layer.INDEX_PATH = original_index_path
 
 # ============================================================
 section("结果汇总")

@@ -150,6 +150,17 @@ def main() -> int:
     if not papers:
         print(json.dumps({"error": "no papers to extract from"}, ensure_ascii=False))
         return 1
+    if not os.environ.get("OPENAI_API_KEY"):
+        print(json.dumps({
+            "known_binders": [],
+            "llm_provider": args.provider,
+            "llm_model": model,
+            "n_papers_processed": 0,
+            "n_binders_found": 0,
+            "run_status": "degraded_no_api_key",
+            "error": "OPENAI_API_KEY is not configured",
+        }, ensure_ascii=False, indent=2))
+        return 0
 
     print(f"[llm_extract] 逐篇提取 {len(papers)} 篇论文, 并发={args.concurrency}, 模型={model}", file=sys.stderr)
 
@@ -187,6 +198,7 @@ def main() -> int:
         "llm_model": model,
         "n_papers_processed": n_processed,
         "n_binders_found": len(unique),
+        "run_status": "complete",
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0

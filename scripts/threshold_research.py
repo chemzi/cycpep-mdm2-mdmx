@@ -22,7 +22,8 @@ Step 8: 阈值文献检索 — 为七层指标电池的每一层找文献依据�
 每层: {value, operator, unit, source, pmid, confidence, note}
 """
 
-import json, os, sys, argparse, re, time, urllib.request, urllib.parse
+import json, os, sys, argparse, re, threading, time, urllib.request, urllib.parse
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 PUBMED_SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
@@ -38,7 +39,6 @@ LAYER_QUERIES = {
             "macrocycle de novo design",
             "AlphaFold pLDDT protein design",
         ],
-        "known_hint": "RFpeptides (Rettie Nat Chem Biol 2025) uses pLDDT > 0.8",
     },
     "L2_ipsae": {
         "desc": "ipSAE 界面置信度阈值（小环肽主指标，替代 ipTM）",
@@ -47,16 +47,27 @@ LAYER_QUERIES = {
             "predicted aligned error protein interface",
             "AlphaFold interface confidence peptide",
         ],
-        "known_hint": "ipSAE from Dunbrack lab; typical accept ~0.5-0.6 for peptide",
     },
-    "L3_interface_physics": {
-        "desc": "界面物理 dG / SC / dSASA 可接受范围",
+    "L3_dg": {
+        "desc": "PRODIGY 预测结合自由能 dG 的筛选阈值",
         "queries": [
             "PRODIGY binding affinity",
-            "shape complementarity protein interface",
-            "buried surface area protein peptide complex",
+            "PRODIGY protein peptide binding affinity",
         ],
-        "known_hint": "dG<-10 kcal/mol strong; SC>0.6 good; dSASA>400 A^2",
+    },
+    "L3_sc": {
+        "desc": "Rosetta shape complementarity (SC) 的筛选阈值",
+        "queries": [
+            "Rosetta shape complementarity protein interface",
+            "shape complementarity protein peptide design",
+        ],
+    },
+    "L3_dsasa": {
+        "desc": "蛋白-肽界面埋藏表面积 dSASA 的筛选阈值",
+        "queries": [
+            "buried surface area protein peptide complex",
+            "protein peptide interface delta SASA",
+        ],
     },
     "L4_ring_closure": {
         "desc": "环肽环闭合几何 QC（肽键距离）",
@@ -64,7 +75,6 @@ LAYER_QUERIES = {
             "head-to-tail cyclic peptide",
             "macrocyclization peptide bond",
         ],
-        "known_hint": "peptide bond ~1.33A; N-C terminal distance < 2.0A indicates closed",
     },
     "L5_hotspot_coverage": {
         "desc": "热点残基覆盖率定义（设计意图）",
@@ -72,7 +82,6 @@ LAYER_QUERIES = {
             "hotspot residues protein interface design",
             "p53 MDM2 peptide inhibitor hotspot",
         ],
-        "known_hint": "cover >= 2/3 of designed hotspot pockets",
     },
     "L6_pose_convergence": {
         "desc": "多预测器/多 seed 结合 pose 收敛 RMSD",
@@ -80,7 +89,6 @@ LAYER_QUERIES = {
             "binding pose prediction RMSD",
             "ColabFold AlphaFold protein peptide docking",
         ],
-        "known_hint": "pose RMSD < 2.0 A across predictors/seeds = converged",
     },
     "L7_scrmsd": {
         "desc": "序列 refold 自洽 scRMSD 阈值",
@@ -89,33 +97,27 @@ LAYER_QUERIES = {
             "de novo protein design self-consistency",
             "sequence design AlphaFold refold",
         ],
-        "known_hint": "RFpeptides/ProteinMPNN: bb-RMSD or scRMSD < 2.0 A",
     },
 }
 
 EXTRACTION_PROMPT_TMPL = """你是计算结构生物学专家，专门做环肽/蛋白设计指标评估。
 
-我在为一篇 de novo 环肽 binder 设计工作确定评估指标"{metric_desc}"的阈值。请根据以下论文摘要，给出该指标可辩护的阈值或判断标准。
+需要审核的指标是"{metric_desc}"。请只根据下方按 PMID 分隔的论文题目和摘要，判断论文是否明确写出了可作为筛选标准的数值。不要使用领域常识补数值，不要把其他指标的数字移植过来。
 
-注意：摘要里往往没有精确数字。如果论文用了这个指标但没给具体值，请基于你的领域知识给出公认的经验值，并诚实标注证据等级。
-
-提取（不要编造论文里没有的具体数字；给经验值时用 evidence_grade 区分）：
-- value: 阈值数值（如 0.8, 2.0, -10）
+提取字段：
+- value: 阈值数值
 - operator: ">" / "<" / ">=" / "<="
-- unit: 单位（"A" / "kcal/mol" / 无则 null）
+- unit: 原文单位，无则 null
 - metric_name: 指标名称
-- evidence_grade: "paper_explicit"(论文明确给出) / "field_consensus"(领域公认经验) / "estimate"(粗略估计)
-- context: 依据来源一句话（论文标题或领域常识）
+- evidence_grade: 有明确数字时只能写 "paper_explicit"
+- source_pmid: 数字直接来自哪一篇论文
+- evidence_quote: 包含指标名和数值的摘要原文短句，必须逐字来自该 PMID 的摘要
+- context: 该数值在论文中的用途，例如训练过滤、最终筛选或结果描述
 - confidence: high/medium/low
 
-如果实在无法给出任何合理数值，返回 {{"found": false}}。
-
-已知线索（参考，以论文/常识为准）：{known_hint}
+摘要没有明确数字，或数字仅描述某个实验结果而不是筛选标准时，返回 {{"found": false}}。
 
 严格 JSON 输出，不要 markdown，不要解释。
-
-示例：
-{{"found": true, "value": 0.8, "operator": ">", "unit": null, "metric_name": "pLDDT", "evidence_grade": "paper_explicit", "context": "RFpeptides graduation criterion", "confidence": "high"}}
 
 以下是论文信息：
 """
@@ -123,14 +125,16 @@ EXTRACTION_PROMPT_TMPL = """你是计算结构生物学专家，专门做环肽/
 
 # ===== PubMed 工具 =====
 _LAST_REQ = [0.0]
+_THROTTLE_LOCK = threading.Lock()
 
 def _throttle(min_interval=0.5):
     """NCBI 限速：无 key 3 req/s，保守取 0.5s 间隔。"""
-    now = time.time()
-    wait = min_interval - (now - _LAST_REQ[0])
-    if wait > 0:
-        time.sleep(wait)
-    _LAST_REQ[0] = time.time()
+    with _THROTTLE_LOCK:
+        now = time.time()
+        wait = min_interval - (now - _LAST_REQ[0])
+        if wait > 0:
+            time.sleep(wait)
+        _LAST_REQ[0] = time.time()
 
 
 def search_pubmed(term: str, max_results: int = 5, retries: int = 3) -> list[str]:
@@ -166,7 +170,7 @@ def fetch_abstracts(pmids: list[str]) -> dict[str, dict]:
 
 
 def fetch_full_abstract(pmids: list[str]) -> dict[str, str]:
-    """efetch 拿完整摘要文本。"""
+    """用 EFetch XML 建立严格的 PMID -> 摘要映射。"""
     texts = {}
     if not pmids:
         return texts
@@ -174,13 +178,21 @@ def fetch_full_abstract(pmids: list[str]) -> dict[str, str]:
     try:
         params = urllib.parse.urlencode({
             "db": "pubmed", "id": ",".join(pmids),
-            "rettype": "abstract", "retmode": "text",
+            "rettype": "abstract", "retmode": "xml",
         })
         with urllib.request.urlopen(f"{PUBMED_FETCH_URL}?{params}", timeout=30) as resp:
-            full = resp.read().decode("utf-8", errors="replace")
-        # efetch text 把所有摘要连在一起，按 PMID 粗略分
-        # 简化：整体返回，LLM 自己找
-        texts["_combined"] = full[:12000]
+            root = ET.fromstring(resp.read().decode("utf-8", errors="replace"))
+        for article in root.findall(".//PubmedArticle"):
+            pmid_elem = article.find(".//MedlineCitation/PMID")
+            if pmid_elem is None or not pmid_elem.text:
+                continue
+            sections = []
+            for abstract in article.findall(".//Abstract/AbstractText"):
+                section = " ".join("".join(abstract.itertext()).split())
+                label = abstract.attrib.get("Label")
+                if section:
+                    sections.append(f"{label}: {section}" if label else section)
+            texts[pmid_elem.text] = " ".join(sections)
     except Exception as e:
         print(f"[thresh] 摘要获取失败: {e}", file=sys.stderr)
     return texts
@@ -228,11 +240,14 @@ def parse_json_loose(raw: str):
     return None
 
 
+def _normalize_evidence(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip().casefold()
+
+
 # ===== 单层处理 =====
 def research_one_layer(layer_key: str, cfg: dict, model: str) -> dict:
     """对一层指标：检索 -> 取摘要 -> LLM 抽取阈值。"""
     desc = cfg["desc"]
-    hint = cfg["known_hint"]
 
     # 多 query 合并 pmids（串行 + 全局限速，避免 429）
     pmids = []
@@ -247,18 +262,39 @@ def research_one_layer(layer_key: str, cfg: dict, model: str) -> dict:
 
     meta = fetch_abstracts(pmids)
     abs_map = fetch_full_abstract(pmids)
-    combined = abs_map.get("_combined", "")
 
-    # 拼论文标题列表
+    # 每篇摘要与 PMID 成对传给模型，避免合并文本后来源归属不清。
     titles = []
+    records = []
     for p in pmids:
         t = meta.get(p, {}).get("title", "")
         if t:
             titles.append(f"PMID {p}: {t}")
-    header = "检索到的论文：\n" + "\n".join(titles) + "\n\n摘要内容：\n"
+        abstract = abs_map.get(p, "")
+        if abstract:
+            records.append(f"PMID: {p}\nTITLE: {t}\nABSTRACT: {abstract[:5000]}")
 
-    prompt = EXTRACTION_PROMPT_TMPL.format(metric_desc=desc, known_hint=hint)
-    user_content = prompt + header + combined[:10000]
+    if not records:
+        return {
+            "layer": layer_key,
+            "found": False,
+            "desc": desc,
+            "pmids_checked": pmids,
+            "reason": "no_abstract_text",
+        }
+
+    if not os.environ.get("OPENAI_API_KEY"):
+        return {
+            "layer": layer_key,
+            "found": False,
+            "desc": desc,
+            "pmids_checked": pmids,
+            "papers_with_abstract": len(records),
+            "reason": "llm_unavailable_no_api_key",
+        }
+
+    prompt = EXTRACTION_PROMPT_TMPL.format(metric_desc=desc)
+    user_content = prompt + "\n\n--- PAPER ---\n".join(records)
 
     try:
         raw = call_openai(
@@ -277,13 +313,34 @@ def research_one_layer(layer_key: str, cfg: dict, model: str) -> dict:
             "pmids_checked": pmids, "reason": "llm_no_threshold",
         }
 
-    result.update({
+    source_pmid = str(result.get("source_pmid", ""))
+    evidence_quote = str(result.get("evidence_quote", ""))
+    source_abstract = abs_map.get(source_pmid, "")
+    quote_verified = (
+        len(_normalize_evidence(evidence_quote)) >= 20
+        and _normalize_evidence(evidence_quote) in _normalize_evidence(source_abstract)
+    )
+    evidence_grade = result.get("evidence_grade")
+    auto_usable = (
+        result.get("value") is not None
+        and source_pmid in pmids
+        and evidence_grade == "paper_explicit"
+        and quote_verified
+    )
+
+    verified_result = {
+        **result,
         "layer": layer_key,
         "desc": desc,
-        "pmids": pmids,
-        "source_papers": [t for t in titles],
-    })
-    return result
+        "pmids_checked": pmids,
+        "source_papers": titles,
+        "quote_verified": quote_verified,
+        "auto_usable": auto_usable,
+    }
+    if not auto_usable:
+        verified_result["found"] = False
+        verified_result["reason"] = "extraction_failed_source_verification"
+    return verified_result
 
 
 def main() -> int:
@@ -302,7 +359,12 @@ def main() -> int:
         wanted = set(args.layers.split(","))
         layers = {k: v for k, v in LAYER_QUERIES.items() if k in wanted}
 
-    print(f"[thresh] 检索 {len(layers)} 层指标阈值, 模型={model}", file=sys.stderr)
+    llm_available = bool(os.environ.get("OPENAI_API_KEY"))
+    print(
+        f"[thresh] 检索 {len(layers)} 个指标阈值, 模型={model}, "
+        f"LLM={'available' if llm_available else 'unavailable'}",
+        file=sys.stderr,
+    )
 
     results = {}
     with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
@@ -312,20 +374,28 @@ def main() -> int:
             try:
                 r = fut.result(timeout=180)
                 results[k] = r
-                status = f"found value={r.get('value')}{r.get('operator','')}" if r.get("found") else "not found"
+                status = (
+                    f"verified value={r.get('operator', '')}{r.get('value')}"
+                    if r.get("auto_usable")
+                    else f"not usable ({r.get('reason', 'no verified threshold')})"
+                )
                 print(f"[thresh] {k}: {status}", file=sys.stderr)
             except Exception as e:
                 results[k] = {"layer": k, "found": False, "reason": f"exception: {e}"}
                 print(f"[thresh] {k}: exception {e}", file=sys.stderr)
 
     n_found = sum(1 for r in results.values() if r.get("found"))
+    n_auto_usable = sum(1 for r in results.values() if r.get("auto_usable"))
     output = {
         "metric_battery": results,
         "_meta": {
             "n_layers": len(results),
             "n_found": n_found,
+            "n_auto_usable": n_auto_usable,
             "llm_model": model,
-            "note": "文献阈值 + 已知论文值；最终以正对照标定为准",
+            "llm_available": llm_available,
+            "run_status": "complete" if llm_available else "degraded_no_llm",
+            "note": "只有 PMID 与摘要原句校验通过的 paper_explicit 数值可自动覆盖默认值；其余等待正对照标定。",
         },
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))

@@ -8,7 +8,7 @@ Step 4: 跨结构聚合口袋残基 + 三口袋分类。
 按已知三口袋归类（Phe19/Trp23/Leu26 pocket lining residues）。
 """
 
-import json, sys
+import json, re, sys
 from collections import Counter
 
 # 三口袋的参考残基映射（基于 1YCR/3DAB 坐标）
@@ -40,8 +40,14 @@ def aggregate(target_name: str, interface_entries: list[dict]) -> dict:
         residues = entry.get("interface_target_residues", [])
         if residues:
             n_structures += 1
-            for r in residues:
-                residue_counter[r] += 1
+            # 跨 PDB 聚合时去掉链 ID；同一结构多拷贝只计一次。
+            normalized = {
+                match.group(1)
+                for residue in residues
+                if (match := re.search(r":(-?\d+[A-Za-z]{3})$", residue))
+            }
+            for residue in normalized:
+                residue_counter[residue.upper()] += 1
 
     if n_structures == 0:
         return {"n_structures": 0, "consensus_residues": {}, "pocket_residues": POCKET_DEFINITIONS[target_name]}
@@ -58,8 +64,12 @@ def aggregate(target_name: str, interface_entries: list[dict]) -> dict:
     for pocket_name, reference_residues in POCKET_DEFINITIONS[target_name].items():
         pocket_consensus[pocket_name] = []
         for ref in reference_residues:
+            match = re.fullmatch(r"([A-Za-z]{3})(-?\d+)", ref)
+            if not match:
+                continue
+            expected = f"{match.group(2)}{match.group(1).upper()}"
             for res_key in consensus:
-                if ref.lower() in res_key.lower():
+                if res_key.upper() == expected:
                     pocket_consensus[pocket_name].append(res_key)
                     break
 
