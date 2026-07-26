@@ -16,7 +16,7 @@ for p in [DATA_DIR / "state.json", EVIDENCE_DIR / "evidence_log.jsonl", DATA_DIR
 
 os.chdir(str(ROOT))
 
-from data_layer import State, EvidenceLogger, CandidateIndex, file_hash, sanitize_id
+from data_layer import State, EvidenceLogger, CandidateIndex, file_hash, sanitize_id, evaluate_battery, INDEX_COLUMNS
 
 passed = 0
 failed = 0
@@ -163,7 +163,7 @@ r = CandidateIndex.find("C0042")
 check("find('C0042') 找到", r is not None and r["sequence"] == "GFEWALAAK")
 check("find('C9999') 返回 None", CandidateIndex.find("C9999") is None)
 
-# update_score
+# update_score（v5: 旧字段名通过 alias 自动落到新列）
 CandidateIndex.update_score("C0042", {
     "monomer_plddt": 0.88, "self_rmsd": 1.1, "layer1_pass": "True",
     "iptm_mdm2": 0.84, "iptm_mdmx": 0.72, "dual_score": 0.72, "asymmetry": 0.12,
@@ -171,7 +171,10 @@ CandidateIndex.update_score("C0042", {
 })
 r2 = CandidateIndex.find("C0042")
 check("update_score 后 iptm_mdm2=0.84", r2["iptm_mdm2"] == "0.84")
-check("update_score 后 layer2_3_pass=True", r2["layer2_3_pass"] == "True")
+# v5: layer2_3_pass 已 alias 到 l2_pass
+check("update_score 后 l2_pass=True (旧名 layer2_3_pass alias)", r2["l2_pass"] == "True")
+check("update_score 后 plddt=0.88 (旧名 monomer_plddt alias)", r2["plddt"] == "0.88")
+check("update_score 后 scrmsd=1.1 (旧名 self_rmsd alias)", r2["scrmsd"] == "1.1")
 
 CandidateIndex.update_score("C0088", {
     "monomer_plddt": 0.79, "layer1_pass": "True",
@@ -219,10 +222,12 @@ section("7. CandidateIndex — stats")
 stats = CandidateIndex.stats()
 check("stats total_candidates=12", stats["total_candidates"] == 12)
 check("stats finalized=1", stats["finalized"] == 1)
+# v5: 保留 iptm_mdm2_median 作参考字段
 check("stats iptm_mdm2_median=0.84", stats["iptm_mdm2_median"] == 0.84)
-check("stats iptm_mdmx_median=0.79", stats["iptm_mdmx_median"] == 0.79)
-check("stats 包含 dual_score_median", "dual_score_median" in stats)
-check("stats 包含 avg_asymmetry", "avg_asymmetry" in stats)
+# v5: 新主指标字段为 ipsae_*_median
+check("stats 包含 ipsae_mdm2_median", "ipsae_mdm2_median" in stats)
+check("stats 包含 all_layers_pass", "all_layers_pass" in stats)
+check("stats 包含 l1_pass (七层计数)", "l1_pass" in stats)
 
 # ============================================================
 section("8. 工具函数")
@@ -263,17 +268,94 @@ check("CSV 以 UTF-8 BOM 开头", csv_content[:3] == b"\xef\xbb\xbf")
 reader = csv.DictReader(csv_content.decode("utf-8-sig").splitlines())
 rows = list(reader)
 check(f"CSV 有 {'>=' if len(rows) >= 12 else ''}12+ 行数据", len(rows) >= 12)
-check("CSV 所有 24 列存在", all(col in reader.fieldnames for col in [
-    "candidate_id","sequence","length","source_route","source_batch",
-    "monomer_plddt","self_rmsd","layer1_pass",
-    "iptm_mdm2","iptm_mdmx","dual_score","asymmetry","layer2_3_pass",
-    "colab_iptm_mdm2","colab_iptm_mdmx","haddock_mdm2","haddock_mdmx",
-    "hotspot_cov_mdm2","hotspot_cov_mdmx","cross_tool_ok","layer4_pass",
-    "final_status","final_rank","notes","last_updated"
-]))
+# v5: INDEX_COLUMNS 已扩展为七层电池 schema（~48 列），直接用源定义做校验
+check(f"CSV 所有 {len(INDEX_COLUMNS)} 列存在", all(col in reader.fieldnames for col in INDEX_COLUMNS))
+# 抽查关键新列
+for must_col in ["plddt","l1_pass","ipsae_mdm2","ipsae_mdmx","dg_mdm2","sc_mdm2",
+                 "dsasa_mdm2","ring_closure_pre","ring_closure_post","l4_pass",
+                 "site_consistency","l5_pass","pose_rmsd","seed_convergence",
+                 "l6_pass","scrmsd","l7_pass","all_layers_pass","pareto_front",
+                 "synth_pass","adme_net_charge","adme_tpsa","adme_clogp",
+                 "adme_chameleonicity","novelty_score"]:
+    check(f"  CSV 含新列 {must_col}", must_col in reader.fieldnames)
 
 # ============================================================
-section("11. 实际场景模拟 — 完整 Agent 工作流")
+section("11. evaluate_battery — 七层指标电池判定")
+# ============================================================
+# 模拟 thresholds（结构同 state.json["thresholds"]，由 Research Agent 文献检索+正对照标定填入）
+test_thresholds = {
+    "L1_plddt":          {"value": 0.80, "operator": ">",  "source": "RFpeptides PMID:40542165", "grade": "paper_explicit"},
+    "L2_ipsae":          {"value": 0.50, "operator": ">",  "source": "field consensus",          "grade": "field_consensus"},
+    "L3_dg":             {"value": -10.0, "operator": "<",  "source": "PRODIGY estimate",        "grade": "estimate"},
+    "L3_sc":             {"value": 0.60, "operator": ">",  "source": "field consensus",         "grade": "field_consensus"},
+    "L3_dsasa":          {"value": 400,  "operator": ">",  "source": "field consensus",         "grade": "field_consensus"},
+    "L5_hotspot_coverage":{"value": 0.67, "operator": ">=", "source": "1YCR hotspot analysis", "grade": "paper_explicit"},
+    "L6_pose_rmsd":      {"value": 2.0,  "operator": "<",  "source": "field consensus",         "grade": "field_consensus"},
+    "L7_scrmsd":         {"value": 2.0,  "operator": "<",  "source": "RFpeptides PMID:40542165", "grade": "paper_explicit"},
+}
+
+# 11a: 全清候选（七层都过关）
+full_pass_candidate = {
+    "candidate_id": "C_TEST_PASS", "sequence": "GFEWALAAK",
+    "plddt": 0.92,                       # L1 > 0.80 ✓
+    "ipsae_mdm2": 0.68,                  # L2 > 0.50 ✓
+    "iptm_mdm2": 0.85,                   # 参考
+    "dg_mdm2": -15.3, "sc_mdm2": 0.72, "dsasa_mdm2": 580,  # L3 ✓
+    "ring_closure_pre": "True", "ring_closure_post": "True",  # L4 ✓
+    "hotspot_cov_mdm2": 0.85, "site_consistency": "True",     # L5 ✓
+    "pose_rmsd": 1.2, "seed_convergence": 0.80,               # L6 ✓
+    "scrmsd": 0.8,                                            # L7 < 2.0 ✓
+}
+r = evaluate_battery(full_pass_candidate, test_thresholds)
+check("全清候选 all_layers_pass=True", r["all_layers_pass"] is True)
+check("全清候选 failed_layers 为空", len(r["failed_layers"]) == 0)
+check("全清 L1 pass", r["l1_pass"] is True)
+check("全清 L2 pass (ipSAE 主)", r["l2_pass"] is True)
+check("全清 L3 pass", r["l3_pass"] is True)
+check("全清 L4 pass (环化 QC)", r["l4_pass"] is True)
+check("全清 L5 pass (热点一致)", r["l5_pass"] is True)
+check("全清 L6 pass (收敛)", r["l6_pass"] is True)
+check("全清 L7 pass (scRMSD)", r["l7_pass"] is True)
+
+# 11b: L3 未达标候选（dG 不够低）
+fail_l3 = dict(full_pass_candidate)
+fail_l3["dg_mdm2"] = -5.0  # 不满足 < -10.0
+r2 = evaluate_battery(fail_l3, test_thresholds)
+check("L3 失败 all_layers_pass=False", r2["all_layers_pass"] is False)
+check("L3 失败 failed_layers 含 l3_pass", "l3_pass" in r2["failed_layers"])
+check("L3 失败 layer_values 记录 dg_mdm2", r2["layer_values"]["L3_dg_mdm2"] == -5.0)
+
+# 11c: L4 环化 QC 一步不过（relax 后断键）
+fail_l4 = dict(full_pass_candidate)
+fail_l4["ring_closure_post"] = "False"  # FastRelax 破坏了环化
+r3 = evaluate_battery(fail_l4, test_thresholds)
+check("L4 post 失败 all_layers_pass=False", r3["all_layers_pass"] is False)
+check("L4 失败 failed_layers 含 l4_pass", "l4_pass" in r3["failed_layers"])
+
+# 11d: 缺少关键字段（无 thresholds 时安全降级）
+r4 = evaluate_battery({"candidate_id": "C_EMPTY", "plddt": 0.9})
+check("无 thresholds 时 all_layers_pass=False", r4["all_layers_pass"] is False)
+check("无 thresholds 时 failed_layers 有7层", len(r4["failed_layers"]) == 7)
+
+# 11e: 旧字段名 alias 兼容（monomer_plddt → plddt 等）
+old_name_cand = {
+    "candidate_id": "C_ALIAS",
+    "monomer_plddt": 0.91, "self_rmsd": 0.9,
+    "layer1_pass": "True",
+    "ipsae_mdm2": 0.65,
+    "dg_mdm2": -12.0, "sc_mdm2": 0.68, "dsasa_mdm2": 500,
+    "ring_closure_pre": "True", "ring_closure_post": "True",
+    "hotspot_cov_mdm2": 0.75, "site_consistency": "True",
+    "pose_rmsd": 1.5, "seed_convergence": 0.75,
+    # 注意：不显式放 scrmsd，让 self_rmsd 走 alias
+}
+r5 = evaluate_battery(old_name_cand, test_thresholds)
+check("旧名 alias 全清 all_layers_pass=True", r5["all_layers_pass"] is True)
+check("旧名 alias layer_values L1_plddt=0.91", r5["layer_values"]["L1_plddt"] == 0.91)
+check("旧名 alias layer_values L7_scrmsd=0.9 (self_rmsd→scrmsd)", r5["layer_values"]["L7_scrmsd"] == 0.9)
+
+# ============================================================
+section("12. 实际场景模拟 — 完整 Agent 工作流")
 # ============================================================
 print("\n  模拟: 于嘉乐(Design) → 王修远(Prediction) → 赵嘉策(Critic) → Planner")
 print("  " + "-" * 50)

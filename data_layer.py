@@ -3,20 +3,26 @@
 所有Agent通过此模块读写 state.json、evidence_log.jsonl、candidate_index.csv
 
 使用方式:
-    from data_layer import State, EvidenceLogger, CandidateIndex
+    from data_layer import State, EvidenceLogger, CandidateIndex, evaluate_battery
 
     # 读全局状态
     state = State.load()
-    
+
     # 记一条日志
     EvidenceLogger.log(agent="design", event_type="design_batch",
                        payload={"route": "route_A", "n_generated": 200})
-    
-    # 加一条候选到索引表
+
+    # 加一条候选到索引表（旧字段名 monomer_plddt/layer1_pass 等会自动 alias 到新列）
     CandidateIndex.add({"candidate_id": "C0001", "sequence": "GFEWALA...", ...})
-    
+
     # 更新候选分数
-    CandidateIndex.update_score("C0001", {"iptm_mdm2": 0.84, "iptm_mdmx": 0.72})
+    CandidateIndex.update_score("C0001", {"ipsae_mdm2": 0.72, "iptm_mdm2": 0.84})  # ipTM 仅做参考
+
+    # 七层指标电池全清判定（v5 主判定函数）
+    result = evaluate_battery(candidate_dict, thresholds=State.load().get("thresholds"))
+    if result["all_layers_pass"]:
+        # 准入下一阶段
+        ...
 """
 import json, csv, hashlib, os, uuid
 from datetime import datetime, timezone
@@ -28,14 +34,55 @@ STATE_PATH = ROOT / "data" / "state.json"
 LOG_PATH   = ROOT / "evidence" / "evidence_log.jsonl"
 INDEX_PATH = ROOT / "data" / "candidate_index.csv"
 
+# v5: 七层指标电池主列。旧列名保留做 alias（见 _ALIAS_MAP），不破坏已有代码。
 INDEX_COLUMNS = [
+    # --- 基础标识 ---
     "candidate_id","sequence","length","source_route","source_batch",
-    "monomer_plddt","self_rmsd","layer1_pass",
-    "iptm_mdm2","iptm_mdmx","dual_score","asymmetry","layer2_3_pass",
-    "colab_iptm_mdm2","colab_iptm_mdmx","haddock_mdm2","haddock_mdmx",
-    "hotspot_cov_mdm2","hotspot_cov_mdmx","cross_tool_ok","layer4_pass",
-    "final_status","final_rank","notes","last_updated"
+    # --- L1 环肽质量 ---
+    "plddt","l1_pass",
+    # --- L2 界面置信度（ipSAE 主, ipTM 仅做参考, 不卡门槛）---
+    "ipsae_mdm2","ipsae_mdmx","ipae_mdm2","iptm_mdm2","iptm_mdmx","l2_pass",
+    # --- L3 界面物理 ---
+    "dg_mdm2","dg_mdmx","sc_mdm2","sc_mdmx","dsasa_mdm2","dsasa_mdmx","l3_pass",
+    # --- L4 环化几何 QC（relax 前后各一次）---
+    "ring_closure_pre","ring_closure_post","l4_pass",
+    # --- L5 设计意图 ---
+    "hotspot_cov_mdm2","hotspot_cov_mdmx","site_consistency","l5_pass",
+    # --- L6 鲁棒性（多预测器/多 seed 收敛）---
+    "pose_rmsd","seed_convergence","colab_iptm_mdm2","colab_iptm_mdmx","l6_pass",
+    # --- L7 可设计性（scRMSD）---
+    "scrmsd","l7_pass",
+    # --- 综合判定 ---
+    "all_layers_pass","pareto_front",
+    # --- 可合成性（Critic 检查）---
+    "synth_pass",
+    # --- ADME bonus ---
+    "adme_net_charge","adme_tpsa","adme_clogp","adme_chameleonicity","novelty_score",
+    # --- 双靶参考（导师禁止做加权门槛但保留做汇报）---
+    "asymmetry","dual_score",
+    # --- 状态/产出 ---
+    "final_status","final_rank","notes","last_updated",
 ]
+
+# 旧名 → 新名别名：旧 Agent 还用旧字段时自动落到新列
+_ALIAS_MAP = {
+    "monomer_plddt": "plddt",
+    "self_rmsd": "scrmsd",
+    "haddock_mdm2": "dg_mdm2",
+    "haddock_mdmx": "dg_mdmx",
+    "layer1_pass": "l1_pass",
+    "layer2_3_pass": "l2_pass",
+    "layer4_pass": "l4_pass",
+    "cross_tool_ok": "l6_pass",
+}
+
+
+def _alias_keys(row: dict) -> dict:
+    """旧字段名 → 新字段名（向前兼容旧 Agent 代码）。"""
+    for old, new in _ALIAS_MAP.items():
+        if old in row and new not in row:
+            row[new] = row.pop(old)
+    return row
 
 # ============================================================
 # 全局状态
@@ -53,7 +100,9 @@ class State:
         "design_budget": {"route_A_mdm2": 400, "route_A_mdmx": 400,
                           "route_B": 400, "route_C": 200},
         "candidate_count": 0,
-        "iteration_history": []
+        "iteration_history": [],
+        # v5: 七层指标电池阈值（来自 data_layer.DEFAULT_THRESHOLDS，最终由正对照标定）
+        "thresholds": {},
     }
     
     @classmethod
@@ -239,12 +288,17 @@ class CandidateIndex:
     def add(cls, row: dict):
         """添加一条新候选。必须包含 candidate_id 和 sequence。"""
         cls._ensure_exists()
+        row = _alias_keys(row)  # 旧名 → 新名
         row.setdefault("source_route", "")
         row.setdefault("source_batch", "")
         row.setdefault("length", len(row.get("sequence", "")))
         row.setdefault("final_status", "pending")
         row.setdefault("last_updated", datetime.now().strftime("%Y-%m-%d %H:%M"))
-        row["layer1_pass"] = ""; row["layer2_3_pass"] = ""; row["layer4_pass"] = ""; row["cross_tool_ok"] = ""
+        # 七层 pass 默认空（待 Prediction Agent 打分后填充）
+        for pass_col in ["l1_pass","l2_pass","l3_pass","l4_pass",
+                         "l5_pass","l6_pass","l7_pass","all_layers_pass",
+                         "synth_pass","pareto_front"]:
+            row.setdefault(pass_col, "")
         ordered = {col: row.get(col, "") for col in INDEX_COLUMNS}
         with open(INDEX_PATH, "a", newline="", encoding="utf-8-sig") as f:
             csv.DictWriter(f, fieldnames=INDEX_COLUMNS, extrasaction="ignore").writerow(ordered)
@@ -253,6 +307,7 @@ class CandidateIndex:
     def add_batch(cls, rows: list[dict]):
         cls._ensure_exists()
         for r in rows:
+            _alias_keys(r)
             r.setdefault("final_status", "pending")
             r.setdefault("last_updated", datetime.now().strftime("%Y-%m-%d %H:%M"))
         with open(INDEX_PATH, "a", newline="", encoding="utf-8-sig") as f:
@@ -276,7 +331,10 @@ class CandidateIndex:
 
     @classmethod
     def update_score(cls, candidate_id: str, scores: dict):
-        """更新某条候选的评分字段（原地修改CSV行）"""
+        """更新某条候选的评分字段（原地修改CSV行）。
+        scores 中的旧字段名（如 monomer_plddt / layer1_pass）会自动 alias 到新名。
+        """
+        scores = _alias_keys(dict(scores))
         rows = cls.load()
         for r in rows:
             if r["candidate_id"] == candidate_id:
@@ -311,7 +369,8 @@ class CandidateIndex:
 
     @classmethod
     def filter_by_layer(cls, layer_pass: bool, layer: int = 1) -> list[dict]:
-        col = {1: "layer1_pass", 2: "layer2_3_pass", 3: "layer2_3_pass", 4: "layer4_pass"}[layer]
+        col = {1: "l1_pass", 2: "l2_pass", 3: "l3_pass",
+               4: "l4_pass", 5: "l5_pass", 6: "l6_pass", 7: "l7_pass"}[layer]
         return [r for r in cls.load() if r.get(col) == str(layer_pass)]
 
     @classmethod
@@ -322,26 +381,39 @@ class CandidateIndex:
 
     @classmethod
     def stats(cls) -> dict:
-        """快速统计：总数、各层通过率、双靶中位数"""
+        """快速统计：总数、七层各层通过数、ipSAE/dG 中位数（v5 主指标）"""
         rows = cls.load()
-        scores_m2 = [float(r["iptm_mdm2"]) for r in rows if r.get("iptm_mdm2")]
-        scores_mx = [float(r["iptm_mdmx"]) for r in rows if r.get("iptm_mdmx")]
-        duals   = [float(r["dual_score"]) for r in rows if r.get("dual_score")]
+        ipsae_m2 = [float(r["ipsae_mdm2"]) for r in rows if r.get("ipsae_mdm2")]
+        ipsae_mx = [float(r["ipsae_mdmx"]) for r in rows if r.get("ipsae_mdmx")]
+        dg_m2   = [float(r["dg_mdm2"]) for r in rows if r.get("dg_mdm2")]
+        scrmsds = [float(r["scrmsd"]) for r in rows if r.get("scrmsd")]
+        # ipTM 保留做参考（导师 Trap 1：不做门槛）
+        iptm_m2 = [float(r["iptm_mdm2"]) for r in rows if r.get("iptm_mdm2")]
 
-        def med(lst): 
+        def med(lst):
             lst = sorted(lst)
             return lst[len(lst)//2] if lst else 0
 
         return {
             "total_candidates": len(rows),
-            "layer1_pass": sum(1 for r in rows if r.get("layer1_pass") == "True"),
-            "layer2_3_pass": sum(1 for r in rows if r.get("layer2_3_pass") == "True"),
-            "layer4_pass": sum(1 for r in rows if r.get("layer4_pass") == "True"),
+            # 七层通过计数（v5 主判定）
+            "l1_pass": sum(1 for r in rows if r.get("l1_pass") == "True"),
+            "l2_pass": sum(1 for r in rows if r.get("l2_pass") == "True"),
+            "l3_pass": sum(1 for r in rows if r.get("l3_pass") == "True"),
+            "l4_pass": sum(1 for r in rows if r.get("l4_pass") == "True"),
+            "l5_pass": sum(1 for r in rows if r.get("l5_pass") == "True"),
+            "l6_pass": sum(1 for r in rows if r.get("l6_pass") == "True"),
+            "l7_pass": sum(1 for r in rows if r.get("l7_pass") == "True"),
+            "all_layers_pass": sum(1 for r in rows if r.get("all_layers_pass") == "True"),
+            "synth_pass": sum(1 for r in rows if r.get("synth_pass") == "True"),
+            "pareto_front": sum(1 for r in rows if r.get("pareto_front") == "True"),
             "finalized": sum(1 for r in rows if r.get("final_status") == "finalized"),
-            "iptm_mdm2_median": round(med(scores_m2), 3),
-            "iptm_mdmx_median": round(med(scores_mx), 3),
-            "dual_score_median": round(med(duals), 3),
-            "avg_asymmetry": round(sum(float(r.get("asymmetry", 0)) for r in rows if r.get("asymmetry")) / max(len(rows), 1), 3)
+            # 主指标中位数（v5: ipSAE 替代 ipTM）
+            "ipsae_mdm2_median": round(med(ipsae_m2), 3),
+            "ipsae_mdmx_median": round(med(ipsae_mx), 3),
+            "dg_mdm2_median": round(med(dg_m2), 3),
+            "scrmsd_median": round(med(scrmsds), 3),
+            "iptm_mdm2_median": round(med(iptm_m2), 3),  # 参考
         }
 
 
@@ -359,6 +431,116 @@ def file_hash(path: str, n_bytes: int = 4096) -> str:
 def sanitize_id(s: str) -> str:
     """C0001格式的候选ID"""
     return s if (len(s) == 5 and s.startswith("C")) else f"C{int(s):04d}"
+
+
+# ============================================================
+# v5: 七层指标电池判定器（所有 Agent 共用）
+# ============================================================
+def _cmp(value: float, op: str, threshold: float) -> bool:
+    """安全比较（value 对 op threshold）。值缺失返回 False。"""
+    if value is None or value == "" or threshold is None:
+        return False
+    ops = {">": lambda a, b: a > b,
+           "<": lambda a, b: a < b,
+           ">=": lambda a, b: a >= b,
+           "<=": lambda a, b: a <= b}
+    return ops.get(op, lambda a, b: False)(float(value), float(threshold))
+
+
+def _f(v):
+    """尝试转 float，失败返回 None。"""
+    if v is None or v == "": return None
+    try: return float(v)
+    except (TypeError, ValueError): return None
+
+
+def evaluate_battery(c: dict, thresholds: dict | None = None) -> dict:
+    """
+    七层指标电池判定（v5 主判定）。
+
+    导师要求（DeeCamp）：七层全清才算成功，缺一不可。每层阈值须有出处
+    （来自 thresholds 由 Research Agent 文献检索+正对照标定填入）。
+
+    参数:
+      c: 候选 dict（含七层指标字段，旧名自动 alias）
+      thresholds: 来自 state.json["thresholds"]，结构同 _DEFAULT_THRESHOLDS
+
+    返回:
+      {l1_pass..l7_pass: bool, all_layers_pass: bool,
+       failed_layers: list[str],
+       layer_values: dict,  # 每层主值 }
+    """
+    c = _alias_keys(dict(c))  # 旧名兜底
+    th = thresholds or {}
+
+    def th_has(key): return bool(th.get(key) and th[key].get("value") is not None)
+
+    # L1 环肽质量：pLDDT
+    l1 = _cmp(_f(c.get("plddt")), th.get("L1_plddt", {}).get("operator", ">"),
+              th.get("L1_plddt", {}).get("value", 0.8)) if th_has("L1_plddt") else False
+
+    # L2 界面置信度：ipSAE 主（小环肽 ipTM 会虚高, 导师 Trap 1）
+    t2 = th.get("L2_ipsae", {})
+    l2 = (_cmp(_f(c.get("ipsae_mdm2")), t2.get("operator", ">"), t2.get("value", 0.5))
+          if th_has("L2_ipsae") else False)
+
+    # L3 界面物理：dG + 形状互补 + dSASA（任一缺即视为该层未通过严谨审查）
+    l3 = all([
+        _cmp(_f(c.get("dg_mdm2")), th.get("L3_dg", {}).get("operator", "<"), th.get("L3_dg", {}).get("value", -10)),
+        _cmp(_f(c.get("sc_mdm2")), th.get("L3_sc", {}).get("operator", ">"), th.get("L3_sc", {}).get("value", 0.6)),
+        _cmp(_f(c.get("dsasa_mdm2")), th.get("L3_dsasa", {}).get("operator", ">"), th.get("L3_dsasa", {}).get("value", 400)),
+    ]) if (th_has("L3_dg") or c.get("dg_mdm2")) else False
+
+    # L4 环化几何 QC：relax 前后环闭合均通过（导师 Trap 2）
+    pre = c.get("ring_closure_pre", "")
+    post = c.get("ring_closure_post", "")
+    l4 = (str(pre).lower() in ("true", "1", "yes")) and (str(post).lower() in ("true", "1", "yes"))
+
+    # L5 设计意图：热点覆盖 + 位点一致性（导师 Trap 3）
+    t5 = th.get("L5_hotspot_coverage", {})
+    hc = _f(c.get("hotspot_cov_mdm2"))
+    l5 = (_cmp(hc, t5.get("operator", ">="), t5.get("value", 0.67)) and
+          str(c.get("site_consistency", "")).lower() in ("true", "1", "yes")) \
+         if (th_has("L5_hotspot_coverage") or hc is not None) else False
+
+    # L6 鲁棒性：多预测器 pose RMSD 收敛 + 多 seed 收敛
+    t6 = th.get("L6_pose_rmsd", {})
+    pr = _f(c.get("pose_rmsd"))
+    sc_ = _f(c.get("seed_convergence"))
+    l6 = (_cmp(pr, t6.get("operator", "<"), t6.get("value", 2.0)) and
+          (sc_ is None or sc_ >= 0.67)) \
+         if (th_has("L6_pose_rmsd") or pr is not None) else False
+
+    # L7 可设计性：scRMSD
+    t7 = th.get("L7_scrmsd", {})
+    l7 = _cmp(_f(c.get("scrmsd")), t7.get("operator", "<"), t7.get("value", 2.0)) \
+         if (th_has("L7_scrmsd") or c.get("scrmsd")) else False
+
+    layer_pass = {
+        "l1_pass": bool(l1), "l2_pass": bool(l2),
+        "l3_pass": bool(l3), "l4_pass": bool(l4),
+        "l5_pass": bool(l5), "l6_pass": bool(l6),
+        "l7_pass": bool(l7),
+    }
+    failed = [k for k, v in layer_pass.items() if not v]
+
+    return {
+        **layer_pass,
+        "all_layers_pass": len(failed) == 0,
+        "failed_layers": failed,
+        "layer_values": {
+            "L1_plddt": _f(c.get("plddt")),
+            "L2_ipsae_mdm2": _f(c.get("ipsae_mdm2")),
+            "L2_iptm_mdm2": _f(c.get("iptm_mdm2")),   # 参考
+            "L3_dg_mdm2": _f(c.get("dg_mdm2")),
+            "L3_sc_mdm2": _f(c.get("sc_mdm2")),
+            "L3_dsasa_mdm2": _f(c.get("dsasa_mdm2")),
+            "L4_pre": str(pre), "L4_post": str(post),
+            "L5_hotspot_cov_mdm2": hc,
+            "L6_pose_rmsd": pr, "L6_seed_conv": sc_,
+            "L7_scrmsd": _f(c.get("scrmsd")),
+        },
+    }
 
 
 if __name__ == "__main__":

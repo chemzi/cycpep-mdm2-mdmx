@@ -33,13 +33,13 @@ POCKET_DIFFERENCES = {
     "_method": "biotite heavy-atom<4A, 43+12 structures <=2.8A, CA RMSD 1.88A/85 residues",
     "Phe19_pocket": {"MDM2_residues": TARGETS["MDM2"]["pocket_residues"]["Phe19_pocket"],
                      "MDMX_residues": TARGETS["MDMX"]["pocket_residues"]["Phe19_pocket"],
-                     "design_rule": "Phe volume or smaller, avoid bulky aromatics (Met53 gate)."},
+                     "design_rule": "Phe volume or smaller. Pocket conserved across MDM2/MDMX, no major steric difference."},
     "Trp23_pocket": {"MDM2_residues": TARGETS["MDM2"]["pocket_residues"]["Trp23_pocket"],
                      "MDMX_residues": TARGETS["MDMX"]["pocket_residues"]["Trp23_pocket"],
-                     "design_rule": "L-Trp invariant shared anchor, preserve NE1 H-bond."},
+                     "design_rule": "L-Trp invariant shared anchor. MDMX Met53 (vs MDM2 Leu54) is bulkier, pocket tighter."},
     "Leu26_pocket": {"MDM2_residues": TARGETS["MDM2"]["pocket_residues"]["Leu26_pocket"],
                      "MDMX_residues": TARGETS["MDMX"]["pocket_residues"]["Leu26_pocket"],
-                     "design_rule": "Downsize to small aliphatic (Leu/Val/Abu/cyclobutyl-Ala)."},
+                     "design_rule": "Downsize to small aliphatic (Leu/Val/Abu). MDMX Met53+Pro95 dual compression vs MDM2 Leu54+His96."},
 }
 KNOWN_DUAL_BINDERS = [
     {"name":"PMI","type":"linear peptide","sequence":"TSFAEYWNLLSP","kd_mdm2":"low nanomolar","kd_mdmx":"low nanomolar","pmid":"34589387"},
@@ -54,12 +54,36 @@ KNOWN_DUAL_BINDERS = [
 LITERATURE_REFS = [
     {"pmid":"34589387"},{"pmid":"23946421"},{"pmid":"37439511"},{"pmid":"34301750"},{"pmid":"19910468"},
 ]
-DESIGN_STRATEGY_SUMMARY = "Trp23=L-Trp invariant anchor. Phe19<=Phe volume. Leu26=small aliphatic. Natural-AA cyclic on helical FxxWxxxL geometry."
+DESIGN_STRATEGY_SUMMARY = "Trp23=L-Trp invariant anchor (MDMX Met53 tighter than MDM2 Leu54). Phe19<=Phe volume (pocket conserved). Leu26=small aliphatic (MDMX Met53+Pro95 dual compression). Natural-AA cyclic on helical FxxWxxxL geometry."
 VERIFIED_PEPTIDE_COMPLEXES = {
     "MDM2": ["1T4F","1YCR","2GV2","3EQS","3G03","3IUX","3IWY","3JZR","3LNZ","3TPX","3V3B","4HFZ"],
     "MDMX": ["3DAB","3EQY","3FDO","3FE7","3FEA","3JZO","3JZP","4RXZ","5VK1","7KJN","8IA5","3JZQ"],
 }
 DATA_QUALITY_ALERT = "4HG7/3LBK are small-molecule complexes, not peptide. Verified: 1YCR/3V3B(MDM2), 3DAB(MDMX)."
+
+# ===== 七层指标电池阈值（文献兜底值，最终以正对照标定为准）=====
+# 来源：RFpeptides (Rettie et al., Nat Chem Biol 2025)、DeeCamp kickoff 指导
+DEFAULT_THRESHOLDS = {
+    "L1_plddt":            {"value": 0.8,  "operator": ">",  "unit": None,
+                            "source": "RFpeptides paper (Nat Chem Biol 2025)", "confidence": "high"},
+    "L2_ipsae":            {"value": 0.55, "operator": ">",  "unit": None,
+                            "source": "ipSAE literature estimate (Dunbrack); 待正对照标定", "confidence": "low"},
+    "L3_dg":               {"value": -10,  "operator": "<",  "unit": "kcal/mol",
+                            "source": "PRODIGY/interface energy 经验值", "confidence": "medium"},
+    "L3_sc":               {"value": 0.6,  "operator": ">",  "unit": None,
+                            "source": "Rosetta shape complementarity 经验值", "confidence": "medium"},
+    "L3_dsasa":            {"value": 400,  "operator": ">",  "unit": "A^2",
+                            "source": "界面埋藏面积经验值", "confidence": "medium"},
+    "L4_nc_term_dist":     {"value": 2.0,  "operator": "<",  "unit": "A",
+                            "source": "肽键~1.33A；N/C端距离<2.0A视为闭合", "confidence": "high"},
+    "L5_hotspot_coverage": {"value": 0.67, "operator": ">=", "unit": None,
+                            "source": ">=2/3 设计热点口袋被覆盖", "confidence": "medium"},
+    "L6_pose_rmsd":        {"value": 2.0,  "operator": "<",  "unit": "A",
+                            "source": "多预测器/多seed结合pose收敛", "confidence": "medium"},
+    "L7_scrmsd":           {"value": 2.0,  "operator": "<",  "unit": "A",
+                            "source": "RFpeptides paper bb-RMSD<2.0A", "confidence": "high"},
+}
+THRESHOLDS_CACHE = DATA_DIR / "_thresholds_cache.json"
 
 
 def _run_script(script_name, input_data=None, extra_args=None):
@@ -137,17 +161,17 @@ def _build_dynamic_pockets(aggregate_result, superpose_result):
         "Phe19_pocket": {
             "MDM2_residues": _extract_residues(mdm2_agg, "Phe19_pocket"),
             "MDMX_residues": _extract_residues(mdmx_agg, "Phe19_pocket"),
-            "design_rule": "Phe volume or smaller, avoid bulky aromatics (Met53 gate).",
+            "design_rule": "Phe volume or smaller. Pocket conserved across MDM2/MDMX, no major steric difference.",
         },
         "Trp23_pocket": {
             "MDM2_residues": _extract_residues(mdm2_agg, "Trp23_pocket"),
             "MDMX_residues": _extract_residues(mdmx_agg, "Trp23_pocket"),
-            "design_rule": "L-Trp invariant shared anchor, preserve NE1 H-bond.",
+            "design_rule": "L-Trp invariant shared anchor. MDMX Met53 (vs MDM2 Leu54) is bulkier, pocket tighter.",
         },
         "Leu26_pocket": {
             "MDM2_residues": _extract_residues(mdm2_agg, "Leu26_pocket"),
             "MDMX_residues": _extract_residues(mdmx_agg, "Leu26_pocket"),
-            "design_rule": "Downsize to small aliphatic (Leu/Val/Abu/cyclobutyl-Ala).",
+            "design_rule": "Downsize to small aliphatic (Leu/Val/Abu). MDMX Met53+Pro95 dual compression vs MDM2 Leu54+His96.",
         },
         "_superpose": {
             "rmsd_A": rmsd,
@@ -274,6 +298,36 @@ def _run_pipeline():
     except Exception as e:
         EvidenceLogger.error("research", "tool_failure", f"LLM: {e}", recovery="fallback to constants")
 
+    # ===== Step 8: 阈值文献检索 =====
+    print("[research] Step 8/8: threshold literature research...")
+    thresholds = DEFAULT_THRESHOLDS.copy()
+    try:
+        tr, te2, tc, td_, th = _run_script("threshold_research.py", extra_args=["--concurrency", "4"])
+        lit = tr.get("metric_battery", {})
+        n_found = tr.get("_meta", {}).get("n_found", 0)
+        # 用文献值覆盖默认值（只覆盖 found 且有具体数值的）
+        for layer, info in lit.items():
+            if info.get("found") and info.get("value") is not None:
+                thresholds[layer] = {
+                    "value": info["value"],
+                    "operator": info.get("operator", ">"),
+                    "unit": info.get("unit"),
+                    "source": f"literature: {info.get('source_papers', ['?'])[0] if info.get('source_papers') else info.get('pmids', ['?'])}",
+                    "confidence": info.get("confidence", "medium"),
+                    "pmids": info.get("pmids", []),
+                }
+        THRESHOLDS_CACHE.write_text(json.dumps(thresholds, ensure_ascii=False, indent=2), encoding="utf-8")
+        EvidenceLogger.log("research", "tool_call", {
+            "tool_name": "threshold_research", "output_hash": th, "exit_code": tc,
+            "duration_sec": round(td_, 1),
+            "stdout_snippet": f"layers_found={n_found}/{len(lit)}",
+        }, targets=["both"], phase="research")
+        print(f"[research] Thresholds: {n_found} layers from literature")
+    except Exception as e:
+        EvidenceLogger.error("research", "tool_failure", f"threshold_research: {e}",
+                             recovery="fallback to DEFAULT_THRESHOLDS")
+        print(f"[research] threshold_research failed, using defaults: {e}")
+
     # ===== 组装结果 =====
     result = {
         "targets": TARGETS.copy(),
@@ -282,6 +336,7 @@ def _run_pipeline():
         "design_strategy_summary": DESIGN_STRATEGY_SUMMARY,
         "data_quality_alert": DATA_QUALITY_ALERT,
         "literature_refs": LITERATURE_REFS,
+        "thresholds": thresholds,
         "_pipeline_meta": {
             "last_run": datetime.now(timezone.utc).isoformat(),
             "pocket_source": pocket_differences.get("_source", "constant"),
@@ -322,6 +377,7 @@ def run(state=None, force_recompute=False, skip_pipeline=False):
         "known_dual_binders": pipeline_result.get("known_dual_binders", KNOWN_DUAL_BINDERS),
         "design_strategy_summary": pipeline_result.get("design_strategy_summary", DESIGN_STRATEGY_SUMMARY),
         "data_quality_alert": pipeline_result.get("data_quality_alert", DATA_QUALITY_ALERT),
+        "thresholds": pipeline_result.get("thresholds", DEFAULT_THRESHOLDS),
     }
     State.update(result)
 
