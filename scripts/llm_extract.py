@@ -92,11 +92,13 @@ def extract_one_paper(paper: dict, model: str) -> dict | None:
     """对一篇论文调用 LLM 提取。返回结构化 dict 或 None（失败时）。"""
     pmid = paper.get("pmid", "?")
     title = paper.get("title", "")
-    abstract = paper.get("abstract", "")
+    content = paper.get("content", paper.get("abstract", ""))[:5000]  # PMC 全文或摘要
     source = paper.get("source", "")
+    source_type = paper.get("source_type", "abstract")
 
-    # 构建用户内容：标题 + 摘要 + PMID
-    user_content = f"PMID: {pmid}\nTitle: {title}\nSource: {source}\nAbstract: {abstract}"
+    # 构建用户内容
+    type_label = "Full Text" if source_type == "pmc_fulltext" else "Abstract"
+    user_content = f"PMID: {pmid}\nTitle: {title}\nSource: {source}\n{type_label}: {content}"
 
     try:
         raw = call_openai(
@@ -148,6 +150,17 @@ def main() -> int:
     if not papers:
         print(json.dumps({"error": "no papers to extract from"}, ensure_ascii=False))
         return 1
+    if not os.environ.get("OPENAI_API_KEY"):
+        print(json.dumps({
+            "known_binders": [],
+            "llm_provider": args.provider,
+            "llm_model": model,
+            "n_papers_processed": 0,
+            "n_binders_found": 0,
+            "run_status": "degraded_no_api_key",
+            "error": "OPENAI_API_KEY is not configured",
+        }, ensure_ascii=False, indent=2))
+        return 0
 
     print(f"[llm_extract] 逐篇提取 {len(papers)} 篇论文, 并发={args.concurrency}, 模型={model}", file=sys.stderr)
 
@@ -174,7 +187,7 @@ def main() -> int:
     seen = set()
     unique = []
     for b in all_binders:
-        key = b.get("name", "")[:30].lower()
+        key = (b.get("name") or "")[:30].lower()
         if key and key not in seen:
             seen.add(key)
             unique.append(b)
@@ -185,6 +198,7 @@ def main() -> int:
         "llm_model": model,
         "n_papers_processed": n_processed,
         "n_binders_found": len(unique),
+        "run_status": "complete",
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0

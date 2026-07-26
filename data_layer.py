@@ -3,39 +3,99 @@
 所有Agent通过此模块读写 state.json、evidence_log.jsonl、candidate_index.csv
 
 使用方式:
-    from data_layer import State, EvidenceLogger, CandidateIndex
+    from data_layer import State, EvidenceLogger, CandidateIndex, evaluate_battery
 
     # 读全局状态
     state = State.load()
-    
+
     # 记一条日志
     EvidenceLogger.log(agent="design", event_type="design_batch",
                        payload={"route": "route_A", "n_generated": 200})
-    
-    # 加一条候选到索引表
+
+    # 加一条候选到索引表（旧字段名 monomer_plddt/layer1_pass 等会自动 alias 到新列）
     CandidateIndex.add({"candidate_id": "C0001", "sequence": "GFEWALA...", ...})
-    
+
     # 更新候选分数
-    CandidateIndex.update_score("C0001", {"iptm_mdm2": 0.84, "iptm_mdmx": 0.72})
+    CandidateIndex.update_score("C0001", {"ipsae_mdm2": 0.72, "iptm_mdm2": 0.84})  # ipTM 仅做参考
+
+    # 七层指标电池全清判定（v5 主判定函数）
+    result = evaluate_battery(candidate_dict, thresholds=State.load().get("thresholds"))
+    if result["all_layers_pass"]:
+        # 准入下一阶段
+        ...
 """
-import json, csv, hashlib, os, uuid
+import json, csv, hashlib, os, statistics, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 ROOT = Path(__file__).resolve().parent
-STATE_PATH = ROOT / "data" / "state.json"
-LOG_PATH   = ROOT / "evidence" / "evidence_log.jsonl"
-INDEX_PATH = ROOT / "data" / "candidate_index.csv"
+DATA_DIR = Path(os.environ.get("CYCPEP_DATA_DIR", ROOT / "data"))
+EVIDENCE_DIR = Path(os.environ.get("CYCPEP_EVIDENCE_DIR", ROOT / "evidence"))
+STATE_PATH = DATA_DIR / "state.json"
+LOG_PATH   = EVIDENCE_DIR / "evidence_log.jsonl"
+INDEX_PATH = DATA_DIR / "candidate_index.csv"
 
+# v5: 七层指标电池主列。旧列名保留做 alias（见 _ALIAS_MAP），不破坏已有代码。
 INDEX_COLUMNS = [
+    # --- 基础标识 ---
     "candidate_id","sequence","length","source_route","source_batch",
-    "monomer_plddt","self_rmsd","layer1_pass",
-    "iptm_mdm2","iptm_mdmx","dual_score","asymmetry","layer2_3_pass",
-    "colab_iptm_mdm2","colab_iptm_mdmx","haddock_mdm2","haddock_mdmx",
-    "hotspot_cov_mdm2","hotspot_cov_mdmx","cross_tool_ok","layer4_pass",
-    "final_status","final_rank","notes","last_updated"
+    # --- 化学与结构交接契约 ---
+    "cyclization_type","cyclization_bonds","design_pdb_path","design_pdb_hash",
+    "manifest_path",
+    # --- L1 环肽质量 ---
+    "plddt","l1_pass",
+    # --- L2 界面置信度（ipSAE 主, ipTM 仅做参考, 不卡门槛）---
+    "ipsae_mdm2","ipsae_mdmx","ipae_mdm2","iptm_mdm2","iptm_mdmx","l2_pass",
+    # --- L3 界面物理 ---
+    "dg_mdm2","dg_mdmx","dg_method","sc_mdm2","sc_mdmx","dsasa_mdm2","dsasa_mdmx","l3_pass",
+    # --- L4 环化几何 QC（relax 前后各一次）---
+    "nc_distance_pre","nc_distance_post","ring_closure_pre","ring_closure_post","l4_pass",
+    # --- L5 设计意图 ---
+    "hotspot_cov_mdm2","hotspot_cov_mdmx","site_consistency_mdm2",
+    "site_consistency_mdmx","site_consistency","l5_pass",
+    # --- L6 鲁棒性（多预测器/多 seed 收敛）---
+    "pose_rmsd_mdm2","pose_rmsd_mdmx","seed_convergence_mdm2",
+    "seed_convergence_mdmx","pose_rmsd","seed_convergence",
+    "colab_iptm_mdm2","colab_iptm_mdmx","l6_pass",
+    # --- L7 可设计性（scRMSD）---
+    "scrmsd","l7_pass",
+    # --- 综合判定 ---
+    "all_layers_pass","pareto_front",
+    # --- 可合成性（Critic 检查）---
+    "synth_pass",
+    # --- ADME bonus ---
+    "adme_net_charge","adme_tpsa","adme_clogp","adme_chameleonicity","novelty_score",
+    # --- 双靶参考（导师禁止做加权门槛但保留做汇报）---
+    "asymmetry","dual_score",
+    # --- 状态/产出 ---
+    "final_status","final_rank","notes","last_updated",
+    # --- v4/早期原型字段，只保留历史含义，不参与 v5 判定 ---
+    "legacy_self_rmsd","legacy_haddock_mdm2","legacy_haddock_mdmx",
+    "legacy_layer1_pass","legacy_layer2_3_pass","legacy_layer4_pass",
+    "legacy_cross_tool_ok",
 ]
+
+# 旧名 → 兼容列。只有 monomer_plddt 与当前 pLDDT 含义一致；
+# 其余旧指标保存在 legacy_*，不能直接参与新版七层判定。
+_ALIAS_MAP = {
+    "monomer_plddt": "plddt",
+    "self_rmsd": "legacy_self_rmsd",
+    "haddock_mdm2": "legacy_haddock_mdm2",
+    "haddock_mdmx": "legacy_haddock_mdmx",
+    "layer1_pass": "legacy_layer1_pass",
+    "layer2_3_pass": "legacy_layer2_3_pass",
+    "layer4_pass": "legacy_layer4_pass",
+    "cross_tool_ok": "legacy_cross_tool_ok",
+}
+
+
+def _alias_keys(row: dict) -> dict:
+    """旧字段名 → 新字段名（向前兼容旧 Agent 代码）。"""
+    for old, new in _ALIAS_MAP.items():
+        if old in row and row.get(old) not in (None, "") and row.get(new) in (None, ""):
+            row[new] = row.pop(old)
+    return row
 
 # ============================================================
 # 全局状态
@@ -53,7 +113,9 @@ class State:
         "design_budget": {"route_A_mdm2": 400, "route_A_mdmx": 400,
                           "route_B": 400, "route_C": 200},
         "candidate_count": 0,
-        "iteration_history": []
+        "iteration_history": [],
+        # v5: 七层指标电池阈值（来自 data_layer.DEFAULT_THRESHOLDS，最终由正对照标定）
+        "thresholds": {},
     }
     
     @classmethod
@@ -145,10 +207,15 @@ class EvidenceLogger:
     @classmethod
     def candidate_scored(cls, candidate_id: str, layer: int, scores: dict,
                          tool_trace: dict, passed: bool):
+        has_mdmx_metric = any(
+            key.endswith("_mdmx") or "_mdmx_" in key
+            for key, value in scores.items()
+            if value not in (None, "")
+        )
         cls.log("prediction", "candidate_scored", {
             "candidate_id": candidate_id, "layer": layer,
             "scores": scores, "tool_trace": tool_trace, "passed": passed
-        }, targets=["both" if scores.get("iptm_mdmx") else "MDM2"], phase="evaluate")
+        }, targets=["both" if has_mdmx_metric else "MDM2"], phase="evaluate")
 
     @classmethod
     def candidate_eliminated(cls, candidate_id: str, layer: int,
@@ -234,32 +301,104 @@ class CandidateIndex:
             with open(INDEX_PATH, "w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.writer(f)
                 writer.writerow(INDEX_COLUMNS)
+            return
+
+        with open(INDEX_PATH, "r", encoding="utf-8-sig", newline="") as f:
+            header = next(csv.reader(f), [])
+        if header != INDEX_COLUMNS:
+            cls._migrate_schema(header)
+
+    @classmethod
+    def _migrate_schema(cls, old_header: list[str]):
+        """把旧 CSV 显式迁移到当前 schema，并在同目录保留原始备份。"""
+        with open(INDEX_PATH, "r", encoding="utf-8-sig", newline="") as f:
+            old_rows = list(csv.DictReader(f))
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = INDEX_PATH.with_name(f"{INDEX_PATH.stem}.pre_v5_{stamp}.csv")
+        backup.write_bytes(INDEX_PATH.read_bytes())
+
+        migrated = []
+        for old_row in old_rows:
+            extra_values = old_row.pop(None, None)
+            row = _alias_keys(dict(old_row))
+            if extra_values:
+                note = row.get("notes", "")
+                warning = f"schema migration found {len(extra_values)} unlabelled legacy values"
+                row["notes"] = f"{note}; {warning}".strip("; ")
+            row["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            migrated.append({col: row.get(col, "") for col in INDEX_COLUMNS})
+        cls._write_rows(migrated)
+
+        EvidenceLogger.log("system", "candidate_index_migrated", {
+            "old_columns": old_header,
+            "new_column_count": len(INDEX_COLUMNS),
+            "row_count": len(migrated),
+            "backup_path": str(backup),
+        }, phase="evaluate")
+
+    @classmethod
+    def _write_rows(cls, rows: list[dict]):
+        """同目录临时文件写完后原子替换，避免中断时留下半张 CSV。"""
+        INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = INDEX_PATH.with_name(f".{INDEX_PATH.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with open(temp_path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=INDEX_COLUMNS, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(
+                    {col: row.get(col, "") for col in INDEX_COLUMNS}
+                    for row in rows
+                )
+            os.replace(temp_path, INDEX_PATH)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+    @classmethod
+    def _prepare_row(cls, row: dict) -> dict:
+        row = _alias_keys(dict(row))
+        if not row.get("candidate_id") or not row.get("sequence"):
+            raise ValueError("candidate_id and sequence are required")
+        row.setdefault("source_route", "")
+        row.setdefault("source_batch", "")
+        row.setdefault("length", len(row["sequence"]))
+        row.setdefault("final_status", "pending")
+        row.setdefault("last_updated", datetime.now().strftime("%Y-%m-%d %H:%M"))
+        if isinstance(row.get("cyclization_bonds"), (list, dict)):
+            row["cyclization_bonds"] = json.dumps(
+                row["cyclization_bonds"], ensure_ascii=False, separators=(",", ":")
+            )
+        for pass_col in [
+            "l1_pass", "l2_pass", "l3_pass", "l4_pass", "l5_pass", "l6_pass",
+            "l7_pass", "all_layers_pass", "synth_pass", "pareto_front",
+        ]:
+            row.setdefault(pass_col, "")
+        return {col: row.get(col, "") for col in INDEX_COLUMNS}
 
     @classmethod
     def add(cls, row: dict):
         """添加一条新候选。必须包含 candidate_id 和 sequence。"""
         cls._ensure_exists()
-        row.setdefault("source_route", "")
-        row.setdefault("source_batch", "")
-        row.setdefault("length", len(row.get("sequence", "")))
-        row.setdefault("final_status", "pending")
-        row.setdefault("last_updated", datetime.now().strftime("%Y-%m-%d %H:%M"))
-        row["layer1_pass"] = ""; row["layer2_3_pass"] = ""; row["layer4_pass"] = ""; row["cross_tool_ok"] = ""
-        ordered = {col: row.get(col, "") for col in INDEX_COLUMNS}
+        ordered = cls._prepare_row(row)
+        if cls.find(ordered["candidate_id"]):
+            raise ValueError(f"duplicate candidate_id: {ordered['candidate_id']}")
         with open(INDEX_PATH, "a", newline="", encoding="utf-8-sig") as f:
             csv.DictWriter(f, fieldnames=INDEX_COLUMNS, extrasaction="ignore").writerow(ordered)
 
     @classmethod
     def add_batch(cls, rows: list[dict]):
         cls._ensure_exists()
-        for r in rows:
-            r.setdefault("final_status", "pending")
-            r.setdefault("last_updated", datetime.now().strftime("%Y-%m-%d %H:%M"))
+        prepared = [cls._prepare_row(row) for row in rows]
+        existing_ids = {row["candidate_id"] for row in cls.load()}
+        new_ids = [row["candidate_id"] for row in prepared]
+        duplicates = existing_ids.intersection(new_ids)
+        duplicates.update(cid for cid in new_ids if new_ids.count(cid) > 1)
+        if duplicates:
+            raise ValueError(f"duplicate candidate_id(s): {sorted(duplicates)}")
         with open(INDEX_PATH, "a", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=INDEX_COLUMNS, extrasaction="ignore")
-            for r in rows:
-                ordered = {col: r.get(col, "") for col in INDEX_COLUMNS}
-                writer.writerow(ordered)
+            writer.writerows(prepared)
 
     @classmethod
     def load(cls) -> list[dict]:
@@ -276,34 +415,39 @@ class CandidateIndex:
 
     @classmethod
     def update_score(cls, candidate_id: str, scores: dict):
-        """更新某条候选的评分字段（原地修改CSV行）"""
+        """更新某条候选的评分字段（原地修改CSV行）。
+        scores 中的旧字段名（如 monomer_plddt / layer1_pass）会自动 alias 到新名。
+        """
+        scores = _alias_keys(dict(scores))
         rows = cls.load()
+        found = False
         for r in rows:
             if r["candidate_id"] == candidate_id:
+                found = True
                 for k, v in scores.items():
                     if k in INDEX_COLUMNS:
                         r[k] = str(v) if not isinstance(v, str) else v
                 r["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
                 break
-        with open(INDEX_PATH, "w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.DictWriter(f, fieldnames=INDEX_COLUMNS)
-            writer.writeheader()
-            writer.writerows(rows)
+        if not found:
+            raise KeyError(f"candidate_id not found: {candidate_id}")
+        cls._write_rows(rows)
 
     @classmethod
     def update_status(cls, candidate_id: str, status: str, notes: str = ""):
         rows = cls.load()
+        found = False
         for r in rows:
             if r["candidate_id"] == candidate_id:
+                found = True
                 r["final_status"] = status
                 if notes:
                     r["notes"] = notes
                 r["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
                 break
-        with open(INDEX_PATH, "w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.DictWriter(f, fieldnames=INDEX_COLUMNS)
-            writer.writeheader()
-            writer.writerows(rows)
+        if not found:
+            raise KeyError(f"candidate_id not found: {candidate_id}")
+        cls._write_rows(rows)
 
     @classmethod
     def filter_by_status(cls, status: str) -> list[dict]:
@@ -311,54 +455,297 @@ class CandidateIndex:
 
     @classmethod
     def filter_by_layer(cls, layer_pass: bool, layer: int = 1) -> list[dict]:
-        col = {1: "layer1_pass", 2: "layer2_3_pass", 3: "layer2_3_pass", 4: "layer4_pass"}[layer]
+        col = {1: "l1_pass", 2: "l2_pass", 3: "l3_pass",
+               4: "l4_pass", 5: "l5_pass", 6: "l6_pass", 7: "l7_pass"}[layer]
         return [r for r in cls.load() if r.get(col) == str(layer_pass)]
 
     @classmethod
-    def top_n(self, n: int = 10, by: str = "dual_score") -> list[dict]:
-        rows = [r for r in self.load() if r.get(by)]
+    def top_n(cls, n: int = 10, by: str = "dual_score") -> list[dict]:
+        rows = [r for r in cls.load() if r.get(by)]
         rows.sort(key=lambda r: float(r.get(by, 0)), reverse=True)
         return rows[:n]
 
     @classmethod
     def stats(cls) -> dict:
-        """快速统计：总数、各层通过率、双靶中位数"""
+        """快速统计：总数、七层各层通过数、ipSAE/dG 中位数（v5 主指标）"""
         rows = cls.load()
-        scores_m2 = [float(r["iptm_mdm2"]) for r in rows if r.get("iptm_mdm2")]
-        scores_mx = [float(r["iptm_mdmx"]) for r in rows if r.get("iptm_mdmx")]
-        duals   = [float(r["dual_score"]) for r in rows if r.get("dual_score")]
+        ipsae_m2 = [float(r["ipsae_mdm2"]) for r in rows if r.get("ipsae_mdm2")]
+        ipsae_mx = [float(r["ipsae_mdmx"]) for r in rows if r.get("ipsae_mdmx")]
+        dg_m2   = [float(r["dg_mdm2"]) for r in rows if r.get("dg_mdm2")]
+        scrmsds = [float(r["scrmsd"]) for r in rows if r.get("scrmsd")]
+        # ipTM 保留做参考（导师 Trap 1：不做门槛）
+        iptm_m2 = [float(r["iptm_mdm2"]) for r in rows if r.get("iptm_mdm2")]
 
-        def med(lst): 
-            lst = sorted(lst)
-            return lst[len(lst)//2] if lst else 0
+        def med(lst):
+            return statistics.median(lst) if lst else 0
 
         return {
             "total_candidates": len(rows),
-            "layer1_pass": sum(1 for r in rows if r.get("layer1_pass") == "True"),
-            "layer2_3_pass": sum(1 for r in rows if r.get("layer2_3_pass") == "True"),
-            "layer4_pass": sum(1 for r in rows if r.get("layer4_pass") == "True"),
+            # 七层通过计数（v5 主判定）
+            "l1_pass": sum(1 for r in rows if r.get("l1_pass") == "True"),
+            "l2_pass": sum(1 for r in rows if r.get("l2_pass") == "True"),
+            "l3_pass": sum(1 for r in rows if r.get("l3_pass") == "True"),
+            "l4_pass": sum(1 for r in rows if r.get("l4_pass") == "True"),
+            "l5_pass": sum(1 for r in rows if r.get("l5_pass") == "True"),
+            "l6_pass": sum(1 for r in rows if r.get("l6_pass") == "True"),
+            "l7_pass": sum(1 for r in rows if r.get("l7_pass") == "True"),
+            "all_layers_pass": sum(1 for r in rows if r.get("all_layers_pass") == "True"),
+            "synth_pass": sum(1 for r in rows if r.get("synth_pass") == "True"),
+            "pareto_front": sum(1 for r in rows if r.get("pareto_front") == "True"),
             "finalized": sum(1 for r in rows if r.get("final_status") == "finalized"),
-            "iptm_mdm2_median": round(med(scores_m2), 3),
-            "iptm_mdmx_median": round(med(scores_mx), 3),
-            "dual_score_median": round(med(duals), 3),
-            "avg_asymmetry": round(sum(float(r.get("asymmetry", 0)) for r in rows if r.get("asymmetry")) / max(len(rows), 1), 3)
+            # 主指标中位数（v5: ipSAE 替代 ipTM）
+            "ipsae_mdm2_median": round(med(ipsae_m2), 3),
+            "ipsae_mdmx_median": round(med(ipsae_mx), 3),
+            "dg_mdm2_median": round(med(dg_m2), 3),
+            "scrmsd_median": round(med(scrmsds), 3),
+            "iptm_mdm2_median": round(med(iptm_m2), 3),  # 参考
         }
 
 
 # ============================================================
 # 工具函数
 # ============================================================
-def file_hash(path: str, n_bytes: int = 4096) -> str:
-    """计算文件MD5（前n_bytes采样，适合大PDB文件）"""
-    h = hashlib.md5()
+def file_hash(path: str) -> str:
+    """流式计算完整文件 SHA-256，返回前 12 位用于索引和证据追溯。"""
+    h = hashlib.sha256()
     with open(path, "rb") as f:
-        h.update(f.read(n_bytes))
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
     return h.hexdigest()[:12]
 
 
 def sanitize_id(s: str) -> str:
     """C0001格式的候选ID"""
     return s if (len(s) == 5 and s.startswith("C")) else f"C{int(s):04d}"
+
+
+# ============================================================
+# v5: 七层指标电池判定器（所有 Agent 共用）
+# ============================================================
+def _cmp(value: float, op: str, threshold: float) -> bool:
+    """安全比较（value 对 op threshold）。值缺失返回 False。"""
+    if value is None or value == "" or threshold is None:
+        return False
+    ops = {">": lambda a, b: a > b,
+           "<": lambda a, b: a < b,
+           ">=": lambda a, b: a >= b,
+           "<=": lambda a, b: a <= b}
+    return ops.get(op, lambda a, b: False)(float(value), float(threshold))
+
+
+def _f(v):
+    """尝试转 float，失败返回 None。"""
+    if v is None or v == "": return None
+    try: return float(v)
+    except (TypeError, ValueError): return None
+
+
+def _truthy(value) -> bool:
+    return str(value).strip().lower() in ("true", "1", "yes")
+
+
+def evaluate_battery(
+    c: dict,
+    thresholds: dict | None = None,
+    required_targets: tuple[str, ...] = ("MDM2", "MDMX"),
+) -> dict:
+    """
+    七层指标电池判定（v5 主判定）。
+
+    导师要求（DeeCamp）：七层全清才算成功，缺一不可。每层阈值须有出处
+    （来自 thresholds 由 Research Agent 文献检索+正对照标定填入）。
+
+    参数:
+      c: 候选 dict（含七层指标字段，旧名自动 alias）
+      thresholds: 来自 state.json["thresholds"]
+      required_targets: 本次判定必须覆盖的靶标。双靶候选使用默认值；
+                        MDM2/MDMX 正对照标定可显式传 ("MDM2",) 或 ("MDMX",)
+
+    返回:
+      {l1_pass..l7_pass: bool, all_layers_pass: bool,
+       failed_layers: list[str],
+       layer_values: dict,  # 每层主值 }
+    """
+    c = _alias_keys(dict(c))  # 旧名兜底
+    th = thresholds or {}
+    targets = tuple(target.upper() for target in required_targets)
+    if not targets or any(target not in ("MDM2", "MDMX") for target in targets):
+        raise ValueError("required_targets must contain MDM2 and/or MDMX")
+
+    def th_has(key): return bool(th.get(key) and th[key].get("value") is not None)
+
+    # L1 环肽质量：pLDDT
+    l1 = _cmp(_f(c.get("plddt")), th.get("L1_plddt", {}).get("operator", ">"),
+              th.get("L1_plddt", {}).get("value", 0.8)) if th_has("L1_plddt") else False
+
+    # L2 界面置信度：每个 required target 都必须有 ipSAE 并通过。
+    t2 = th.get("L2_ipsae", {})
+    l2_by_target = {
+        target: _cmp(
+            _f(c.get(f"ipsae_{target.lower()}")),
+            t2.get("operator", ">"),
+            t2.get("value"),
+        )
+        for target in targets
+    }
+    l2 = th_has("L2_ipsae") and all(l2_by_target.values())
+
+    # L3 界面物理：两个靶标分别通过同一套 dG、SC、dSASA 定义。
+    l3_by_target = {}
+    for target in targets:
+        suffix = target.lower()
+        l3_by_target[target] = all([
+            _cmp(_f(c.get(f"dg_{suffix}")), th.get("L3_dg", {}).get("operator", "<"),
+                 th.get("L3_dg", {}).get("value")),
+            _cmp(_f(c.get(f"sc_{suffix}")), th.get("L3_sc", {}).get("operator", ">"),
+                 th.get("L3_sc", {}).get("value")),
+            _cmp(_f(c.get(f"dsasa_{suffix}")), th.get("L3_dsasa", {}).get("operator", ">"),
+                 th.get("L3_dsasa", {}).get("value")),
+        ])
+    required_dg_method = th.get("L3_dg", {}).get("method")
+    method_ok = (
+        not required_dg_method
+        or str(c.get("dg_method", "")).strip().casefold()
+        == str(required_dg_method).strip().casefold()
+    )
+    l3 = (
+        all(th_has(key) for key in ("L3_dg", "L3_sc", "L3_dsasa"))
+        and method_ok
+        and all(l3_by_target.values())
+    )
+
+    # L4 环化几何 QC：使用可审计的 N-C 数值，布尔字段只保留作显示。
+    pre = c.get("ring_closure_pre", "")
+    post = c.get("ring_closure_post", "")
+    nc_pre = _f(c.get("nc_distance_pre"))
+    nc_post = _f(c.get("nc_distance_post"))
+    t4 = th.get("L4_nc_term_dist", {})
+    l4 = (
+        th_has("L4_nc_term_dist")
+        and _cmp(nc_pre, t4.get("operator", "<"), t4.get("value"))
+        and _cmp(nc_post, t4.get("operator", "<"), t4.get("value"))
+    )
+
+    # L5 设计意图：每个 required target 分别验证热点覆盖与位点一致性。
+    t5 = th.get("L5_hotspot_coverage", {})
+    l5_by_target = {}
+    for target in targets:
+        suffix = target.lower()
+        specific_site = c.get(f"site_consistency_{suffix}")
+        if specific_site in (None, "") and len(targets) == 1:
+            specific_site = c.get("site_consistency")
+        l5_by_target[target] = (
+            _cmp(_f(c.get(f"hotspot_cov_{suffix}")), t5.get("operator", ">="), t5.get("value"))
+            and _truthy(specific_site)
+        )
+    l5 = th_has("L5_hotspot_coverage") and all(l5_by_target.values())
+
+    # L6 鲁棒性：每个 required target 分别检查多预测器 pose 和 seed 收敛。
+    t6 = th.get("L6_pose_rmsd", {})
+    min_seed_fraction = t6.get("min_seed_fraction", 0.67)
+    l6_by_target = {}
+    for target in targets:
+        suffix = target.lower()
+        pose = c.get(f"pose_rmsd_{suffix}")
+        seed = c.get(f"seed_convergence_{suffix}")
+        if len(targets) == 1:
+            pose = pose if pose not in (None, "") else c.get("pose_rmsd")
+            seed = seed if seed not in (None, "") else c.get("seed_convergence")
+        l6_by_target[target] = (
+            _cmp(_f(pose), t6.get("operator", "<"), t6.get("value"))
+            and _f(seed) is not None
+            and _f(seed) >= float(min_seed_fraction)
+        )
+    l6 = th_has("L6_pose_rmsd") and all(l6_by_target.values())
+
+    # L7 可设计性：scRMSD
+    t7 = th.get("L7_scrmsd", {})
+    l7 = (
+        _cmp(_f(c.get("scrmsd")), t7.get("operator", "<"), t7.get("value"))
+        if th_has("L7_scrmsd") else False
+    )
+
+    layer_pass = {
+        "l1_pass": bool(l1), "l2_pass": bool(l2),
+        "l3_pass": bool(l3), "l4_pass": bool(l4),
+        "l5_pass": bool(l5), "l6_pass": bool(l6),
+        "l7_pass": bool(l7),
+    }
+    failed = [k for k, v in layer_pass.items() if not v]
+
+    return {
+        **layer_pass,
+        "all_layers_pass": len(failed) == 0,
+        "failed_layers": failed,
+        "required_targets": list(targets),
+        "target_pass": {
+            target: {
+                "l2_pass": l2_by_target[target],
+                "l3_pass": l3_by_target[target] and method_ok,
+                "l5_pass": l5_by_target[target],
+                "l6_pass": l6_by_target[target],
+            }
+            for target in targets
+        },
+        "layer_values": {
+            "L1_plddt": _f(c.get("plddt")),
+            **{
+                f"L2_ipsae_{target.lower()}": _f(c.get(f"ipsae_{target.lower()}"))
+                for target in targets
+            },
+            **{
+                f"L3_dg_{target.lower()}": _f(c.get(f"dg_{target.lower()}"))
+                for target in targets
+            },
+            **{
+                f"L3_sc_{target.lower()}": _f(c.get(f"sc_{target.lower()}"))
+                for target in targets
+            },
+            **{
+                f"L3_dsasa_{target.lower()}": _f(c.get(f"dsasa_{target.lower()}"))
+                for target in targets
+            },
+            "L4_nc_distance_pre": nc_pre,
+            "L4_nc_distance_post": nc_post,
+            **{
+                f"L5_hotspot_cov_{target.lower()}": _f(c.get(f"hotspot_cov_{target.lower()}"))
+                for target in targets
+            },
+            **{
+                f"L6_pose_rmsd_{target.lower()}": _f(
+                    c.get(f"pose_rmsd_{target.lower()}")
+                    if c.get(f"pose_rmsd_{target.lower()}") not in (None, "")
+                    else c.get("pose_rmsd") if len(targets) == 1 else None
+                )
+                for target in targets
+            },
+            "L7_scrmsd": _f(c.get("scrmsd")),
+        },
+    }
+
+
+def compute_pareto_front(
+    candidates: list[dict],
+    objectives: tuple[str, ...] = ("ipsae_mdm2", "ipsae_mdmx"),
+) -> list[str]:
+    """返回双靶目标下非支配候选 ID；所有 objectives 均按越大越好处理。"""
+    valid = []
+    for candidate in candidates:
+        values = tuple(_f(candidate.get(key)) for key in objectives)
+        if candidate.get("candidate_id") and all(value is not None for value in values):
+            valid.append((candidate["candidate_id"], values))
+
+    front = []
+    for candidate_id, values in valid:
+        dominated = any(
+            all(other >= current for other, current in zip(other_values, values))
+            and any(other > current for other, current in zip(other_values, values))
+            for other_id, other_values in valid
+            if other_id != candidate_id
+        )
+        if not dominated:
+            front.append(candidate_id)
+    return front
 
 
 if __name__ == "__main__":

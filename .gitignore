@@ -32,3 +32,45 @@ env/
 *.tmp
 *.log
 *.pkl
+
+# SSH 凭据（含明文密码，禁止入库）
+_ssh_exec.py
+*_ssh_exec.py
+**/ssh_*creds*
+
+# WorkBuddy 工作区数据（本地记忆/缓存，不进仓库）
+.workbuddy/
+
+# 临时调试脚本（开发过程产出，非交付物）
+check*.py
+check*.sh
+debug*.py
+debug*.sh
+test_*.sh
+test_biotite*.sh
+test_cif*.py
+test_efetch*.py
+test_enrich*.py
+test_graphql*.py
+test_llm*.sh
+test_llm*.py
+test_mmcif*.py
+test_pmc*.py
+test_pmc*.sh
+test_raw*.sh
+test_simple*.sh
+test_full*.sh
+test_one*.sh
+test_new*.sh
+test_server.py
+profile*.py
+quick_*.py
+quick_*.sh
+chk.py
+final_*.sh
+llm_*.sh
+show_*.sh
+search_pmc*.py
+run_*.sh
+data_layer_v5_backup.py
+test_chain_fix.py
