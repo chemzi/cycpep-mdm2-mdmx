@@ -35,6 +35,7 @@ EVIDENCE_DIR = Path(os.environ.get("CYCPEP_EVIDENCE_DIR", ROOT / "evidence"))
 STATE_PATH = DATA_DIR / "state.json"
 LOG_PATH   = EVIDENCE_DIR / "evidence_log.jsonl"
 INDEX_PATH = DATA_DIR / "candidate_index.csv"
+THRESHOLDS_CACHE = DATA_DIR / "_thresholds_cache.json"
 
 # v5: 七层指标电池主列。旧列名保留做 alias（见 _ALIAS_MAP），不破坏已有代码。
 INDEX_COLUMNS = [
@@ -97,6 +98,81 @@ def _alias_keys(row: dict) -> dict:
             row[new] = row.pop(old)
     return row
 
+
+_THRESHOLD_KEY_ALIASES = {
+    "L4_ring_closure": "L4_nc_term_dist",
+    "L6_pose_convergence": "L6_pose_rmsd",
+}
+
+_CONFIDENCE_TO_GRADE = {
+    "high": "paper_explicit",
+    "medium": "field_consensus",
+    "low": "estimate",
+}
+
+
+def _threshold_rank(entry: dict) -> int:
+    if not isinstance(entry, dict):
+        return 0
+    grade = str(
+        entry.get("evidence_grade")
+        or entry.get("grade")
+        or _CONFIDENCE_TO_GRADE.get(str(entry.get("confidence", "")).lower(), "")
+    ).lower()
+    if "paper" in grade:
+        return 3
+    if "field" in grade or "consensus" in grade or "design" in grade:
+        return 2
+    if "team" in grade or "provisional" in grade:
+        return 1
+    if "estimate" in grade or "经验" in grade:
+        return 0
+
+    source = str(entry.get("source", ""))
+    pmids = entry.get("pmids") or entry.get("pmid") or entry.get("source_pmid")
+    if "PMID" in source or "pmid" in source or pmids:
+        return 3
+    if source and "经验" not in source:
+        return 2
+    return 0
+
+
+def _normalize_thresholds(raw: dict) -> dict:
+    """
+    Normalize threshold aliases emitted by research scripts into keys read by
+    evaluate_battery. When duplicate aliases exist, keep the stronger evidence.
+    """
+    if not isinstance(raw, dict) or not raw:
+        return {}
+
+    normalized = {k: v for k, v in raw.items()}
+    conflicts = {}
+    for old_key, new_key in _THRESHOLD_KEY_ALIASES.items():
+        if old_key not in normalized:
+            continue
+
+        old_entry = normalized.pop(old_key)
+        new_entry = normalized.get(new_key)
+        merged = old_entry
+        if new_entry is not None:
+            old_rank = _threshold_rank(old_entry)
+            new_rank = _threshold_rank(new_entry)
+            merged = old_entry if old_rank > new_rank else new_entry
+            conflicts[old_key] = {
+                "discarded_for": new_key,
+                "kept_rank": _threshold_rank(merged),
+                "discarded_rank": _threshold_rank(new_entry if merged is old_entry else old_entry),
+            }
+
+        if isinstance(merged, dict):
+            inferred_grade = _CONFIDENCE_TO_GRADE.get(str(merged.get("confidence", "")).lower(), "")
+            merged.setdefault("evidence_grade", merged.get("evidence_grade") or merged.get("grade") or inferred_grade)
+        normalized[new_key] = merged
+
+    if conflicts:
+        normalized["_conflict_log"] = conflicts
+    return normalized
+
 # ============================================================
 # 全局状态
 # ============================================================
@@ -142,6 +218,39 @@ class State:
         s = cls.load()
         s.setdefault("iteration_history", []).append(entry)
         cls.save(s)
+
+    @classmethod
+    def sync_thresholds_from_cache(cls) -> dict:
+        """
+        Read _thresholds_cache.json, normalize threshold aliases, and merge into
+        state["thresholds"]. Stronger evidence replaces weaker same-key entries.
+        """
+        if not THRESHOLDS_CACHE.exists():
+            return cls.load().get("thresholds", {})
+        try:
+            raw_cache = json.loads(THRESHOLDS_CACHE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return cls.load().get("thresholds", {})
+
+        normalized = _normalize_thresholds(raw_cache)
+        state = cls.load()
+        existing = state.get("thresholds", {})
+        merged = dict(existing)
+        for key, value in normalized.items():
+            if key.startswith("_"):
+                merged[key] = value
+                continue
+            if key not in existing or _threshold_rank(value) > _threshold_rank(existing.get(key, {})):
+                merged[key] = value
+
+        state["thresholds"] = merged
+        cls.save(state)
+        EvidenceLogger.log("system", "thresholds_synced_from_cache", {
+            "cache_keys": list(normalized.keys()),
+            "conflicts": normalized.get("_conflict_log", {}),
+            "n_thresholds": len(merged),
+        }, phase="research")
+        return merged
 
 
 # ============================================================

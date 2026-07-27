@@ -29,11 +29,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 PUBMED_SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 PUBMED_SUMMARY_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
 PUBMED_FETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+PMC_CONVERT_URL = "https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/"
 
 # ===== 每层指标的检索配置 =====
 LAYER_QUERIES = {
     "L1_plddt": {
         "desc": "环肽/蛋白单体 pLDDT 置信度阈值",
+        "seed_pmids": ["40542165"],
         "queries": [
             "RFpeptides",
             "macrocycle de novo design",
@@ -92,6 +94,7 @@ LAYER_QUERIES = {
     },
     "L7_scrmsd": {
         "desc": "序列 refold 自洽 scRMSD 阈值",
+        "seed_pmids": ["40542165"],
         "queries": [
             "ProteinMPNN",
             "de novo protein design self-consistency",
@@ -100,9 +103,36 @@ LAYER_QUERIES = {
     },
 }
 
+CURATED_THRESHOLD_EVIDENCE = {
+    "L1_plddt": {
+        "found": True,
+        "value": 0.8,
+        "operator": ">",
+        "unit": None,
+        "metric_name": "pLDDT",
+        "evidence_grade": "paper_explicit",
+        "source_pmid": "40542165",
+        "evidence_quote": "refold with pLDDT > 0.8 and within 2.0 Å backbone r.m.s.d.",
+        "context": "RFpeptides self-consistency criterion",
+        "confidence": "high",
+    },
+    "L7_scrmsd": {
+        "found": True,
+        "value": 2.0,
+        "operator": "<",
+        "unit": "A",
+        "metric_name": "backbone r.m.s.d.",
+        "evidence_grade": "paper_explicit",
+        "source_pmid": "40542165",
+        "evidence_quote": "refold with pLDDT > 0.8 and within 2.0 Å backbone r.m.s.d.",
+        "context": "RFpeptides self-consistency criterion",
+        "confidence": "high",
+    },
+}
+
 EXTRACTION_PROMPT_TMPL = """你是计算结构生物学专家，专门做环肽/蛋白设计指标评估。
 
-需要审核的指标是"{metric_desc}"。请只根据下方按 PMID 分隔的论文题目和摘要，判断论文是否明确写出了可作为筛选标准的数值。不要使用领域常识补数值，不要把其他指标的数字移植过来。
+需要审核的指标是"{metric_desc}"。请只根据下方按 PMID 分隔的论文题目和论文文本，判断论文是否明确写出了可作为筛选标准的数值。不要使用领域常识补数值，不要把其他指标的数字移植过来。
 
 提取字段：
 - value: 阈值数值
@@ -111,11 +141,11 @@ EXTRACTION_PROMPT_TMPL = """你是计算结构生物学专家，专门做环肽/
 - metric_name: 指标名称
 - evidence_grade: 有明确数字时只能写 "paper_explicit"
 - source_pmid: 数字直接来自哪一篇论文
-- evidence_quote: 包含指标名和数值的摘要原文短句，必须逐字来自该 PMID 的摘要
+- evidence_quote: 包含指标名和数值的原文短句，必须逐字来自该 PMID 的论文文本
 - context: 该数值在论文中的用途，例如训练过滤、最终筛选或结果描述
 - confidence: high/medium/low
 
-摘要没有明确数字，或数字仅描述某个实验结果而不是筛选标准时，返回 {{"found": false}}。
+论文文本没有明确数字，或数字仅描述某个实验结果而不是筛选标准时，返回 {{"found": false}}。
 
 严格 JSON 输出，不要 markdown，不要解释。
 
@@ -198,6 +228,94 @@ def fetch_full_abstract(pmids: list[str]) -> dict[str, str]:
     return texts
 
 
+def fetch_pmc_ids(pmids: list[str], retries: int = 3) -> dict[str, str]:
+    """PMID -> PMCID mapping via NCBI idconv."""
+    pmc_map = {}
+    for i in range(0, len(pmids), 20):
+        batch = pmids[i:i + 20]
+        for attempt in range(retries):
+            _throttle()
+            try:
+                url = f"{PMC_CONVERT_URL}?ids={','.join(batch)}&format=json"
+                with urllib.request.urlopen(url, timeout=20) as resp:
+                    data = json.loads(resp.read().decode())
+                for rec in data.get("records", []):
+                    pmid = rec.get("pmid")
+                    pmcid = rec.get("pmcid")
+                    if pmid and pmcid:
+                        pmc_map[pmid] = pmcid
+                break
+            except Exception as e:
+                if attempt < retries - 1:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                print(f"[thresh] PMC 转换失败 (batch {i}): {e}", file=sys.stderr)
+    return pmc_map
+
+
+def fetch_pmc_fulltext(pmc_ids: list[str], retries: int = 3) -> dict[str, str]:
+    """Fetch PMC full text and return PMID -> body text."""
+    texts = {}
+
+    def collect_text(nodes) -> list[str]:
+        sections = []
+        for node in nodes:
+            text = " ".join("".join(node.itertext()).split())
+            if text:
+                sections.append(text)
+        return sections
+
+    for i in range(0, len(pmc_ids), 5):
+        batch = pmc_ids[i:i + 5]
+        for attempt in range(retries):
+            _throttle()
+            try:
+                params = urllib.parse.urlencode({
+                    "db": "pmc",
+                    "id": ",".join(batch),
+                    "rettype": "xml",
+                })
+                with urllib.request.urlopen(f"{PUBMED_FETCH_URL}?{params}", timeout=60) as resp:
+                    root = ET.fromstring(resp.read().decode("utf-8", errors="replace"))
+                for article in root.findall(".//{*}article"):
+                    pmid_elem = article.find(".//{*}article-id[@pub-id-type='pmid']")
+                    if pmid_elem is None or not pmid_elem.text:
+                        continue
+                    paragraphs = []
+                    paragraphs.extend(collect_text(article.findall(".//{*}abstract//{*}p")))
+                    paragraphs.extend(collect_text(article.findall(".//{*}body//{*}p")))
+                    paragraphs.extend(collect_text(article.findall(".//{*}fig//{*}caption")))
+                    paragraphs.extend(collect_text(article.findall(".//{*}table-wrap//{*}caption")))
+                    full_text = " ".join(paragraphs)
+                    if full_text:
+                        texts[pmid_elem.text] = full_text[:20000]
+                break
+            except Exception as e:
+                if attempt < retries - 1:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                print(f"[thresh] PMC 全文失败 (batch {i}): {e}", file=sys.stderr)
+    return texts
+
+
+def fetch_paper_texts(pmids: list[str]) -> tuple[dict[str, str], dict[str, str]]:
+    """Return PMID -> text and PMID -> source_type, preferring PMC full text."""
+    abstracts = fetch_full_abstract(pmids)
+    pmc_map = fetch_pmc_ids(pmids)
+    pmc_texts = fetch_pmc_fulltext(list(pmc_map.values())) if pmc_map else {}
+
+    texts = {}
+    source_types = {}
+    for pmid in pmids:
+        if pmc_texts.get(pmid):
+            texts[pmid] = pmc_texts[pmid]
+            source_types[pmid] = "pmc_fulltext"
+        elif abstracts.get(pmid):
+            texts[pmid] = abstracts[pmid]
+            source_types[pmid] = "pubmed_abstract"
+    return texts, source_types
+
+
 # ===== LLM =====
 def call_openai(system_prompt: str, user_content: str, model: str) -> str:
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -244,13 +362,51 @@ def _normalize_evidence(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip().casefold()
 
 
+def curated_threshold_result(
+    layer_key: str,
+    desc: str,
+    pmids: list[str],
+    titles: list[str],
+    text_map: dict[str, str],
+    source_type_map: dict[str, str],
+    text_stats: dict,
+) -> dict | None:
+    curated = CURATED_THRESHOLD_EVIDENCE.get(layer_key)
+    if not curated:
+        return None
+
+    source_pmid = str(curated.get("source_pmid", ""))
+    evidence_quote = str(curated.get("evidence_quote", ""))
+    source_text = text_map.get(source_pmid, "")
+    quote_verified = (
+        source_pmid in pmids
+        and len(_normalize_evidence(evidence_quote)) >= 20
+        and _normalize_evidence(evidence_quote) in _normalize_evidence(source_text)
+    )
+    if not quote_verified:
+        return None
+
+    return {
+        **curated,
+        "layer": layer_key,
+        "desc": desc,
+        "pmids_checked": pmids,
+        "source_papers": titles,
+        "source_type": source_type_map.get(source_pmid),
+        **text_stats,
+        "quote_verified": True,
+        "auto_usable": True,
+        "curated_seed": True,
+    }
+
+
 # ===== 单层处理 =====
 def research_one_layer(layer_key: str, cfg: dict, model: str) -> dict:
-    """对一层指标：检索 -> 取摘要 -> LLM 抽取阈值。"""
+    """对一层指标：检索 -> 取正文/摘要 -> LLM 抽取阈值。"""
     desc = cfg["desc"]
 
     # 多 query 合并 pmids（串行 + 全局限速，避免 429）
-    pmids = []
+    pmids = list(cfg.get("seed_pmids", []))
     for q in cfg["queries"]:
         pmids.extend(search_pubmed(q, max_results=4))
     # 去重保持顺序
@@ -261,18 +417,27 @@ def research_one_layer(layer_key: str, cfg: dict, model: str) -> dict:
         return {"layer": layer_key, "found": False, "reason": "no_papers", "desc": desc}
 
     meta = fetch_abstracts(pmids)
-    abs_map = fetch_full_abstract(pmids)
+    text_map, source_type_map = fetch_paper_texts(pmids)
 
-    # 每篇摘要与 PMID 成对传给模型，避免合并文本后来源归属不清。
+    # 每篇文本与 PMID 成对传给模型，避免合并文本后来源归属不清。
     titles = []
     records = []
     for p in pmids:
         t = meta.get(p, {}).get("title", "")
         if t:
             titles.append(f"PMID {p}: {t}")
-        abstract = abs_map.get(p, "")
-        if abstract:
-            records.append(f"PMID: {p}\nTITLE: {t}\nABSTRACT: {abstract[:5000]}")
+        text = text_map.get(p, "")
+        if text:
+            source_type = source_type_map.get(p, "pubmed_abstract")
+            records.append(
+                f"PMID: {p}\nTITLE: {t}\nSOURCE_TYPE: {source_type}\nTEXT: {text[:12000]}"
+            )
+    text_stats = {
+        "papers_with_text": len(records),
+        "papers_with_pmc_fulltext": sum(
+            1 for p in pmids if source_type_map.get(p) == "pmc_fulltext"
+        ),
+    }
 
     if not records:
         return {
@@ -280,8 +445,15 @@ def research_one_layer(layer_key: str, cfg: dict, model: str) -> dict:
             "found": False,
             "desc": desc,
             "pmids_checked": pmids,
-            "reason": "no_abstract_text",
+            **text_stats,
+            "reason": "no_paper_text",
         }
+
+    curated_result = curated_threshold_result(
+        layer_key, desc, pmids, titles, text_map, source_type_map, text_stats
+    )
+    if curated_result:
+        return curated_result
 
     if not os.environ.get("OPENAI_API_KEY"):
         return {
@@ -289,7 +461,7 @@ def research_one_layer(layer_key: str, cfg: dict, model: str) -> dict:
             "found": False,
             "desc": desc,
             "pmids_checked": pmids,
-            "papers_with_abstract": len(records),
+            **text_stats,
             "reason": "llm_unavailable_no_api_key",
         }
 
@@ -310,15 +482,15 @@ def research_one_layer(layer_key: str, cfg: dict, model: str) -> dict:
     if not result or not result.get("found"):
         return {
             "layer": layer_key, "found": False, "desc": desc,
-            "pmids_checked": pmids, "reason": "llm_no_threshold",
+            "pmids_checked": pmids, **text_stats, "reason": "llm_no_threshold",
         }
 
     source_pmid = str(result.get("source_pmid", ""))
     evidence_quote = str(result.get("evidence_quote", ""))
-    source_abstract = abs_map.get(source_pmid, "")
+    source_text = text_map.get(source_pmid, "")
     quote_verified = (
         len(_normalize_evidence(evidence_quote)) >= 20
-        and _normalize_evidence(evidence_quote) in _normalize_evidence(source_abstract)
+        and _normalize_evidence(evidence_quote) in _normalize_evidence(source_text)
     )
     evidence_grade = result.get("evidence_grade")
     auto_usable = (
@@ -334,6 +506,8 @@ def research_one_layer(layer_key: str, cfg: dict, model: str) -> dict:
         "desc": desc,
         "pmids_checked": pmids,
         "source_papers": titles,
+        "source_type": source_type_map.get(source_pmid),
+        **text_stats,
         "quote_verified": quote_verified,
         "auto_usable": auto_usable,
     }
@@ -395,7 +569,7 @@ def main() -> int:
             "llm_model": model,
             "llm_available": llm_available,
             "run_status": "complete" if llm_available else "degraded_no_llm",
-            "note": "只有 PMID 与摘要原句校验通过的 paper_explicit 数值可自动覆盖默认值；其余等待正对照标定。",
+            "note": "只有 PMID 与论文文本原句校验通过的 paper_explicit 数值可自动覆盖默认值；其余等待正对照标定。",
         },
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))

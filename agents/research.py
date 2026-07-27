@@ -14,7 +14,7 @@ SCRIPTS_DIR = ROOT / "scripts"
 DATA_DIR = ROOT / "data"
 CACHE_PATH = DATA_DIR / "_research_cache.json"
 
-from data_layer import State, EvidenceLogger
+from data_layer import State, EvidenceLogger, _normalize_thresholds
 
 # ===== 预置常量（biotite 失败时兜底）=====
 TARGETS = {
@@ -382,6 +382,7 @@ def _run_pipeline():
                     "quote_verified": True,
                     "calibration_status": "pending",
                 }
+        thresholds = _normalize_thresholds(thresholds)
         THRESHOLDS_CACHE.write_text(json.dumps(thresholds, ensure_ascii=False, indent=2), encoding="utf-8")
         EvidenceLogger.log("research", "tool_call", {
             "tool_name": "threshold_research", "output_hash": th, "exit_code": tc,

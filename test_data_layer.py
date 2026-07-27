@@ -17,7 +17,7 @@ os.chdir(str(ROOT))
 import data_layer
 from data_layer import (
     State, EvidenceLogger, CandidateIndex, file_hash, sanitize_id,
-    evaluate_battery, compute_pareto_front, INDEX_COLUMNS,
+    evaluate_battery, compute_pareto_front, INDEX_COLUMNS, _normalize_thresholds,
 )
 
 passed = 0
@@ -372,6 +372,34 @@ legacy_only = dict(old_name_cand)
 legacy_only.pop("scrmsd")
 r5b = evaluate_battery(legacy_only, test_thresholds, required_targets=("MDM2",))
 check("只有旧 self_rmsd 时 L7 不通过", r5b["l7_pass"] is False)
+
+# ============================================================
+section("11f. thresholds key 归一化与文献 lineage 回归")
+# ============================================================
+raw_with_dup = {
+    "L4_ring_closure": {"value": 2.0, "operator": "<", "source": "PMID 35274526",
+                        "confidence": "high", "pmids": ["35274526"]},
+    "L4_nc_term_dist": {"value": 1.33, "operator": "<", "source": "经验值",
+                        "confidence": "medium"},
+    "L6_pose_convergence": {"value": 2.0, "operator": "<", "source": "PMID 35609983",
+                            "confidence": "high", "pmids": ["35609983"]},
+    "L6_pose_rmsd": {"value": 2.0, "operator": "<", "source": "经验值",
+                     "confidence": "medium"},
+}
+norm = _normalize_thresholds(raw_with_dup)
+check("归一化后 L4 旧 key 被消除", "L4_ring_closure" not in norm)
+check("归一化后 L6 旧 key 被消除", "L6_pose_convergence" not in norm)
+check("L4 文献 PMID 35274526 胜过经验值", "35274526" in norm["L4_nc_term_dist"]["source"])
+check("L6 文献 PMID 35609983 胜过 confidence=medium 经验值", "35609983" in norm["L6_pose_rmsd"]["source"])
+check("confidence=high 被映射为 paper_explicit", norm["L6_pose_rmsd"]["evidence_grade"] == "paper_explicit")
+check("冲突日志记录两个旧 key", set(norm["_conflict_log"]) == {"L4_ring_closure", "L6_pose_convergence"})
+
+data_layer.THRESHOLDS_CACHE.write_text(json.dumps(raw_with_dup, ensure_ascii=False, indent=2), encoding="utf-8")
+State.save(dict(State._default, thresholds={}))
+merged_thresholds = State.sync_thresholds_from_cache()
+check("sync cache 后 state 使用 L6 正确 key", "L6_pose_rmsd" in merged_thresholds)
+check("sync cache 后 L6 文献来源保留", "35609983" in merged_thresholds["L6_pose_rmsd"]["source"])
+check("sync cache 后 state 不含 L6 旧 key", "L6_pose_convergence" not in State.load()["thresholds"])
 
 # ============================================================
 section("12. 实际场景模拟 — 完整 Agent 工作流")
