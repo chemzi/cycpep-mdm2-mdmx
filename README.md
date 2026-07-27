@@ -7,7 +7,51 @@ MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当�
 ```bash
 git clone https://github.com/chemzi/cycpep-mdm2-mdmx.git
 cd cycpep-mdm2-mdmx
+pip install -r requirements.txt
 ```
+
+## 环境安装
+
+当前仓库中已提交的 Python 代码，基础依赖通过下面这条即可安装：
+
+```bash
+pip install -r requirements.txt
+```
+
+这会安装当前 `Research` 脚本和回归测试实际会用到的基础包：
+
+- `numpy`
+- `biotite`
+
+如果不安装 `biotite`，`Research` 的结构分析脚本和 `test_reliability_regressions.py` 会在导入或运行时失败。
+
+### 可选 / 路线相关依赖
+
+下面这些依赖与特定设计路线或后续规划有关，不包含在当前的最小 `requirements.txt` 中：
+
+- `torch`：Route B 接入 ProteinMPNN adapter 时需要
+- `colabdesign`：Route A 的 ColabDesign 原型需要
+- `proteinmpnn`：Route B 当前代码期望的适配模块
+
+### 计划中的外部工具
+
+根据 v5 方案，下面这些属于外部工具栈或独立部署组件，不建议直接当作普通 pip 依赖处理：
+
+- RFpeptides / RFdiffusion
+- LigandMPNN
+- AfCycDesign / ColabFold
+- HADDOCK
+- Rosetta FastRelax / InterfaceAnalyzer
+- PRODIGY
+- RDKit
+
+当前仓库状态下：
+
+- `Research` 已有可运行实现
+- `Design` 已有三条路线的代码骨架和候选登记逻辑
+- `Prediction` / `Planner` / `Critic` 仍在待实现阶段
+
+所以如果只是复现当前已提交代码、跑数据层测试和 Research/Design 的基础逻辑，先装 `requirements.txt` 就够；如果要跑完整 v5 设计方案，需要再按具体路线补齐上面的外部工具环境。
 
 共享数据入口：
 
@@ -19,6 +63,10 @@ from data_layer import (
 ```
 
 详细用法见 [数据层使用手册](./数据层使用手册.md)。
+
+协作上手资料：
+
+- [赵嘉策上手指南：Planner / Critic / Orchestrator](./docs/赵嘉策上手指南.md)
 
 ## 目录
 
