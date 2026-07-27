@@ -23,6 +23,9 @@
     if result["all_layers_pass"]:
         # 准入下一阶段
         ...
+
+    # 把 _thresholds_cache.json 归一化后合并回 state.json（修复丢失 thresholds）
+    State.sync_thresholds_from_cache()
 """
 import json, csv, hashlib, os, uuid
 from datetime import datetime, timezone
@@ -30,9 +33,12 @@ from pathlib import Path
 from typing import Optional
 
 ROOT = Path(__file__).resolve().parent
-STATE_PATH = ROOT / "data" / "state.json"
-LOG_PATH   = ROOT / "evidence" / "evidence_log.jsonl"
-INDEX_PATH = ROOT / "data" / "candidate_index.csv"
+DATA_DIR = Path(os.environ.get("CYCPEP_DATA_DIR", ROOT / "data"))
+EVIDENCE_DIR = Path(os.environ.get("CYCPEP_EVIDENCE_DIR", ROOT / "evidence"))
+STATE_PATH = DATA_DIR / "state.json"
+LOG_PATH   = EVIDENCE_DIR / "evidence_log.jsonl"
+INDEX_PATH = DATA_DIR / "candidate_index.csv"
+THRESHOLDS_CACHE = DATA_DIR / "_thresholds_cache.json"
 
 # v5: 七层指标电池主列。旧列名保留做 alias（见 _ALIAS_MAP），不破坏已有代码。
 INDEX_COLUMNS = [
@@ -84,6 +90,64 @@ def _alias_keys(row: dict) -> dict:
             row[new] = row.pop(old)
     return row
 
+
+# v5: thresholds key 归一化映射。
+# threshold_research.py 早期版本会同时写两个 key（如 L4_ring_closure 与 L4_nc_term_dist），
+# evaluate_battery 只认后者。归一化策略：「文献值优先」——同义 key 同时存在时，
+# 保留证据等极更高的那条（paper_explicit > field_consensus > estimate）。
+_THRESHOLD_KEY_ALIASES = {
+    "L4_ring_closure":   "L4_nc_term_dist",
+    "L6_pose_convergence": "L6_pose_rmsd",
+}
+
+
+def _normalize_thresholds(raw: dict) -> dict:
+    """
+    把 threshold_research.py 输出的 thresholds 做一次 key 归一化。
+    同义 key 同时存在时，优先保留证据等极更高（paper_explicit > field_consensus > estimate）
+    且 source 中带 PMID 的那条；另一条不丢弃，留到 _conflict 备查。
+    缺失的 grade 字段按字段特征兜底。
+    """
+    if not isinstance(raw, dict) or not raw:
+        return {}
+
+    def conf_rank(entry: dict) -> int:
+        g = str(entry.get("evidence_grade") or entry.get("grade") or "").lower()
+        if "paper" in g:   return 3
+        if "field" in g or "consensus" in g: return 2
+        if "design" in g:  return 2  # design_rule 与 field_consensus 同等
+        if "team"  in g or "provisional" in g: return 1
+        if "estimate" in g or "经验" in g:    return 0
+        # 无 grade 字段时按 source 是否带 PMID / "paper" 推断
+        src = str(entry.get("source", ""))
+        if "PMID" in src or "pmid" in src:
+            return 3
+        if src and "经验" not in src:
+            return 2
+        return 0
+
+    normalized = {k: v for k, v in raw.items()}
+    conflicts = {}
+    for old_key, new_key in _THRESHOLD_KEY_ALIASES.items():
+        if old_key in normalized:
+            old_entry, new_entry = normalized.pop(old_key), normalized.get(new_key)
+            merged = new_entry if new_entry is not None else old_entry
+            if new_entry is not None:
+                # 同义 key 都有 → 保留等级更高的
+                if conf_rank(old_entry) > conf_rank(new_entry):
+                    merged = old_entry
+                conflicts[old_key] = {
+                    "discarded_for": new_key,
+                    "kept_rank": conf_rank(merged),
+                    "discarded_rank": conf_rank(old_entry if merged is new_entry else new_entry),
+                }
+            merged.setdefault("evidence_grade",
+                              merged.get("evidence_grade") or merged.get("grade") or "")
+            normalized[new_key] = merged
+    if conflicts:
+        normalized["_conflict_log"] = conflicts
+    return normalized
+
 # ============================================================
 # 全局状态
 # ============================================================
@@ -129,6 +193,46 @@ class State:
         s = cls.load()
         s.setdefault("iteration_history", []).append(entry)
         cls.save(s)
+
+    @classmethod
+    def sync_thresholds_from_cache(cls) -> dict:
+        """
+        读取 _thresholds_cache.json，做 key 归一化，合并回 state.json["thresholds"]。
+        已有 thresholds 优先保留（除非新缓存条目的证据等级更高）。
+        列出合并来源变化记一条 evidence_log。
+        返回 merge 后的 thresholds dict。
+        """
+        if not THRESHOLDS_CACHE.exists():
+            return cls.load().get("thresholds", {})
+        try:
+            raw_cache = json.loads(THRESHOLDS_CACHE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return cls.load().get("thresholds", {})
+
+        normalized = _normalize_thresholds(raw_cache)
+        s = cls.load()
+        existing = s.get("thresholds", {})
+        # 已有 threshold 优先保留；同 key 下新条目等级更高时覆盖
+        def _rank(entry):
+            g = str(entry.get("evidence_grade") or entry.get("grade") or "").lower()
+            if "paper" in g:   return 3
+            if "field" in g or "consensus" in g or "design" in g: return 2
+            if "team" in g or "provisional" in g:  return 1
+            return 0
+        merged = dict(existing)
+        for k, v in normalized.items():
+            if k.startswith("_"):
+                merged[k] = v; continue
+            if k not in existing or _rank(v) > _rank(existing.get(k, {})):
+                merged[k] = v
+        s["thresholds"] = merged
+        cls.save(s)
+        EvidenceLogger.log("system", "thresholds_synced_from_cache", {
+            "cache_keys": list(normalized.keys()),
+            "conflicts": normalized.get("_conflict_log", {}),
+            "n_thresholds": len(merged),
+        }, phase="research")
+        return merged
 
 
 # ============================================================

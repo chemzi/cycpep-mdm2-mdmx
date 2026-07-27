@@ -2,21 +2,27 @@
 data_layer.py 完整集成测试
 覆盖所有 Agent 使用场景 + 边界情况
 """
-import json, sys, os, csv
+import json, sys, os, csv, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"
-EVIDENCE_DIR = ROOT / "evidence"
 
-# 清理上次测试残留
-for p in [DATA_DIR / "state.json", EVIDENCE_DIR / "evidence_log.jsonl", DATA_DIR / "candidate_index.csv"]:
-    if p.exists():
-        p.unlink()
+# v5 修复（吸取 PR #4）：测试用独立临时目录，不污染项目 runtime 文件
+TEST_ROOT = Path(tempfile.mkdtemp(prefix="cycpep-data-layer-test-"))
+os.environ["CYCPEP_DATA_DIR"] = str(TEST_ROOT / "data")
+os.environ["CYCPEP_EVIDENCE_DIR"] = str(TEST_ROOT / "evidence")
 
 os.chdir(str(ROOT))
 
-from data_layer import State, EvidenceLogger, CandidateIndex, file_hash, sanitize_id, evaluate_battery, INDEX_COLUMNS
+import data_layer
+DATA_DIR = data_layer.DATA_DIR
+EVIDENCE_DIR = data_layer.EVIDENCE_DIR
+
+from data_layer import (
+    State, EvidenceLogger, CandidateIndex, file_hash, sanitize_id,
+    evaluate_battery, INDEX_COLUMNS, _normalize_thresholds,
+    _THRESHOLD_KEY_ALIASES,
+)
 
 passed = 0
 failed = 0
@@ -353,6 +359,90 @@ r5 = evaluate_battery(old_name_cand, test_thresholds)
 check("旧名 alias 全清 all_layers_pass=True", r5["all_layers_pass"] is True)
 check("旧名 alias layer_values L1_plddt=0.91", r5["layer_values"]["L1_plddt"] == 0.91)
 check("旧名 alias layer_values L7_scrmsd=0.9 (self_rmsd→scrmsd)", r5["layer_values"]["L7_scrmsd"] == 0.9)
+
+# ============================================================
+section("11b. _normalize_thresholds — key 冗余归一化（regression）")
+# ============================================================
+# 今天发现的真实 bug：threshold_research.py 同时写出 L4_ring_closure
+# 和 L4_nc_term_dist 两条同义 key，evaluate_battery 只读 L4_nc_term_dist，
+# 文献值（带 PMID）被静默丢弃，电池用的是经验值那条。
+# 此 regression 锁死归一化逻辑：文献优先 + evaluate_battery 认的 key 胜出。
+raw_with_dup = {
+    "L4_ring_closure":   {"value": 2.0, "operator": "<", "source": "PMID 35274526",
+                           "confidence": "high", "pmids": ["35274526"],
+                           "evidence_grade": "paper_explicit"},
+    "L4_nc_term_dist":   {"value": 2.0, "operator": "<", "source": "经验值",
+                           "confidence": "high", "evidence_grade": "estimate"},
+    "L6_pose_convergence": {"value": 2.0, "operator": "<", "source": "PMID 35609983",
+                            "confidence": "high", "pmids": ["35609983"]},
+    "L6_pose_rmsd":      {"value": 2.0, "operator": "<", "source": "经验值",
+                           "confidence": "medium"},
+    "L1_plddt":          {"value": 0.8, "operator": ">",
+                           "source": "PMID 40542165", "confidence": "high"},
+}
+norm = _normalize_thresholds(raw_with_dup)
+check("归一化后只剩 evaluate_battery 认读的 key", set(norm.keys()) == {"L4_nc_term_dist", "L6_pose_rmsd", "L1_plddt", "_conflict_log"})
+check("L4 文献值保留 (PMID)", "35274526" in norm["L4_nc_term_dist"]["source"])
+check("L6 文献值保留 (PMID)", "35609983" in norm["L6_pose_rmsd"]["source"])
+check("L4 旧 key 被丢弃", "L4_ring_closure" not in norm)
+check("L6 旧 key 被丢弃", "L6_pose_convergence" not in norm)
+check("_conflict_log 记录了冲突处理", "_conflict_log" in norm)
+
+# 11b.b: 只有旧 key、没有新 key 时也归一化过去
+only_old = {
+    "L4_ring_closure": {"value": 1.8, "operator": "<", "source": "PMID 35274526",
+                        "confidence": "high", "pmids": ["35274526"]},
+}
+norm_only = _normalize_thresholds(only_old)
+check("只有旧 key 时也归一化到新 key", "L4_nc_term_dist" in norm_only)
+check("只有旧 key 时新 key 内容来自旧 key", norm_only["L4_nc_term_dist"]["value"] == 1.8)
+
+# 11b.c: 空输入安全降级
+check("_normalize_thresholds({}) 返回 {}", _normalize_thresholds({}) == {})
+check("_normalize_thresholds(None) 返回 {}", _normalize_thresholds(None) == {})
+
+# 11b.d: 无 grade 时按 source 是否带 PMID 推断
+inferred = _normalize_thresholds({
+    "L4_ring_closure": {"value": 1.8, "source": "PMID 35274526", "operator": "<"},
+    "L4_nc_term_dist": {"value": 2.0, "source": "经验值", "operator": "<"},
+})
+check("无 grade 时优先保留含 PMID 的 source",
+      "35274526" in inferred["L4_nc_term_dist"]["source"])
+
+# ============================================================
+section("11c. State.sync_thresholds_from_cache — cache→state 合并（regression）")
+# ============================================================
+# 今天发现的真实 bug：因为 test 开头 rm -f state.json 后没重跑 research
+# 合并 cache 回 state，导致 state.json["thresholds"] = {} 下游 Agent 裸奔。
+# State.sync_thresholds_from_cache 应该从 _thresholds_cache.json 读出来、
+# 归一化后合并回 state.json["thresholds"]。
+import tempfile as _tf
+cache_file = DATA_DIR / "_thresholds_cache.json"
+cache_file.parent.mkdir(parents=True, exist_ok=True)
+cache_payload = {
+    "L4_ring_closure":   {"value": 2.0, "operator": "<", "source": "PMID 35274526",
+                           "confidence": "high", "pmids": ["35274526"]},
+    "L4_nc_term_dist":   {"value": 2.0, "operator": "<", "source": "经验值"},
+    "L1_plddt":          {"value": 0.8, "operator": ">", "confidence": "high"},
+}
+cache_file.write_text(json.dumps(cache_payload), encoding="utf-8")
+
+# 预置空 thresholds 的 state.json
+State.save(dict(State._default, thresholds={}))
+merged = State.sync_thresholds_from_cache()
+s = State.load()
+check("sync 后 state 含 L4_nc_term_dist key", "L4_nc_term_dist" in s["thresholds"])
+check("sync 后 L4 文献值被采纳", "35274526" in s["thresholds"]["L4_nc_term_dist"]["source"])
+check("sync 后 L1_plddt 写入", s["thresholds"]["L1_plddt"]["value"] == 0.8)
+# evidence 应有一条 thresholds_synced_from_cache 事件
+synced_events = EvidenceLogger.filter(event_type="thresholds_synced_from_cache")
+check("sync 写了 thresholds_synced_from_cache 证据事件", len(synced_events) >= 1)
+
+# 11c.b: 缺 cache 时安全降级（不抛）
+cache_file.unlink()
+empty_state = State.save(dict(State._default, thresholds={}))
+r = State.sync_thresholds_from_cache()
+check("缺 cache 时不抛、保留 state 现状", r == {})
 
 # ============================================================
 section("12. 实际场景模拟 — 完整 Agent 工作流")
