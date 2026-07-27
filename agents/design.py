@@ -48,105 +48,6 @@ CYCLIZATION_PAIRS = [("C", "C"), ("", "")]
 LINKER_MATRIX = ["GGGGS", "GGGS", "GGS", "GS", ""]
 SCAFFOLD_MUTABLE_AA = "ACDEFGHIKLMNPQRSTVWY"
 
-# 便宜预筛参数
-CHEAP_FILTER_TOP_K = 4    # refold 前保留序列数
-HYDROPHOBIC = set("AILMFWV")
-POS_CHARGED = set("KR")
-NEG_CHARGED = set("DE")
-
-
-def _cheap_filter_sequences(seqs, seen_seqs=None, top_k=CHEAP_FILTER_TOP_K):
-    """
-    便宜预筛（无 GPU）：合成可行性 + 基本理化性质。
-    返回 top_k 条最优序列，格式 [(seq, score), ...]
-    """
-    if seen_seqs is None:
-        seen_seqs = set()
-    scored = []
-    for seq in seqs:
-        if seq in seen_seqs:
-            continue
-        violations = _synthesizability_violations(seq)
-        if violations:
-            continue  # 硬淘汰
-        score = _sequence_quality_score(seq)
-        scored.append((seq, score))
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return scored[:top_k]
-
-
-def _synthesizability_violations(seq):
-    """
-    检查 Kickoff 定义的可合成性规则。返回违规列表，空列表 = 通过。
-    - 聚集：连续 >4 个疏水氨基酸
-    - 游离 Cys：不在 N/C 端的 Cys
-    - 氧化：Met / Trp（软警告，不硬淘汰）
-    - 脱酰胺：Asn-Gly
-    - Asp-Pro 断裂
-    """
-    v = []
-    # 连续疏水
-    run = 0
-    for aa in seq:
-        if aa in HYDROPHOBIC:
-            run += 1
-        else:
-            run = 0
-        if run > 4:
-            v.append("aggregation")
-            break
-    # 游离 Cys（不在首尾）
-    for i, aa in enumerate(seq):
-        if aa == "C" and i not in (0, len(seq) - 1):
-            v.append("stray_cys")
-            break
-    # Asn-Gly 脱酰胺
-    for i in range(len(seq) - 1):
-        if seq[i:i+2] == "NG":
-            v.append("deamidation_NG")
-            break
-    # Asp-Pro 断裂（环肽中 N→C 也检查）
-    for i in range(len(seq) - 1):
-        if seq[i:i+2] == "DP":
-            v.append("dp_cleavage")
-            break
-    # 首尾连接也要检查（环化后 N-term 和 C-term 相邻）
-    if seq[0] == "G" and seq[-1] == "N":
-        v.append("deamidation_NG_cyclic")
-    if seq[0] == "P" and seq[-1] == "D":
-        v.append("dp_cleavage_cyclic")
-    return v
-
-
-def _sequence_quality_score(seq):
-    """
-    序列质量评分（越高越好），基于：
-    - 疏水/亲水平衡（0.3-0.7 区间最优）
-    - 净电荷适中（-1 到 +1 最优）
-    - 氨基酸多样性
-    """
-    L = len(seq)
-    h = sum(1 for aa in seq if aa in HYDROPHOBIC) / max(L, 1)
-    pos = sum(1 for aa in seq if aa in POS_CHARGED)
-    neg = sum(1 for aa in seq if aa in NEG_CHARGED)
-    net = (pos - neg) / max(L, 1)
-    diversity = len(set(seq)) / max(L, 1)
-
-    # 疏水平衡分：离 0.5 越近越好
-    h_score = 1.0 - abs(h - 0.5) * 2
-    # 电荷分：离 0 越近越好
-    c_score = 1.0 - min(abs(net) * 5, 1.0)
-    # 多样性分：越高越好（但 >0.4 就很好）
-    d_score = min(diversity / 0.5, 1.0)
-
-    total = h_score * 0.4 + c_score * 0.3 + d_score * 0.3
-    # Met/Trp 氧化风险：扣 0.15（软惩罚，不硬淘汰）
-    for aa in seq:
-        if aa in "MW":
-            total -= 0.15
-            break
-    return max(total, 0.0)
-
 
 # ============================================================
 # Route A: RFpeptides 自由生成
@@ -193,11 +94,8 @@ def design_rfpeptides(target_spec=None, design_config=None):
             if not seqs:
                 print(f"[Route A] LigandMPNN 返回 0 条序列: {bb_path.name}")
                 continue
-            # 便宜预筛 → 只 refold top 4
-            filtered = _cheap_filter_sequences(seqs, top_k=4)
-            print(f"[Route A] cheap filter: {len(seqs)}→{len(filtered)} sequences")
 
-            for seq, quality_score in filtered:
+            for seq in seqs[:4]:
                 cid = _next_candidate_id()
                 refold_dir = f"{batch_dir}/candidates/{cid}"
                 os.makedirs(refold_dir, exist_ok=True)
@@ -212,8 +110,7 @@ def design_rfpeptides(target_spec=None, design_config=None):
                         "candidate_id": cid, "sequence": seq, "length": L,
                         "source_route": route_name, "source_batch": batch_id,
                         "monomer_plddt": round(plddt, 3),
-                        "notes": json.dumps({**_manifest_summary(manifest),
-                                             "quality_score": round(quality_score, 3)})
+                        "notes": json.dumps(_manifest_summary(manifest))
                     })
                     EvidenceLogger.log("design", "candidate_registered",
                         {"candidate": {"candidate_id": cid, "sequence": seq}},
@@ -290,11 +187,8 @@ def design_motif_guided(target_spec=None, design_config=None):
             if not seqs:
                 print(f"[Route B] LigandMPNN 返回 0 条序列: {bb_path.name}")
                 continue
-            # 便宜预筛 → 只 refold top 4
-            filtered = _cheap_filter_sequences(seqs, top_k=4)
-            print(f"[Route B] cheap filter: {len(seqs)}→{len(filtered)} sequences")
 
-            for seq, quality_score in filtered:
+            for seq in seqs[:4]:
                 cid = _next_candidate_id()
                 refold_dir = f"{batch_dir}/candidates/{cid}"
                 os.makedirs(refold_dir, exist_ok=True)
@@ -309,8 +203,7 @@ def design_motif_guided(target_spec=None, design_config=None):
                         "candidate_id": cid, "sequence": seq, "length": L,
                         "source_route": route_name, "source_batch": batch_id,
                         "monomer_plddt": round(plddt, 3),
-                        "notes": json.dumps({**_manifest_summary(manifest),
-                                             "quality_score": round(quality_score, 3)})
+                        "notes": json.dumps(_manifest_summary(manifest))
                     })
                     EvidenceLogger.log("design", "candidate_registered",
                         {"candidate": {"candidate_id": cid, "sequence": seq}},
@@ -790,19 +683,11 @@ def _merge_config(target_spec, design_config):
     tn = dc.get("target_name") or ts.get("target_name") or "1YCR"
 
     # 从 Research 数据提取当前靶点的热点残基
-    # Target name 可以是 "MDM2" 或 PDB 编码 "1YCR"——自动做映射
     research_hotspots = ""
     if not dc.get("hotspots") and not ts.get("hotspots"):
-        lookup_tn = tn
         targets_info = research.get("targets", {})
-        if lookup_tn not in targets_info:
-            for t_name, t_info in targets_info.items():
-                pdbs = t_info.get("reference_pdb", []) + t_info.get("verified_peptide_pdb", [])
-                if lookup_tn in pdbs:
-                    lookup_tn = t_name
-                    break
-        if lookup_tn in targets_info:
-            pockets = targets_info[lookup_tn].get("pocket_residues", {})
+        if tn in targets_info:
+            pockets = targets_info[tn].get("pocket_residues", {})
             all_res = []
             for p in ["Phe19_pocket", "Trp23_pocket", "Leu26_pocket"]:
                 all_res.extend(pockets.get(p, []))

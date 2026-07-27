@@ -48,7 +48,7 @@ src = src.replace(
     '# data_layer stubs injected by test_design.py'
 )
 # Prevent CLI execution
-src = src.replace('if __name__ == "__main__":', 'if False and __name__ == "__main__":')
+src = src.replace("if __name__ == '__main__':", "if False and __name__ == '__main__':")
 exec(src)
 
 failures = []
@@ -226,31 +226,6 @@ m2 = _write_manifest('C0002', 'ACDEFGHI', 'route_C_test', 'batch_2', tmp_pdb.nam
 check(m2['cyclization_type'] == 'Cys-Cys_disulfide,linker=GGGGS', f'custom cyclization -> {m2["cyclization_type"]}')
 os.unlink(tmp_pdb.name)
 
-# ── Test 15: cheap filter ──
-print('Test 15: cheap pre-filter')
-# synthesizability
-check(len(_synthesizability_violations('ATDEFGHI')) == 0, 'clean seq passes')
-check(len(_synthesizability_violations('AAAAANGLLL')) > 0, 'NG deamidation caught')
-check(len(_synthesizability_violations('AAAADPLLL')) > 0, 'DP cleavage caught')
-check(len(_synthesizability_violations('IIIIIILLLLLL')) > 0, 'hydrophobic aggregation caught')
-check(len(_synthesizability_violations('CCCACCC')) > 0, 'stray Cys caught')
-check(len(_synthesizability_violations('LTFLEYWAAQSL')) == 0, 'ATSP-7041 (has W) passes')
-# quality score
-s1 = _sequence_quality_score('ATDEFGHI')
-s2 = _sequence_quality_score('IIIIIILLLL')
-check(s1 > s2, f'balanced > hydrophobic: {s1:.2f} vs {s2:.2f}')
-# W penalty
-s_atsp = _sequence_quality_score('LTFLEYWAAQSL')
-s_now  = _sequence_quality_score('LTFLEYAAAQSL')  # W→A, no oxidation penalty
-check(s_now > s_atsp, f'W penalty applied: {s_now:.3f} > {s_atsp:.3f}')
-# top-k filter (all-G passes synthesizability but scores very low)
-filtered = _cheap_filter_sequences(
-    ['LTFLEYWAAQSL', 'TSFAEYWNLLSP', 'GLITPEGFSK', 'ATDEFGHI', 'GGGGGGGGGG'], top_k=4)
-check(len(filtered) == 4, f'top_k=4, got {len(filtered)}')
-check('GGGGGGGGGG' not in [s for s,_ in filtered], 'all-G ranked out of top-4')
-# ATSP passes (W is soft penalty, not hard reject)
-check(any('LTFLE' in s for s,_ in filtered), 'ATSP-7041 passes')
-
 # ── Summary ──
 print()
 if failures:
@@ -259,4 +234,4 @@ if failures:
         print(f'  - {f}')
     sys.exit(1)
 else:
-    print('ALL 15 TESTS PASSED')
+    print('ALL 14 TESTS PASSED')
