@@ -70,13 +70,13 @@ MDM2 是被研究烂了的靶点，靶点本身不加分。我们的差异化在
 ┌─ Phase 2: DESIGN ─────────────────────────────────────┐
 │ Design Agent                                           │
 │ RFpeptides 生成环肽骨架 → LigandMPNN 设计序列           │
-│ 三条路线并行（详见第四部分）                            │
-│ 产出: ~1000 条候选（骨架+序列）                         │
+│ 三条路线策略并行，单 GPU 实际串行排队（详见第四部分）     │
+│ 产出: ~1000 条 proposal，重模型只筛 top 子集             │
 └──────────────────┬─────────────────────────────────────┘
                    ▼
 ┌─ Phase 3: SCORE（七层指标电池）───────────────────────┐
 │ Prediction Agent                                       │
-│ L1→L7 逐级过滤，每层阈值来自正对照标定                   │
+│ cheap screen → quick refold → confirm → L1→L7 逐级过滤  │
 │ 产出: ~10-20 条全清候选                                │
 └──────────────────┬─────────────────────────────────────┘
                    ▼
@@ -221,22 +221,39 @@ Step 5: LLM 抽取 → 已知 binder 清单
 
 ### Phase 2: Design（W2，于嘉乐）
 
-**三条路线并行，生成器统一为 RFpeptides + LigandMPNN：**
+**三条路线策略并行，GPU 执行串行：**
+
+原方案中的“约 1000 条候选”按 proposal pool 理解，不代表 1000 条都要完成 AfCycDesign refold 和完整七层重验证。单 GPU 条件下，RFdiffusion / RFpeptides / AfCycDesign / ColabFold 任务进入同一个 GPU 队列，轮流小批量执行；CPU 侧的去重、manifest 检查、候选登记和日志整理可以并行。
 
 | 路线 | 策略 | 数量 | 具体做法 |
 |------|------|------|---------|
-| A | RFpeptides 自由生成 | ~500 | hotspot 约束到三口袋，长度 10/12/14 扫描 |
-| B | motif 引导生成 | ~300 | contigmap 中固定 FxxWxxxL motif 位置，扩散其余部分；L26 位点 LigandMPNN 采样时偏置小脂肪族（Leu/Val/Ala） |
-| C | 已知 binder 环化改造 | ~200 | ATSP-7041 核心序列保留 F/W/L 锚点，2-4 残基 Gly/Ser linker 替换 staple 位点，AfCycDesign 验证构象保持 |
+| A | RFpeptides 自由生成 | proposal ~500 | hotspot 约束到三口袋，长度 10/12/14 扫描；按 GPU 时间小批量追加 |
+| B | motif 引导生成 | proposal ~300 | contigmap 中固定 FxxWxxxL motif 位置，扩散其余部分；L26 位点 LigandMPNN 采样时偏置小脂肪族（Leu/Val/Ala） |
+| C | 已知 binder 环化改造 | proposal ~200 | ATSP-7041 核心序列保留 F/W/L 锚点，2-4 残基 Gly/Ser linker 替换 staple 位点；先作为便宜 proposal 进入漏斗 |
 
 **每条候选入库**：`CandidateIndex.add_batch()`，记 `design_batch` 日志。
+
+**GPU 队列建议**：
+
+```text
+Route A small batch
+-> Route B small batch
+-> Route C proposal registration
+-> AfCycDesign quick_refold top N
+-> confirm_refold top M
+```
+
+Critic 第二、三轮调整策略时，不重跑全量历史候选；只追加 50-100 条新 proposal，并复用已有分数和 evidence。
 
 ### Phase 3: Score——七层指标电池（W2-W3，王修远）
 
 ```
-~1000 条
-  │ L1: AfCycDesign refold，pLDDT > 0.8           → ~500
-  │ L2: 复合物预测 ipSAE > 标定阈值（主指标）        → ~100
+~1000 条 proposal pool
+  │ cheap screen: 长度/合法氨基酸/去重/manifest/来源检查 → top 200 左右
+  │ quick refold: AfCycDesign 低迭代、单 seed、限时粗筛    → top 50-100
+  │ confirm refold: top 子集用更完整参数重跑              → top 10-30
+  │ L1: pLDDT > 0.8                                      → 通过者进入后续层
+  │ L2: 复合物预测 ipSAE > 标定阈值（主指标）              → ~100
   │     注：ipTM 只记录不卡门槛（小界面会虚高）
   │ L3: PRODIGY dG < 阈值, SC > 0.6, dSASA > 400Å² → ~50
   │ L4: FastRelax 前后环化 QC 双通过               → ~45（淘汰 relax 断环的）
@@ -247,6 +264,8 @@ Step 5: LLM 抽取 → 已知 binder 清单
   ▼
 全清候选（每条 7/7 通过，一张总表）
 ```
+
+`quick_refold` 只用于粗筛，不包装成最终证据；报告正式候选时，需要明确对应 candidate 是否经过 `confirm_refold` 或完整 Prediction evidence。
 
 ### Phase 4: Critic + Iterate（W3，赵嘉策）
 
@@ -349,8 +368,8 @@ Step 5: LLM 抽取 → 已知 binder 清单
 
 | 周 | 里程碑 | 交付物 | 门禁 |
 |----|--------|--------|------|
-| W1 | 调研完成 + 电池标定 | 靶点档案（✅已有）、RFpeptides 环境跑通、正对照七层结果表 | 正对照全过电池；RFpeptides 出第一个骨架 |
-| W2 | 首轮设计 + 粗筛 | ~1000 候选入库，L1-L3 筛完 | 候选池 L1 通过率 30-70%（太高说明阈值松，太低说明生成有问题） |
+| W1 | 调研完成 + 流程跑通 | 靶点档案（✅已有）、RFpeptides 环境冒烟、Prediction 能接候选并写回、至少一批 quick screen evidence | 能展示 Research → Design proposal → Prediction 判定 → Evidence 追溯 |
+| W2 | 首轮设计 + 粗筛 | ~1000 proposal 入库，cheap screen + quick refold top 子集 | AfCycDesign 不全量跑；按 GPU 时间预算截断并记录 |
 | W3 | 精筛 + 迭代 + 双靶扩展 | L4-L7 筛完 ≥10 条全清；Critic ≥1 次有效反馈；MDMX 管线复用 | 全清候选 ≥5；MDMX 不重写代码 |
 | W4 | 收敛 + 交付 | 指标总表、证据链、Pareto 前沿图、汇报 PPT | 现场抽查任意数字可溯源 |
 
@@ -369,6 +388,8 @@ Step 5: LLM 抽取 → 已知 binder 清单
 | 风险 | 概率 | 兜底 |
 |------|------|------|
 | RFpeptides 部署失败/无 GPU | 中 | AutoDL A100；仍失败则降级 AfCycDesign hallucination 生成，但报告明示这是 weaker strategy 并加强 L6/L7 验证 |
+| AfCycDesign refold 太慢 | 高 | 改为 quick/confirm 两档：全量只做便宜筛，top 50-200 做 quick refold，top 10-30 做 confirm |
+| 单 GPU 并行跑 RFdiffusion OOM | 高 | Planner / Orchestrator 维护 GPU 串行队列；三条 Route 只在策略层并行 |
 | ipSAE 计算没现成实现 | 低 | 按 Dunbrack 定义从 PAE 矩阵自写（~50 行），正对照验证 |
 | 正对照过不了电池 | 低 | 说明电池实现错了——这正是 Phase 1 存在的意义，修电池 |
 | 全清候选为 0 | 中 | 放宽策略不是降阈值，而是加迭代轮数 + 调整路线配比；实在为 0 则报告各层漏斗数据（深度 > 勉强凑数） |

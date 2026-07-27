@@ -53,6 +53,29 @@ pip install -r requirements.txt
 
 所以如果只是复现当前已提交代码、跑数据层测试和 Research/Design 的基础逻辑，先装 `requirements.txt` 就够；如果要跑完整 v5 设计方案，需要再按具体路线补齐上面的外部工具环境。
 
+## 当前运行策略
+
+根据 PR #4 后的代码状态和单 GPU 实测，v5 里的“约 1000 条候选”现在按 **proposal pool** 理解，不再表示 1000 条都要跑完整 AfCycDesign refold 和七层重模型验证。
+
+实际采用多层漏斗：
+
+```text
+Route A/B/C 生成 proposal pool
+-> 序列合法性、长度、去重、来源和 manifest 检查
+-> AfCycDesign quick refold 粗筛 top 50-200
+-> confirm refold / 多 seed / 复合物预测验证 top 10-30
+-> 七层指标电池 + Pareto front + Critic 审查
+```
+
+AfCycDesign 分两档使用：
+
+- `quick refold`：低迭代、单 seed、限时运行，只作为粗筛 evidence。
+- `confirm refold`：只对 top candidates 使用更完整参数，作为正式 Prediction evidence。
+
+单 GPU 运行时，RFdiffusion / RFpeptides / AfCycDesign / ColabFold 等 GPU 任务必须进入队列串行执行。三条 Route 可以在策略上并行探索，但实际 GPU 进程不要同时启动多个 RFdiffusion/RFpeptides 任务，否则容易 OOM。CPU 侧的 manifest、去重、日志整理和便宜规则检查可以并行。
+
+每轮 Critic 调整策略后，不重跑全量历史候选；只追加一小批新 proposal，并复用已有的 manifest、分数和 evidence。Week 1 的目标是证明端到端流程跑通，而不是完成 1000 条全量重验证。
+
 共享数据入口：
 
 ```python
