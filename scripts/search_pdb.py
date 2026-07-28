@@ -1,15 +1,17 @@
 """
-Step 1: RCSB Search API v2 — 检索 MDM2/MDMX 人源肽段复合物。
+Step 1: RCSB Search API v2 — 检索项目配置中的靶点肽段复合物。
 
 调用方式:
     python -m scripts.search_pdb > data/search_results.json
 
-策略: 用 structure_title 搜靶点名 + 分辨率/物种过滤 → 下载后 Python 侧筛 UniProt。
-       (RCSB text 服务不支持直接搜 uniprot_ids 字段)
+策略: 直接按 polymer entity 的 UniProt accession 检索，再叠加分辨率、
+      人源和至少两条蛋白聚合物链的限制。靶标名称只作为输出标签。
 """
 
-import json, sys, time, urllib.request, urllib.error
+import argparse, json, sys, time, urllib.request, urllib.error
 from pathlib import Path
+
+from project_config import load_project_config
 
 RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
 
@@ -17,8 +19,8 @@ RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
 def _search_target(target_name: str, uniprot: str) -> list[dict]:
     """搜索某一靶点的结构。
 
-    先按 structure_title 搜靶点名，再按分辨率/物种/多链过滤。
-    返回原始结果，UniProt 筛选在 enrich 阶段做。
+    UniProt 条件用于候选召回，enrich 阶段仍会再次核对每条实体和链，
+    因为一个 PDB 条目可能同时含有多个靶标、融合蛋白或抗体。
     """
     query = {
         "query": {
@@ -27,9 +29,14 @@ def _search_target(target_name: str, uniprot: str) -> list[dict]:
             "nodes": [
                 {
                     "type": "terminal",
-                    "service": "full_text",
+                    "service": "text",
                     "parameters": {
-                        "value": target_name,
+                        "attribute": (
+                            "rcsb_polymer_entity_container_identifiers."
+                            "reference_sequence_identifiers.database_accession"
+                        ),
+                        "operator": "exact_match",
+                        "value": uniprot,
                     },
                 },
                 {
@@ -68,7 +75,10 @@ def _search_target(target_name: str, uniprot: str) -> list[dict]:
             "sort": [{"sort_by": "score", "direction": "desc"}],
         },
     }
-    return _execute(query, target_name)
+    results = _execute(query, target_name)
+    for result in results:
+        result["query_uniprot"] = uniprot
+    return results
 
 
 def _execute(query: dict, label: str) -> list[dict]:
@@ -114,14 +124,29 @@ def _execute(query: dict, label: str) -> list[dict]:
 
 
 def main() -> int:
-    mdm2 = _search_target("MDM2", "Q00987")
-    mdmx = _search_target("MDMX", "O15151")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=None, help="project JSON config")
+    args = parser.parse_args()
+    config = load_project_config(args.config)
+    results_by_target = {}
+    target_metadata = {}
+    for target in config["targets"]:
+        target_id = target["id"]
+        results_by_target[target_id] = _search_target(target_id, target.get("uniprot", ""))
+        target_metadata[target_id] = {
+            "uniprot": target.get("uniprot"),
+            "required": target.get("required", True),
+        }
 
     output = {
-        "MDM2": mdm2,
-        "MDMX": mdmx,
-        "n_mdm2": len(mdm2),
-        "n_mdmx": len(mdmx),
+        "project_id": config["project_id"],
+        "targets": target_metadata,
+        "results_by_target": results_by_target,
+        "counts_by_target": {name: len(rows) for name, rows in results_by_target.items()},
+        "run_status": "complete" if all(results_by_target.values()) else "failed_or_incomplete",
+        **results_by_target,
+        **{f"n_{target['metric_slug']}": len(results_by_target[target["id"]])
+           for target in config["targets"]},
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0

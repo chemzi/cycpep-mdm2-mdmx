@@ -1,0 +1,31 @@
+# Core Python dependencies used by the current checked-in code.
+# Install with:
+#   pip install -r requirements.txt
+#
+# Notes:
+# - This file lists Python packages only.
+# - Several planned tools in the v5 design document are external frameworks
+#   or server-side programs and are therefore documented below as comments
+#   rather than pinned pip requirements.
+
+# Keep the NumPy 1.x ABI until the full scientific stack is rebuilt for 2.x.
+numpy>=1.24,<2
+biotite>=0.41
+
+# Optional Python packages for planned or environment-specific workflows:
+# torch                  # needed by Route B adapter if ProteinMPNN is wired up
+# colabdesign            # needed by Route A ColabDesign prototype
+# proteinmpnn            # adapter/module name expected by Route B code
+
+# Planned external tools from the project plan (not normal pip deps here):
+# - RFpeptides / RFdiffusion
+# - LigandMPNN
+# - AfCycDesign / ColabFold
+# - HADDOCK
+# - Rosetta FastRelax / InterfaceAnalyzer
+# - PRODIGY
+# - RDKit
+#
+# Why RDKit is not included above:
+# - It appears in the v5 plan for Critic / synthesizability checks,
+#   but the current checked-in Python code does not import it yet.

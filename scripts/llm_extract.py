@@ -13,21 +13,22 @@ Step 7: LLM 提取 — 逐篇从 PubMed 摘要中提取双靶分子信息。
 import json, os, sys, argparse, re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-EXTRACTION_PROMPT = """你是一个蛋白质结构生物学专家。从以下一篇 PubMed 论文中提取 MDM2/MDMX 双靶肽类抑制剂的信息。
+EXTRACTION_PROMPT = """你是一个蛋白质结构生物学专家。从以下一篇 PubMed 论文中提取与项目靶点相关的肽类结合分子信息。
 
-如果论文确实描述了一个具体的双靶分子，提取以下字段（不确定的填 null，不要编造）：
+项目靶点：{target_ids}
+
+如果论文确实描述了具体分子，提取以下字段（不确定的填 null，不要编造）：
 - name: 分子名称（论文中使用的名称）
 - type: 类型（linear peptide / stapled peptide / cyclic peptide / d-peptide / other）
 - sequence: 氨基酸序列（单字母，必须从论文中精确复制）
 - length: 序列长度（整数）
-- kd_mdm2: MDM2 亲和力（论文中的原始数值和单位，如 "Ki 0.9 nM"）
-- kd_mdmx: MDMX 亲和力（同上）
+- affinity_by_target: 按项目靶点 ID 记录论文原始亲和力字符串；未报道填 null
 - key_residues: 关键残基列表 [{"position": "Phe19", "residue": "Phe", "role": "anchor"}]
 - pmid: 从输入中精确复制 PMID
 - pdb_ids: 相关的 PDB ID 列表（如有）
 - design_insight: 一句话设计启发
 
-如果论文不涉及具体的双靶分子（如综述、方法学文章），返回 {"is_relevant": false}。
+如果论文不涉及项目靶点的具体分子（如综述、方法学文章），返回 {"is_relevant": false}。
 
 严格以 JSON 输出，不要 markdown 代码块，不要额外解释。
 
@@ -38,8 +39,7 @@ EXTRACTION_PROMPT = """你是一个蛋白质结构生物学专家。从以下一
   "type": "linear peptide",
   "sequence": "TSFAEYWNLLSP",
   "length": 12,
-  "kd_mdm2": "IC50 8.7 nM",
-  "kd_mdmx": "IC50 15.2 nM",
+  "affinity_by_target": {"TARGET_A": "IC50 8.7 nM", "TARGET_B": null},
   "key_residues": [{"position": "Phe19", "residue": "Phe", "role": "anchor"}, {"position": "Trp23", "residue": "Trp", "role": "anchor"}, {"position": "Leu26", "residue": "Leu", "role": "anchor"}],
   "pmid": "34589387",
   "pdb_ids": ["3EQS", "3EQY"],
@@ -88,7 +88,7 @@ def call_openai(system_prompt: str, user_content: str, model: str) -> str:
     return result["choices"][0]["message"]["content"]
 
 
-def extract_one_paper(paper: dict, model: str) -> dict | None:
+def extract_one_paper(paper: dict, model: str, target_ids: list[str]) -> dict | None:
     """对一篇论文调用 LLM 提取。返回结构化 dict 或 None（失败时）。"""
     pmid = paper.get("pmid", "?")
     title = paper.get("title", "")
@@ -103,7 +103,7 @@ def extract_one_paper(paper: dict, model: str) -> dict | None:
     try:
         raw = call_openai(
             system_prompt="你是一个蛋白质结构生物学专家。只输出合法 JSON，不要额外解释，不要 markdown 代码块。",
-            user_content=EXTRACTION_PROMPT + user_content,
+            user_content=EXTRACTION_PROMPT.replace("{target_ids}", ", ".join(target_ids)) + user_content,
             model=model,
         )
     except Exception as e:
@@ -146,10 +146,24 @@ def main() -> int:
 
     input_data = json.loads(sys.stdin.read())
     papers = input_data.get("papers", [])
+    target_ids = [target.get("id") for target in input_data.get("targets", []) if target.get("id")]
+    if not target_ids:
+        target_ids = ["MDM2", "MDMX"]  # v5 cached PubMed payload compatibility
 
     if not papers:
         print(json.dumps({"error": "no papers to extract from"}, ensure_ascii=False))
         return 1
+    if not os.environ.get("OPENAI_API_KEY"):
+        print(json.dumps({
+            "known_binders": [],
+            "llm_provider": args.provider,
+            "llm_model": model,
+            "n_papers_processed": 0,
+            "n_binders_found": 0,
+            "run_status": "degraded_no_api_key",
+            "error": "OPENAI_API_KEY is not configured",
+        }, ensure_ascii=False, indent=2))
+        return 0
 
     print(f"[llm_extract] 逐篇提取 {len(papers)} 篇论文, 并发={args.concurrency}, 模型={model}", file=sys.stderr)
 
@@ -157,7 +171,7 @@ def main() -> int:
     n_processed = 0
 
     with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
-        futures = {executor.submit(extract_one_paper, p, model): p for p in papers}
+        futures = {executor.submit(extract_one_paper, p, model, target_ids): p for p in papers}
         for future in as_completed(futures):
             paper = futures[future]
             pmid = paper.get("pmid", "?")
@@ -187,6 +201,7 @@ def main() -> int:
         "llm_model": model,
         "n_papers_processed": n_processed,
         "n_binders_found": len(unique),
+        "run_status": "complete",
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
