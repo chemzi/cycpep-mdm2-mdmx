@@ -7,6 +7,7 @@ MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当�
 
 - [中文：可迁移流程、结构闸门与阈值校准](docs/transferable_pipeline.md)
 - [English: transferable workflow, structure gate, and calibration](docs/transferable_pipeline.en.md)
+- [前端 API contract、请求示例与状态机](docs/frontend_api_contract.md)
 
 ```bash
 python -m target_bootstrap draft --identifier P12345 --type uniprot --output projects/new_target.draft.json
