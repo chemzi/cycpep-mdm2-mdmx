@@ -16,7 +16,11 @@ from typing import Protocol
 
 from llm_client import ConfiguredLLM
 from project_config import normalize_project_config, target_slug
-from structure_resolution import resolve_project_structures
+from structure_resolution import (
+    materialize_target_coordinates,
+    refresh_project_structure_readiness,
+    resolve_project_structures,
+)
 
 
 class BootstrapError(RuntimeError):
@@ -396,30 +400,55 @@ class TargetBootstrapper:
         return draft
 
 
-def edit_draft(path: str | Path, patch: dict, *, experimental_provider=None,
-               predicted_provider=None) -> dict:
-    draft_path = Path(path)
-    config = json.loads(draft_path.read_text(encoding="utf-8"))
-    previous_review = config.get("review") or {}
-    updated = _merge_patch(config, patch)
-    updated = normalize_project_config(updated)
-    previous_structure_inputs = [
-        (target.get("id"), target.get("uniprot"), target.get("structure"))
+def _structure_discovery_inputs(config: dict) -> list[tuple]:
+    return [
+        (
+            target.get("id"),
+            target.get("uniprot"),
+            (target.get("structure") or {}).get("pdb_id"),
+            (target.get("structure") or {}).get("model_id"),
+        )
         for target in config.get("targets", [])
     ]
-    updated_structure_inputs = [
-        (target.get("id"), target.get("uniprot"), target.get("structure"))
-        for target in updated.get("targets", [])
+
+
+def _structure_readiness_inputs(config: dict) -> list[tuple]:
+    return [
+        (
+            target.get("id"),
+            target.get("binding_site"),
+            target.get("structure"),
+        )
+        for target in config.get("targets", [])
     ]
-    if previous_structure_inputs != updated_structure_inputs:
+
+
+def _finish_edit(
+    draft_path: Path,
+    config: dict,
+    updated: dict,
+    *,
+    action: str,
+    experimental_provider=None,
+    predicted_provider=None,
+) -> dict:
+    previous_review = config.get("review") or {}
+    updated = normalize_project_config(updated)
+    if _structure_discovery_inputs(config) != _structure_discovery_inputs(updated):
         updated = resolve_project_structures(
             updated,
             experimental_provider=experimental_provider,
             predicted_provider=predicted_provider,
         )
+    elif _structure_readiness_inputs(config) != _structure_readiness_inputs(updated):
+        updated = refresh_project_structure_readiness(updated)
     audit = review_project_config(updated)
     history = list(previous_review.get("history") or [])
-    history.append({"action": "edited", "at": _utcnow(), "previous_revision": previous_review.get("revision")})
+    history.append({
+        "action": action,
+        "at": _utcnow(),
+        "previous_revision": previous_review.get("revision"),
+    })
     updated["review"] = {
         "status": "draft",
         "revision": int(previous_review.get("revision", 0)) + 1,
@@ -433,6 +462,121 @@ def edit_draft(path: str | Path, patch: dict, *, experimental_provider=None,
     }
     _write_json_atomic(draft_path, updated)
     return updated
+
+
+def edit_draft(path: str | Path, patch: dict, *, experimental_provider=None,
+               predicted_provider=None) -> dict:
+    """Apply a project-level merge patch.
+
+    HTTP adapters should use :func:`edit_target_draft` for target edits because
+    RFC 7396 replaces arrays wholesale.  This generic helper remains available
+    for trusted CLI callers that intentionally provide a complete target list.
+    """
+    draft_path = Path(path)
+    config = json.loads(draft_path.read_text(encoding="utf-8"))
+    updated = _merge_patch(config, patch)
+    return _finish_edit(
+        draft_path,
+        config,
+        updated,
+        action="edited",
+        experimental_provider=experimental_provider,
+        predicted_provider=predicted_provider,
+    )
+
+
+def edit_target_draft(path: str | Path, target_id: str, patch: dict, *,
+                      experimental_provider=None, predicted_provider=None) -> dict:
+    """Safely merge one target without replacing the complete targets array."""
+    if not isinstance(patch, dict):
+        raise BootstrapError("target patch must be an object")
+    protected_structure_fields = {"coordinate_path", "coordinate_sha256", "coordinate_format"}
+    structure_patch = patch.get("structure") or {}
+    if not isinstance(structure_patch, dict):
+        raise BootstrapError("target structure patch must be an object")
+    if protected_structure_fields.intersection(structure_patch):
+        raise BootstrapError("coordinate artifact metadata can only be written by materialization")
+    draft_path = Path(path)
+    config = json.loads(draft_path.read_text(encoding="utf-8"))
+    updated = json.loads(json.dumps(config))
+    matches = [
+        (index, target) for index, target in enumerate(updated.get("targets", []))
+        if str(target.get("id", "")).casefold() == str(target_id).casefold()
+    ]
+    if len(matches) != 1:
+        raise BootstrapError(f"target is not configured or is ambiguous: {target_id}")
+    index, target = matches[0]
+    updated["targets"][index] = _merge_patch(target, patch)
+    return _finish_edit(
+        draft_path,
+        config,
+        updated,
+        action="target_edited",
+        experimental_provider=experimental_provider,
+        predicted_provider=predicted_provider,
+    )
+
+
+def select_resolved_candidate(path: str | Path, candidate_ref: str, *,
+                              experimental_provider=None, predicted_provider=None) -> dict:
+    """Select one server-offered identity candidate and clear ambiguity safely."""
+    draft_path = Path(path)
+    config = json.loads(draft_path.read_text(encoding="utf-8"))
+    candidates = (config.get("bootstrap") or {}).get("resolved_candidates") or []
+    ref = str(candidate_ref).casefold()
+    matches = [
+        candidate for candidate in candidates
+        if ref in {
+            str(candidate.get("id", "")).casefold(),
+            str(candidate.get("uniprot", "")).casefold(),
+        }
+    ]
+    if len(matches) != 1:
+        raise BootstrapError("candidate_ref must identify exactly one offered resolved candidate")
+    if len(config.get("targets") or []) != 1:
+        raise BootstrapError("candidate selection currently requires a single-target bootstrap draft")
+
+    candidate = json.loads(json.dumps(matches[0]))
+    updated = json.loads(json.dumps(config))
+    old_target = updated["targets"][0]
+    candidate_structure = candidate.get("structure") or {}
+    # Never carry a PDB selection, chain, or materialized coordinates from a
+    # different identity. Discovery will populate a new structure plan.
+    updated["targets"][0] = {
+        **old_target,
+        **candidate,
+        "structure": candidate_structure,
+    }
+    updated["bootstrap"]["ambiguous_identifier"] = False
+    updated["bootstrap"]["selected_candidate"] = candidate
+    return _finish_edit(
+        draft_path,
+        config,
+        updated,
+        action="resolved_candidate_selected",
+        experimental_provider=experimental_provider,
+        predicted_provider=predicted_provider,
+    )
+
+
+def materialize_draft_coordinates(path: str | Path, target_id: str,
+                                  target_root: str | Path, *,
+                                  structure_record_id: str | None = None,
+                                  downloader=None) -> dict:
+    """Materialize selected coordinates and persist the refreshed review gate."""
+    draft_path = Path(path)
+    config = json.loads(draft_path.read_text(encoding="utf-8"))
+    updated = materialize_target_coordinates(
+        config, target_id, target_root,
+        structure_record_id=structure_record_id,
+        downloader=downloader,
+    )
+    return _finish_edit(
+        draft_path,
+        config,
+        updated,
+        action="coordinates_materialized",
+    )
 
 
 def approve_draft(path: str | Path, *, output_path: str | Path | None = None,

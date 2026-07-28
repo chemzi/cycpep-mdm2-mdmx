@@ -61,8 +61,9 @@ experimental-first policy:
   predicted structures are graded from pLDDT/PAE availability.
 - Predicted or C-grade structures are marked as requiring ensemble validation.
 - Missing structures return `prediction_required` and an explicit next action.
-- Usable coordinates alone do not make a target design-ready. The binding-site
-  residues, their review status, and the target chain must also be confirmed.
+- Selecting a usable structure record does not mean its coordinates are ready.
+  The backend must materialize and hash-check the coordinate artifact; binding-site
+  residues, review status, and the target chain must also be confirmed.
 
 The `ExperimentalStructureProvider` and `PredictedStructureProvider` protocols
 allow a future local AlphaFold 3, Boltz, or other prediction backend to be added

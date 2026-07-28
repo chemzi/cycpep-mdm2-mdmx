@@ -16,6 +16,9 @@ from target_bootstrap import (
     approve_draft,
     assert_project_approved,
     edit_draft,
+    edit_target_draft,
+    materialize_draft_coordinates,
+    select_resolved_candidate,
 )
 
 
@@ -70,6 +73,7 @@ class ExperimentalProvider:
         self.rows = rows if rows is not None else [{
             "source": "rcsb", "kind": "experimental", "id": "9XYZ",
             "pdb_id": "9XYZ", "resolution": 2.1, "has_bound_partner": True,
+            "pdb_url": "https://files.example/9XYZ.pdb",
         }]
 
     def find(self, target):
@@ -114,6 +118,7 @@ class BootstrapTests(unittest.TestCase):
                 }}]
             })
             self.assertEqual(edited["review"]["revision"], 2)
+            self.assertTrue(edited["targets"][0]["structure_plan"]["binding_site_reviewed"])
             approved = approve_draft(path)
             assert_project_approved(approved)
 
@@ -130,6 +135,63 @@ class BootstrapTests(unittest.TestCase):
             with self.assertRaises(ReviewRequiredError):
                 approve_draft(path)
 
+            selected = select_resolved_candidate(
+                path, "Q99999",
+                experimental_provider=ExperimentalProvider(),
+                predicted_provider=PredictedProvider(),
+            )
+            self.assertFalse(selected["bootstrap"]["ambiguous_identifier"])
+            self.assertEqual(selected["bootstrap"]["selected_candidate"]["uniprot"], "Q99999")
+            self.assertEqual(selected["targets"][0]["uniprot"], "Q99999")
+
+    def test_target_patch_preserves_other_targets_and_refreshes_site_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "draft.json"
+            draft = self.bootstrapper().create_draft(identifier="NOVEL1", output_path=path)
+            second = json.loads(json.dumps(draft["targets"][0]))
+            second.update({"id": "NOVEL2", "uniprot": "P54321"})
+            draft["targets"].append(second)
+            path.write_text(json.dumps(draft), encoding="utf-8")
+
+            edited = edit_target_draft(path, "NOVEL1", {"binding_site": {
+                "description": "reviewed pocket",
+                "residues": [11, 21],
+                "status": "user_reviewed",
+                "confidence": "medium",
+            }})
+            self.assertEqual([row["id"] for row in edited["targets"]], ["NOVEL1", "NOVEL2"])
+            self.assertTrue(edited["targets"][0]["structure_plan"]["binding_site_reviewed"])
+
+    def test_coordinates_must_be_materialized_before_design_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "draft.json"
+            artifact_root = Path(directory) / "targets"
+            draft = self.bootstrapper().create_draft(identifier="NOVEL1", output_path=path)
+            self.assertFalse(draft["targets"][0]["structure_plan"]["coordinates_ready"])
+
+            edited = edit_target_draft(path, "NOVEL1", {
+                "binding_site": {
+                    "description": "reviewed pocket", "residues": [11, 21],
+                    "status": "user_reviewed", "confidence": "medium",
+                },
+                "structure": {"chain": "A"},
+            })
+            self.assertFalse(edited["targets"][0]["structure_plan"]["ready_for_design"])
+
+            materialized = materialize_draft_coordinates(
+                path, "NOVEL1", artifact_root,
+                downloader=lambda _url: b"ATOM      1  CA  ALA A   1      1.000   2.000   3.000\nEND\n",
+            )
+            plan = materialized["targets"][0]["structure_plan"]
+            self.assertTrue(plan["coordinates_ready"])
+            self.assertTrue(plan["ready_for_design"])
+            coordinate_path = Path(materialized["targets"][0]["structure"]["coordinate_path"])
+            self.assertTrue(coordinate_path.is_file())
+            assert_target_structure_ready(materialized, "NOVEL1")
+            coordinate_path.write_text("tampered", encoding="utf-8")
+            with self.assertRaises(StructureNotReadyError):
+                assert_target_structure_ready(materialized, "NOVEL1")
+
     def test_llm_failure_keeps_reviewable_draft(self):
         draft = self.bootstrapper(llm=FailingLLM()).create_draft(identifier="NOVEL1")
         self.assertEqual(draft["bootstrap"]["llm_status"], "failed")
@@ -143,7 +205,8 @@ class BootstrapTests(unittest.TestCase):
         )
         self.assertEqual(plan["status"], "experimental_selected")
         self.assertEqual(plan["quality_grade"], "A")
-        self.assertTrue(plan["coordinates_ready"])
+        self.assertTrue(plan["coordinates_selected"])
+        self.assertFalse(plan["coordinates_ready"])
         self.assertFalse(plan["ready_for_design"])
 
     def test_prediction_fallback_and_missing_structure_gate(self):
