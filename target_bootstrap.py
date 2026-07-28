@@ -493,7 +493,7 @@ def edit_target_draft(path: str | Path, target_id: str, patch: dict, *,
     if not isinstance(patch, dict):
         raise BootstrapError("target patch must be an object")
     server_managed_fields = {
-        "id", "uniprot", "uniprot_id", "gene_name", "protein_name",
+        "uniprot", "uniprot_id", "gene_name", "protein_name",
         "organism", "length", "metric_slug", "structure_plan",
     }
     forbidden = server_managed_fields.intersection(patch)
