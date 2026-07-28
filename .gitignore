@@ -37,6 +37,11 @@ env/
 _ssh_exec.py
 *_ssh_exec.py
 **/ssh_*creds*
+.env
+.env.*
+!.env.example
+diagnose*.sh
+test1paper.sh
 
 # WorkBuddy 工作区数据（本地记忆/缓存，不进仓库）
 .workbuddy/

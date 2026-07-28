@@ -2,6 +2,22 @@
 
 MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当前目标是在一个月赛期内形成可追溯的 Research → Design → Prediction → Critic/Planner 闭环，并交付通过约定计算指标的候选；项目不包含 wet-lab 验证。
 
+本仓库同时支持以 MDM2/MDMX 为回归基准的可迁移靶点流程：最小 gene、UniProt
+或 PDB 输入可自动补全为项目草稿，用户检查并批准后才能启动 Research/Design。
+
+- [中文：可迁移流程、结构闸门与阈值校准](docs/transferable_pipeline.md)
+- [English: transferable workflow, structure gate, and calibration](docs/transferable_pipeline.en.md)
+
+```bash
+python -m target_bootstrap draft --identifier P12345 --type uniprot --output projects/new_target.draft.json
+python -m target_bootstrap show --draft projects/new_target.draft.json
+python -m target_bootstrap approve --draft projects/new_target.draft.json --output projects/new_target.json
+```
+
+The bootstrapper resolves and enriches minimal target input with the configured
+LLM. Explicit, digest-bound approval is required before downstream execution;
+editing approved content invalidates that approval.
+
 ## 快速开始
 
 ```bash
@@ -15,6 +31,9 @@ pip install -r requirements.txt
 当前仓库中已提交的 Python 代码，基础依赖通过下面这条即可安装：
 
 ```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
 ```
 

@@ -5,7 +5,7 @@ Step 2: RCSB GraphQL — 富集 PDB 条目，判定肽段复合物。
     python -m scripts.enrich_pdb < data/search_results.json > data/enriched_results.json
 
 对每个 PDB，查询 polymer entities 的 UniProt、序列和实际链 ID。只有实体
-UniProt 与目标一致时才标为 MDM2/MDMX；非靶标的 6~50 aa L 型多肽实体
+UniProt 与项目目标一致时才标为 target；非靶标的 6~50 aa L 型多肽实体
 才作为候选 binder 链。
 """
 
@@ -49,7 +49,7 @@ MAX_PEPTIDE_LEN = 50
 TARGET_UNIPROT = {"MDM2": "Q00987", "MDMX": "O15151"}
 
 
-def enrich(pdb_id: str) -> dict | None:
+def enrich(pdb_id: str, target_uniprot: dict | None = None) -> dict | None:
     """对单个 PDB 做 GraphQL 查询，返回结构化信息。"""
     payload = json.dumps({"query": QUERY, "variables": {"id": pdb_id}}).encode("utf-8")
     req = urllib.request.Request(
@@ -84,7 +84,7 @@ def enrich(pdb_id: str) -> dict | None:
         auth_asym_ids = container.get("auth_asym_ids") or []
         chain_ids = auth_asym_ids or asym_ids
         matched_targets = [
-            target_name for target_name, uid in TARGET_UNIPROT.items()
+            target_name for target_name, uid in (target_uniprot or TARGET_UNIPROT).items()
             if uid in uniprots
         ]
         entity = {
@@ -130,11 +130,24 @@ def enrich(pdb_id: str) -> dict | None:
 
 def main() -> int:
     input_data = json.loads(sys.stdin.read())
+    target_metadata = input_data.get("targets") or {}
+    target_uniprot = {
+        target_id: info.get("uniprot")
+        for target_id, info in target_metadata.items()
+        if isinstance(info, dict) and info.get("uniprot")
+    } or TARGET_UNIPROT
     all_results = []
     MAX_PER_TARGET = 100  # 限制每个靶点最多处理 100 条，避免超时
+    results_by_target = input_data.get("results_by_target")
+    if not isinstance(results_by_target, dict):
+        ignored = {"targets", "counts_by_target", "project_id", "run_status"}
+        results_by_target = {
+            key: value for key, value in input_data.items()
+            if key not in ignored and not key.startswith("n_") and isinstance(value, list)
+        }
     search_hits = {}
-    for target_name in ["MDM2", "MDMX"]:
-        entries = input_data.get(target_name, [])[:MAX_PER_TARGET]
+    for target_name, target_entries in results_by_target.items():
+        entries = target_entries[:MAX_PER_TARGET]
         for e in entries:
             pdb_id = e["pdb_id"].upper()
             search_hits.setdefault(pdb_id, []).append({
@@ -145,7 +158,7 @@ def main() -> int:
             })
 
     for i, (pdb_id, hits) in enumerate(search_hits.items()):
-        enriched = enrich(pdb_id)
+        enriched = enrich(pdb_id, target_uniprot)
         if enriched:
             enriched["resolution"] = next(
                 (h.get("resolution") for h in hits if h.get("resolution") is not None),
@@ -169,7 +182,7 @@ def main() -> int:
         for target_name in result.get("targets_present", []):
             target_specific = dict(result)
             target_specific["target"] = target_name
-            target_specific["target_uniprot"] = TARGET_UNIPROT[target_name]
+            target_specific["target_uniprot"] = target_uniprot[target_name]
             target_specific["target_chains"] = [
                 chain for chain in result.get("target_chains", [])
                 if target_name in chain.get("matched_targets", [])
@@ -183,13 +196,13 @@ def main() -> int:
         "n_unique_pdb_entries": len(all_results),
         "n_by_target": {
             target: sum(1 for r in peptide_complexes if r.get("target") == target)
-            for target in TARGET_UNIPROT
+            for target in target_uniprot
         },
         "run_status": (
             "complete"
             if all(
                 any(r.get("target") == target for r in peptide_complexes)
-                for target in TARGET_UNIPROT
+                for target in target_uniprot
             )
             else "failed_or_incomplete"
         ),

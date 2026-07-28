@@ -49,8 +49,9 @@ def aggregate(target_name: str, interface_entries: list[dict]) -> dict:
             for residue in normalized:
                 residue_counter[residue.upper()] += 1
 
+    reference_pockets = POCKET_DEFINITIONS.get(target_name, {})
     if n_structures == 0:
-        return {"n_structures": 0, "consensus_residues": {}, "pocket_residues": POCKET_DEFINITIONS[target_name]}
+        return {"n_structures": 0, "consensus_residues": {}, "pocket_residues": reference_pockets}
 
     # 频率 ≥ 50% 的共识残基
     consensus = {}
@@ -61,7 +62,7 @@ def aggregate(target_name: str, interface_entries: list[dict]) -> dict:
 
     # 按口袋归类
     pocket_consensus = {}
-    for pocket_name, reference_residues in POCKET_DEFINITIONS[target_name].items():
+    for pocket_name, reference_residues in reference_pockets.items():
         pocket_consensus[pocket_name] = []
         for ref in reference_residues:
             match = re.fullmatch(r"([A-Za-z]{3})(-?\d+)", ref)
@@ -77,7 +78,7 @@ def aggregate(target_name: str, interface_entries: list[dict]) -> dict:
         "n_structures": n_structures,
         "consensus_residues": consensus,
         "pocket_consensus": pocket_consensus,
-        "pocket_residues": POCKET_DEFINITIONS[target_name],
+        "pocket_residues": reference_pockets,
     }
 
 
@@ -85,14 +86,19 @@ def main() -> int:
     input_data = json.loads(sys.stdin.read())
     with_interface = input_data.get("with_interface", [])
 
-    mdm2_entries = [e for e in with_interface if e.get("target") == "MDM2"]
-    mdmx_entries = [e for e in with_interface if e.get("target") == "MDMX"]
-
+    target_names = sorted({entry.get("target") for entry in with_interface if entry.get("target")})
+    results_by_target = {target: aggregate(target, with_interface) for target in target_names}
     output = {
-        "MDM2": aggregate("MDM2", with_interface),
-        "MDMX": aggregate("MDMX", with_interface),
-        "n_mdm2_structures": len(mdm2_entries),
-        "n_mdmx_structures": len(mdmx_entries),
+        "results_by_target": results_by_target,
+        "counts_by_target": {
+            target: sum(1 for entry in with_interface if entry.get("target") == target)
+            for target in target_names
+        },
+        **results_by_target,
+        **{f"n_{target.lower()}_structures": count for target, count in {
+            target: sum(1 for entry in with_interface if entry.get("target") == target)
+            for target in target_names
+        }.items()},
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0

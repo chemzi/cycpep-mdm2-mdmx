@@ -46,8 +46,9 @@
       "type": "array",
       "items": {
         "type": "string",
-        "enum": ["MDM2", "MDMX", "both"]
-      }
+        "minLength": 1
+      },
+      "description": "Project target IDs; 'both' remains a legacy display value"
     },
     "candidate_id": {
       "type": "string",
@@ -123,6 +124,16 @@
     "scores": {
       "type": "object",
       "properties": {
+        "metrics": {
+          "type": "object",
+          "properties": {
+            "global": {"type": "object", "additionalProperties": true},
+            "targets": {
+              "type": "object",
+              "additionalProperties": {"$ref": "#/$defs/target_scores"}
+            }
+          }
+        },
         "plddt": {
           "type": "number",
           "minimum": 0,
@@ -230,6 +241,22 @@
           "type": "boolean"
         }
       }
+    },
+    "target_scores": {
+      "type": "object",
+      "properties": {
+        "ipsae": {"type": "number", "minimum": 0, "maximum": 1},
+        "ipae": {"type": "number", "minimum": 0},
+        "iptm": {"type": "number", "minimum": 0, "maximum": 1},
+        "dg": {"type": "number"},
+        "sc": {"type": "number", "minimum": 0, "maximum": 1},
+        "dsasa": {"type": "number", "minimum": 0},
+        "hotspot_cov": {"type": "number", "minimum": 0, "maximum": 1},
+        "site_consistency": {"type": ["boolean", "string"]},
+        "pose_rmsd": {"type": "number", "minimum": 0},
+        "seed_convergence": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": true
     },
     "tool_trace": {
       "type": "object",

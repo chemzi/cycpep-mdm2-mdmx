@@ -11,10 +11,18 @@ from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = ROOT / "scripts"
-DATA_DIR = ROOT / "data"
-CACHE_PATH = DATA_DIR / "_research_cache.json"
 
-from data_layer import State, EvidenceLogger, _normalize_thresholds
+from data_layer import State, EvidenceLogger, DATA_DIR
+from project_config import load_project_config, target_slug
+from target_bootstrap import assert_project_approved
+
+PROJECT_CONFIG = load_project_config()
+PROJECT_TARGET_IDS = tuple(target["id"] for target in PROJECT_CONFIG["targets"])
+IS_MDM_REFERENCE = set(PROJECT_TARGET_IDS) == {"MDM2", "MDMX"}
+CACHE_PATH = (
+    DATA_DIR / "_research_cache.json" if IS_MDM_REFERENCE
+    else DATA_DIR / f"_research_cache_{target_slug(PROJECT_CONFIG['project_id'])}.json"
+)
 
 # ===== 预置常量（biotite 失败时兜底）=====
 TARGETS = {
@@ -45,7 +53,7 @@ POCKET_DIFFERENCES = {
 KNOWN_DUAL_BINDERS = [
     {"name":"PMI","type":"linear peptide","sequence":"TSFAEYWNLLSP","kd_mdm2":"low nanomolar","kd_mdmx":"low nanomolar","pmid":"34589387"},
     {"name":"PMI-M3","type":"linear peptide","sequence":"LTFLEYWAQLMQ","kd_mdm2":"low picomolar","kd_mdmx":"low picomolar","pmid":"34589387"},
-    {"name":"ATSP-7041","type":"stapled peptide","sequence":"LTFLEYWAAQSL","kd_mdm2":"Ki ~0.9 nM","kd_mdmx":"Ki ~2.3 nM","pmid":"23946421"},
+    {"name":"ATSP-7041","type":"stapled peptide","kd_mdm2":"Ki ~0.9 nM","kd_mdmx":"Ki ~2.3 nM","pmid":"23946421"},
     {"name":"ALRN-6924","type":"stapled peptide (clinical)","kd_mdm2":"nanomolar","kd_mdmx":"nanomolar","pmid":"37439511"},
     {"name":"pDI","type":"linear peptide","sequence":"LTFEHYWAQLTS","kd_mdm2":"~40 nM","kd_mdmx":"sub-micromolar","pmid":"19910468"},
     {"name":"pDI6W","type":"linear peptide","sequence":"LTFEHWWAQLTS","pmid":"19910468"},
@@ -382,7 +390,6 @@ def _run_pipeline():
                     "quote_verified": True,
                     "calibration_status": "pending",
                 }
-        thresholds = _normalize_thresholds(thresholds)
         THRESHOLDS_CACHE.write_text(json.dumps(thresholds, ensure_ascii=False, indent=2), encoding="utf-8")
         EvidenceLogger.log("research", "tool_call", {
             "tool_name": "threshold_research", "output_hash": th, "exit_code": tc,
@@ -435,20 +442,172 @@ def _run_pipeline():
     return result
 
 
+def _run_generic_pipeline():
+    """Target-configured research path without MDM-specific biological fallbacks."""
+    target_ids = list(PROJECT_TARGET_IDS)
+    stage_status = {}
+
+    sr, _, sc, sd, sh = _run_script("search_pdb.py")
+    stage_status["rcsb_search"] = sr.get("run_status", "failed") if sc == 0 else "failed"
+    EvidenceLogger.log("research", "tool_call", {
+        "tool_name": "rcsb_search_api", "output_hash": sh, "exit_code": sc,
+        "duration_sec": round(sd, 1), "stdout_snippet": str(sr.get("counts_by_target", {})),
+    }, targets=target_ids, phase="research")
+
+    er, _, ec, ed, eh = _run_script("enrich_pdb.py", sr)
+    stage_status["rcsb_enrich"] = er.get("run_status", "failed") if ec == 0 else "failed"
+    EvidenceLogger.log("research", "tool_call", {
+        "tool_name": "rcsb_graphql_api", "output_hash": eh, "exit_code": ec,
+        "duration_sec": round(ed, 1), "stdout_snippet": str(er.get("counts_by_target", {})),
+    }, targets=target_ids, phase="research")
+
+    aggregate = {"results_by_target": {}, "counts_by_target": {}}
+    if os.environ.get("SKIP_BIOTITE", "").lower() in ("1", "true", "yes"):
+        stage_status["interface"] = "skipped"
+        stage_status["aggregate"] = "skipped"
+    else:
+        try:
+            ir, _, ic, id_, ih = _run_script("compute_interface.py", er)
+            stage_status["interface"] = "complete" if ic == 0 and ir.get("n_with_interface", 0) else "failed_or_empty"
+            EvidenceLogger.log("research", "tool_call", {
+                "tool_name": "biotite", "output_hash": ih, "exit_code": ic,
+                "duration_sec": round(id_, 1),
+                "stdout_snippet": f"interfaces={ir.get('n_with_interface', 0)}",
+            }, targets=target_ids, phase="research")
+            aggregate, _, ac, ad, ah = _run_script("aggregate_pockets.py", ir)
+            stage_status["aggregate"] = "complete" if ac == 0 else "failed"
+            EvidenceLogger.log("research", "tool_call", {
+                "tool_name": "aggregate_pockets", "output_hash": ah, "exit_code": ac,
+                "duration_sec": round(ad, 1),
+                "stdout_snippet": str(aggregate.get("counts_by_target", {})),
+            }, targets=target_ids, phase="research")
+        except Exception as exc:
+            stage_status["interface"] = "failed"
+            stage_status["aggregate"] = "failed"
+            EvidenceLogger.error("research", "tool_failure", str(exc), recovery="continue without interface aggregation")
+
+    pmr, _, pc, pd, ph = _run_script("pubmed_search.py")
+    stage_status["pubmed"] = "complete" if pc == 0 else "failed"
+    EvidenceLogger.log("research", "tool_call", {
+        "tool_name": "pubmed_eutils", "output_hash": ph, "exit_code": pc,
+        "duration_sec": round(pd, 1), "stdout_snippet": f"papers={pmr.get('n_total', 0)}",
+    }, targets=target_ids, phase="research")
+
+    known_binders = []
+    try:
+        lr, _, lc, ld, lh = _run_script("llm_extract.py", pmr, extra_args=["--concurrency", "3"])
+        known_binders = lr.get("known_binders", [])
+        stage_status["llm_extract"] = "complete" if lc == 0 else "failed"
+        EvidenceLogger.log("research", "tool_call", {
+            "tool_name": "llm_extract", "output_hash": lh, "exit_code": lc,
+            "duration_sec": round(ld, 1), "stdout_snippet": f"binders={len(known_binders)}",
+        }, targets=target_ids, phase="research")
+    except Exception as exc:
+        stage_status["llm_extract"] = "failed"
+        EvidenceLogger.error("research", "tool_failure", str(exc), recovery="no fabricated binder fallback")
+
+    thresholds = json.loads(json.dumps(DEFAULT_THRESHOLDS))
+    try:
+        tr, _, tc, td, thash = _run_script("threshold_research.py", extra_args=["--concurrency", "4"])
+        threshold_aliases = {
+            "L4_ring_closure": "L4_nc_term_dist",
+            "L6_pose_convergence": "L6_pose_rmsd",
+        }
+        for raw_key, info in tr.get("metric_battery", {}).items():
+            if info.get("auto_usable") and info.get("value") is not None:
+                key = threshold_aliases.get(raw_key, raw_key)
+                thresholds[key] = {
+                    **{name: value for name, value in thresholds.get(key, {}).items()
+                       if name in ("method", "min_seed_fraction")},
+                    "value": info["value"], "operator": info.get("operator", ">"),
+                    "unit": info.get("unit"), "source": f"PubMed PMID {info.get('source_pmid')}",
+                    "source_pmid": info.get("source_pmid"), "evidence_quote": info.get("evidence_quote"),
+                    "evidence_grade": "paper_explicit", "calibration_status": "pending",
+                }
+        stage_status["threshold_research"] = tr.get("_meta", {}).get("run_status", "failed")
+        EvidenceLogger.log("research", "tool_call", {
+            "tool_name": "threshold_research", "output_hash": thash, "exit_code": tc,
+            "duration_sec": round(td, 1),
+            "stdout_snippet": f"usable={tr.get('_meta', {}).get('n_auto_usable', 0)}",
+        }, targets=target_ids, phase="research")
+    except Exception as exc:
+        stage_status["threshold_research"] = "failed"
+        EvidenceLogger.error("research", "tool_failure", str(exc), recovery="provisional thresholds remain non-clearable")
+
+    dynamic_pdb_list = [row.get("pdb_id") for row in er.get("peptide_complexes", []) if row.get("pdb_id")]
+    result = {
+        "project_id": PROJECT_CONFIG["project_id"],
+        "targets": {target["id"]: target for target in PROJECT_CONFIG["targets"]},
+        "pocket_differences": {
+            "_source": "dynamic_interface_aggregation",
+            "targets": aggregate.get("results_by_target", {}),
+        },
+        "known_binders": known_binders,
+        "known_dual_binders": known_binders,
+        "known_binder_source": "llm_extracted" if known_binders else "none_found",
+        "design_strategy_summary": "Target-configured; derive design constraints from retrieved epitope evidence.",
+        "data_quality_alert": "No MDM-specific constants were used as fallback.",
+        "literature_refs": pmr.get("pmids", []),
+        "thresholds": thresholds,
+        "_pipeline_meta": {
+            "last_run": datetime.now(timezone.utc).isoformat(),
+            "dynamic_pdb_list": dynamic_pdb_list,
+            "counts_by_target": er.get("counts_by_target", {}),
+            "stage_status": stage_status,
+            "run_status": "complete" if all(value == "complete" for value in stage_status.values()) else "degraded_with_fallbacks",
+        },
+    }
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    CACHE_PATH.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
 def run(state=None, force_recompute=False, skip_pipeline=False):
+    assert_project_approved(PROJECT_CONFIG)
     if state is None:
         state = State.load()
 
+    pipeline_runner = _run_pipeline if IS_MDM_REFERENCE else _run_generic_pipeline
     if force_recompute:
-        pipeline_result = _run_pipeline()
+        pipeline_result = pipeline_runner()
     elif skip_pipeline or CACHE_PATH.exists():
         if CACHE_PATH.exists():
             pipeline_result = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
             print(f"[research] Using cache: {CACHE_PATH}")
         else:
-            pipeline_result = _run_pipeline()
+            pipeline_result = pipeline_runner()
     else:
-        pipeline_result = _run_pipeline()
+        pipeline_result = pipeline_runner()
+
+    if not IS_MDM_REFERENCE:
+        targets = state.get("targets", {})
+        for name, info in pipeline_result.get("targets", {}).items():
+            targets.setdefault(name, {}).update(info)
+        result = {
+            "targets": targets,
+            "pocket_differences": pipeline_result.get("pocket_differences", {}),
+            "known_binders": pipeline_result.get("known_binders", []),
+            "known_dual_binders": pipeline_result.get("known_binders", []),
+            "known_binder_source": pipeline_result.get("known_binder_source", "none_found"),
+            "design_strategy_summary": pipeline_result.get("design_strategy_summary", ""),
+            "data_quality_alert": pipeline_result.get("data_quality_alert", ""),
+            "thresholds": pipeline_result.get("thresholds", DEFAULT_THRESHOLDS),
+            "research_pipeline_meta": pipeline_result.get("_pipeline_meta", {}),
+        }
+        State.update(result)
+        meta = result["research_pipeline_meta"]
+        EvidenceLogger.research_complete(
+            hotspot_analysis={
+                "pdb_list": meta.get("dynamic_pdb_list", []),
+                "counts_by_target": meta.get("counts_by_target", {}),
+                "pockets": result["pocket_differences"],
+                "stage_status": meta.get("stage_status", {}),
+                "run_status": meta.get("run_status", "unknown"),
+            },
+            known_binders=result["known_binders"],
+            refs=pipeline_result.get("literature_refs", []),
+        )
+        return result
 
     targets = state.get("targets", {})
     for name, info in pipeline_result.get("targets", TARGETS).items():

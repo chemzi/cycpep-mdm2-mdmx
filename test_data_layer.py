@@ -17,8 +17,12 @@ os.chdir(str(ROOT))
 import data_layer
 from data_layer import (
     State, EvidenceLogger, CandidateIndex, file_hash, sanitize_id,
-    evaluate_battery, compute_pareto_front, INDEX_COLUMNS, _normalize_thresholds,
+    evaluate_battery, compute_pareto_front, INDEX_COLUMNS,
 )
+from project_config import load_project_config, required_target_ids
+from threshold_calibration import calibrate_threshold
+from scripts.pubmed_search import build_search_term
+from scripts.aggregate_pockets import aggregate
 
 passed = 0
 failed = 0
@@ -374,34 +378,6 @@ r5b = evaluate_battery(legacy_only, test_thresholds, required_targets=("MDM2",))
 check("只有旧 self_rmsd 时 L7 不通过", r5b["l7_pass"] is False)
 
 # ============================================================
-section("11f. thresholds key 归一化与文献 lineage 回归")
-# ============================================================
-raw_with_dup = {
-    "L4_ring_closure": {"value": 2.0, "operator": "<", "source": "PMID 35274526",
-                        "confidence": "high", "pmids": ["35274526"]},
-    "L4_nc_term_dist": {"value": 1.33, "operator": "<", "source": "经验值",
-                        "confidence": "medium"},
-    "L6_pose_convergence": {"value": 2.0, "operator": "<", "source": "PMID 35609983",
-                            "confidence": "high", "pmids": ["35609983"]},
-    "L6_pose_rmsd": {"value": 2.0, "operator": "<", "source": "经验值",
-                     "confidence": "medium"},
-}
-norm = _normalize_thresholds(raw_with_dup)
-check("归一化后 L4 旧 key 被消除", "L4_ring_closure" not in norm)
-check("归一化后 L6 旧 key 被消除", "L6_pose_convergence" not in norm)
-check("L4 文献 PMID 35274526 胜过经验值", "35274526" in norm["L4_nc_term_dist"]["source"])
-check("L6 文献 PMID 35609983 胜过 confidence=medium 经验值", "35609983" in norm["L6_pose_rmsd"]["source"])
-check("confidence=high 被映射为 paper_explicit", norm["L6_pose_rmsd"]["evidence_grade"] == "paper_explicit")
-check("冲突日志记录两个旧 key", set(norm["_conflict_log"]) == {"L4_ring_closure", "L6_pose_convergence"})
-
-data_layer.THRESHOLDS_CACHE.write_text(json.dumps(raw_with_dup, ensure_ascii=False, indent=2), encoding="utf-8")
-State.save(dict(State._default, thresholds={}))
-merged_thresholds = State.sync_thresholds_from_cache()
-check("sync cache 后 state 使用 L6 正确 key", "L6_pose_rmsd" in merged_thresholds)
-check("sync cache 后 L6 文献来源保留", "35609983" in merged_thresholds["L6_pose_rmsd"]["source"])
-check("sync cache 后 state 不含 L6 旧 key", "L6_pose_convergence" not in State.load()["thresholds"])
-
-# ============================================================
 section("12. 实际场景模拟 — 完整 Agent 工作流")
 # ============================================================
 print("\n  模拟: 于嘉乐(Design) → 王修远(Prediction) → 赵嘉策(Critic) → Planner")
@@ -472,6 +448,117 @@ check("旧 self_rmsd 保存在 legacy 列", migrated["legacy_self_rmsd"] == "1.2
 check("旧 layer2_3_pass 不冒充新版 L2", migrated["l2_pass"] == "")
 check("迁移前 CSV 备份已生成", len(list(migration_dir.glob("candidate_index.pre_v5_*.csv"))) == 1)
 data_layer.INDEX_PATH = original_index_path
+
+# ============================================================
+section("14. 任意靶点、双层决策与阈值校准")
+# ============================================================
+custom_config = load_project_config(raw={
+    "project_id": "novel_target_demo",
+    "targets": [{"id": "NOVEL-1", "uniprot": "P00001", "required": True}],
+})
+check("自定义项目读取任意靶点", required_target_ids(custom_config) == ("NOVEL-1",))
+
+calibrated_thresholds = json.loads(json.dumps(test_thresholds))
+for entry in calibrated_thresholds.values():
+    entry["calibration_status"] = "calibrated"
+    entry.setdefault("source", "same-protocol control calibration")
+
+novel_candidate = {
+    "candidate_id": "C_NEW_TARGET",
+    "metrics": {
+        "global": {
+            "plddt": 0.92, "nc_distance_pre": 1.35,
+            "nc_distance_post": 1.38, "scrmsd": 0.8,
+        },
+        "targets": {
+            "NOVEL-1": {
+                "ipsae": 0.68, "dg": -15.3, "sc": 0.72, "dsasa": 580,
+                "hotspot_cov": 0.85, "site_consistency": True,
+                "pose_rmsd": 1.2, "seed_convergence": 0.80,
+            }
+        },
+    },
+}
+novel_result = evaluate_battery(
+    novel_candidate, calibrated_thresholds, required_targets=("NOVEL-1",)
+)
+check("任意靶点嵌套指标可七层全清", novel_result["all_layers_pass"] is True)
+check("已校准阈值允许最终清关", novel_result["competition_clearance"] is True)
+check("全清候选进入 shortlisted", novel_result["triage_status"] == "shortlisted")
+
+provisional_thresholds = json.loads(json.dumps(calibrated_thresholds))
+provisional_thresholds["L2_ipsae"].update({
+    "calibration_status": "pending", "grade": "team_provisional",
+    "evidence_grade": "team_provisional",
+})
+provisional_result = evaluate_battery(
+    novel_candidate, provisional_thresholds, required_targets=("NOVEL-1",)
+)
+check("暂定阈值仍可计算七层数值通过", provisional_result["all_layers_pass"] is True)
+check("暂定阈值不能冒充最终清关", provisional_result["competition_clearance"] is False)
+
+incomplete_candidate = json.loads(json.dumps(novel_candidate))
+del incomplete_candidate["metrics"]["targets"]["NOVEL-1"]["ipsae"]
+incomplete_result = evaluate_battery(
+    incomplete_candidate, calibrated_thresholds, required_targets=("NOVEL-1",)
+)
+check("软证据缺失进入 needs_more_evidence", incomplete_result["triage_status"] == "needs_more_evidence")
+
+broken_ring = json.loads(json.dumps(novel_candidate))
+broken_ring["metrics"]["global"]["nc_distance_post"] = 3.2
+broken_result = evaluate_battery(
+    broken_ring, calibrated_thresholds, required_targets=("NOVEL-1",)
+)
+check("环闭合硬失败标记 invalid", broken_result["triage_status"] == "invalid")
+
+mixed_front = compute_pareto_front([
+    {"candidate_id": "N1", "metrics": {"targets": {"NOVEL-1": {"ipsae": 0.80, "dg": -8}}}},
+    {"candidate_id": "N2", "metrics": {"targets": {"NOVEL-1": {"ipsae": 0.70, "dg": -12}}}},
+    {"candidate_id": "N3", "metrics": {"targets": {"NOVEL-1": {"ipsae": 0.60, "dg": -7}}}},
+], objectives=(
+    {"target": "NOVEL-1", "metric": "ipsae", "direction": "maximize"},
+    {"target": "NOVEL-1", "metric": "dg", "direction": "minimize"},
+))
+check("Pareto 同时支持最大化与最小化", set(mixed_front) == {"N1", "N2"})
+
+calibrated = calibrate_threshold(
+    metric="ipsae", target_id="NOVEL-1",
+    negatives=[0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55,
+               0.12, 0.18, 0.22, 0.28, 0.32, 0.38, 0.42, 0.48, 0.52, 0.58],
+    positives=[0.62, 0.68, 0.75], max_false_positive_rate=0.05,
+    protocol={"tool": "example", "seeds": 5},
+)
+check("校准器控制经验 FPR", calibrated["observed_false_positive_rate"] <= 0.05)
+check("校准器写出协议哈希", bool(calibrated["protocol_hash"]))
+check("校准器结果可支持阈值审计", calibrated["calibration_status"] == "calibrated")
+
+CandidateIndex.add({
+    "candidate_id": "C0200", "sequence": "GFEWALAAK",
+    "source_route": "generic_structure_route", "metrics": novel_candidate["metrics"],
+})
+stored_novel = CandidateIndex.find("C0200")
+check("CandidateIndex 保存任意靶点 metrics_json", "NOVEL-1" in stored_novel["metrics_json"])
+CandidateIndex.update_score("C0200", {
+    "metrics": {"targets": {"NOVEL-1": {"ipsae": 0.71}}},
+    "triage_status": novel_result["triage_status"],
+    "competition_clearance": novel_result["competition_clearance"],
+    "threshold_audit": novel_result["threshold_audit"],
+})
+stored_novel = CandidateIndex.find("C0200")
+stored_metrics = json.loads(stored_novel["metrics_json"])
+check("CandidateIndex 增量合并通用指标", stored_metrics["targets"]["NOVEL-1"]["ipsae"] == 0.71)
+check("增量合并不丢其他指标", stored_metrics["targets"]["NOVEL-1"]["dg"] == -15.3)
+check("通用指标从 CSV 读回后仍可评估", evaluate_battery(
+    stored_novel, calibrated_thresholds, required_targets=("NOVEL-1",)
+)["all_layers_pass"] is True)
+check("CandidateIndex 可按任意靶点嵌套指标排序",
+      CandidateIndex.top_n(1, by="NOVEL-1:ipsae")[0]["candidate_id"] == "C0200")
+search_term = build_search_term(custom_config)
+check("PubMed 查询由项目靶点生成", "NOVEL-1" in search_term and "P00001" in search_term)
+generic_pockets = aggregate("NOVEL-1", [{
+    "target": "NOVEL-1", "interface_target_residues": ["A:10ALA", "A:20TRP"],
+}])
+check("未知靶点可聚合界面且不套用 MDM 口袋", generic_pockets["n_structures"] == 1 and generic_pockets["pocket_residues"] == {})
 
 # ============================================================
 section("结果汇总")
