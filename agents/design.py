@@ -26,15 +26,23 @@ from data_layer import EvidenceLogger, CandidateIndex, State, file_hash
 # 环境路径
 # ============================================================
 
-RFDIFF_PYTHON   = "/root/autodl-tmp/rfdiff_env/bin/python"
-CYCPEP_PYTHON   = "/root/miniconda3/envs/cycpep/bin/python"
-RFDIFF_DIR      = "/root/RFdiffusion"
-LIGANDMPNN_DIR  = "/root/LigandMPNN"
-COLABDESIGN_DIR = "/root/ColabDesign"
-COLABDESIGN_PARAMS = "/root/ColabDesign/params"
-TARGETS_DIR        = "/root/targets"
-OUTPUT_DIR         = "/root/designs"
-CUDA_DATA_DIR      = "/usr/local/cuda-12.1"
+# --- 新服务器 (RTX 4090, damodel) 路径 ---
+CYCPEP_CONDA  = "/root/damodel-tmp/envs/cycpep-prediction"
+CYCPEP_PYTHON   = f"{CYCPEP_CONDA}/bin/python"
+COLABDESIGN_DIR = "/root/workspace/NovaPeptide/tools/ColabDesign"
+COLABDESIGN_PARAMS = f"{COLABDESIGN_DIR}/params"
+CUDA_DATA_DIR   = f"{CYCPEP_CONDA}/lib/python3.10/site-packages/nvidia/cuda_nvcc"
+TARGETS_DIR     = "/root/damodel-tmp/novapeptide/targets"
+OUTPUT_DIR      = "/root/damodel-tmp/novapeptide/designs"
+
+# RFdiffusion + LigandMPNN 环境（待建立）
+RFDIFF_CONDA   = "/root/damodel-tmp/envs/rfdiffusion-design"
+RFDIFF_PYTHON   = f"{RFDIFF_CONDA}/bin/python"
+RFDIFF_DIR      = "/root/workspace/NovaPeptide/tools/RFdiffusion"
+LIGANDMPNN_DIR  = "/root/workspace/NovaPeptide/tools/LigandMPNN"
+
+# SE3-Transformer（新服务器需确认路径，按文档 8 节查找）
+SE3_ROOT = "/root/workspace/NovaPeptide"
 DEFAULT_SEED = None
 
 
@@ -410,7 +418,7 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600,
             cwd=RFDIFF_DIR,
-            env={**os.environ, "PYTHONPATH": f"/root/autodl-tmp:{os.environ.get('PYTHONPATH', '')}"})
+            env={**os.environ, "PYTHONPATH": f"{SE3_ROOT}:{os.environ.get('PYTHONPATH', '')}"})
         if r.returncode != 0:
             print(f"[RFdiff 失败] exit={r.returncode}")
             print(f"  stderr: {r.stderr[-500:]}")
@@ -454,7 +462,7 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, target_chain="A",
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
             cwd=LIGANDMPNN_DIR,
-            env={**os.environ, "PYTHONPATH": f"/root/autodl-tmp:{os.environ.get('PYTHONPATH', '')}"})
+            env={**os.environ, "PYTHONPATH": f"{SE3_ROOT}:{os.environ.get('PYTHONPATH', '')}"})
         if r.returncode != 0:
             print(f"[LigandMPNN 失败] exit={r.returncode} stderr={r.stderr[-300:]}")
             return []
@@ -492,8 +500,7 @@ from colabdesign import mk_af_model, clear_mem
 
 model = mk_af_model(protocol='hallucination', data_dir='{COLABDESIGN_PARAMS}')
 model.prep_inputs(length={L})
-model.set_seq(seq='{sequence}')
-model.restart()
+model.restart(seq='{sequence}')
 
 i = np.arange({L})
 ij = np.stack([i, i+{L}], -1)
