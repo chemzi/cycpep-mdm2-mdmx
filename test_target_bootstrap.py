@@ -332,6 +332,9 @@ class BootstrapTests(unittest.TestCase):
                 path, "NOVEL2", artifact_root, downloader=payload,
             )
             second_artifact = dict(materialized["targets"][1]["structure"])
+            second_selected = dict(
+                materialized["targets"][1]["structure_plan"]["selected"]
+            )
 
             rediscovered = edit_target_draft(
                 path, "NOVEL1", {"structure": {"source": "user_selected_rcsb"}},
@@ -351,6 +354,14 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(
                 rediscovered["targets"][1]["structure"]["coordinate_sha256"],
                 second_artifact["coordinate_sha256"],
+            )
+            self.assertEqual(
+                rediscovered["targets"][1]["structure"]["pdb_id"],
+                second_artifact["pdb_id"],
+            )
+            self.assertEqual(
+                rediscovered["targets"][1]["structure_plan"]["selected"],
+                second_selected,
             )
 
     def test_llm_failure_keeps_reviewable_draft(self):

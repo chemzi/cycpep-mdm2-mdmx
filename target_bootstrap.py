@@ -450,7 +450,7 @@ def _finish_edit(
             updated,
             experimental_provider=experimental_provider,
             predicted_provider=predicted_provider,
-            invalidate_target_indexes=changed_target_indexes,
+            target_indexes=changed_target_indexes,
         )
     elif _structure_readiness_inputs(config) != _structure_readiness_inputs(updated):
         updated = refresh_project_structure_readiness(updated)

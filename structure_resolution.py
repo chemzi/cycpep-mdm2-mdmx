@@ -301,18 +301,19 @@ def resolve_project_structures(
     *,
     experimental_provider: ExperimentalStructureProvider | None = None,
     predicted_provider: PredictedStructureProvider | None = None,
-    invalidate_target_indexes: set[int] | None = None,
+    target_indexes: set[int] | None = None,
 ) -> dict:
     updated = json.loads(json.dumps(config))
     for index, target in enumerate(updated["targets"]):
-        # Direct callers conservatively invalidate every target. Edit workflows
-        # pass the indexes whose discovery inputs changed so unrelated targets
-        # retain their already materialized coordinate artifacts.
-        if invalidate_target_indexes is None or index in invalidate_target_indexes:
-            structure = dict(target.get("structure") or {})
-            for field in _ARTIFACT_FIELDS:
-                structure.pop(field, None)
-            target["structure"] = structure
+        # Direct callers rediscover every target. Edit workflows restrict work
+        # to targets whose discovery inputs changed, preserving the complete
+        # plan and materialized artifact for every unchanged target.
+        if target_indexes is not None and index not in target_indexes:
+            continue
+        structure = dict(target.get("structure") or {})
+        for field in _ARTIFACT_FIELDS:
+            structure.pop(field, None)
+        target["structure"] = structure
         target["structure_plan"] = resolve_target_structure(
             target,
             experimental_provider=experimental_provider,
