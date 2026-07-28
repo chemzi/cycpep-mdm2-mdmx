@@ -492,8 +492,7 @@ from colabdesign import mk_af_model, clear_mem
 
 model = mk_af_model(protocol='hallucination', data_dir='{COLABDESIGN_PARAMS}')
 model.prep_inputs(length={L})
-model.set_seq(seq='{sequence}')
-model.restart()
+model.restart(seq='{sequence}')
 
 i = np.arange({L})
 ij = np.stack([i, i+{L}], -1)
