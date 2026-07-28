@@ -70,6 +70,10 @@ without changing the bootstrap, approval, or Design contracts. The current
 implementation discovers and grades public structures; it does not submit an
 expensive local prediction job.
 
+The UI-facing resource model, REST-adapter contract, request/response examples,
+and review/run state machine are documented in
+[frontend_api_contract.md](frontend_api_contract.md).
+
 ## Thresholds for novel targets
 
 When literature does not provide a defensible cutoff, use

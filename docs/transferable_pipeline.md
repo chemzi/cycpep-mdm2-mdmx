@@ -142,6 +142,9 @@ python -m agents.research
 当前 MDM 专属的 motif graft 和 ATSP 路线仍属于参考项目资产。新靶点默认只能启用
 结构导向路线；Research Agent 未找到新靶点 motif 时，不允许静默复用 MDM motif。
 
+面向 UI 的资源模型、REST adapter contract、请求/响应示例和审核/运行状态机见
+[frontend_api_contract.md](frontend_api_contract.md)。
+
 ## 服务器实测（AutoDL A100）
 
 2026-07-28 在 NVIDIA A100 40GB 环境完成了隔离冒烟测试：
