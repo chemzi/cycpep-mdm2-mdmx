@@ -301,15 +301,18 @@ def resolve_project_structures(
     *,
     experimental_provider: ExperimentalStructureProvider | None = None,
     predicted_provider: PredictedStructureProvider | None = None,
+    invalidate_target_indexes: set[int] | None = None,
 ) -> dict:
     updated = json.loads(json.dumps(config))
-    for target in updated["targets"]:
-        # Any discovery pass may select a different record. A previous artifact
-        # cannot remain authoritative across that transition.
-        structure = dict(target.get("structure") or {})
-        for field in _ARTIFACT_FIELDS:
-            structure.pop(field, None)
-        target["structure"] = structure
+    for index, target in enumerate(updated["targets"]):
+        # Direct callers conservatively invalidate every target. Edit workflows
+        # pass the indexes whose discovery inputs changed so unrelated targets
+        # retain their already materialized coordinate artifacts.
+        if invalidate_target_indexes is None or index in invalidate_target_indexes:
+            structure = dict(target.get("structure") or {})
+            for field in _ARTIFACT_FIELDS:
+                structure.pop(field, None)
+            target["structure"] = structure
         target["structure_plan"] = resolve_target_structure(
             target,
             experimental_provider=experimental_provider,
@@ -489,7 +492,7 @@ def assert_target_structure_ready(config: dict, target_id: str) -> dict:
                 f"target {target['id']} coordinate artifact has no valid SHA-256"
             )
         actual_hash = hashlib.sha256(coordinate_path.read_bytes()).hexdigest()
-        if actual_hash != expected_hash:
+        if actual_hash != expected_hash.lower():
             raise StructureNotReadyError(
                 f"target {target['id']} coordinate artifact hash does not match the approved config"
             )

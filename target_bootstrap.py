@@ -436,11 +436,21 @@ def _finish_edit(
 ) -> dict:
     previous_review = config.get("review") or {}
     updated = normalize_project_config(updated)
-    if _structure_discovery_inputs(config) != _structure_discovery_inputs(updated):
+    previous_discovery_inputs = _structure_discovery_inputs(config)
+    updated_discovery_inputs = _structure_discovery_inputs(updated)
+    if previous_discovery_inputs != updated_discovery_inputs:
+        changed_target_indexes = {
+            index
+            for index in range(max(len(previous_discovery_inputs), len(updated_discovery_inputs)))
+            if index >= len(previous_discovery_inputs)
+            or index >= len(updated_discovery_inputs)
+            or previous_discovery_inputs[index] != updated_discovery_inputs[index]
+        }
         updated = resolve_project_structures(
             updated,
             experimental_provider=experimental_provider,
             predicted_provider=predicted_provider,
+            invalidate_target_indexes=changed_target_indexes,
         )
     elif _structure_readiness_inputs(config) != _structure_readiness_inputs(updated):
         updated = refresh_project_structure_readiness(updated)

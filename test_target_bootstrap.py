@@ -1,5 +1,6 @@
 """Offline contract tests for target bootstrap, review, and structure resolution."""
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -184,6 +185,21 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual([row["id"] for row in edited["targets"]], ["NOVEL1", "NOVEL2"])
             self.assertTrue(edited["targets"][0]["structure_plan"]["binding_site_reviewed"])
 
+    def test_target_patch_allows_id_rename_and_rediscovers_structure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "draft.json"
+            self.bootstrapper().create_draft(identifier="NOVEL1", output_path=path)
+
+            edited = edit_target_draft(
+                path, "NOVEL1", {"id": "RENAMED"},
+                experimental_provider=ExperimentalProvider(),
+                predicted_provider=PredictedProvider(),
+            )
+
+            self.assertEqual(edited["targets"][0]["id"], "RENAMED")
+            self.assertEqual(edited["targets"][0]["metric_slug"], "renamed")
+            self.assertEqual(edited["targets"][0]["structure_plan"]["selected"]["id"], "9XYZ")
+
     def test_coordinates_must_be_materialized_before_design_ready(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "draft.json"
@@ -236,6 +252,31 @@ class BootstrapTests(unittest.TestCase):
             with self.assertRaises(StructureNotReadyError):
                 assert_target_structure_ready({"targets": [refreshed]}, "NOVEL1")
 
+    def test_planned_coordinate_accepts_uppercase_sha256(self):
+        with tempfile.TemporaryDirectory() as directory:
+            coordinate = Path(directory) / "target.pdb"
+            payload = b"ATOM      1  CA  ALA A   1\n"
+            coordinate.write_bytes(payload)
+            target = {
+                "id": "NOVEL1",
+                "binding_site": {"residues": [1], "status": "user_reviewed"},
+                "structure": {
+                    "chain": "A",
+                    "coordinate_path": str(coordinate),
+                    "coordinate_sha256": hashlib.sha256(payload).hexdigest().upper(),
+                },
+                "structure_plan": {
+                    "selected": {"id": "9XYZ", "kind": "experimental", "quality_grade": "A"},
+                    "quality_grade": "A",
+                },
+            }
+            refreshed = refresh_target_structure_readiness(target)
+            self.assertTrue(refreshed["structure_plan"]["ready_for_design"])
+            self.assertEqual(
+                assert_target_structure_ready({"targets": [refreshed]}, "NOVEL1")["id"],
+                "NOVEL1",
+            )
+
     def test_coordinate_download_rejects_untrusted_url(self):
         config = {"targets": [{
             "id": "NOVEL1",
@@ -275,6 +316,42 @@ class BootstrapTests(unittest.TestCase):
             self.assertNotIn("coordinate_path", structure)
             self.assertNotIn("coordinate_sha256", structure)
             self.assertFalse(rediscovered["targets"][0]["structure_plan"]["coordinates_ready"])
+
+    def test_rediscovery_preserves_unchanged_target_coordinate_artifact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "draft.json"
+            artifact_root = Path(directory) / "targets"
+            draft = self.bootstrapper().create_draft(identifier="NOVEL1", output_path=path)
+            second = json.loads(json.dumps(draft["targets"][0]))
+            second.update({"id": "NOVEL2", "uniprot": "P54321"})
+            draft["targets"].append(second)
+            path.write_text(json.dumps(draft), encoding="utf-8")
+            payload = lambda _url: b"ATOM      1  CA  ALA A   1\n"
+            materialize_draft_coordinates(path, "NOVEL1", artifact_root, downloader=payload)
+            materialized = materialize_draft_coordinates(
+                path, "NOVEL2", artifact_root, downloader=payload,
+            )
+            second_artifact = dict(materialized["targets"][1]["structure"])
+
+            rediscovered = edit_target_draft(
+                path, "NOVEL1", {"structure": {"source": "user_selected_rcsb"}},
+                experimental_provider=ExperimentalProvider([{
+                    "source": "rcsb", "kind": "experimental", "id": "8NEW",
+                    "pdb_id": "8NEW", "resolution": 2.0, "has_bound_partner": True,
+                    "pdb_url": "https://files.rcsb.org/download/8NEW.pdb",
+                }]),
+                predicted_provider=PredictedProvider(),
+            )
+
+            self.assertNotIn("coordinate_path", rediscovered["targets"][0]["structure"])
+            self.assertEqual(
+                rediscovered["targets"][1]["structure"]["coordinate_path"],
+                second_artifact["coordinate_path"],
+            )
+            self.assertEqual(
+                rediscovered["targets"][1]["structure"]["coordinate_sha256"],
+                second_artifact["coordinate_sha256"],
+            )
 
     def test_llm_failure_keeps_reviewable_draft(self):
         draft = self.bootstrapper(llm=FailingLLM()).create_draft(identifier="NOVEL1")
