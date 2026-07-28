@@ -407,7 +407,7 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
         f"inference.num_designs={n_designs}",
         f"inference.output_prefix={output_prefix}",
         f"contigmap.contigs=['{contig}']",
-        "diffuser.T=25",
+        "diffuser.T=50",
     ]
     if hotspots:
         # 补链名前缀: "54,93,96" → "A54,A93,A96"
@@ -450,6 +450,8 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, target_chain="A",
     chains_str = ",".join(sorted(binder_chains)) if binder_chains else "B"
     cmd = [
         RFDIFF_PYTHON, f"{LIGANDMPNN_DIR}/run.py",
+        "--model_type", "protein_mpnn",
+        f"--checkpoint_protein_mpnn={LIGANDMPNN_DIR}/model_params/proteinmpnn_v_48_020.pt",
         f"--pdb_path={backbone_pdb}",
         f"--out_folder={output_dir}",
         f"--batch_size={min(n_seq, 4)}",
