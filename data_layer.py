@@ -29,13 +29,31 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from project_config import (
+    global_value,
+    load_project_config,
+    required_target_ids,
+    target_slug,
+    target_value,
+    threshold_for_target,
+)
+
 ROOT = Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ.get("CYCPEP_DATA_DIR", ROOT / "data"))
-EVIDENCE_DIR = Path(os.environ.get("CYCPEP_EVIDENCE_DIR", ROOT / "evidence"))
+ACTIVE_PROJECT_CONFIG = load_project_config()
+_IS_REFERENCE_PROJECT = ACTIVE_PROJECT_CONFIG["project_id"] == "mdm2_mdmx_reference"
+_DEFAULT_DATA_DIR = (
+    ROOT / "data" if _IS_REFERENCE_PROJECT
+    else ROOT / "data" / "projects" / target_slug(ACTIVE_PROJECT_CONFIG["project_id"])
+)
+_DEFAULT_EVIDENCE_DIR = (
+    ROOT / "evidence" if _IS_REFERENCE_PROJECT
+    else ROOT / "evidence" / "projects" / target_slug(ACTIVE_PROJECT_CONFIG["project_id"])
+)
+DATA_DIR = Path(os.environ.get("CYCPEP_DATA_DIR", _DEFAULT_DATA_DIR))
+EVIDENCE_DIR = Path(os.environ.get("CYCPEP_EVIDENCE_DIR", _DEFAULT_EVIDENCE_DIR))
 STATE_PATH = DATA_DIR / "state.json"
 LOG_PATH   = EVIDENCE_DIR / "evidence_log.jsonl"
 INDEX_PATH = DATA_DIR / "candidate_index.csv"
-THRESHOLDS_CACHE = DATA_DIR / "_thresholds_cache.json"
 
 # v5: 七层指标电池主列。旧列名保留做 alias（见 _ALIAS_MAP），不破坏已有代码。
 INDEX_COLUMNS = [
@@ -44,6 +62,8 @@ INDEX_COLUMNS = [
     # --- 化学与结构交接契约 ---
     "cyclization_type","cyclization_bonds","design_pdb_path","design_pdb_hash",
     "manifest_path",
+    # --- v6 通用指标载荷（任意靶点；旧 MDM2/MDMX 列继续用于表格展示）---
+    "metrics_json",
     # --- L1 环肽质量 ---
     "plddt","l1_pass",
     # --- L2 界面置信度（ipSAE 主, ipTM 仅做参考, 不卡门槛）---
@@ -62,7 +82,8 @@ INDEX_COLUMNS = [
     # --- L7 可设计性（scRMSD）---
     "scrmsd","l7_pass",
     # --- 综合判定 ---
-    "all_layers_pass","pareto_front",
+    "all_layers_pass","metric_clearance","competition_clearance",
+    "triage_status","threshold_audit_json","pareto_front",
     # --- 可合成性（Critic 检查）---
     "synth_pass",
     # --- ADME bonus ---
@@ -98,90 +119,22 @@ def _alias_keys(row: dict) -> dict:
             row[new] = row.pop(old)
     return row
 
-
-_THRESHOLD_KEY_ALIASES = {
-    "L4_ring_closure": "L4_nc_term_dist",
-    "L6_pose_convergence": "L6_pose_rmsd",
-}
-
-_CONFIDENCE_TO_GRADE = {
-    "high": "paper_explicit",
-    "medium": "field_consensus",
-    "low": "estimate",
-}
-
-
-def _threshold_rank(entry: dict) -> int:
-    if not isinstance(entry, dict):
-        return 0
-    grade = str(
-        entry.get("evidence_grade")
-        or entry.get("grade")
-        or _CONFIDENCE_TO_GRADE.get(str(entry.get("confidence", "")).lower(), "")
-    ).lower()
-    if "paper" in grade:
-        return 3
-    if "field" in grade or "consensus" in grade or "design" in grade:
-        return 2
-    if "team" in grade or "provisional" in grade:
-        return 1
-    if "estimate" in grade or "经验" in grade:
-        return 0
-
-    source = str(entry.get("source", ""))
-    pmids = entry.get("pmids") or entry.get("pmid") or entry.get("source_pmid")
-    if "PMID" in source or "pmid" in source or pmids:
-        return 3
-    if source and "经验" not in source:
-        return 2
-    return 0
-
-
-def _normalize_thresholds(raw: dict) -> dict:
-    """
-    Normalize threshold aliases emitted by research scripts into keys read by
-    evaluate_battery. When duplicate aliases exist, keep the stronger evidence.
-    """
-    if not isinstance(raw, dict) or not raw:
-        return {}
-
-    normalized = {k: v for k, v in raw.items()}
-    conflicts = {}
-    for old_key, new_key in _THRESHOLD_KEY_ALIASES.items():
-        if old_key not in normalized:
-            continue
-
-        old_entry = normalized.pop(old_key)
-        new_entry = normalized.get(new_key)
-        merged = old_entry
-        if new_entry is not None:
-            old_rank = _threshold_rank(old_entry)
-            new_rank = _threshold_rank(new_entry)
-            merged = old_entry if old_rank > new_rank else new_entry
-            conflicts[old_key] = {
-                "discarded_for": new_key,
-                "kept_rank": _threshold_rank(merged),
-                "discarded_rank": _threshold_rank(new_entry if merged is old_entry else old_entry),
-            }
-
-        if isinstance(merged, dict):
-            inferred_grade = _CONFIDENCE_TO_GRADE.get(str(merged.get("confidence", "")).lower(), "")
-            merged.setdefault("evidence_grade", merged.get("evidence_grade") or merged.get("grade") or inferred_grade)
-        normalized[new_key] = merged
-
-    if conflicts:
-        normalized["_conflict_log"] = conflicts
-    return normalized
-
 # ============================================================
 # 全局状态
 # ============================================================
 class State:
     """读/写 state.json —— 所有Agent共享的'白板'"""
     
+    _project_config = ACTIVE_PROJECT_CONFIG
     _default = {
-        "project": "MDM2/MDMX双靶环肽Agent设计",
-        "targets": {"MDM2": {"uniprot": "Q00987"}, "MDMX": {"uniprot": "O15151"}},
+        "project": _project_config.get("name", _project_config["project_id"]),
+        "project_id": _project_config["project_id"],
+        "project_config": _project_config,
+        # Legacy mapping retained for older agents. New code reads project_config.
+        "targets": {
+            target["id"]: {key: value for key, value in target.items() if key != "id"}
+            for target in _project_config["targets"]
+        },
         "phase": "research",
         "round": 1,
         "pocket_differences": {},
@@ -218,39 +171,6 @@ class State:
         s = cls.load()
         s.setdefault("iteration_history", []).append(entry)
         cls.save(s)
-
-    @classmethod
-    def sync_thresholds_from_cache(cls) -> dict:
-        """
-        Read _thresholds_cache.json, normalize threshold aliases, and merge into
-        state["thresholds"]. Stronger evidence replaces weaker same-key entries.
-        """
-        if not THRESHOLDS_CACHE.exists():
-            return cls.load().get("thresholds", {})
-        try:
-            raw_cache = json.loads(THRESHOLDS_CACHE.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return cls.load().get("thresholds", {})
-
-        normalized = _normalize_thresholds(raw_cache)
-        state = cls.load()
-        existing = state.get("thresholds", {})
-        merged = dict(existing)
-        for key, value in normalized.items():
-            if key.startswith("_"):
-                merged[key] = value
-                continue
-            if key not in existing or _threshold_rank(value) > _threshold_rank(existing.get(key, {})):
-                merged[key] = value
-
-        state["thresholds"] = merged
-        cls.save(state)
-        EvidenceLogger.log("system", "thresholds_synced_from_cache", {
-            "cache_keys": list(normalized.keys()),
-            "conflicts": normalized.get("_conflict_log", {}),
-            "n_thresholds": len(merged),
-        }, phase="research")
-        return merged
 
 
 # ============================================================
@@ -290,7 +210,8 @@ class EvidenceLogger:
             "hotspot_analysis": hotspot_analysis,
             "known_binders": known_binders,
             "literature_refs": refs
-        }, targets=["both"], phase="research", round_num=1)
+        }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
+                phase="research", round_num=1)
 
     @classmethod
     def design_batch(cls, route: str, n_generated: int, n_valid: int,
@@ -299,32 +220,42 @@ class EvidenceLogger:
             "route": route, "n_generated": n_generated, "n_valid": n_valid,
             "tool_trace": {"tool_name": tool_name, "tool_version": tool_version,
                            "exit_code": 0, "duration_sec": duration_sec}
-        }, targets=["both"], phase="design")
+        }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
+                phase="design")
 
     @classmethod
     def candidate_registered(cls, candidate: dict):
         cls.log("design", "candidate_registered", {"candidate": candidate},
-                targets=["both"], phase="design")
+                targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
+                phase="design")
         cls._increment_counter()
 
     @classmethod
     def evaluate_layer_start(cls, layer: int, n_candidates: int, thresholds: dict):
         return cls.log("prediction", "evaluate_layer_start", {
             "layer": layer, "n_candidates_in": n_candidates, "thresholds": thresholds
-        }, targets=["both"], phase="evaluate")
+        }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
+                phase="evaluate")
 
     @classmethod
     def candidate_scored(cls, candidate_id: str, layer: int, scores: dict,
-                         tool_trace: dict, passed: bool):
-        has_mdmx_metric = any(
-            key.endswith("_mdmx") or "_mdmx_" in key
-            for key, value in scores.items()
-            if value not in (None, "")
-        )
+                         tool_trace: dict, passed: bool, target_ids: list | None = None):
+        if target_ids is None:
+            nested_targets = scores.get("metrics", {}).get("targets", {})
+            target_ids = list(nested_targets) if isinstance(nested_targets, dict) else []
+        if not target_ids:
+            configured = required_target_ids(State.load().get("project_config") or State._project_config)
+            target_ids = [
+                target for target in configured
+                if any(
+                    key.endswith(f"_{target_slug(target)}") and value not in (None, "")
+                    for key, value in scores.items()
+                )
+            ] or list(configured)
         cls.log("prediction", "candidate_scored", {
             "candidate_id": candidate_id, "layer": layer,
             "scores": scores, "tool_trace": tool_trace, "passed": passed
-        }, targets=["both" if has_mdmx_metric else "MDM2"], phase="evaluate")
+        }, targets=target_ids, phase="evaluate")
 
     @classmethod
     def candidate_eliminated(cls, candidate_id: str, layer: int,
@@ -339,7 +270,8 @@ class EvidenceLogger:
         cls.log("prediction", "evaluate_layer_complete", {
             "layer": layer, "n_in": n_in, "n_pass": n_pass, "n_fail": n_fail,
             "pass_rate": round(n_pass / max(n_in, 1), 3)
-        }, targets=["both"], phase="evaluate")
+        }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
+                phase="evaluate")
 
     @classmethod
     def critic_review(cls, issues: list, passed: bool, summary: str,
@@ -348,7 +280,8 @@ class EvidenceLogger:
             "issues": issues, "pass": passed,
             "summary": summary, "recommendation": recommendation,
             "metrics_snapshot": metrics
-        }, targets=["both"], phase="critic")
+        }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
+                phase="critic")
 
     @classmethod
     def planner_adjust(cls, trigger_event_id: str, old_strategy: dict,
@@ -357,7 +290,8 @@ class EvidenceLogger:
             "trigger_event_id": trigger_event_id,
             "old_strategy": old_strategy, "new_strategy": new_strategy,
             "reason": reason
-        }, targets=["both"], phase="iterate")
+        }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
+                phase="iterate")
 
     @classmethod
     def error(cls, agent: str, error_type: str, message: str,
@@ -478,9 +412,18 @@ class CandidateIndex:
             row["cyclization_bonds"] = json.dumps(
                 row["cyclization_bonds"], ensure_ascii=False, separators=(",", ":")
             )
+        if isinstance(row.get("metrics"), dict):
+            row["metrics_json"] = json.dumps(
+                row.pop("metrics"), ensure_ascii=False, separators=(",", ":")
+            )
+        if isinstance(row.get("threshold_audit"), dict):
+            row["threshold_audit_json"] = json.dumps(
+                row.pop("threshold_audit"), ensure_ascii=False, separators=(",", ":")
+            )
         for pass_col in [
             "l1_pass", "l2_pass", "l3_pass", "l4_pass", "l5_pass", "l6_pass",
-            "l7_pass", "all_layers_pass", "synth_pass", "pareto_front",
+            "l7_pass", "all_layers_pass", "metric_clearance",
+            "competition_clearance", "synth_pass", "pareto_front",
         ]:
             row.setdefault(pass_col, "")
         return {col: row.get(col, "") for col in INDEX_COLUMNS}
@@ -534,6 +477,29 @@ class CandidateIndex:
             if r["candidate_id"] == candidate_id:
                 found = True
                 for k, v in scores.items():
+                    if k == "metrics" and isinstance(v, dict):
+                        try:
+                            existing = json.loads(r.get("metrics_json") or "{}")
+                        except json.JSONDecodeError:
+                            existing = {}
+
+                        def merge(left, right):
+                            for name, value in right.items():
+                                if isinstance(value, dict) and isinstance(left.get(name), dict):
+                                    merge(left[name], value)
+                                else:
+                                    left[name] = value
+                            return left
+
+                        r["metrics_json"] = json.dumps(
+                            merge(existing, v), ensure_ascii=False, separators=(",", ":")
+                        )
+                        continue
+                    if k == "threshold_audit" and isinstance(v, dict):
+                        r["threshold_audit_json"] = json.dumps(
+                            v, ensure_ascii=False, separators=(",", ":")
+                        )
+                        continue
                     if k in INDEX_COLUMNS:
                         r[k] = str(v) if not isinstance(v, str) else v
                 r["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -569,9 +535,18 @@ class CandidateIndex:
         return [r for r in cls.load() if r.get(col) == str(layer_pass)]
 
     @classmethod
-    def top_n(cls, n: int = 10, by: str = "dual_score") -> list[dict]:
-        rows = [r for r in cls.load() if r.get(by)]
-        rows.sort(key=lambda r: float(r.get(by, 0)), reverse=True)
+    def top_n(cls, n: int = 10, by: str = "dual_score",
+              direction: str = "maximize") -> list[dict]:
+        """Rank a flat column or ``TARGET:metric`` nested objective."""
+        if direction not in {"maximize", "minimize"}:
+            raise ValueError("direction must be maximize or minimize")
+        if ":" in by:
+            target_id, metric = by.split(":", 1)
+            value_of = lambda row: _f(target_value(row, target_id, metric))
+        else:
+            value_of = lambda row: _f(row.get(by))
+        rows = [row for row in cls.load() if value_of(row) is not None]
+        rows.sort(key=value_of, reverse=direction == "maximize")
         return rows[:n]
 
     @classmethod
@@ -588,7 +563,7 @@ class CandidateIndex:
         def med(lst):
             return statistics.median(lst) if lst else 0
 
-        return {
+        result = {
             "total_candidates": len(rows),
             # 七层通过计数（v5 主判定）
             "l1_pass": sum(1 for r in rows if r.get("l1_pass") == "True"),
@@ -609,6 +584,19 @@ class CandidateIndex:
             "scrmsd_median": round(med(scrmsds), 3),
             "iptm_mdm2_median": round(med(iptm_m2), 3),  # 参考
         }
+        project_config = State.load().get("project_config") or State._project_config
+        result["target_metrics"] = {}
+        for target in required_target_ids(project_config):
+            metric_summary = {}
+            for metric in ("ipsae", "dg", "sc", "dsasa", "pose_rmsd"):
+                values = [
+                    value for value in (_f(target_value(row, target, metric)) for row in rows)
+                    if value is not None
+                ]
+                metric_summary[f"{metric}_median"] = round(med(values), 3)
+                metric_summary[f"{metric}_n"] = len(values)
+            result["target_metrics"][target] = metric_summary
+        return result
 
 
 # ============================================================
@@ -653,10 +641,37 @@ def _truthy(value) -> bool:
     return str(value).strip().lower() in ("true", "1", "yes")
 
 
+def _threshold_has_value(entry: dict) -> bool:
+    return bool(entry and entry.get("value") is not None)
+
+
+def _threshold_is_justified(entry: dict) -> tuple[bool, str]:
+    """Audit whether an entry may support final competition clearance.
+
+    Provisional numbers remain usable for metric exploration, but they cannot
+    turn ``competition_clearance`` true until evidence or calibration exists.
+    """
+    if not _threshold_has_value(entry):
+        return False, "missing_value"
+    source = str(entry.get("source") or "").strip()
+    if not source:
+        return False, "missing_source"
+    calibration = str(entry.get("calibration_status") or "").casefold()
+    if calibration in {"calibrated", "validated", "complete"}:
+        return True, "calibrated"
+    grade = str(entry.get("evidence_grade") or entry.get("grade") or "").casefold()
+    if grade in {
+        "paper_explicit", "method_explicit", "design_rule",
+        "field_consensus", "positive_control", "empirical_null",
+    }:
+        return True, grade
+    return False, grade or calibration or "ungraded"
+
+
 def evaluate_battery(
     c: dict,
     thresholds: dict | None = None,
-    required_targets: tuple[str, ...] = ("MDM2", "MDMX"),
+    required_targets: tuple[str, ...] | None = None,
 ) -> dict:
     """
     七层指标电池判定（v5 主判定）。
@@ -667,8 +682,8 @@ def evaluate_battery(
     参数:
       c: 候选 dict（含七层指标字段，旧名自动 alias）
       thresholds: 来自 state.json["thresholds"]
-      required_targets: 本次判定必须覆盖的靶标。双靶候选使用默认值；
-                        MDM2/MDMX 正对照标定可显式传 ("MDM2",) 或 ("MDMX",)
+      required_targets: 本次判定必须覆盖的靶标。None 时从 project_config
+                        读取；可传任意合法靶点 ID，不再限制 MDM2/MDMX。
 
     返回:
       {l1_pass..l7_pass: bool, all_layers_pass: bool,
@@ -677,39 +692,50 @@ def evaluate_battery(
     """
     c = _alias_keys(dict(c))  # 旧名兜底
     th = thresholds or {}
-    targets = tuple(target.upper() for target in required_targets)
-    if not targets or any(target not in ("MDM2", "MDMX") for target in targets):
-        raise ValueError("required_targets must contain MDM2 and/or MDMX")
+    if required_targets is None:
+        candidate_targets = c.get("required_targets")
+        if candidate_targets:
+            required_targets = tuple(candidate_targets)
+        else:
+            state = State.load()
+            config = state.get("project_config") or State._project_config
+            required_targets = required_target_ids(config)
+    targets = tuple(str(target).strip() for target in required_targets if str(target).strip())
+    if not targets:
+        raise ValueError("required_targets must contain at least one target id")
+    if len(set(target.casefold() for target in targets)) != len(targets):
+        raise ValueError("required_targets contains duplicate target ids")
 
-    def th_has(key): return bool(th.get(key) and th[key].get("value") is not None)
+    def th_has(key): return _threshold_has_value(th.get(key) or {})
 
     # L1 环肽质量：pLDDT
-    l1 = _cmp(_f(c.get("plddt")), th.get("L1_plddt", {}).get("operator", ">"),
+    l1 = _cmp(_f(global_value(c, "plddt")), th.get("L1_plddt", {}).get("operator", ">"),
               th.get("L1_plddt", {}).get("value", 0.8)) if th_has("L1_plddt") else False
 
     # L2 界面置信度：每个 required target 都必须有 ipSAE 并通过。
-    t2 = th.get("L2_ipsae", {})
+    t2_by_target = {
+        target: threshold_for_target(th, "L2_ipsae", target) for target in targets
+    }
     l2_by_target = {
         target: _cmp(
-            _f(c.get(f"ipsae_{target.lower()}")),
-            t2.get("operator", ">"),
-            t2.get("value"),
+            _f(target_value(c, target, "ipsae")),
+            t2_by_target[target].get("operator", ">"),
+            t2_by_target[target].get("value"),
         )
         for target in targets
     }
-    l2 = th_has("L2_ipsae") and all(l2_by_target.values())
+    l2 = all(_threshold_has_value(t2_by_target[target]) for target in targets) and all(l2_by_target.values())
 
     # L3 界面物理：两个靶标分别通过同一套 dG、SC、dSASA 定义。
     l3_by_target = {}
     for target in targets:
-        suffix = target.lower()
+        tdg = threshold_for_target(th, "L3_dg", target)
+        tsc = threshold_for_target(th, "L3_sc", target)
+        tdsasa = threshold_for_target(th, "L3_dsasa", target)
         l3_by_target[target] = all([
-            _cmp(_f(c.get(f"dg_{suffix}")), th.get("L3_dg", {}).get("operator", "<"),
-                 th.get("L3_dg", {}).get("value")),
-            _cmp(_f(c.get(f"sc_{suffix}")), th.get("L3_sc", {}).get("operator", ">"),
-                 th.get("L3_sc", {}).get("value")),
-            _cmp(_f(c.get(f"dsasa_{suffix}")), th.get("L3_dsasa", {}).get("operator", ">"),
-                 th.get("L3_dsasa", {}).get("value")),
+            _cmp(_f(target_value(c, target, "dg")), tdg.get("operator", "<"), tdg.get("value")),
+            _cmp(_f(target_value(c, target, "sc")), tsc.get("operator", ">"), tsc.get("value")),
+            _cmp(_f(target_value(c, target, "dsasa")), tdsasa.get("operator", ">"), tdsasa.get("value")),
         ])
     required_dg_method = th.get("L3_dg", {}).get("method")
     method_ok = (
@@ -718,7 +744,11 @@ def evaluate_battery(
         == str(required_dg_method).strip().casefold()
     )
     l3 = (
-        all(th_has(key) for key in ("L3_dg", "L3_sc", "L3_dsasa"))
+        all(
+            _threshold_has_value(threshold_for_target(th, key, target))
+            for key in ("L3_dg", "L3_sc", "L3_dsasa")
+            for target in targets
+        )
         and method_ok
         and all(l3_by_target.values())
     )
@@ -726,8 +756,8 @@ def evaluate_battery(
     # L4 环化几何 QC：使用可审计的 N-C 数值，布尔字段只保留作显示。
     pre = c.get("ring_closure_pre", "")
     post = c.get("ring_closure_post", "")
-    nc_pre = _f(c.get("nc_distance_pre"))
-    nc_post = _f(c.get("nc_distance_post"))
+    nc_pre = _f(global_value(c, "nc_distance_pre"))
+    nc_post = _f(global_value(c, "nc_distance_post"))
     t4 = th.get("L4_nc_term_dist", {})
     l4 = (
         th_has("L4_nc_term_dist")
@@ -736,27 +766,28 @@ def evaluate_battery(
     )
 
     # L5 设计意图：每个 required target 分别验证热点覆盖与位点一致性。
-    t5 = th.get("L5_hotspot_coverage", {})
     l5_by_target = {}
     for target in targets:
-        suffix = target.lower()
-        specific_site = c.get(f"site_consistency_{suffix}")
+        t5 = threshold_for_target(th, "L5_hotspot_coverage", target)
+        specific_site = target_value(c, target, "site_consistency")
         if specific_site in (None, "") and len(targets) == 1:
             specific_site = c.get("site_consistency")
         l5_by_target[target] = (
-            _cmp(_f(c.get(f"hotspot_cov_{suffix}")), t5.get("operator", ">="), t5.get("value"))
+            _cmp(_f(target_value(c, target, "hotspot_cov")), t5.get("operator", ">="), t5.get("value"))
             and _truthy(specific_site)
         )
-    l5 = th_has("L5_hotspot_coverage") and all(l5_by_target.values())
+    l5 = all(
+        _threshold_has_value(threshold_for_target(th, "L5_hotspot_coverage", target))
+        for target in targets
+    ) and all(l5_by_target.values())
 
     # L6 鲁棒性：每个 required target 分别检查多预测器 pose 和 seed 收敛。
-    t6 = th.get("L6_pose_rmsd", {})
-    min_seed_fraction = t6.get("min_seed_fraction", 0.67)
     l6_by_target = {}
     for target in targets:
-        suffix = target.lower()
-        pose = c.get(f"pose_rmsd_{suffix}")
-        seed = c.get(f"seed_convergence_{suffix}")
+        t6 = threshold_for_target(th, "L6_pose_rmsd", target)
+        min_seed_fraction = t6.get("min_seed_fraction", 0.67)
+        pose = target_value(c, target, "pose_rmsd")
+        seed = target_value(c, target, "seed_convergence")
         if len(targets) == 1:
             pose = pose if pose not in (None, "") else c.get("pose_rmsd")
             seed = seed if seed not in (None, "") else c.get("seed_convergence")
@@ -765,12 +796,15 @@ def evaluate_battery(
             and _f(seed) is not None
             and _f(seed) >= float(min_seed_fraction)
         )
-    l6 = th_has("L6_pose_rmsd") and all(l6_by_target.values())
+    l6 = all(
+        _threshold_has_value(threshold_for_target(th, "L6_pose_rmsd", target))
+        for target in targets
+    ) and all(l6_by_target.values())
 
     # L7 可设计性：scRMSD
     t7 = th.get("L7_scrmsd", {})
     l7 = (
-        _cmp(_f(c.get("scrmsd")), t7.get("operator", "<"), t7.get("value"))
+        _cmp(_f(global_value(c, "scrmsd")), t7.get("operator", "<"), t7.get("value"))
         if th_has("L7_scrmsd") else False
     )
 
@@ -782,9 +816,58 @@ def evaluate_battery(
     }
     failed = [k for k, v in layer_pass.items() if not v]
 
+    threshold_audit = {}
+    for key in ("L1_plddt", "L4_nc_term_dist", "L7_scrmsd"):
+        ok, reason = _threshold_is_justified(th.get(key) or {})
+        threshold_audit[key] = {"justified": ok, "reason": reason}
+    for key in ("L2_ipsae", "L3_dg", "L3_sc", "L3_dsasa", "L5_hotspot_coverage", "L6_pose_rmsd"):
+        for target in targets:
+            ok, reason = _threshold_is_justified(threshold_for_target(th, key, target))
+            threshold_audit[f"{key}:{target}"] = {"justified": ok, "reason": reason}
+    all_thresholds_justified = all(item["justified"] for item in threshold_audit.values())
+
+    missing_evidence = []
+    global_required = {
+        "plddt": global_value(c, "plddt"), "nc_distance_pre": global_value(c, "nc_distance_pre"),
+        "nc_distance_post": global_value(c, "nc_distance_post"), "scrmsd": global_value(c, "scrmsd"),
+    }
+    missing_evidence.extend(name for name, value in global_required.items() if value in (None, ""))
+    for target in targets:
+        for metric in (
+            "ipsae", "dg", "sc", "dsasa", "hotspot_cov",
+            "site_consistency", "pose_rmsd", "seed_convergence",
+        ):
+            value = target_value(c, target, metric)
+            if value in (None, "") and not (
+                len(targets) == 1 and metric in {"site_consistency", "pose_rmsd", "seed_convergence"}
+                and c.get(metric) not in (None, "")
+            ):
+                missing_evidence.append(f"{target}:{metric}")
+    missing_thresholds = [name for name, item in threshold_audit.items() if item["reason"] == "missing_value"]
+
+    hard_failures = []
+    if nc_pre is not None and nc_post is not None and th_has("L4_nc_term_dist") and not l4:
+        hard_failures.append("ring_closure_geometry")
+    if hard_failures:
+        triage_status = "invalid"
+    elif missing_evidence or missing_thresholds:
+        triage_status = "needs_more_evidence"
+    elif not failed:
+        triage_status = "shortlisted"
+    else:
+        triage_status = "needs_optimization"
+
     return {
         **layer_pass,
         "all_layers_pass": len(failed) == 0,
+        "metric_clearance": len(failed) == 0,
+        "competition_clearance": len(failed) == 0 and all_thresholds_justified,
+        "all_thresholds_justified": all_thresholds_justified,
+        "threshold_audit": threshold_audit,
+        "triage_status": triage_status,
+        "hard_failures": hard_failures,
+        "missing_evidence": missing_evidence,
+        "missing_thresholds": missing_thresholds,
         "failed_layers": failed,
         "required_targets": list(targets),
         "target_pass": {
@@ -797,50 +880,79 @@ def evaluate_battery(
             for target in targets
         },
         "layer_values": {
-            "L1_plddt": _f(c.get("plddt")),
+            "L1_plddt": _f(global_value(c, "plddt")),
             **{
-                f"L2_ipsae_{target.lower()}": _f(c.get(f"ipsae_{target.lower()}"))
+                f"L2_ipsae_{target_slug(target)}": _f(target_value(c, target, "ipsae"))
                 for target in targets
             },
             **{
-                f"L3_dg_{target.lower()}": _f(c.get(f"dg_{target.lower()}"))
+                f"L3_dg_{target_slug(target)}": _f(target_value(c, target, "dg"))
                 for target in targets
             },
             **{
-                f"L3_sc_{target.lower()}": _f(c.get(f"sc_{target.lower()}"))
+                f"L3_sc_{target_slug(target)}": _f(target_value(c, target, "sc"))
                 for target in targets
             },
             **{
-                f"L3_dsasa_{target.lower()}": _f(c.get(f"dsasa_{target.lower()}"))
+                f"L3_dsasa_{target_slug(target)}": _f(target_value(c, target, "dsasa"))
                 for target in targets
             },
             "L4_nc_distance_pre": nc_pre,
             "L4_nc_distance_post": nc_post,
             **{
-                f"L5_hotspot_cov_{target.lower()}": _f(c.get(f"hotspot_cov_{target.lower()}"))
+                f"L5_hotspot_cov_{target_slug(target)}": _f(target_value(c, target, "hotspot_cov"))
                 for target in targets
             },
             **{
-                f"L6_pose_rmsd_{target.lower()}": _f(
-                    c.get(f"pose_rmsd_{target.lower()}")
-                    if c.get(f"pose_rmsd_{target.lower()}") not in (None, "")
+                f"L6_pose_rmsd_{target_slug(target)}": _f(
+                    target_value(c, target, "pose_rmsd")
+                    if target_value(c, target, "pose_rmsd") not in (None, "")
                     else c.get("pose_rmsd") if len(targets) == 1 else None
                 )
                 for target in targets
             },
-            "L7_scrmsd": _f(c.get("scrmsd")),
+            "L7_scrmsd": _f(global_value(c, "scrmsd")),
         },
     }
 
 
 def compute_pareto_front(
     candidates: list[dict],
-    objectives: tuple[str, ...] = ("ipsae_mdm2", "ipsae_mdmx"),
+    objectives: tuple = ("ipsae_mdm2", "ipsae_mdmx"),
 ) -> list[str]:
-    """返回双靶目标下非支配候选 ID；所有 objectives 均按越大越好处理。"""
+    """Return non-dominated candidates for mixed-direction objectives.
+
+    Backward-compatible strings mean ``maximize``. A generic objective may be
+    ``{"target": "NEW1", "metric": "dg", "direction": "minimize"}`` or
+    ``{"key": "scrmsd", "direction": "minimize"}``.
+    """
+    specs = []
+    for objective in objectives:
+        if isinstance(objective, str):
+            specs.append({"key": objective, "direction": "maximize"})
+        elif isinstance(objective, dict):
+            direction = objective.get("direction", "maximize")
+            if direction not in {"maximize", "minimize"}:
+                raise ValueError(f"invalid Pareto direction: {direction}")
+            if not objective.get("key") and not (objective.get("target") and objective.get("metric")):
+                raise ValueError("Pareto objective requires key or target+metric")
+            specs.append(dict(objective, direction=direction))
+        else:
+            raise TypeError("Pareto objectives must be strings or dictionaries")
+
+    def objective_value(candidate: dict, spec: dict):
+        if spec.get("target"):
+            value = target_value(candidate, spec["target"], spec["metric"])
+        else:
+            value = candidate.get(spec["key"])
+        number = _f(value)
+        if number is None:
+            return None
+        return -number if spec["direction"] == "minimize" else number
+
     valid = []
     for candidate in candidates:
-        values = tuple(_f(candidate.get(key)) for key in objectives)
+        values = tuple(objective_value(candidate, spec) for spec in specs)
         if candidate.get("candidate_id") and all(value is not None for value in values):
             valid.append((candidate["candidate_id"], values))
 

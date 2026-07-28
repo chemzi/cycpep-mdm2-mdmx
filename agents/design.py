@@ -14,6 +14,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from data_layer import EvidenceLogger, CandidateIndex, State, file_hash
+from project_config import load_project_config, target_slug
+from structure_resolution import assert_target_structure_ready
+from target_bootstrap import assert_project_approved
 
 
 # ============================================================
@@ -23,10 +26,39 @@ from data_layer import EvidenceLogger, CandidateIndex, State, file_hash
 # 靶点→设计参数映射（来源：research.py TARGETS.pocket_residues，p53 Phe19/Trp23/Leu26 对齐）
 # MDM2 1YCR chain A: Phe19→LEU54, Trp23→VAL93, Leu26→HIS96
 # MDMX 3DAB chain A: Phe19→MET53, Trp23→VAL92, Leu26→PRO95
-HOTSPOT_MAP = {
-    "1YCR": {"chain": "A", "hotspots": "54,93,96", "lengths": [8, 10, 12]},
-    "3DAB": {"chain": "A", "hotspots": "53,92,95", "lengths": [8, 10, 12]},
-}
+ACTIVE_PROJECT_CONFIG = load_project_config()
+
+
+def _build_hotspot_map() -> dict:
+    mapping = {}
+    for target in ACTIVE_PROJECT_CONFIG["targets"]:
+        structure = target.get("structure") or {}
+        pdb_id = structure.get("pdb_id")
+        spec = {
+            "target_id": target["id"],
+            "pdb_id": pdb_id or target["id"],
+            "chain": structure.get("chain", "A"),
+            "hotspots": ",".join(
+                str(residue) for residue in (target.get("binding_site") or {}).get("residues", [])
+            ),
+            "lengths": (target.get("design") or {}).get("lengths", [10]),
+        }
+        mapping[str(target["id"]).upper()] = spec
+        if pdb_id:
+            mapping[str(pdb_id).upper()] = spec
+    return mapping
+
+
+HOTSPOT_MAP = _build_hotspot_map()
+
+
+def _require_mdm_reference_route(route_name: str):
+    target_ids = {target["id"] for target in ACTIVE_PROJECT_CONFIG["targets"]}
+    if target_ids != {"MDM2", "MDMX"}:
+        raise RuntimeError(
+            f"{route_name} contains MDM-specific motif knowledge and is disabled for "
+            f"project {ACTIVE_PROJECT_CONFIG['project_id']}; provide project-specific motifs instead"
+        )
 
 # 已知双靶结合肽种子序列（来源：research.py KNOWN_DUAL_BINDERS）
 # PMI: PMID 34589387; pDI: PMID 19910468; ATSP-7041: PMID 23946421
@@ -55,10 +87,6 @@ COLABDESIGN_PARAMS = Path(
     os.environ.get("COLABDESIGN_PARAMS", COLABDESIGN_ROOT / "params")
 )
 
-ROUTE_A_NAMES = {
-    "1YCR": "route_A_mdm2_first",
-    "3DAB": "route_A_mdmx_first",
-}
 _LAST_ISSUED_CANDIDATE_NUMBER = 0
 
 
@@ -69,7 +97,7 @@ _LAST_ISSUED_CANDIDATE_NUMBER = 0
 def design_afcyc(target: str, n: int = 10,
                  lengths: list = None,
                  hotspots: str = None,
-                 chain: str = "A") -> list[dict]:
+                 chain: str = None) -> list[dict]:
     """
     用 ColabDesign fixbb + cyclic offset 设计靶点导向环肽。
 
@@ -90,22 +118,27 @@ def design_afcyc(target: str, n: int = 10,
     Returns:
         list[dict]: 候选列表，写入 CandidateIndex + EvidenceLogger
     """
-    target = target.upper()
-    if target not in HOTSPOT_MAP:
+    assert_project_approved(ACTIVE_PROJECT_CONFIG)
+    target_key = target.upper()
+    if target_key not in HOTSPOT_MAP:
         raise ValueError(f"unsupported Route A target: {target}; choose from {sorted(HOTSPOT_MAP)}")
-    lengths = lengths or HOTSPOT_MAP[target]["lengths"]
+    target_spec = HOTSPOT_MAP[target_key]
+    target_id = target_spec["target_id"]
+    assert_target_structure_ready(ACTIVE_PROJECT_CONFIG, target_id)
+    pdb_id = target_spec["pdb_id"]
+    lengths = lengths or target_spec["lengths"]
     if any(length < 8 or length > 20 for length in lengths):
         raise ValueError("v5 product definition requires cyclic peptides of 8-20 aa")
-    hotspots = hotspots or HOTSPOT_MAP.get(target, {}).get("hotspots", "")
-    chain = chain or HOTSPOT_MAP.get(target, {}).get("chain", "A")
+    hotspots = hotspots or target_spec.get("hotspots", "")
+    chain = chain or target_spec.get("chain", "A")
 
-    target_pdb = TARGET_ROOT / f"{target}.pdb"
+    target_pdb = TARGET_ROOT / f"{pdb_id}.pdb"
     if not target_pdb.exists():
         raise FileNotFoundError(f"靶点 PDB 不存在: {target_pdb}")
     target_hash = file_hash(str(target_pdb))
 
-    route_name = ROUTE_A_NAMES[target]
-    batch_id = f"batch_{target}_len{'_'.join(map(str, lengths))}"
+    route_name = f"route_structure_{target_slug(target_id)}"
+    batch_id = f"batch_{target_slug(target_id)}_len{'_'.join(map(str, lengths))}"
     out_dir = DESIGN_ROOT / "route_A" / batch_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -251,6 +284,8 @@ def design_motif_graft(n: int = 400) -> list[dict]:
     Returns:
         list[dict]: 候选列表
     """
+    assert_project_approved(ACTIVE_PROJECT_CONFIG)
+    _require_mdm_reference_route("route_B_motif_graft")
     route_name = "route_B_motif_graft"
     batch_id = f"batch_motif_graft_{int(time.time())}"
     candidates = []
@@ -391,6 +426,8 @@ def design_atsp_cyclize(n: int = 200) -> list[dict]:
     Returns:
         list[dict]: 候选列表
     """
+    assert_project_approved(ACTIVE_PROJECT_CONFIG)
+    _require_mdm_reference_route("route_C_atsp")
     route_name = "route_C_atsp"
     batch_id = f"batch_atsp_{int(time.time())}"
     candidates = []

@@ -1,5 +1,5 @@
 """
-Step 1: RCSB Search API v2 — 检索 MDM2/MDMX 人源肽段复合物。
+Step 1: RCSB Search API v2 — 检索项目配置中的靶点肽段复合物。
 
 调用方式:
     python -m scripts.search_pdb > data/search_results.json
@@ -8,8 +8,10 @@ Step 1: RCSB Search API v2 — 检索 MDM2/MDMX 人源肽段复合物。
       人源和至少两条蛋白聚合物链的限制。靶标名称只作为输出标签。
 """
 
-import json, sys, time, urllib.request, urllib.error
+import argparse, json, sys, time, urllib.request, urllib.error
 from pathlib import Path
+
+from project_config import load_project_config
 
 RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
 
@@ -122,15 +124,29 @@ def _execute(query: dict, label: str) -> list[dict]:
 
 
 def main() -> int:
-    mdm2 = _search_target("MDM2", "Q00987")
-    mdmx = _search_target("MDMX", "O15151")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=None, help="project JSON config")
+    args = parser.parse_args()
+    config = load_project_config(args.config)
+    results_by_target = {}
+    target_metadata = {}
+    for target in config["targets"]:
+        target_id = target["id"]
+        results_by_target[target_id] = _search_target(target_id, target.get("uniprot", ""))
+        target_metadata[target_id] = {
+            "uniprot": target.get("uniprot"),
+            "required": target.get("required", True),
+        }
 
     output = {
-        "MDM2": mdm2,
-        "MDMX": mdmx,
-        "n_mdm2": len(mdm2),
-        "n_mdmx": len(mdmx),
-        "run_status": "complete" if mdm2 and mdmx else "failed_or_incomplete",
+        "project_id": config["project_id"],
+        "targets": target_metadata,
+        "results_by_target": results_by_target,
+        "counts_by_target": {name: len(rows) for name, rows in results_by_target.items()},
+        "run_status": "complete" if all(results_by_target.values()) else "failed_or_incomplete",
+        **results_by_target,
+        **{f"n_{target['metric_slug']}": len(results_by_target[target["id"]])
+           for target in config["targets"]},
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0

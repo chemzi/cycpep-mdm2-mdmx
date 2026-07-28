@@ -8,7 +8,8 @@
 #   or server-side programs and are therefore documented below as comments
 #   rather than pinned pip requirements.
 
-numpy>=1.24
+# Keep the NumPy 1.x ABI until the full scientific stack is rebuilt for 2.x.
+numpy>=1.24,<2
 biotite>=0.41
 
 # Optional Python packages for planned or environment-specific workflows:

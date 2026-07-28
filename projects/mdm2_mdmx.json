@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "project_id": "mdm2_mdmx_reference",
+  "name": "MDM2/MDMX dual-target cyclic peptide reference project",
+  "modality": "head_to_tail_cyclic_peptide",
+  "objective": "multi_target_binder",
+  "targets": [
+    {
+      "id": "MDM2",
+      "uniprot": "Q00987",
+      "required": true,
+      "structure": {"pdb_id": "1YCR", "chain": "A"},
+      "binding_site": {"residues": [54, 93, 96], "source": "curated_reference"},
+      "design": {"lengths": [8, 10, 12]}
+    },
+    {
+      "id": "MDMX",
+      "uniprot": "O15151",
+      "required": true,
+      "structure": {"pdb_id": "3DAB", "chain": "A"},
+      "binding_site": {"residues": [53, 92, 95], "source": "curated_reference"},
+      "design": {"lengths": [8, 10, 12]}
+    }
+  ],
+  "selection": {
+    "experiment_budget": 20,
+    "diversity_required": true,
+    "final_rule": "threshold_clearance_then_pareto"
+  },
+  "review": {
+    "status": "approved",
+    "revision": 1,
+    "approved_digest": "9bf42175d416986223da959e5c57a174ea7b809f567907d1e76a0b98e6d8b7c4",
+    "content_digest": "9bf42175d416986223da959e5c57a174ea7b809f567907d1e76a0b98e6d8b7c4",
+    "blocking_issues": [],
+    "warnings": [],
+    "checklist": {
+      "target_identity_resolved": true,
+      "binding_site_reviewed": true,
+      "structure_reviewed": true,
+      "ready_to_approve": true
+    },
+    "history": [
+      {"action": "approved_bundled_reference", "source": "curated_project_config"}
+    ]
+  }
+}

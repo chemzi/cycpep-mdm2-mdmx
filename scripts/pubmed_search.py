@@ -8,14 +8,26 @@ Step 6: PubMed E-utilities — 搜文献 + 摘要 + PMC 全文（优先用全文
 每篇论文含 title, authors, source, pubdate, doi, abstract, full_text (PMC 全文, 优先), source_type
 """
 
-import json, sys, time, urllib.request, urllib.parse, xml.etree.ElementTree as ET
+import argparse, json, sys, time, urllib.request, urllib.parse, xml.etree.ElementTree as ET
+
+from project_config import load_project_config
 
 PUBMED_SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 PUBMED_SUMMARY_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
 PUBMED_FETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 PMC_CONVERT_URL = "https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/"
 
-SEARCH_TERM = "MDM2 MDMX dual peptide inhibitor"
+def build_search_term(config: dict) -> str:
+    target_terms = []
+    for target in config["targets"]:
+        names = [target["id"]]
+        if target.get("gene_name"):
+            names.append(target["gene_name"])
+        if target.get("uniprot"):
+            names.append(target["uniprot"])
+        target_terms.append("(" + " OR ".join(dict.fromkeys(names)) + ")")
+    relationship = " AND ".join(target_terms) if len(target_terms) > 1 else target_terms[0]
+    return f"({relationship}) AND (peptide OR macrocycle OR cyclic peptide) AND (binder OR inhibitor OR ligand)"
 
 
 def search_pubmed(term: str, max_results: int = 30) -> list[str]:
@@ -130,7 +142,13 @@ def fetch_pmc_fulltext(pmc_ids: list[str]) -> dict[str, str]:
 
 
 def main() -> int:
-    pmids = search_pubmed(SEARCH_TERM, max_results=30)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=None, help="project JSON config")
+    parser.add_argument("--max-results", type=int, default=30)
+    args = parser.parse_args()
+    config = load_project_config(args.config)
+    search_term = build_search_term(config)
+    pmids = search_pubmed(search_term, max_results=args.max_results)
     print(f"[pubmed] 搜索到 {len(pmids)} 篇", file=sys.stderr)
 
     meta = fetch_metadata(pmids)
@@ -181,7 +199,9 @@ def main() -> int:
     )
 
     output = {
-        "search_term": SEARCH_TERM,
+        "project_id": config["project_id"],
+        "targets": [{"id": target["id"], "uniprot": target.get("uniprot")} for target in config["targets"]],
+        "search_term": search_term,
         "pmids": pmids,
         "papers": papers,
         "n_total": len(papers),
