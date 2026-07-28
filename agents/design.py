@@ -37,6 +37,7 @@ def _build_hotspot_map() -> dict:
         spec = {
             "target_id": target["id"],
             "pdb_id": pdb_id or target["id"],
+            "coordinate_path": structure.get("coordinate_path"),
             "chain": structure.get("chain", "A"),
             "hotspots": ",".join(
                 str(residue) for residue in (target.get("binding_site") or {}).get("residues", [])
@@ -132,7 +133,17 @@ def design_afcyc(target: str, n: int = 10,
     hotspots = hotspots or target_spec.get("hotspots", "")
     chain = chain or target_spec.get("chain", "A")
 
-    target_pdb = TARGET_ROOT / f"{pdb_id}.pdb"
+    coordinate_path = target_spec.get("coordinate_path")
+    if coordinate_path:
+        target_pdb = Path(coordinate_path)
+    else:
+        safe_id = "".join(ch for ch in str(pdb_id) if ch.isalnum() or ch in {"-", "_"})
+        if not safe_id:
+            raise ValueError(f"invalid pdb_id for TARGET_ROOT lookup: {pdb_id}")
+        target_root = TARGET_ROOT.resolve()
+        target_pdb = (target_root / f"{safe_id}.pdb").resolve()
+        if target_pdb.parent != target_root:
+            raise ValueError(f"invalid pdb_id escaped target root: {pdb_id}")
     if not target_pdb.exists():
         raise FileNotFoundError(f"靶点 PDB 不存在: {target_pdb}")
     target_hash = file_hash(str(target_pdb))

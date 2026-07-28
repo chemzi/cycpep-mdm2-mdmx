@@ -308,6 +308,8 @@ LLM 无法调用时仍返回 `201`；`bootstrap.llm_status=failed` 和 review wa
 `200 OK` 返回完整新 draft。每次修改都会把 `review.status` 复位为 `draft`、递增
 `revision`，并重新计算 warnings。即使只修改 binding-site residues/status，也必须重算
 `binding_site_reviewed` 和 `ready_for_design`；修改 target ID、UniProt 或结构来源时必须重新发现结构。
+`structure_plan`、identity 字段、`metric_slug` 和 coordinate artifact 元数据属于服务端字段，
+target PATCH 必须拒绝它们。结构来源或 ID 触发重新发现时，旧 coordinate path/hash 必须失效。
 
 ### 选择已解析候选
 
@@ -319,7 +321,9 @@ LLM 无法调用时仍返回 `201`；`bootstrap.llm_status=failed` 和 review wa
 
 服务端只能接受 `bootstrap.resolved_candidates` 中恰好匹配一个的 `id` 或 `uniprot`，随后更新
 target identity、记录 `bootstrap.selected_candidate`、清除 ambiguity 并重算结构。前端不能直接修改
-`bootstrap.ambiguous_identifier`。成功返回完整 `ProjectDraft`。
+`bootstrap.ambiguous_identifier`。如果选择结果改变了 target identity，服务端必须清空旧身份的
+binding site、natural partners、known binders、off-targets 和 research queries，并要求重新研究/
+审核；不得把原蛋白的表位带到新蛋白。成功返回完整 `ProjectDraft`。
 
 ### 物化结构坐标
 
@@ -329,8 +333,9 @@ target identity、记录 `bootstrap.selected_candidate`、清除 ambiguity 并�
 {"structure_record_id": "1YCR"}
 ```
 
-服务端验证该记录属于候选列表，从可信来源下载并验证坐标格式，写入后端控制的 artifact store，
-记录 SHA-256，并在响应中只暴露 opaque `coordinate_artifact_id`。只有此步骤成功后
+服务端验证该记录属于候选列表，只允许后端配置的 HTTPS host（默认 RCSB/AlphaFold DB，
+重定向也必须重新校验 host），下载并验证坐标格式，写入后端控制的 artifact store，
+记录强制 SHA-256，并在响应中只暴露 opaque `coordinate_artifact_id`。只有此步骤成功后
 `coordinates_ready` 才能为 true。不得接受浏览器提供的本地路径或任意下载 URL。
 
 ### 批准
@@ -486,5 +491,6 @@ UI 按钮规则：
 5. 在 adapter 层强制候选数、并发 run 数和 GPU 队列限制；浏览器提供的数值不可直接传给计算工具。
 6. run 必须绑定 `{project_id, project_config_revision, approved_digest}`；worker 启动后再次校验
    digest，输出目录也必须按 project/run 隔离，禁止复用 import 时加载的其他项目全局状态。
-7. Design 入队前验证 coordinate artifact 存在、可读且 SHA-256 匹配；把其后端目录设置为
-   子进程的 `CYCPEP_TARGET_ROOT`。元数据候选存在不等于坐标就绪。
+7. Design 入队前强制验证 coordinate artifact 存在、可读、SHA-256 字段存在且匹配；Design
+   直接读取批准配置中的内部 `coordinate_path`，不得再次从未规范化 target ID 拼文件名。
+   兼容旧项目时才回退到 `CYCPEP_TARGET_ROOT/<pdb_id>.pdb`。元数据候选存在不等于坐标就绪。

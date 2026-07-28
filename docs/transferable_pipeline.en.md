@@ -64,6 +64,8 @@ experimental-first policy:
 - Selecting a usable structure record does not mean its coordinates are ready.
   The backend must materialize and hash-check the coordinate artifact; binding-site
   residues, review status, and the target chain must also be confirmed.
+- Target identity or structure-provenance changes invalidate any prior coordinate
+  artifact and identity-specific enrichment; both must be materialized/reviewed again.
 
 The `ExperimentalStructureProvider` and `PredictedStructureProvider` protocols
 allow a future local AlphaFold 3, Boltz, or other prediction backend to be added

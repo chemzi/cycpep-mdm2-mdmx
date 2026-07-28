@@ -23,6 +23,10 @@ class StructureNotReadyError(RuntimeError):
     """Raised when design is requested without a reviewed usable structure."""
 
 
+TRUSTED_COORDINATE_HOSTS = frozenset({"files.rcsb.org", "alphafold.ebi.ac.uk"})
+_ARTIFACT_FIELDS = ("coordinate_path", "coordinate_sha256", "coordinate_format")
+
+
 class ExperimentalStructureProvider(Protocol):
     def find(self, target: dict) -> list[dict]: ...
 
@@ -175,6 +179,14 @@ def _materialized_coordinate_path(target: dict) -> Path | None:
     return path if path.is_file() and path.stat().st_size > 0 else None
 
 
+def _valid_sha256(value) -> bool:
+    return bool(
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value.lower())
+    )
+
+
 def refresh_target_structure_readiness(target: dict) -> dict:
     """Recompute derived structure gates without repeating public discovery.
 
@@ -196,7 +208,10 @@ def refresh_target_structure_readiness(target: dict) -> dict:
     chain_reviewed = bool(configured_structure.get("chain") or selected.get("chain"))
     coordinates_selected = bool(selected and selected_grade in {"A", "B", "C"})
     coordinate_path = _materialized_coordinate_path(updated)
-    coordinates_ready = bool(coordinates_selected and coordinate_path)
+    coordinate_sha256 = configured_structure.get("coordinate_sha256")
+    coordinates_ready = bool(
+        coordinates_selected and coordinate_path and _valid_sha256(coordinate_sha256)
+    )
     ready_for_design = bool(coordinates_ready and site_reviewed and chain_reviewed)
 
     if not selected:
@@ -286,9 +301,19 @@ def resolve_project_structures(
     *,
     experimental_provider: ExperimentalStructureProvider | None = None,
     predicted_provider: PredictedStructureProvider | None = None,
+    target_indexes: set[int] | None = None,
 ) -> dict:
     updated = json.loads(json.dumps(config))
-    for target in updated["targets"]:
+    for index, target in enumerate(updated["targets"]):
+        # Direct callers rediscover every target. Edit workflows restrict work
+        # to targets whose discovery inputs changed, preserving the complete
+        # plan and materialized artifact for every unchanged target.
+        if target_indexes is not None and index not in target_indexes:
+            continue
+        structure = dict(target.get("structure") or {})
+        for field in _ARTIFACT_FIELDS:
+            structure.pop(field, None)
+        target["structure"] = structure
         target["structure_plan"] = resolve_target_structure(
             target,
             experimental_provider=experimental_provider,
@@ -321,9 +346,34 @@ def refresh_project_structure_readiness(config: dict) -> dict:
     return updated
 
 
-def _download_coordinate_bytes(url: str, *, timeout: int = 30) -> bytes:
+def _validate_coordinate_url(url: str, allowed_hosts) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    hostname = (parsed.hostname or "").casefold()
+    if parsed.scheme.casefold() != "https" or not hostname:
+        raise StructureNotReadyError("coordinate URL must use HTTPS with a valid host")
+    if parsed.username or parsed.password:
+        raise StructureNotReadyError("coordinate URL must not contain user information")
+    if hostname not in {str(host).casefold() for host in allowed_hosts}:
+        raise StructureNotReadyError(f"coordinate host is not trusted: {hostname}")
+    return url
+
+
+class _TrustedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, allowed_hosts):
+        super().__init__()
+        self.allowed_hosts = allowed_hosts
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_coordinate_url(newurl, self.allowed_hosts)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _download_coordinate_bytes(url: str, *, timeout: int = 30,
+                               allowed_hosts=TRUSTED_COORDINATE_HOSTS) -> bytes:
+    _validate_coordinate_url(url, allowed_hosts)
     request = urllib.request.Request(url, headers={"User-Agent": "cycpep-agent/1.0"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    opener = urllib.request.build_opener(_TrustedRedirectHandler(allowed_hosts))
+    with opener.open(request, timeout=timeout) as response:
         return response.read()
 
 
@@ -334,6 +384,7 @@ def materialize_target_coordinates(
     *,
     structure_record_id: str | None = None,
     downloader=None,
+    allowed_hosts=TRUSTED_COORDINATE_HOSTS,
 ) -> dict:
     """Download and validate the selected target coordinates into backend storage.
 
@@ -361,8 +412,13 @@ def materialize_target_coordinates(
     source_url = selected.get("pdb_url")
     if not source_url:
         raise StructureNotReadyError(f"selected structure for {target_id} has no PDB coordinate URL")
+    _validate_coordinate_url(source_url, allowed_hosts)
 
-    payload = (downloader or _download_coordinate_bytes)(source_url)
+    payload = (
+        downloader(source_url)
+        if downloader
+        else _download_coordinate_bytes(source_url, allowed_hosts=allowed_hosts)
+    )
     if not isinstance(payload, bytes) or not payload.strip():
         raise StructureNotReadyError(f"downloaded coordinates for {target_id} are empty")
     text_head = payload[:200000].decode("utf-8", errors="ignore")
@@ -432,12 +488,15 @@ def assert_target_structure_ready(config: dict, target_id: str) -> dict:
                 f"target {target['id']} coordinate artifact is missing or empty"
             )
         expected_hash = (target.get("structure") or {}).get("coordinate_sha256")
-        if expected_hash:
-            actual_hash = hashlib.sha256(coordinate_path.read_bytes()).hexdigest()
-            if actual_hash != expected_hash:
-                raise StructureNotReadyError(
-                    f"target {target['id']} coordinate artifact hash does not match the approved config"
-                )
+        if not _valid_sha256(expected_hash):
+            raise StructureNotReadyError(
+                f"target {target['id']} coordinate artifact has no valid SHA-256"
+            )
+        actual_hash = hashlib.sha256(coordinate_path.read_bytes()).hexdigest()
+        if actual_hash != expected_hash.lower():
+            raise StructureNotReadyError(
+                f"target {target['id']} coordinate artifact hash does not match the approved config"
+            )
     if plan is None and not (target.get("structure") or {}).get("pdb_id"):
         raise StructureNotReadyError(
             f"target {target['id']} has neither a reviewed structure plan nor an explicit PDB ID"
