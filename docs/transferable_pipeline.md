@@ -44,6 +44,8 @@ python -m agents.research
 - 无可用实验结构时查询 AlphaFold DB，结合 pLDDT/PAE 分级 B/C/D；
 - 预测结构或 C 级结构标记 `needs_ensemble`，不能被描述成已验证结合构象；
 - 没有结构时返回 `prediction_required` 和 `required_next_step`，而非静默继续设计。
+- 选中结构元数据后还要由后端落盘并校验坐标 artifact；只有 artifact、target chain 和
+  表位残基都通过检查，`ready_for_design` 才为 true。
 
 本阶段已经定义 `ExperimentalStructureProvider` 和 `PredictedStructureProvider` 接口；
 后续接本地 AlphaFold 3、Boltz 或其他预测服务时只需实现 `find(target)`，不需要改
