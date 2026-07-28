@@ -17,6 +17,7 @@ from typing import Protocol
 from llm_client import ConfiguredLLM
 from project_config import normalize_project_config, target_slug
 from structure_resolution import (
+    TRUSTED_COORDINATE_HOSTS,
     materialize_target_coordinates,
     refresh_project_structure_readiness,
     resolve_project_structures,
@@ -407,6 +408,7 @@ def _structure_discovery_inputs(config: dict) -> list[tuple]:
             target.get("uniprot"),
             (target.get("structure") or {}).get("pdb_id"),
             (target.get("structure") or {}).get("model_id"),
+            (target.get("structure") or {}).get("source"),
         )
         for target in config.get("targets", [])
     ]
@@ -490,6 +492,15 @@ def edit_target_draft(path: str | Path, target_id: str, patch: dict, *,
     """Safely merge one target without replacing the complete targets array."""
     if not isinstance(patch, dict):
         raise BootstrapError("target patch must be an object")
+    server_managed_fields = {
+        "id", "uniprot", "uniprot_id", "gene_name", "protein_name",
+        "organism", "length", "metric_slug", "structure_plan",
+    }
+    forbidden = server_managed_fields.intersection(patch)
+    if forbidden:
+        raise BootstrapError(
+            "target patch contains server-managed fields: " + ", ".join(sorted(forbidden))
+        )
     protected_structure_fields = {"coordinate_path", "coordinate_sha256", "coordinate_format"}
     structure_patch = patch.get("structure") or {}
     if not isinstance(structure_patch, dict):
@@ -540,13 +551,41 @@ def select_resolved_candidate(path: str | Path, candidate_ref: str, *,
     updated = json.loads(json.dumps(config))
     old_target = updated["targets"][0]
     candidate_structure = candidate.get("structure") or {}
+    identity_changed = (
+        str(old_target.get("uniprot") or "").casefold()
+        != str(candidate.get("uniprot") or "").casefold()
+        or str(old_target.get("id") or "").casefold()
+        != str(candidate.get("id") or "").casefold()
+    )
     # Never carry a PDB selection, chain, or materialized coordinates from a
     # different identity. Discovery will populate a new structure plan.
-    updated["targets"][0] = {
-        **old_target,
-        **candidate,
-        "structure": candidate_structure,
-    }
+    if identity_changed:
+        updated["targets"][0] = {
+            **candidate,
+            "required": old_target.get("required", True),
+            "aliases": [],
+            "function_summary": None,
+            "biological_mechanism": None,
+            "binding_site": {
+                "description": None,
+                "residues": [],
+                "status": "unknown",
+                "confidence": "user_review_required",
+                "source_refs": [],
+            },
+            "natural_partners": [],
+            "known_binders": [],
+            "off_targets": [],
+            "research_queries": [],
+            "uncertainties": ["Target identity changed; enrichment and binding site require review."],
+            "structure": candidate_structure,
+        }
+    else:
+        updated["targets"][0] = {
+            **old_target,
+            **candidate,
+            "structure": candidate_structure,
+        }
     updated["bootstrap"]["ambiguous_identifier"] = False
     updated["bootstrap"]["selected_candidate"] = candidate
     return _finish_edit(
@@ -562,7 +601,8 @@ def select_resolved_candidate(path: str | Path, candidate_ref: str, *,
 def materialize_draft_coordinates(path: str | Path, target_id: str,
                                   target_root: str | Path, *,
                                   structure_record_id: str | None = None,
-                                  downloader=None) -> dict:
+                                  downloader=None,
+                                  allowed_hosts=TRUSTED_COORDINATE_HOSTS) -> dict:
     """Materialize selected coordinates and persist the refreshed review gate."""
     draft_path = Path(path)
     config = json.loads(draft_path.read_text(encoding="utf-8"))
@@ -570,6 +610,7 @@ def materialize_draft_coordinates(path: str | Path, target_id: str,
         config, target_id, target_root,
         structure_record_id=structure_record_id,
         downloader=downloader,
+        allowed_hosts=allowed_hosts,
     )
     return _finish_edit(
         draft_path,
