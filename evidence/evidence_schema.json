@@ -1,123 +1,293 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "环肽Agent证据日志",
-  "description": "每位Agent每次操作的完整记录，可追溯可复现",
-  "definitions": {
-    "base_entry": {
-      "type": "object",
-      "required": ["timestamp", "event_id", "agent", "event_type"],
-      "properties": {
-        "timestamp":    {"type": "string", "format": "date-time", "description": "ISO 8601"},
-        "event_id":     {"type": "string", "description": "UUID，本条目全局唯一标识"},
-        "agent":        {"type": "string", "enum": ["planner","research","design","prediction","critic","reporter","system"]},
-        "event_type":   {"type": "string", "description": "见下方枚举"},
-        "phase":        {"type": "string", "enum": ["research","design","evaluate","critic","iterate","report"]},
-        "round":        {"type": "integer", "minimum": 1},
-        "blocks":       {"type": "array", "items": {"type": "string"}, "description": "依赖的前置event_id列表"},
-        "targets":      {"type": "array", "items": {"type": "string", "enum": ["MDM2","MDMX","both"]}},
-        "notes":        {"type": "string"}
-      }
+  "title": "Cyclic peptide Agent evidence log v5",
+  "description": "Append-only evidence entries for Research, Design, Prediction, Critic and Planner.",
+  "type": "object",
+  "required": ["timestamp", "event_id", "agent", "event_type"],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
     },
+    "event_id": {
+      "type": "string"
+    },
+    "agent": {
+      "type": "string",
+      "enum": ["planner", "research", "design", "prediction", "critic", "reporter", "system"]
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "research_targets",
+        "tool_call",
+        "design_batch",
+        "candidate_registered",
+        "candidate_index_migrated",
+        "evaluate_layer_start",
+        "candidate_scored",
+        "candidate_eliminated",
+        "evaluate_layer_complete",
+        "critic_review",
+        "planner_adjust",
+        "candidate_finalized",
+        "error"
+      ]
+    },
+    "phase": {
+      "type": "string",
+      "enum": ["research", "design", "evaluate", "critic", "iterate", "report"]
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "targets": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Project target IDs; 'both' remains a legacy display value"
+    },
+    "candidate_id": {
+      "type": "string",
+      "pattern": "^C\\d{4,}$"
+    },
+    "candidate": {
+      "$ref": "#/$defs/candidate"
+    },
+    "scores": {
+      "$ref": "#/$defs/scores"
+    },
+    "tool_trace": {
+      "$ref": "#/$defs/tool_trace"
+    }
+  },
+  "$defs": {
     "candidate": {
       "type": "object",
       "required": ["candidate_id", "sequence"],
       "properties": {
-        "candidate_id":   {"type": "string", "pattern": "^C\\d{4}$"},
-        "sequence":       {"type": "string", "description": "单字母氨基酸序列"},
-        "length":         {"type": "integer", "minimum": 6, "maximum": 20},
-        "source_route":   {"type": "string", "enum": ["route_A_mdm2_first","route_A_mdmx_first","route_B_motif_graft","route_C_atsp"]},
-        "source_batch":   {"type": "string"},
-        "smiles":         {"type": "string", "description": "环肽SMILES（可选）"}
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^C\\d{4,}$"
+        },
+        "sequence": {
+          "type": "string",
+          "pattern": "^[ACDEFGHIKLMNPQRSTVWY]+$"
+        },
+        "length": {
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 20
+        },
+        "source_route": {
+          "type": "string"
+        },
+        "source_batch": {
+          "type": "string"
+        },
+        "cyclization_type": {
+          "type": "string",
+          "enum": ["head_to_tail_amide"]
+        },
+        "cyclization_bonds": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["atom_1", "atom_2", "bond_type"],
+            "properties": {
+              "atom_1": {
+                "type": "string"
+              },
+              "atom_2": {
+                "type": "string"
+              },
+              "bond_type": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "design_pdb_path": {
+          "type": ["string", "null"]
+        },
+        "design_pdb_hash": {
+          "type": ["string", "null"]
+        },
+        "manifest_path": {
+          "type": "string"
+        }
       }
     },
     "scores": {
       "type": "object",
       "properties": {
-        "iptm_mdm2":      {"type": "number", "minimum": 0, "maximum": 1},
-        "iptm_mdmx":      {"type": "number", "minimum": 0, "maximum": 1},
-        "dual_score":     {"type": "number", "description": "combined - 0.5 * asymmetry"},
-        "asymmetry":      {"type": "number", "minimum": 0, "maximum": 1, "description": "|iptm_mdm2 - iptm_mdmx|"},
-        "monomer_plddt":  {"type": "number", "minimum": 0, "maximum": 1},
-        "self_rmsd":      {"type": "number", "minimum": 0, "description": "骨架RMSD (Å)"},
-        "colab_iptm_mdm2":{"type": "number", "minimum": 0, "maximum": 1},
-        "colab_iptm_mdmx":{"type": "number", "minimum": 0, "maximum": 1},
-        "haddock_mdm2":   {"type": "number", "description": "HADDOCK score"},
-        "haddock_mdmx":   {"type": "number", "description": "HADDOCK score"},
-        "hotspot_cov_mdm2":{"type": "number", "minimum": 0, "maximum": 1, "description": "F/W/L热点覆盖率"},
-        "hotspot_cov_mdmx":{"type": "number", "minimum": 0, "maximum": 1, "description": "F/W/L热点覆盖率"},
-        "layer":          {"type": "integer", "minimum": 1, "maximum": 4}
+        "metrics": {
+          "type": "object",
+          "properties": {
+            "global": {"type": "object", "additionalProperties": true},
+            "targets": {
+              "type": "object",
+              "additionalProperties": {"$ref": "#/$defs/target_scores"}
+            }
+          }
+        },
+        "plddt": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "ipsae_mdm2": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "ipsae_mdmx": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "dg_mdm2": {
+          "type": "number"
+        },
+        "dg_mdmx": {
+          "type": "number"
+        },
+        "dg_method": {
+          "type": "string"
+        },
+        "sc_mdm2": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "sc_mdmx": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "dsasa_mdm2": {
+          "type": "number",
+          "minimum": 0
+        },
+        "dsasa_mdmx": {
+          "type": "number",
+          "minimum": 0
+        },
+        "nc_distance_pre": {
+          "type": "number",
+          "minimum": 0
+        },
+        "nc_distance_post": {
+          "type": "number",
+          "minimum": 0
+        },
+        "hotspot_cov_mdm2": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "hotspot_cov_mdmx": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "pose_rmsd_mdm2": {
+          "type": "number",
+          "minimum": 0
+        },
+        "pose_rmsd_mdmx": {
+          "type": "number",
+          "minimum": 0
+        },
+        "seed_convergence_mdm2": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "seed_convergence_mdmx": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "scrmsd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "l1_pass": {
+          "type": "boolean"
+        },
+        "l2_pass": {
+          "type": "boolean"
+        },
+        "l3_pass": {
+          "type": "boolean"
+        },
+        "l4_pass": {
+          "type": "boolean"
+        },
+        "l5_pass": {
+          "type": "boolean"
+        },
+        "l6_pass": {
+          "type": "boolean"
+        },
+        "l7_pass": {
+          "type": "boolean"
+        },
+        "all_layers_pass": {
+          "type": "boolean"
+        }
       }
+    },
+    "target_scores": {
+      "type": "object",
+      "properties": {
+        "ipsae": {"type": "number", "minimum": 0, "maximum": 1},
+        "ipae": {"type": "number", "minimum": 0},
+        "iptm": {"type": "number", "minimum": 0, "maximum": 1},
+        "dg": {"type": "number"},
+        "sc": {"type": "number", "minimum": 0, "maximum": 1},
+        "dsasa": {"type": "number", "minimum": 0},
+        "hotspot_cov": {"type": "number", "minimum": 0, "maximum": 1},
+        "site_consistency": {"type": ["boolean", "string"]},
+        "pose_rmsd": {"type": "number", "minimum": 0},
+        "seed_convergence": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": true
     },
     "tool_trace": {
       "type": "object",
-      "required": ["tool_name", "tool_version", "input_params", "exit_code"],
+      "required": ["tool_name", "exit_code"],
       "properties": {
-        "tool_name":      {"type": "string", "enum": ["afcycdesign_monomer","afcycdesign_complex","afcycdesign_binder","colabfold","haddock","biotite","proteinmpnn","pubmed_api","rcsb_api"]},
-        "tool_version":   {"type": "string"},
-        "input_params":   {"type": "object"},
-        "output_path":    {"type": "string"},
-        "output_hash":    {"type": "string", "description": "MD5 of output file"},
-        "exit_code":      {"type": "integer"},
-        "stdout_snippet": {"type": "string", "description": "关键输出行（截断到200字符）"},
-        "duration_sec":   {"type": "number"}
+        "tool_name": {
+          "type": "string"
+        },
+        "tool_version": {
+          "type": "string"
+        },
+        "input_params": {
+          "type": "object"
+        },
+        "output_path": {
+          "type": "string"
+        },
+        "output_hash": {
+          "type": "string"
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "stdout_snippet": {
+          "type": "string"
+        },
+        "duration_sec": {
+          "type": "number",
+          "minimum": 0
+        }
       }
-    }
-  },
-  "event_types": {
-    "research_targets": {
-      "extends": "base_entry",
-      "description": "Research Agent完成靶点调研",
-      "additional": ["pdb_complexes","hotspot_analysis","known_binders","literature_refs"]
-    },
-    "design_batch": {
-      "extends": "base_entry",
-      "description": "Design Agent产出一批候选",
-      "additional": ["route","n_generated","n_valid","tool_trace"]
-    },
-    "candidate_registered": {
-      "extends": "base_entry",
-      "description": "一条新候选进入评估系统",
-      "additional": ["candidate"]
-    },
-    "evaluate_layer_start": {
-      "extends": "base_entry",
-      "description": "开始评估某一层",
-      "additional": ["layer","n_candidates_in","thresholds"]
-    },
-    "candidate_scored": {
-      "extends": "base_entry",
-      "description": "单条候选在某层的评分结果",
-      "additional": ["candidate","scores","tool_trace","passed"]
-    },
-    "candidate_eliminated": {
-      "extends": "base_entry",
-      "description": "候选被淘汰",
-      "additional": ["candidate_id","reason","layer","actual_score","threshold"]
-    },
-    "evaluate_layer_complete": {
-      "extends": "base_entry",
-      "description": "某一层评估完成",
-      "additional": ["layer","n_in","n_pass","n_fail","pass_rate"]
-    },
-    "critic_review": {
-      "extends": "base_entry",
-      "description": "Critic Agent出评审报告",
-      "additional": ["issues","pass","summary","recommendation","metrics_snapshot"]
-    },
-    "planner_adjust": {
-      "extends": "base_entry",
-      "description": "Planner根据Critic调整策略",
-      "additional": ["trigger_event_id","old_strategy","new_strategy","reason"]
-    },
-    "candidate_finalized": {
-      "extends": "base_entry",
-      "description": "候选进入最终交付列表",
-      "additional": ["candidate","final_scores","rank","evidence_summary"]
-    },
-    "error": {
-      "extends": "base_entry",
-      "description": "任何错误或异常",
-      "additional": ["error_type","error_message","stack_trace","recovery_action"]
     }
   }
 }

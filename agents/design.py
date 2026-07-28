@@ -20,6 +20,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from data_layer import EvidenceLogger, CandidateIndex, State, file_hash
+from project_config import load_project_config, target_slug
+from structure_resolution import assert_target_structure_ready
+from target_bootstrap import assert_project_approved
 
 
 # ============================================================
@@ -56,6 +59,15 @@ CYCLIZATION_PAIRS = [("C", "C"), ("", "")]
 LINKER_MATRIX = ["GGGGS", "GGGS", "GGS", "GS", ""]
 SCAFFOLD_MUTABLE_AA = "ACDEFGHIKLMNPQRSTVWY"
 
+def design_afcyc(target: str, n: int = 10,
+                 lengths: list = None,
+                 hotspots: str = None,
+                 chain: str = None) -> list[dict]:
+    """
+    用 ColabDesign fixbb + cyclic offset 设计靶点导向环肽。
+
+    每对 (length, i) 生成一个子进程：
+      python <CYCPEP_DESIGN_ROOT>/route_A/<batch>/script_<cid>.py
 
 # ============================================================
 # Route A: RFpeptides 自由生成
@@ -431,6 +443,15 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
         EvidenceLogger.error("design", "rfdiff_exception", str(e))
         return False
 
+    return None
+
+
+def _proteinmpnn_adapter_available() -> bool:
+    try:
+        from proteinmpnn.run import get_model, score_seq
+        return callable(get_model) and callable(score_seq)
+    except (ImportError, AttributeError):
+        return False
 
 def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, target_chain="A",
                     fixed_residues=None):
@@ -548,6 +569,11 @@ clear_mem()
         except OSError:
             pass
 
+    生成策略：
+      1. ATSP 核心与 0/2/3/4 aa Gly/Ser linker 组合；
+      2. 保留 F/W/L 锚点，对其余位点做确定性的单点枚举；
+      3. 所有候选统一声明为首尾酰胺键闭环意图，交由 Prediction 构建和
+         检查真实闭环几何。
 
 def _ring_closure_check(pdb_path):
     """检查 N-Cα 到 C-Cα 距离 < 7Å（只读第一个 MODEL）"""
@@ -640,6 +666,11 @@ def _hotspot_fixed_residues(hotspots, binder_residues):
             fixed.append(f"{ch}{resi}")
         # L 残基不固定，让 backbone 几何自然偏置小氨基酸
     return " ".join(fixed)
+    assert_project_approved(ACTIVE_PROJECT_CONFIG)
+    _require_mdm_reference_route("route_C_atsp")
+    route_name = "route_C_atsp"
+    batch_id = f"batch_atsp_{int(time.time())}"
+    candidates = []
 
 
 def _validate_sequence(seq):

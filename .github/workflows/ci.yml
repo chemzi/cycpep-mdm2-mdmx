@@ -1,0 +1,57 @@
+name: Python CI
+
+on:
+  pull_request:
+    branches:
+      - chemzi/dev
+  push:
+    branches:
+      - chemzi/dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-tests:
+    name: python-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Compile core modules
+        run: |
+          python -m py_compile \
+            target_bootstrap.py \
+            structure_resolution.py \
+            agents/design.py
+
+      - name: Test target bootstrap and structure gates
+        run: python test_target_bootstrap.py
+
+      - name: Test data layer
+        run: python test_data_layer.py
+
+      - name: Test reliability regressions
+        run: python test_reliability_regressions.py
+
+      - name: Test threshold research
+        run: python test_threshold_research.py
