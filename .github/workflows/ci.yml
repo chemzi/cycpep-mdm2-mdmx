@@ -42,7 +42,11 @@ jobs:
           python -m py_compile \
             target_bootstrap.py \
             structure_resolution.py \
-            agents/design.py
+            agents/design.py \
+            agents/planner.py \
+            agents/critic.py \
+            agents/search_tree.py \
+            scripts/run_pipeline.py
 
       - name: Test target bootstrap and structure gates
         run: python test_target_bootstrap.py
@@ -55,3 +59,12 @@ jobs:
 
       - name: Test threshold research
         run: python test_threshold_research.py
+
+      - name: Test search tree engine
+        run: python test_search_tree.py
+
+      - name: Test planner and critic
+        run: python test_planner_critic.py
+
+      - name: Orchestrator dry-run smoke test
+        run: python scripts/run_pipeline.py --dry-run --max-nodes 6 --beam-width 2 --max-steps 12
