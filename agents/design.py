@@ -1,5 +1,5 @@
 """
-Design Agent v5 — 于嘉乐
+Design Agent v5.1.0 — 于嘉乐
 职责：RFpeptides 生成环肽骨架 → LigandMPNN 序列设计 → AfCycDesign refold 验证
 入口：design_rfpeptides(target_spec, design_config) → list[dict]
       design_motif_guided(target_spec, design_config) → list[dict]
@@ -14,7 +14,7 @@ Agent 职责边界：
   pLDDT > 0.8 的最终过滤由 Prediction Agent (Phase 3 L1) 负责。
 """
 
-import os, sys, json, time, subprocess, threading
+import math, os, sys, json, time, subprocess, threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -58,6 +58,7 @@ COLABDESIGN_DIR = os.environ.get(
 COLABDESIGN_PARAMS = os.environ.get(
     "COLABDESIGN_PARAMS", f"{COLABDESIGN_DIR}/params"
 )
+COLABDESIGN_COMMIT = "094e2cb3603dee7d99846e0977736bd943c830c2"
 SE3_ROOT = os.environ.get("SE3_ROOT", f"{RFDIFF_DIR}/env/SE3Transformer")
 CUDA_DATA_DIR = os.environ.get(
     "CUDA_DATA_DIR",
@@ -100,6 +101,30 @@ LIGANDMPNN_CHECKPOINT = os.environ.get(
     f"{LIGANDMPNN_DIR}/model_params/proteinmpnn_v_48_020.pt",
 )
 DEFAULT_SEED = None
+DESIGN_PIPELINE_VERSION = "5.1.0"
+
+# Geometry gates are deliberately labelled as compatibility checks.  A model
+# whose terminal atoms are close enough for a covalent bond is suitable for
+# downstream relaxation/validation; coordinates alone do not prove that the
+# bond has been chemically formed.
+CLOSURE_GEOMETRY = {
+    "head-to-tail_amide": {
+        "atom_1": "last:C",
+        "atom_2": "first:N",
+        # The wwPDB validation range for a peptide C-N bond is 1.30-1.45 Å.
+        # Design uses a wider pre-relax screen and records ideal-range status.
+        "screen_range_angstrom": (1.15, 2.00),
+        "ideal_range_angstrom": (1.30, 1.45),
+    },
+    "Cys-Cys_disulfide": {
+        "atom_1": "first:SG",
+        "atom_2": "last:SG",
+        # Typical protein disulfides are close to 2.03 Å.  The wider screen
+        # tolerates an unrelaxed predictor output without accepting CA proxies.
+        "screen_range_angstrom": (1.80, 2.30),
+        "ideal_range_angstrom": (1.90, 2.15),
+    },
+}
 
 
 # ============================================================
@@ -248,7 +273,9 @@ def design_rfpeptides(target_spec=None, design_config=None):
         rfdiff_ok = _run_rfdiff(
             target_pdb=config["target_pdb"], binder_len=L,
             n_designs=n_designs, output_prefix=f"{backbone_dir}/bb",
-            contig=f"{config['chain']}{target_range[0]}-{target_range[1]}/0 {L}-{L}",
+            contig=_binder_first_contig(
+                config["chain"], target_range[0], target_range[1], L
+            ),
             seed=config["seed"],
             hotspots=config.get("hotspots"),
             chain=config["chain"])
@@ -260,9 +287,19 @@ def design_rfpeptides(target_spec=None, design_config=None):
         print(f"[Route A] RFdiff 完成, 找到 {len(bb_files)} 个骨架PDB")
         for bb_path in bb_files[:n_designs]:
             total_gen += 1
+            try:
+                binder_chain = _infer_binder_chain(str(bb_path), L)
+            except ValueError as exc:
+                EvidenceLogger.error(
+                    "design", "rfdiff_binder_chain_invalid",
+                    f"{bb_path}: {exc}", recovery="skip ambiguous backbone",
+                )
+                continue
             mpnn_dir = f"{batch_dir}/mpnn_{bb_path.stem}"
             os.makedirs(mpnn_dir, exist_ok=True)
-            seqs = _run_ligandmpnn(str(bb_path), mpnn_dir, n_seq=8, target_chain=config["chain"])
+            seqs = _run_ligandmpnn(
+                str(bb_path), mpnn_dir, n_seq=8, binder_chain=binder_chain
+            )
             if not seqs:
                 print(f"[Route A] LigandMPNN 返回 0 条序列: {bb_path.name}")
                 continue
@@ -276,11 +313,20 @@ def design_rfpeptides(target_spec=None, design_config=None):
                 os.makedirs(refold_dir, exist_ok=True)
                 refold_pdb = f"{refold_dir}/refold.pdb"
                 plddt = _run_refold(seq, refold_pdb)
-                rc = _ring_closure_check(refold_pdb) if os.path.exists(refold_pdb) else {"pass": False}
+                cyclization = _infer_cyclization_type(seq)
+                rc = (
+                    _ring_closure_check(refold_pdb, cyclization, sequence=seq)
+                    if os.path.exists(refold_pdb)
+                    else {"pass": False, "reason": "refold_pdb_missing"}
+                )
 
                 if plddt and rc.get("pass"):
                     total_valid += 1
-                    manifest = _write_manifest(cid, seq, route_name, batch_id, refold_pdb, config, backbone_pdb=str(bb_path))
+                    manifest = _write_manifest(
+                        cid, seq, route_name, batch_id, refold_pdb, config,
+                        backbone_pdb=str(bb_path), cyclization=cyclization,
+                        ring_closure=rc,
+                    )
                     candidate = _candidate_from_manifest(
                         manifest, plddt,
                         notes={"quality_score": round(quality_score, 3)},
@@ -294,7 +340,8 @@ def design_rfpeptides(target_spec=None, design_config=None):
                     print(f"[Route A] refold失败: {cid} pLDDT={plddt} ring_closed={rc.get('pass')}")
 
     EvidenceLogger.design_batch(route=route_name, n_generated=total_gen,
-        n_valid=total_valid, tool_name="rfpeptides_pipeline", tool_version="v5",
+        n_valid=total_valid, tool_name="rfpeptides_pipeline",
+        tool_version=DESIGN_PIPELINE_VERSION,
         duration_sec=round(time.time()-t_batch, 1))
     return candidates
 
@@ -341,7 +388,9 @@ def design_motif_guided(target_spec=None, design_config=None):
         # Route B: motif 约束由 LigandMPNN 的 fixed_residues 实现，不通过 RFdiffusion inpaint_seq
         rfdiff_ok = _run_rfdiff(target_pdb=config["target_pdb"], binder_len=L,
             n_designs=n_per, output_prefix=f"{backbone_dir}/bb",
-            contig=f"{config['chain']}{target_range[0]}-{target_range[1]}/0 {L}-{L}",
+            contig=_binder_first_contig(
+                config["chain"], target_range[0], target_range[1], L
+            ),
             seed=config["seed"],
             hotspots=config.get("hotspots"),
             chain=config["chain"])
@@ -353,12 +402,20 @@ def design_motif_guided(target_spec=None, design_config=None):
         print(f"[Route B] {tmpl_name}: RFdiff 完成, 找到 {len(bb_files)} 个骨架PDB")
         for bb_path in bb_files[:n_per]:
             total_gen += 1
-            binder_res = _parse_binder_residues(str(bb_path), config["chain"])
+            try:
+                binder_chain = _infer_binder_chain(str(bb_path), L)
+            except ValueError as exc:
+                EvidenceLogger.error(
+                    "design", "rfdiff_binder_chain_invalid",
+                    f"{bb_path}: {exc}", recovery="skip ambiguous backbone",
+                )
+                continue
+            binder_res = _parse_binder_residues(str(bb_path), binder_chain)
             fixed_res = _hotspot_fixed_residues(tmpl_hotspots, binder_res) if binder_res else ""
             mpnn_dir = f"{batch_dir}/mpnn_{bb_path.stem}"
             os.makedirs(mpnn_dir, exist_ok=True)
             seqs = _run_ligandmpnn(str(bb_path), mpnn_dir, n_seq=8,
-                target_chain=config["chain"], fixed_residues=fixed_res or None)
+                binder_chain=binder_chain, fixed_residues=fixed_res or None)
             if not seqs:
                 print(f"[Route B] LigandMPNN 返回 0 条序列: {bb_path.name}")
                 continue
@@ -372,11 +429,20 @@ def design_motif_guided(target_spec=None, design_config=None):
                 os.makedirs(refold_dir, exist_ok=True)
                 refold_pdb = f"{refold_dir}/refold.pdb"
                 plddt = _run_refold(seq, refold_pdb)
-                rc = _ring_closure_check(refold_pdb) if os.path.exists(refold_pdb) else {"pass": False}
+                cyclization = _infer_cyclization_type(seq)
+                rc = (
+                    _ring_closure_check(refold_pdb, cyclization, sequence=seq)
+                    if os.path.exists(refold_pdb)
+                    else {"pass": False, "reason": "refold_pdb_missing"}
+                )
 
                 if plddt and rc.get("pass"):
                     total_valid += 1
-                    manifest = _write_manifest(cid, seq, route_name, batch_id, refold_pdb, config, backbone_pdb=str(bb_path))
+                    manifest = _write_manifest(
+                        cid, seq, route_name, batch_id, refold_pdb, config,
+                        backbone_pdb=str(bb_path), cyclization=cyclization,
+                        ring_closure=rc,
+                    )
                     candidate = _candidate_from_manifest(
                         manifest, plddt,
                         notes={"quality_score": round(quality_score, 3)},
@@ -390,7 +456,8 @@ def design_motif_guided(target_spec=None, design_config=None):
                     print(f"[Route B] refold失败: {cid} pLDDT={plddt} ring_closed={rc.get('pass')}")
 
     EvidenceLogger.design_batch(route=route_name, n_generated=total_gen,
-        n_valid=total_valid, tool_name="rfpeptides_motif", tool_version="v5",
+        n_valid=total_valid, tool_name="rfpeptides_motif",
+        tool_version=DESIGN_PIPELINE_VERSION,
         duration_sec=round(time.time()-t_batch, 1))
     return candidates
 
@@ -466,11 +533,18 @@ def design_atsp_derived(target_spec=None, design_config=None):
         os.makedirs(refold_dir, exist_ok=True)
         refold_pdb = f"{refold_dir}/refold.pdb"
         plddt = _run_refold(seq, refold_pdb)
-        rc = _ring_closure_check(refold_pdb) if os.path.exists(refold_pdb) else {"pass": False}
+        rc = (
+            _ring_closure_check(refold_pdb, desc, sequence=seq)
+            if os.path.exists(refold_pdb)
+            else {"pass": False, "reason": "refold_pdb_missing"}
+        )
 
         if plddt and rc.get("pass"):
             total_valid += 1
-            manifest = _write_manifest(cid, seq, route_name, batch_id, refold_pdb, config, cyclization=desc)
+            manifest = _write_manifest(
+                cid, seq, route_name, batch_id, refold_pdb, config,
+                cyclization=desc, ring_closure=rc,
+            )
             candidate = _candidate_from_manifest(manifest, plddt, notes={"design": desc})
             CandidateIndex.add(candidate)
             EvidenceLogger.log("design", "candidate_registered",
@@ -482,7 +556,8 @@ def design_atsp_derived(target_spec=None, design_config=None):
                 f"{cid}: pLDDT={plddt}", recovery="skip")
 
     EvidenceLogger.design_batch(route=route_name, n_generated=total_gen,
-        n_valid=total_valid, tool_name="atsp_derived", tool_version="v5",
+        n_valid=total_valid, tool_name="atsp_derived",
+        tool_version=DESIGN_PIPELINE_VERSION,
         duration_sec=round(time.time()-t_batch, 1))
     return candidates
 
@@ -566,17 +641,39 @@ def pareto_front(candidates, obj_x=None, obj_y=None, project_config=None):
 # candidate_manifest.json
 # ============================================================
 
-def _write_manifest(cid, seq, route, batch_id, refold_pdb, config, backbone_pdb=None, cyclization=None):
-    """每条候选输出 manifest.json"""
+def _write_manifest(
+        cid, seq, route, batch_id, refold_pdb, config, backbone_pdb=None,
+        cyclization=None, ring_closure=None):
+    """Write one versioned candidate manifest with audited closure geometry."""
     refold_dir = os.path.dirname(refold_pdb)
     manifest_path = f"{refold_dir}/manifest.json"
-    rc = _ring_closure_check(refold_pdb) if os.path.exists(refold_pdb) else {}
     if cyclization is None:
-        cyclization = "Cys-Cys_disulfide" if (seq.startswith("C") and seq.endswith("C")) else "head-to-tail_amide"
+        cyclization = _infer_cyclization_type(seq)
+    cyclization_description = str(cyclization)
+    canonical_cyclization = _canonical_cyclization_type(
+        cyclization_description, sequence=seq
+    )
+    rc = ring_closure
+    if rc is None:
+        rc = (
+            _ring_closure_check(
+                refold_pdb, canonical_cyclization, sequence=seq
+            )
+            if os.path.exists(refold_pdb)
+            else {"pass": False, "reason": "refold_pdb_missing"}
+        )
+    observed_type = rc.get("cyclization_type")
+    if observed_type and observed_type != canonical_cyclization:
+        raise ValueError(
+            "ring-closure result cyclization does not match manifest: "
+            f"{observed_type!r} != {canonical_cyclization!r}"
+        )
     manifest = {
+        "design_pipeline_version": DESIGN_PIPELINE_VERSION,
         "candidate_id": cid, "sequence": seq, "length": len(seq),
         "source_route": route, "source_batch": batch_id,
-        "cyclization_type": cyclization,
+        "cyclization_type": canonical_cyclization,
+        "cyclization_description": cyclization_description,
         "refold_pdb": refold_pdb,
         "refold_pdb_hash": file_hash(refold_pdb) if os.path.exists(refold_pdb) else "",
         "backbone_pdb": backbone_pdb or "",
@@ -599,7 +696,11 @@ def _write_manifest(cid, seq, route, batch_id, refold_pdb, config, backbone_pdb=
 def _manifest_summary(manifest):
     return {
         key: manifest[key]
-        for key in ["candidate_id", "sequence", "refold_pdb_hash", "manifest_path"]
+        for key in [
+            "design_pipeline_version", "candidate_id", "sequence",
+            "refold_pdb_hash", "manifest_path",
+        ]
+        if key in manifest
     }
 
 
@@ -642,6 +743,24 @@ def _candidate_from_manifest(manifest, plddt, notes=None):
 # 工具调用封装
 # ============================================================
 
+def _binder_first_contig(target_chain, target_start, target_end, binder_len):
+    """Build the RFdiffusion macrocyclic-binder contig in official chain order.
+
+    RFdiffusion assigns the first contig segment to internal chain ``a``.
+    Because ``inference.cyc_chains=a`` is used below, the generated binder must
+    be the first segment and the fixed receptor must follow it.
+    """
+    chain = str(target_chain or "").strip()
+    if len(chain) != 1:
+        raise ValueError(f"target chain must be one PDB chain ID, got {target_chain!r}")
+    start, end, length = int(target_start), int(target_end), int(binder_len)
+    if start > end:
+        raise ValueError(f"target residue range is reversed: {start}-{end}")
+    if not 8 <= length <= 20:
+        raise ValueError(f"binder length must be 8-20, got {length}")
+    return f"{length}-{length} {chain}{start}-{end}/0"
+
+
 def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
                 seed=None, hotspots=None, chain="A"):
     """RFdiffusion 子进程。hotspots: 逗号分隔的残基号如 '54,93,96'"""
@@ -678,32 +797,50 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
         return False
 
 
-def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, target_chain="A",
+def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, binder_chain=None,
                     fixed_residues=None):
-    """LigandMPNN 子进程。target_chain=受体链，设计除受体外的所有链。
+    """LigandMPNN subprocess with an explicitly validated binder chain.
+
+    The RFdiffusion output chain labels are discovered from the emitted PDB,
+    rather than inferred from the input receptor's chain label.
     fixed_residues: 空格分隔的 chain+resi 列表，如 'B25 B26 B27'，这些残基在 LigandMPNN 中固定不变。"""
-    # 自动检测 binder 链
-    binder_chains = set()
+    if LIGANDMPNN_MODEL_TYPE != "protein_mpnn":
+        EvidenceLogger.error(
+            "design", "unsupported_inverse_folding_model",
+            f"LIGANDMPNN_MODEL_TYPE={LIGANDMPNN_MODEL_TYPE!r}; "
+            "the validated protein-target workflow requires 'protein_mpnn'",
+            recovery="use protein_mpnn or add a separately tested adapter",
+        )
+        return []
     try:
-        with open(backbone_pdb) as f:
-            for line in f:
-                if line.startswith("ATOM"):
-                    ch = line[21]
-                    if ch != target_chain:
-                        binder_chains.add(ch)
-    except Exception:
-        pass
-    chains_str = ",".join(sorted(binder_chains)) if binder_chains else "B"
+        layout = _pdb_chain_residue_layout(backbone_pdb)
+        input_sequences = _pdb_chain_sequences(backbone_pdb)
+    except (OSError, ValueError) as exc:
+        EvidenceLogger.error(
+            "design", "ligandmpnn_backbone_invalid", str(exc), recovery="skip"
+        )
+        return []
+    binder_chain = str(binder_chain or "").strip()
+    if binder_chain not in layout:
+        EvidenceLogger.error(
+            "design", "ligandmpnn_binder_chain_missing",
+            f"{backbone_pdb}: binder chain {binder_chain!r} is absent",
+            recovery="skip",
+        )
+        return []
+    batch_size = min(max(1, int(n_seq)), 4)
+    number_of_batches = max(1, (int(n_seq) + batch_size - 1) // batch_size)
     cmd = [
         RFDIFF_PYTHON, f"{LIGANDMPNN_DIR}/run.py",
         "--model_type", LIGANDMPNN_MODEL_TYPE,
         f"--checkpoint_protein_mpnn={LIGANDMPNN_CHECKPOINT}",
         f"--pdb_path={backbone_pdb}",
         f"--out_folder={output_dir}",
-        f"--batch_size={min(n_seq, 4)}",
-        f"--number_of_batches={max(1, n_seq // 4)}",
+        f"--batch_size={batch_size}",
+        f"--number_of_batches={number_of_batches}",
         "--temperature=0.1", "--seed=42",
-        f"--chains_to_design={chains_str}",
+        "--fasta_seq_separation=:",
+        f"--chains_to_design={binder_chain}",
     ]
     if fixed_residues:
         cmd.append(f"--fixed_residues={fixed_residues}")
@@ -717,13 +854,28 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, target_chain="A",
         seqs = []
         for fa in sorted(Path(output_dir).glob("**/*.fa"))[:1]:  # 一个 PDB 只出一个 FASTA
             with open(fa) as fh:
+                is_generated_record = False
                 for line in fh:
                     line = line.strip()
-                    if line.startswith(">") or not line:
+                    if line.startswith(">"):
+                        # The first FASTA record is the native/reference
+                        # complex. Only records carrying a design id are model
+                        # outputs and may become candidates.
+                        is_generated_record = ", id=" in line
                         continue
-                    # LigandMPNN 输出: "受体序列:设计序列"，只取 binder 部分
-                    if ":" in line:
-                        line = line.split(":")[-1]
+                    if not line or not is_generated_record:
+                        continue
+                    try:
+                        line = _extract_ligandmpnn_binder_sequence(
+                            line, binder_chain, layout, input_sequences
+                        )
+                    except ValueError as exc:
+                        EvidenceLogger.error(
+                            "design", "ligandmpnn_fasta_invalid",
+                            f"{fa}: {exc}", recovery="skip malformed output",
+                        )
+                        return []
+                    is_generated_record = False
                     # 跳过全 G 或单氨基酸重复（LigandMPNN baseline）
                     if len(set(line)) <= 2:
                         continue
@@ -764,18 +916,47 @@ def _rfdiff_subprocess_env():
 
 
 def _build_refold_script(sequence, output_pdb):
-    """Build an AfCycDesign script that keeps ``sequence`` fixed on restart."""
+    """Build a fixed-sequence AfCycDesign prediction script.
+
+    ``design_3stage`` optimizes sequence logits and therefore cannot be used
+    for refolding an already designed LigandMPNN sequence.  Prediction uses
+    ``predict(seq=...)`` and verifies both ColabDesign's hard sequence and the
+    emitted PDB before the manifest is allowed downstream.
+    """
     if not _validate_sequence(sequence):
         raise ValueError("refold sequence must contain 8-20 standard amino acids")
     L = len(sequence)
     return f"""
-import sys, numpy as np
+import sys, subprocess, numpy as np
 sys.path.insert(0, {COLABDESIGN_DIR!r})
 from colabdesign import mk_af_model, clear_mem
+from colabdesign.af.alphafold.model import modules as af_modules
+
+head = subprocess.run(
+    ['git', '-C', {COLABDESIGN_DIR!r}, 'rev-parse', 'HEAD'],
+    capture_output=True, text=True, timeout=30, check=True,
+).stdout.strip()
+if head != {COLABDESIGN_COMMIT!r}:
+    raise RuntimeError(
+        'ColabDesign commit mismatch: expected=' + {COLABDESIGN_COMMIT!r}
+        + ' observed=' + head
+    )
+dirty = subprocess.run(
+    [
+        'git', '-C', {COLABDESIGN_DIR!r}, 'status', '--porcelain',
+        '--untracked-files=no'
+    ],
+    capture_output=True, text=True, timeout=30, check=True,
+).stdout.strip()
+if dirty:
+    raise RuntimeError('tracked ColabDesign sources are modified')
+source = open(af_modules.__file__, encoding='utf-8').read()
+if '"offset" in batch' not in source and "'offset' in batch" not in source:
+    raise RuntimeError('ColabDesign backend does not consume cyclic pairwise offset')
 
 model = mk_af_model(protocol='hallucination', data_dir={COLABDESIGN_PARAMS!r})
 model.prep_inputs(length={L})
-model.restart(seq={sequence!r})
+model.restart(seed=0, seq={sequence!r})
 
 i = np.arange({L})
 ij = np.stack([i, i+{L}], -1)
@@ -789,9 +970,43 @@ off = np.array(idx[:,None] - idx[None,:])
 off[:{L}, :{L}] = c_offset
 model._inputs['offset'] = off
 
-model.design_3stage(100, 100, 20)
-model.save_pdb({str(output_pdb)!r}, get_best=True)
-plddt = float(np.mean(model.aux['plddt']))
+aux = model.predict(
+    seq={sequence!r}, seed=0, models=[0], num_models=1, num_recycles=3,
+    sample_models=False, dropout=False, hard=True, soft=False,
+    verbose=False, return_aux=True,
+)
+observed = model.get_seq(get_best=False)
+if observed != [{sequence!r}]:
+    raise RuntimeError(
+        'fixed-sequence refold drift: requested=' + repr([{sequence!r}])
+        + ' observed=' + repr(observed)
+    )
+model.save_pdb({str(output_pdb)!r}, get_best=False, aux=aux)
+
+aa3 = {{
+    'ALA':'A','ARG':'R','ASN':'N','ASP':'D','CYS':'C','GLN':'Q','GLU':'E',
+    'GLY':'G','HIS':'H','ILE':'I','LEU':'L','LYS':'K','MET':'M','PHE':'F',
+    'PRO':'P','SER':'S','THR':'T','TRP':'W','TYR':'Y','VAL':'V'
+}}
+chains, seen = {{}}, set()
+with open({str(output_pdb)!r}) as handle:
+    for line in handle:
+        if line.startswith('ENDMDL'):
+            break
+        if not line.startswith('ATOM') or line[12:16].strip() != 'CA':
+            continue
+        key = (line[21].strip() or '_', line[22:27])
+        if key in seen:
+            continue
+        seen.add(key)
+        chains.setdefault(key[0], []).append(aa3.get(line[17:20].strip(), 'X'))
+pdb_sequences = {{chain: ''.join(values) for chain, values in chains.items()}}
+if len(pdb_sequences) != 1 or list(pdb_sequences.values()) != [{sequence!r}]:
+    raise RuntimeError(
+        'fixed-sequence PDB mismatch: requested=' + repr({sequence!r})
+        + ' observed=' + repr(pdb_sequences)
+    )
+plddt = float(np.mean(aux['plddt']))
 with open({f'{output_pdb}.plddt'!r}, 'w') as pf:
     pf.write(str(plddt))
 clear_mem()
@@ -805,6 +1020,13 @@ def _run_refold(sequence, output_pdb):
     """
     script = _build_refold_script(sequence, output_pdb)
     spath = f"/tmp/refold_{os.getpid()}_{hash(sequence) % 100000}.py"
+    plddt_file = f"{output_pdb}.plddt"
+    # A failed retry must never inherit a PDB or score produced by an older run.
+    for stale_artifact in (output_pdb, plddt_file):
+        try:
+            os.unlink(stale_artifact)
+        except FileNotFoundError:
+            pass
     with open(spath, "w") as f:
         f.write(script)
     try:
@@ -815,11 +1037,19 @@ def _run_refold(sequence, output_pdb):
         if r.returncode != 0:
             EvidenceLogger.error("design", "refold_nonzero",
                 f"exit={r.returncode} stderr={r.stderr[-200:]}")
-        plddt_file = f"{output_pdb}.plddt"
-        if os.path.exists(plddt_file):
-            with open(plddt_file) as pf:
-                return float(pf.read().strip())
-        return None
+            return None
+        if not os.path.isfile(output_pdb) or not os.path.isfile(plddt_file):
+            EvidenceLogger.error(
+                "design", "refold_artifact_missing",
+                f"fixed-sequence refold did not produce {output_pdb} and score",
+            )
+            return None
+        _verify_fixed_sequence_pdb(output_pdb, sequence)
+        with open(plddt_file) as pf:
+            plddt = float(pf.read().strip())
+        if not math.isfinite(plddt) or not 0.0 <= plddt <= 1.0:
+            raise ValueError(f"invalid refold pLDDT: {plddt!r}")
+        return plddt
     except Exception as e:
         EvidenceLogger.error("design", "refold_exception", str(e))
         return None
@@ -830,26 +1060,172 @@ def _run_refold(sequence, output_pdb):
             pass
 
 
-def _ring_closure_check(pdb_path):
-    """检查 N-Cα 到 C-Cα 距离 < 7Å（只读第一个 MODEL）"""
-    try:
-        with open(pdb_path) as f:
-            lines = f.readlines()
-        # 只取第一个 MODEL（避免 recycle 拼接干扰）
-        ca = []
-        for l in lines:
-            if l.startswith("ENDMDL"):
+def _canonical_cyclization_type(cyclization, sequence=None):
+    """Return the stable manifest value while accepting legacy descriptions."""
+    raw = str(cyclization or "").strip()
+    if not raw:
+        return _infer_cyclization_type(sequence or "")
+    normalized = raw.lower().replace("_", "-")
+    if "cys-cys-disulfide" in normalized:
+        return "Cys-Cys_disulfide"
+    if "head-to-tail-amide" in normalized:
+        return "head-to-tail_amide"
+    raise ValueError(f"unsupported cyclization type: {cyclization!r}")
+
+
+def _infer_cyclization_type(sequence):
+    """Infer the existing Design convention for routes without an explicit mode."""
+    sequence = str(sequence or "").strip().upper()
+    if not _validate_sequence(sequence):
+        raise ValueError("cannot infer cyclization from an invalid sequence")
+    if sequence.startswith("C") and sequence.endswith("C"):
+        return "Cys-Cys_disulfide"
+    return "head-to-tail_amide"
+
+
+def _first_model_residues(pdb_path):
+    """Parse canonical protein atoms from the first PDB model, fail closed."""
+    chains, residue_lookup = {}, {}
+    with open(pdb_path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            record = line[0:6].strip()
+            if record == "ENDMDL":
                 break
-            if l.startswith("ATOM") and " CA " in l:
-                ca.append(l)
-        if len(ca) < 2:
-            return {"pass": False, "reason": "too_few_CA", "n_ca": len(ca)}
-        n_term = [float(ca[0][30:38]), float(ca[0][38:46]), float(ca[0][46:54])]
-        c_term = [float(ca[-1][30:38]), float(ca[-1][38:46]), float(ca[-1][46:54])]
-        dist = sum((a-b)**2 for a,b in zip(n_term, c_term)) ** 0.5
-        return {"pass": dist < 7.0, "n_ca_dist": round(dist, 2)}
-    except Exception:
-        return {"pass": False, "reason": "io_error"}
+            if record != "ATOM":
+                continue
+            if len(line) < 54:
+                raise ValueError("short_atom_line")
+            altloc = line[16:17].strip()
+            if altloc not in {"", "A"}:
+                continue
+            chain = line[21:22].strip() or "_"
+            residue_number = line[22:26].strip()
+            insertion_code = line[26:27].strip()
+            residue_name = line[17:20].strip().upper()
+            atom_name = line[12:16].strip().upper()
+            if not residue_number:
+                raise ValueError("blank_residue_identifier")
+            try:
+                coordinate = tuple(
+                    float(line[start:end])
+                    for start, end in ((30, 38), (38, 46), (46, 54))
+                )
+            except ValueError as exc:
+                raise ValueError("invalid_atom_coordinate") from exc
+            if not all(math.isfinite(value) for value in coordinate):
+                raise ValueError("nonfinite_atom_coordinate")
+            residue_id = (chain, residue_number, insertion_code)
+            residue = residue_lookup.get(residue_id)
+            if residue is None:
+                residue = {
+                    "chain": chain,
+                    "number": residue_number,
+                    "insertion_code": insertion_code,
+                    "name": residue_name,
+                    "atoms": {},
+                }
+                residue_lookup[residue_id] = residue
+                chains.setdefault(chain, []).append(residue)
+            elif residue["name"] != residue_name:
+                raise ValueError("conflicting_residue_name")
+            residue["atoms"].setdefault(atom_name, coordinate)
+    if not chains:
+        raise ValueError("no_protein_atoms")
+    return chains
+
+
+def _ring_closure_check(pdb_path, cyclization_type, sequence=None):
+    """Check the actual prospective covalent atoms; never use terminal CA atoms.
+
+    This is a pre-relax geometric compatibility gate.  It records the observed
+    bond distance and both the screening and ideal ranges; it does not claim
+    that a coordinate file contains a chemically instantiated covalent bond.
+    """
+    try:
+        canonical = _canonical_cyclization_type(
+            cyclization_type, sequence=sequence
+        )
+    except ValueError as exc:
+        return {
+            "pass": False,
+            "reason": "unsupported_cyclization",
+            "detail": str(exc),
+        }
+    criterion = CLOSURE_GEOMETRY[canonical]
+    base = {
+        "pass": False,
+        "assessment": "pre_relax_geometry_compatibility",
+        "cyclization_type": canonical,
+        "atom_1": criterion["atom_1"],
+        "atom_2": criterion["atom_2"],
+        "screen_range_angstrom": list(criterion["screen_range_angstrom"]),
+        "ideal_range_angstrom": list(criterion["ideal_range_angstrom"]),
+    }
+    try:
+        chains = _first_model_residues(pdb_path)
+        if len(chains) != 1:
+            return {
+                **base,
+                "reason": "ambiguous_monomer_chain",
+                "chains": sorted(chains),
+            }
+        chain, residues = next(iter(chains.items()))
+        if len(residues) < 2:
+            return {
+                **base,
+                "reason": "too_few_residues",
+                "chain": chain,
+                "n_residues": len(residues),
+            }
+        first, last = residues[0], residues[-1]
+        if sequence is not None and len(residues) != len(sequence):
+            return {
+                **base,
+                "reason": "sequence_length_mismatch",
+                "chain": chain,
+                "pdb_length": len(residues),
+                "sequence_length": len(sequence),
+            }
+        if canonical == "head-to-tail_amide":
+            atom_1_name, atom_2_name = "C", "N"
+            atom_1 = last["atoms"].get(atom_1_name)
+            atom_2 = first["atoms"].get(atom_2_name)
+        else:
+            if first["name"] != "CYS" or last["name"] != "CYS":
+                return {
+                    **base,
+                    "reason": "terminal_residues_not_cysteine",
+                    "first_residue": first["name"],
+                    "last_residue": last["name"],
+                }
+            atom_1_name = atom_2_name = "SG"
+            atom_1 = first["atoms"].get(atom_1_name)
+            atom_2 = last["atoms"].get(atom_2_name)
+        missing = []
+        if atom_1 is None:
+            missing.append(criterion["atom_1"])
+        if atom_2 is None:
+            missing.append(criterion["atom_2"])
+        if missing:
+            return {**base, "reason": "closure_atom_missing", "missing": missing}
+        distance = math.dist(atom_1, atom_2)
+        screen_min, screen_max = criterion["screen_range_angstrom"]
+        ideal_min, ideal_max = criterion["ideal_range_angstrom"]
+        passed = screen_min <= distance <= screen_max
+        return {
+            **base,
+            "pass": passed,
+            "reason": "geometry_compatible" if passed else "distance_out_of_range",
+            "chain": chain,
+            "distance_angstrom": round(distance, 3),
+            "ideal_geometry": ideal_min <= distance <= ideal_max,
+        }
+    except (OSError, ValueError) as exc:
+        return {
+            **base,
+            "reason": "pdb_parse_failed",
+            "detail": str(exc),
+        }
 
 
 # ============================================================
@@ -880,23 +1256,160 @@ def _pdb_residue_range(pdb_path, chain="A"):
     return min_r, max_r
 
 
-def _parse_binder_residues(pdb_path, target_chain="A"):
-    """解析 backbone PDB 中 binder 链的残基号列表，返回 [(chain, resi), ...]"""
-    residues = []
-    try:
-        with open(pdb_path) as f:
-            for line in f:
-                if line.startswith("ATOM") and " CA " in line:
-                    ch = line[21]
-                    if ch != target_chain:
-                        resi = line[22:26].strip()
-                        # 去重：同一 chain+resi 只记一次
-                        key = (ch, resi)
-                        if not residues or residues[-1] != key:
-                            residues.append(key)
-    except Exception:
-        pass
-    return residues
+def _pdb_chain_residue_layout(pdb_path):
+    """Return first-model PDB residues grouped in emitted chain order."""
+    layout, seen = {}, {}
+    model_seen = False
+    with open(pdb_path) as handle:
+        for line in handle:
+            if line.startswith("MODEL"):
+                if model_seen:
+                    break
+                model_seen = True
+                continue
+            if line.startswith("ENDMDL"):
+                break
+            if not line.startswith("ATOM"):
+                continue
+            chain = line[21].strip()
+            residue_number = line[22:26].strip()
+            insertion_code = line[26].strip()
+            if not chain or not residue_number:
+                raise ValueError(f"blank chain/residue identifier in {pdb_path}")
+            residue_id = (residue_number, insertion_code)
+            layout.setdefault(chain, [])
+            seen.setdefault(chain, set())
+            if residue_id not in seen[chain]:
+                seen[chain].add(residue_id)
+                layout[chain].append(residue_id)
+    if not layout:
+        raise ValueError(f"no ATOM residues found in {pdb_path}")
+    return layout
+
+
+def _pdb_chain_sequences(pdb_path):
+    """Return first-model canonical sequences in emitted PDB chain order."""
+    amino_acids = {
+        "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
+        "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
+        "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
+        "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+    }
+    sequences, seen = {}, {}
+    model_seen = False
+    with open(pdb_path) as handle:
+        for line in handle:
+            if line.startswith("MODEL"):
+                if model_seen:
+                    break
+                model_seen = True
+                continue
+            if line.startswith("ENDMDL"):
+                break
+            if not line.startswith("ATOM"):
+                continue
+            chain = line[21].strip()
+            residue_number = line[22:26].strip()
+            insertion_code = line[26].strip()
+            residue_name = line[17:20].strip().upper()
+            if not chain or not residue_number:
+                raise ValueError(f"blank chain/residue identifier in {pdb_path}")
+            residue_id = (residue_number, insertion_code)
+            sequences.setdefault(chain, [])
+            seen.setdefault(chain, set())
+            if residue_id in seen[chain]:
+                continue
+            seen[chain].add(residue_id)
+            if residue_name not in amino_acids:
+                raise ValueError(
+                    f"non-canonical residue {residue_name!r} in chain {chain} "
+                    f"at {residue_number}{insertion_code}"
+                )
+            sequences[chain].append(amino_acids[residue_name])
+    if not sequences:
+        raise ValueError(f"no ATOM residues found in {pdb_path}")
+    return {chain: "".join(values) for chain, values in sequences.items()}
+
+
+def _verify_fixed_sequence_pdb(pdb_path, requested_sequence):
+    """Require one monomer chain whose saved PDB sequence is exactly requested."""
+    requested_sequence = str(requested_sequence or "").strip().upper()
+    if not _validate_sequence(requested_sequence):
+        raise ValueError("requested fixed sequence is invalid")
+    observed = _pdb_chain_sequences(pdb_path)
+    if len(observed) != 1 or list(observed.values()) != [requested_sequence]:
+        raise ValueError(
+            f"fixed-sequence PDB mismatch: requested={requested_sequence!r} "
+            f"observed={observed!r}"
+        )
+    return observed
+
+
+def _infer_binder_chain(pdb_path, expected_length):
+    """Require one unique emitted chain with the requested binder length."""
+    layout = _pdb_chain_residue_layout(pdb_path)
+    if len(layout) < 2:
+        raise ValueError(
+            f"RFdiffusion binder complex requires at least two chains, got "
+            f"{sorted(layout)}"
+        )
+    candidates = [
+        chain for chain, residues in layout.items()
+        if len(residues) == int(expected_length)
+    ]
+    if len(candidates) != 1:
+        counts = {chain: len(residues) for chain, residues in layout.items()}
+        raise ValueError(
+            f"expected one {expected_length}-residue binder chain, "
+            f"found {candidates}; chain lengths={counts}"
+        )
+    return candidates[0]
+
+
+def _parse_binder_residues(pdb_path, binder_chain):
+    """Return ``[(chain, residue_id), ...]`` for one validated binder chain."""
+    layout = _pdb_chain_residue_layout(pdb_path)
+    if binder_chain not in layout:
+        raise ValueError(f"binder chain {binder_chain!r} is absent from {pdb_path}")
+    return [
+        (binder_chain, f"{number}{insertion}")
+        for number, insertion in layout[binder_chain]
+    ]
+
+
+def _extract_ligandmpnn_binder_sequence(
+        encoded, binder_chain, layout, input_sequences=None):
+    """Extract the binder segment and verify that every receptor chain stayed fixed."""
+    # LigandMPNN's parse_PDB() builds ``mask_c`` from a sorted chain list and
+    # writes FASTA segments in that order, even when the PDB records first
+    # encounter the chains in a different order.
+    chain_order = sorted(layout)
+    if binder_chain not in layout:
+        raise ValueError(f"binder chain {binder_chain!r} is absent from PDB layout")
+    segments = str(encoded).strip().upper().split(":")
+    if len(segments) != len(chain_order):
+        raise ValueError(
+            f"FASTA has {len(segments)} chain segments, PDB has "
+            f"{len(chain_order)} chains"
+        )
+    if input_sequences is not None:
+        for chain, segment in zip(chain_order, segments):
+            if chain == binder_chain:
+                continue
+            expected = input_sequences.get(chain)
+            if expected is None or segment != expected:
+                raise ValueError(
+                    f"fixed chain {chain} changed during inverse folding"
+                )
+    sequence = segments[chain_order.index(binder_chain)]
+    expected_length = len(layout[binder_chain])
+    if len(sequence) != expected_length:
+        raise ValueError(
+            f"binder FASTA length {len(sequence)} != PDB length {expected_length}"
+        )
+    if not sequence or any(amino_acid not in SCAFFOLD_MUTABLE_AA for amino_acid in sequence):
+        raise ValueError("binder FASTA contains non-standard amino acids")
+    return sequence
 
 
 def _hotspot_positions(template_seq):
@@ -1103,7 +1616,9 @@ def dual_target_score(iptm_mdm2, iptm_mdmx):
 if __name__ == "__main__":
     import argparse
 
-    p = argparse.ArgumentParser(description="Design Agent v5")
+    p = argparse.ArgumentParser(
+        description=f"Design Agent v{DESIGN_PIPELINE_VERSION}"
+    )
     p.add_argument("--route", choices=["A","B","C","all"], default="all")
     p.add_argument("--target", default=None,
                    help="configured target ID or PDB ID; defaults to the first approved target")

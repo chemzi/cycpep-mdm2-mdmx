@@ -8,6 +8,8 @@ MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当�
 - [中文：可迁移流程、结构闸门与阈值校准](docs/transferable_pipeline.md)
 - [English: transferable workflow, structure gate, and calibration](docs/transferable_pipeline.en.md)
 - [前端 API contract、请求示例与状态机](docs/frontend_api_contract.md)
+- [环肽反向折叠：ProteinMPNN 的适用范围与验证要求](docs/cyclic_inverse_folding.md)
+- [Design v5.1.0：固定序列与闭环几何完整性门禁](docs/design_integrity_v5.1.0.md)
 
 ```bash
 python -m target_bootstrap draft --identifier P12345 --type uniprot --output projects/new_target.draft.json
@@ -68,10 +70,14 @@ pip install -r requirements.txt
 当前仓库状态下：
 
 - `Research` 已有可运行实现
-- `Design` 已有三条路线的代码骨架和候选登记逻辑
-- `Prediction` / `Planner` / `Critic` 仍在待实现阶段
+- `Design` 已有 RFdiffusion 宏环骨架、ProteinMPNN 反向折叠、
+  AfCycDesign 固定序列回折、真实闭环原子几何门禁和候选登记逻辑
+- `Prediction` 已有严格 artifact 摄取、七层指标计算、状态判定和断点续跑实现
+- `Planner` / `Critic` 仍在待实现阶段
 
-所以如果只是复现当前已提交代码、跑数据层测试和 Research/Design 的基础逻辑，先装 `requirements.txt` 就够；如果要跑完整 v5 设计方案，需要再按具体路线补齐上面的外部工具环境。
+所以如果只是跑数据层、Research 和不调用模型的回归测试，先装
+`requirements.txt` 即可；完整 Design/Prediction 需要按部署文档准备模型、
+checkpoint 和外部工具。
 
 ## 当前运行策略
 
@@ -117,6 +123,7 @@ from data_layer import (
 cycpep-mdm2-mdmx/
 ├── data_layer.py              ← State、Evidence、候选索引、七层判定
 ├── test_data_layer.py         ← 隔离的数据层集成测试
+├── test_prediction_pipeline.py ← Prediction 契约、指标与端到端回归测试
 ├── test_reliability_regressions.py ← Research/Design 回归测试
 ├── 数据层使用手册.md           ← 必读
 ├── v5可靠性修复说明_人类可读版.md
@@ -131,7 +138,7 @@ cycpep-mdm2-mdmx/
     ├── planner.py             ← 长时任务规划与迭代（待实现）
     ├── critic.py              ← 失败审查与回溯（待实现）
     ├── design.py              ← 于嘉乐：三条设计路线
-    ├── prediction.py          ← 王修远：七层计算评估（待实现）
+    ├── prediction.py          ← 七层生产编排入口（无 placeholder/demo）
     └── research.py            ← RCSB/PubMed/阈值证据调研
 ```
 
@@ -146,8 +153,21 @@ cycpep-mdm2-mdmx/
 
 ```bash
 python3 test_data_layer.py
+python3 test_design.py
+python3 -m unittest -v test_prediction_pipeline.py
 ./.venv/bin/python -m unittest -v test_reliability_regressions.py
 ```
+
+部署环境中的固定序列 GPU 回归测试需要显式启用，普通 CI 会安全跳过：
+
+```bash
+CYCPEP_RUN_GPU_TESTS=1 \
+/root/damodel-tmp/envs/cycpep-prediction/bin/python \
+-m unittest -v test_design_gpu.py
+```
+
+Prediction 的 Design 交接契约、artifact schema、七层计算定义、状态语义与
+4090 运行命令见 [Prediction 生产管线](./docs/prediction_pipeline.md)。
 
 强制从网络重跑 Research、绕过旧缓存：
 
