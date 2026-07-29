@@ -1,0 +1,405 @@
+"""Tool adapters and the versioned raw-artifact ingestion boundary."""
+
+from __future__ import annotations
+
+import json
+import os
+import shlex
+import subprocess
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+from .contracts import (
+    SCHEMA_VERSION,
+    ContractError,
+    file_sha256,
+    object_sha256,
+)
+from .metrics import parse_prodigy_output, parse_rosetta_interface_output
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    argv: tuple[str, ...]
+    exit_code: int
+    stdout: str
+    stderr: str
+    duration_sec: float
+
+    def trace(self, tool_name: str, tool_version: str = "") -> dict:
+        return {
+            "tool_name": tool_name,
+            "tool_version": tool_version,
+            "input_params": {"argv": list(self.argv)},
+            "exit_code": self.exit_code,
+            "duration_sec": self.duration_sec,
+            "stdout_snippet": self.stdout[-500:],
+            "stderr_snippet": self.stderr[-500:],
+        }
+
+
+def run_command(
+    argv: Iterable[str],
+    *,
+    timeout: int,
+    cwd: str | Path | None = None,
+    env: dict | None = None,
+) -> CommandResult:
+    """Run an explicit argv list.  Shell expansion is intentionally disabled."""
+    command = tuple(str(value) for value in argv)
+    if not command:
+        raise ContractError("empty_command", "adapter command cannot be empty")
+    started = time.monotonic()
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(cwd) if cwd else None,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise ContractError("tool_unavailable", f"tool not found: {command[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ContractError(
+            "tool_timeout", f"command timed out after {timeout}s: {shlex.join(command)}"
+        ) from exc
+    return CommandResult(
+        argv=command,
+        exit_code=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+        duration_sec=time.monotonic() - started,
+    )
+
+
+def _resolve_artifact_path(raw: str, base: Path, label: str) -> Path:
+    if not str(raw or "").strip():
+        raise ContractError("artifact_path_missing", f"{label} path is missing")
+    path = Path(raw).expanduser()
+    path = path.resolve() if path.is_absolute() else (base / path).resolve()
+    if not path.is_file():
+        raise ContractError("artifact_missing", f"{label} not found: {path}")
+    return path
+
+
+def _materialize_file(entry: dict, key: str, base: Path, label: str) -> dict:
+    path = _resolve_artifact_path(entry.get(key), base, label)
+    actual = file_sha256(path)
+    declared = str(entry.get(f"{key}_sha256") or "").strip().lower()
+    if declared and declared != actual:
+        raise ContractError(
+            "artifact_hash_mismatch",
+            f"{label} hash mismatch: declared={declared}, actual={actual}",
+        )
+    return {"path": path, "sha256": actual}
+
+
+def _validate_prediction_entry(entry: dict, base: Path, label: str) -> dict:
+    if not isinstance(entry, dict):
+        raise ContractError("artifact_entry_type", f"{label} must be an object")
+    allowed = {
+        "predictor", "seed", "primary", "pdb", "pdb_sha256", "pae",
+        "pae_sha256", "metadata", "metadata_sha256", "binder_chain",
+    }
+    unknown = sorted(set(entry) - allowed)
+    if unknown:
+        raise ContractError(
+            "artifact_unknown_keys", f"{label} contains unknown keys: {unknown}"
+        )
+    predictor = str(entry.get("predictor") or "").strip()
+    if not predictor:
+        raise ContractError("predictor_missing", f"{label} requires predictor")
+    if isinstance(entry.get("seed"), bool) or not isinstance(entry.get("seed"), int):
+        raise ContractError("seed_invalid", f"{label} requires an integer seed")
+    result = dict(entry)
+    result["predictor"] = predictor
+    result["pdb"] = _materialize_file(entry, "pdb", base, f"{label}.pdb")
+    if entry.get("pae"):
+        result["pae"] = _materialize_file(entry, "pae", base, f"{label}.pae")
+    metadata = entry.get("metadata")
+    if metadata:
+        result["metadata"] = _materialize_file(
+            entry, "metadata", base, f"{label}.metadata"
+        )
+    return result
+
+
+@dataclass(frozen=True)
+class ArtifactBundle:
+    path: Path
+    sha256: str
+    candidate_id: str
+    sequence: str
+    global_artifacts: dict
+    target_artifacts: dict[str, dict]
+    digest: str
+
+
+def load_artifact_bundle(
+    path: str | Path,
+    *,
+    candidate_id: str,
+    sequence: str,
+    required_targets: tuple[str, ...],
+) -> ArtifactBundle:
+    path = Path(path).expanduser().resolve()
+    if not path.is_file():
+        raise ContractError("artifact_bundle_missing", f"artifact bundle not found: {path}")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ContractError("artifact_bundle_malformed", f"invalid JSON: {path}") from exc
+    if not isinstance(raw, dict):
+        raise ContractError("artifact_bundle_type", "artifacts.json must be an object")
+    unknown = sorted(set(raw) - {
+        "schema_version", "candidate_id", "sequence", "global", "targets"
+    })
+    if unknown:
+        raise ContractError(
+            "artifact_unknown_keys", f"artifacts.json contains unknown keys: {unknown}"
+        )
+    if raw.get("schema_version") != SCHEMA_VERSION:
+        raise ContractError(
+            "artifact_schema_unsupported",
+            f"artifacts.json schema_version must be {SCHEMA_VERSION}",
+        )
+    if str(raw.get("candidate_id") or "") != candidate_id:
+        raise ContractError(
+            "artifact_candidate_mismatch",
+            f"artifact bundle candidate does not match {candidate_id}",
+        )
+    if str(raw.get("sequence") or "").upper() != sequence:
+        raise ContractError(
+            "artifact_sequence_mismatch",
+            f"artifact bundle sequence does not match {candidate_id}",
+        )
+    base = path.parent
+    global_raw = raw.get("global") or {}
+    if not isinstance(global_raw, dict):
+        raise ContractError("artifact_global_type", "global artifacts must be an object")
+    unknown = sorted(set(global_raw) - {
+        "monomer_predictions",
+        "post_relax_pdb", "post_relax_pdb_sha256",
+        "design_reference_pdb", "design_reference_pdb_sha256",
+    })
+    if unknown:
+        raise ContractError(
+            "artifact_unknown_keys", f"global artifacts contain unknown keys: {unknown}"
+        )
+    global_artifacts = dict(global_raw)
+    predictions = global_raw.get("monomer_predictions") or []
+    if not isinstance(predictions, list):
+        raise ContractError(
+            "artifact_prediction_type", "monomer_predictions must be a list"
+        )
+    global_artifacts["monomer_predictions"] = [
+        _validate_prediction_entry(item, base, f"global.monomer_predictions[{index}]")
+        for index, item in enumerate(predictions)
+    ]
+    for key in ("post_relax_pdb", "design_reference_pdb"):
+        if global_raw.get(key):
+            global_artifacts[key] = _materialize_file(
+                global_raw, key, base, f"global.{key}"
+            )
+
+    target_raw = raw.get("targets") or {}
+    if not isinstance(target_raw, dict):
+        raise ContractError("artifact_targets_type", "targets artifacts must be an object")
+    unexpected = sorted(set(target_raw) - set(required_targets))
+    if unexpected:
+        raise ContractError(
+            "artifact_target_unexpected", f"unexpected target artifacts: {unexpected}"
+        )
+    target_artifacts: dict[str, dict] = {}
+    for target_id in required_targets:
+        values = target_raw.get(target_id) or {}
+        if not isinstance(values, dict):
+            raise ContractError(
+                "artifact_target_type", f"target {target_id} artifacts must be an object"
+            )
+        unknown = sorted(set(values) - {
+            "target_chain", "complex_predictions",
+            "prodigy_output", "prodigy_output_sha256",
+            "rosetta_output", "rosetta_output_sha256",
+        })
+        if unknown:
+            raise ContractError(
+                "artifact_unknown_keys",
+                f"target {target_id} artifacts contain unknown keys: {unknown}",
+            )
+        result = dict(values)
+        predictions = values.get("complex_predictions") or []
+        if not isinstance(predictions, list):
+            raise ContractError(
+                "artifact_prediction_type",
+                f"{target_id}.complex_predictions must be a list",
+            )
+        result["complex_predictions"] = [
+            _validate_prediction_entry(
+                item, base, f"targets.{target_id}.complex_predictions[{index}]"
+            )
+            for index, item in enumerate(predictions)
+        ]
+        for key in ("prodigy_output", "rosetta_output"):
+            if values.get(key):
+                result[key] = _materialize_file(
+                    values, key, base, f"targets.{target_id}.{key}"
+                )
+        target_artifacts[target_id] = result
+
+    file_inventory = []
+    for entry in global_artifacts["monomer_predictions"]:
+        file_inventory.extend(
+            value["sha256"] for key, value in entry.items()
+            if key in {"pdb", "pae", "metadata"} and isinstance(value, dict)
+        )
+    for key in ("post_relax_pdb", "design_reference_pdb"):
+        if isinstance(global_artifacts.get(key), dict):
+            file_inventory.append(global_artifacts[key]["sha256"])
+    for values in target_artifacts.values():
+        for entry in values["complex_predictions"]:
+            file_inventory.extend(
+                value["sha256"] for key, value in entry.items()
+                if key in {"pdb", "pae", "metadata"} and isinstance(value, dict)
+            )
+        for key in ("prodigy_output", "rosetta_output"):
+            if isinstance(values.get(key), dict):
+                file_inventory.append(values[key]["sha256"])
+    bundle_sha = file_sha256(path)
+    digest = object_sha256({"bundle": bundle_sha, "files": sorted(file_inventory)})
+    return ArtifactBundle(
+        path=path,
+        sha256=bundle_sha,
+        candidate_id=candidate_id,
+        sequence=sequence,
+        global_artifacts=global_artifacts,
+        target_artifacts=target_artifacts,
+        digest=digest,
+    )
+
+
+def parse_metadata(path_entry: dict | None) -> dict:
+    if not path_entry:
+        return {}
+    try:
+        value = json.loads(path_entry["path"].read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ContractError(
+            "prediction_metadata_malformed",
+            f"invalid prediction metadata JSON: {path_entry['path']}",
+        ) from exc
+    if not isinstance(value, dict):
+        raise ContractError(
+            "prediction_metadata_type", "prediction metadata must be an object"
+        )
+    return value
+
+
+def parse_target_physics(target_artifacts: dict) -> tuple[dict, list[dict]]:
+    metrics, provenance = {}, []
+    prodigy = target_artifacts.get("prodigy_output")
+    if prodigy:
+        parsed = parse_prodigy_output(
+            prodigy["path"].read_text(encoding="utf-8", errors="replace")
+        )
+        metrics.update(parsed)
+        provenance.append({
+            "tool": "PRODIGY",
+            "artifact": str(prodigy["path"]),
+            "sha256": prodigy["sha256"],
+            "metrics": sorted(parsed),
+        })
+    rosetta = target_artifacts.get("rosetta_output")
+    if rosetta:
+        parsed = parse_rosetta_interface_output(
+            rosetta["path"].read_text(encoding="utf-8", errors="replace")
+        )
+        metrics.update(parsed)
+        provenance.append({
+            "tool": "Rosetta InterfaceAnalyzer",
+            "artifact": str(rosetta["path"]),
+            "sha256": rosetta["sha256"],
+            "metrics": sorted(parsed),
+        })
+    return metrics, provenance
+
+
+def run_prodigy(
+    complex_pdb: str | Path,
+    target_chain: str,
+    binder_chain: str,
+    *,
+    executable: str = "prodigy",
+    timeout: int = 300,
+) -> tuple[dict, dict]:
+    result = run_command(
+        [
+            executable,
+            "-q",
+            str(Path(complex_pdb).resolve()),
+            "--selection",
+            target_chain,
+            binder_chain,
+        ],
+        timeout=timeout,
+    )
+    if result.exit_code != 0:
+        raise ContractError(
+            "prodigy_failed",
+            f"PRODIGY exited {result.exit_code}: {result.stderr[-500:]}",
+        )
+    return parse_prodigy_output(result.stdout), result.trace("PRODIGY")
+
+
+def build_colabdesign_command(
+    *,
+    python: str,
+    sequence: str,
+    output_dir: str | Path,
+    data_dir: str | Path,
+    colabdesign_dir: str | Path,
+    expected_commit: str,
+    seed: int,
+    model_number: int,
+    num_recycles: int,
+    target_pdb: str | Path | None = None,
+    target_chain: str | None = None,
+    use_multimer: bool = True,
+) -> list[str]:
+    command = [
+        python,
+        "-m",
+        "prediction_pipeline.colabdesign_worker",
+        "--sequence", sequence,
+        "--output-dir", str(Path(output_dir).resolve()),
+        "--data-dir", str(Path(data_dir).resolve()),
+        "--colabdesign-dir", str(Path(colabdesign_dir).resolve()),
+        "--expected-commit", expected_commit,
+        "--seed", str(seed),
+        "--model-number", str(model_number),
+        "--num-recycles", str(num_recycles),
+    ]
+    if target_pdb:
+        if not target_chain:
+            raise ContractError(
+                "target_chain_missing", "target_chain is required with target_pdb"
+            )
+        command.extend([
+            "--target-pdb", str(Path(target_pdb).resolve()),
+            "--target-chain", target_chain,
+        ])
+        if use_multimer:
+            command.append("--use-multimer")
+    return command
+
+
+def prediction_environment(cuda_data_dir: str | None = None) -> dict:
+    env = dict(os.environ)
+    if cuda_data_dir:
+        env["XLA_FLAGS"] = f"--xla_gpu_cuda_data_dir={cuda_data_dir}"
+    return env

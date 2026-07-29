@@ -58,6 +58,7 @@ COLABDESIGN_DIR = os.environ.get(
 COLABDESIGN_PARAMS = os.environ.get(
     "COLABDESIGN_PARAMS", f"{COLABDESIGN_DIR}/params"
 )
+COLABDESIGN_COMMIT = "094e2cb3603dee7d99846e0977736bd943c830c2"
 SE3_ROOT = os.environ.get("SE3_ROOT", f"{RFDIFF_DIR}/env/SE3Transformer")
 CUDA_DATA_DIR = os.environ.get(
     "CUDA_DATA_DIR",
@@ -248,7 +249,9 @@ def design_rfpeptides(target_spec=None, design_config=None):
         rfdiff_ok = _run_rfdiff(
             target_pdb=config["target_pdb"], binder_len=L,
             n_designs=n_designs, output_prefix=f"{backbone_dir}/bb",
-            contig=f"{config['chain']}{target_range[0]}-{target_range[1]}/0 {L}-{L}",
+            contig=_binder_first_contig(
+                config["chain"], target_range[0], target_range[1], L
+            ),
             seed=config["seed"],
             hotspots=config.get("hotspots"),
             chain=config["chain"])
@@ -260,9 +263,19 @@ def design_rfpeptides(target_spec=None, design_config=None):
         print(f"[Route A] RFdiff 完成, 找到 {len(bb_files)} 个骨架PDB")
         for bb_path in bb_files[:n_designs]:
             total_gen += 1
+            try:
+                binder_chain = _infer_binder_chain(str(bb_path), L)
+            except ValueError as exc:
+                EvidenceLogger.error(
+                    "design", "rfdiff_binder_chain_invalid",
+                    f"{bb_path}: {exc}", recovery="skip ambiguous backbone",
+                )
+                continue
             mpnn_dir = f"{batch_dir}/mpnn_{bb_path.stem}"
             os.makedirs(mpnn_dir, exist_ok=True)
-            seqs = _run_ligandmpnn(str(bb_path), mpnn_dir, n_seq=8, target_chain=config["chain"])
+            seqs = _run_ligandmpnn(
+                str(bb_path), mpnn_dir, n_seq=8, binder_chain=binder_chain
+            )
             if not seqs:
                 print(f"[Route A] LigandMPNN 返回 0 条序列: {bb_path.name}")
                 continue
@@ -341,7 +354,9 @@ def design_motif_guided(target_spec=None, design_config=None):
         # Route B: motif 约束由 LigandMPNN 的 fixed_residues 实现，不通过 RFdiffusion inpaint_seq
         rfdiff_ok = _run_rfdiff(target_pdb=config["target_pdb"], binder_len=L,
             n_designs=n_per, output_prefix=f"{backbone_dir}/bb",
-            contig=f"{config['chain']}{target_range[0]}-{target_range[1]}/0 {L}-{L}",
+            contig=_binder_first_contig(
+                config["chain"], target_range[0], target_range[1], L
+            ),
             seed=config["seed"],
             hotspots=config.get("hotspots"),
             chain=config["chain"])
@@ -353,12 +368,20 @@ def design_motif_guided(target_spec=None, design_config=None):
         print(f"[Route B] {tmpl_name}: RFdiff 完成, 找到 {len(bb_files)} 个骨架PDB")
         for bb_path in bb_files[:n_per]:
             total_gen += 1
-            binder_res = _parse_binder_residues(str(bb_path), config["chain"])
+            try:
+                binder_chain = _infer_binder_chain(str(bb_path), L)
+            except ValueError as exc:
+                EvidenceLogger.error(
+                    "design", "rfdiff_binder_chain_invalid",
+                    f"{bb_path}: {exc}", recovery="skip ambiguous backbone",
+                )
+                continue
+            binder_res = _parse_binder_residues(str(bb_path), binder_chain)
             fixed_res = _hotspot_fixed_residues(tmpl_hotspots, binder_res) if binder_res else ""
             mpnn_dir = f"{batch_dir}/mpnn_{bb_path.stem}"
             os.makedirs(mpnn_dir, exist_ok=True)
             seqs = _run_ligandmpnn(str(bb_path), mpnn_dir, n_seq=8,
-                target_chain=config["chain"], fixed_residues=fixed_res or None)
+                binder_chain=binder_chain, fixed_residues=fixed_res or None)
             if not seqs:
                 print(f"[Route B] LigandMPNN 返回 0 条序列: {bb_path.name}")
                 continue
@@ -642,6 +665,24 @@ def _candidate_from_manifest(manifest, plddt, notes=None):
 # 工具调用封装
 # ============================================================
 
+def _binder_first_contig(target_chain, target_start, target_end, binder_len):
+    """Build the RFdiffusion macrocyclic-binder contig in official chain order.
+
+    RFdiffusion assigns the first contig segment to internal chain ``a``.
+    Because ``inference.cyc_chains=a`` is used below, the generated binder must
+    be the first segment and the fixed receptor must follow it.
+    """
+    chain = str(target_chain or "").strip()
+    if len(chain) != 1:
+        raise ValueError(f"target chain must be one PDB chain ID, got {target_chain!r}")
+    start, end, length = int(target_start), int(target_end), int(binder_len)
+    if start > end:
+        raise ValueError(f"target residue range is reversed: {start}-{end}")
+    if not 8 <= length <= 20:
+        raise ValueError(f"binder length must be 8-20, got {length}")
+    return f"{length}-{length} {chain}{start}-{end}/0"
+
+
 def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
                 seed=None, hotspots=None, chain="A"):
     """RFdiffusion 子进程。hotspots: 逗号分隔的残基号如 '54,93,96'"""
@@ -678,32 +719,50 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
         return False
 
 
-def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, target_chain="A",
+def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, binder_chain=None,
                     fixed_residues=None):
-    """LigandMPNN 子进程。target_chain=受体链，设计除受体外的所有链。
+    """LigandMPNN subprocess with an explicitly validated binder chain.
+
+    The RFdiffusion output chain labels are discovered from the emitted PDB,
+    rather than inferred from the input receptor's chain label.
     fixed_residues: 空格分隔的 chain+resi 列表，如 'B25 B26 B27'，这些残基在 LigandMPNN 中固定不变。"""
-    # 自动检测 binder 链
-    binder_chains = set()
+    if LIGANDMPNN_MODEL_TYPE != "protein_mpnn":
+        EvidenceLogger.error(
+            "design", "unsupported_inverse_folding_model",
+            f"LIGANDMPNN_MODEL_TYPE={LIGANDMPNN_MODEL_TYPE!r}; "
+            "the validated protein-target workflow requires 'protein_mpnn'",
+            recovery="use protein_mpnn or add a separately tested adapter",
+        )
+        return []
     try:
-        with open(backbone_pdb) as f:
-            for line in f:
-                if line.startswith("ATOM"):
-                    ch = line[21]
-                    if ch != target_chain:
-                        binder_chains.add(ch)
-    except Exception:
-        pass
-    chains_str = ",".join(sorted(binder_chains)) if binder_chains else "B"
+        layout = _pdb_chain_residue_layout(backbone_pdb)
+        input_sequences = _pdb_chain_sequences(backbone_pdb)
+    except (OSError, ValueError) as exc:
+        EvidenceLogger.error(
+            "design", "ligandmpnn_backbone_invalid", str(exc), recovery="skip"
+        )
+        return []
+    binder_chain = str(binder_chain or "").strip()
+    if binder_chain not in layout:
+        EvidenceLogger.error(
+            "design", "ligandmpnn_binder_chain_missing",
+            f"{backbone_pdb}: binder chain {binder_chain!r} is absent",
+            recovery="skip",
+        )
+        return []
+    batch_size = min(max(1, int(n_seq)), 4)
+    number_of_batches = max(1, (int(n_seq) + batch_size - 1) // batch_size)
     cmd = [
         RFDIFF_PYTHON, f"{LIGANDMPNN_DIR}/run.py",
         "--model_type", LIGANDMPNN_MODEL_TYPE,
         f"--checkpoint_protein_mpnn={LIGANDMPNN_CHECKPOINT}",
         f"--pdb_path={backbone_pdb}",
         f"--out_folder={output_dir}",
-        f"--batch_size={min(n_seq, 4)}",
-        f"--number_of_batches={max(1, n_seq // 4)}",
+        f"--batch_size={batch_size}",
+        f"--number_of_batches={number_of_batches}",
         "--temperature=0.1", "--seed=42",
-        f"--chains_to_design={chains_str}",
+        "--fasta_seq_separation=:",
+        f"--chains_to_design={binder_chain}",
     ]
     if fixed_residues:
         cmd.append(f"--fixed_residues={fixed_residues}")
@@ -717,13 +776,28 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, target_chain="A",
         seqs = []
         for fa in sorted(Path(output_dir).glob("**/*.fa"))[:1]:  # 一个 PDB 只出一个 FASTA
             with open(fa) as fh:
+                is_generated_record = False
                 for line in fh:
                     line = line.strip()
-                    if line.startswith(">") or not line:
+                    if line.startswith(">"):
+                        # The first FASTA record is the native/reference
+                        # complex. Only records carrying a design id are model
+                        # outputs and may become candidates.
+                        is_generated_record = ", id=" in line
                         continue
-                    # LigandMPNN 输出: "受体序列:设计序列"，只取 binder 部分
-                    if ":" in line:
-                        line = line.split(":")[-1]
+                    if not line or not is_generated_record:
+                        continue
+                    try:
+                        line = _extract_ligandmpnn_binder_sequence(
+                            line, binder_chain, layout, input_sequences
+                        )
+                    except ValueError as exc:
+                        EvidenceLogger.error(
+                            "design", "ligandmpnn_fasta_invalid",
+                            f"{fa}: {exc}", recovery="skip malformed output",
+                        )
+                        return []
+                    is_generated_record = False
                     # 跳过全 G 或单氨基酸重复（LigandMPNN baseline）
                     if len(set(line)) <= 2:
                         continue
@@ -764,18 +838,47 @@ def _rfdiff_subprocess_env():
 
 
 def _build_refold_script(sequence, output_pdb):
-    """Build an AfCycDesign script that keeps ``sequence`` fixed on restart."""
+    """Build a fixed-sequence AfCycDesign prediction script.
+
+    ``design_3stage`` optimizes sequence logits and therefore cannot be used
+    for refolding an already designed LigandMPNN sequence.  Prediction uses
+    ``predict(seq=...)`` and verifies both ColabDesign's hard sequence and the
+    emitted PDB before the manifest is allowed downstream.
+    """
     if not _validate_sequence(sequence):
         raise ValueError("refold sequence must contain 8-20 standard amino acids")
     L = len(sequence)
     return f"""
-import sys, numpy as np
+import sys, subprocess, numpy as np
 sys.path.insert(0, {COLABDESIGN_DIR!r})
 from colabdesign import mk_af_model, clear_mem
+from colabdesign.af.alphafold.model import modules as af_modules
+
+head = subprocess.run(
+    ['git', '-C', {COLABDESIGN_DIR!r}, 'rev-parse', 'HEAD'],
+    capture_output=True, text=True, timeout=30, check=True,
+).stdout.strip()
+if head != {COLABDESIGN_COMMIT!r}:
+    raise RuntimeError(
+        'ColabDesign commit mismatch: expected=' + {COLABDESIGN_COMMIT!r}
+        + ' observed=' + head
+    )
+dirty = subprocess.run(
+    [
+        'git', '-C', {COLABDESIGN_DIR!r}, 'status', '--porcelain',
+        '--untracked-files=no'
+    ],
+    capture_output=True, text=True, timeout=30, check=True,
+).stdout.strip()
+if dirty:
+    raise RuntimeError('tracked ColabDesign sources are modified')
+source = open(af_modules.__file__, encoding='utf-8').read()
+if '"offset" in batch' not in source and "'offset' in batch" not in source:
+    raise RuntimeError('ColabDesign backend does not consume cyclic pairwise offset')
 
 model = mk_af_model(protocol='hallucination', data_dir={COLABDESIGN_PARAMS!r})
 model.prep_inputs(length={L})
-model.restart(seq={sequence!r})
+model.restart(seed=0, seq={sequence!r})
 
 i = np.arange({L})
 ij = np.stack([i, i+{L}], -1)
@@ -789,8 +892,42 @@ off = np.array(idx[:,None] - idx[None,:])
 off[:{L}, :{L}] = c_offset
 model._inputs['offset'] = off
 
-model.design_3stage(100, 100, 20)
-model.save_pdb({str(output_pdb)!r}, get_best=True)
+aux = model.predict(
+    seq={sequence!r}, seed=0, models=[0], num_models=1, num_recycles=3,
+    sample_models=False, dropout=False, hard=True, soft=False,
+    verbose=False, return_aux=True,
+)
+observed = model.get_seq(get_best=False)
+if observed != [{sequence!r}]:
+    raise RuntimeError(
+        'fixed-sequence refold drift: requested=' + repr([{sequence!r}])
+        + ' observed=' + repr(observed)
+    )
+model.save_pdb({str(output_pdb)!r}, get_best=False, aux=aux)
+
+aa3 = {{
+    'ALA':'A','ARG':'R','ASN':'N','ASP':'D','CYS':'C','GLN':'Q','GLU':'E',
+    'GLY':'G','HIS':'H','ILE':'I','LEU':'L','LYS':'K','MET':'M','PHE':'F',
+    'PRO':'P','SER':'S','THR':'T','TRP':'W','TYR':'Y','VAL':'V'
+}}
+chains, seen = {{}}, set()
+with open({str(output_pdb)!r}) as handle:
+    for line in handle:
+        if line.startswith('ENDMDL'):
+            break
+        if not line.startswith('ATOM') or line[12:16].strip() != 'CA':
+            continue
+        key = (line[21].strip() or '_', line[22:27])
+        if key in seen:
+            continue
+        seen.add(key)
+        chains.setdefault(key[0], []).append(aa3.get(line[17:20].strip(), 'X'))
+pdb_sequences = {{chain: ''.join(values) for chain, values in chains.items()}}
+if list(pdb_sequences.values()).count({sequence!r}) != 1:
+    raise RuntimeError(
+        'fixed-sequence PDB mismatch: requested=' + repr({sequence!r})
+        + ' observed=' + repr(pdb_sequences)
+    )
 plddt = float(np.mean(model.aux['plddt']))
 with open({f'{output_pdb}.plddt'!r}, 'w') as pf:
     pf.write(str(plddt))
@@ -880,23 +1017,146 @@ def _pdb_residue_range(pdb_path, chain="A"):
     return min_r, max_r
 
 
-def _parse_binder_residues(pdb_path, target_chain="A"):
-    """解析 backbone PDB 中 binder 链的残基号列表，返回 [(chain, resi), ...]"""
-    residues = []
-    try:
-        with open(pdb_path) as f:
-            for line in f:
-                if line.startswith("ATOM") and " CA " in line:
-                    ch = line[21]
-                    if ch != target_chain:
-                        resi = line[22:26].strip()
-                        # 去重：同一 chain+resi 只记一次
-                        key = (ch, resi)
-                        if not residues or residues[-1] != key:
-                            residues.append(key)
-    except Exception:
-        pass
-    return residues
+def _pdb_chain_residue_layout(pdb_path):
+    """Return first-model PDB residues grouped in emitted chain order."""
+    layout, seen = {}, {}
+    model_seen = False
+    with open(pdb_path) as handle:
+        for line in handle:
+            if line.startswith("MODEL"):
+                if model_seen:
+                    break
+                model_seen = True
+                continue
+            if line.startswith("ENDMDL"):
+                break
+            if not line.startswith("ATOM"):
+                continue
+            chain = line[21].strip()
+            residue_number = line[22:26].strip()
+            insertion_code = line[26].strip()
+            if not chain or not residue_number:
+                raise ValueError(f"blank chain/residue identifier in {pdb_path}")
+            residue_id = (residue_number, insertion_code)
+            layout.setdefault(chain, [])
+            seen.setdefault(chain, set())
+            if residue_id not in seen[chain]:
+                seen[chain].add(residue_id)
+                layout[chain].append(residue_id)
+    if not layout:
+        raise ValueError(f"no ATOM residues found in {pdb_path}")
+    return layout
+
+
+def _pdb_chain_sequences(pdb_path):
+    """Return first-model canonical sequences in emitted PDB chain order."""
+    amino_acids = {
+        "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
+        "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
+        "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
+        "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+    }
+    sequences, seen = {}, {}
+    model_seen = False
+    with open(pdb_path) as handle:
+        for line in handle:
+            if line.startswith("MODEL"):
+                if model_seen:
+                    break
+                model_seen = True
+                continue
+            if line.startswith("ENDMDL"):
+                break
+            if not line.startswith("ATOM"):
+                continue
+            chain = line[21].strip()
+            residue_number = line[22:26].strip()
+            insertion_code = line[26].strip()
+            residue_name = line[17:20].strip().upper()
+            if not chain or not residue_number:
+                raise ValueError(f"blank chain/residue identifier in {pdb_path}")
+            residue_id = (residue_number, insertion_code)
+            sequences.setdefault(chain, [])
+            seen.setdefault(chain, set())
+            if residue_id in seen[chain]:
+                continue
+            seen[chain].add(residue_id)
+            if residue_name not in amino_acids:
+                raise ValueError(
+                    f"non-canonical residue {residue_name!r} in chain {chain} "
+                    f"at {residue_number}{insertion_code}"
+                )
+            sequences[chain].append(amino_acids[residue_name])
+    if not sequences:
+        raise ValueError(f"no ATOM residues found in {pdb_path}")
+    return {chain: "".join(values) for chain, values in sequences.items()}
+
+
+def _infer_binder_chain(pdb_path, expected_length):
+    """Require one unique emitted chain with the requested binder length."""
+    layout = _pdb_chain_residue_layout(pdb_path)
+    if len(layout) < 2:
+        raise ValueError(
+            f"RFdiffusion binder complex requires at least two chains, got "
+            f"{sorted(layout)}"
+        )
+    candidates = [
+        chain for chain, residues in layout.items()
+        if len(residues) == int(expected_length)
+    ]
+    if len(candidates) != 1:
+        counts = {chain: len(residues) for chain, residues in layout.items()}
+        raise ValueError(
+            f"expected one {expected_length}-residue binder chain, "
+            f"found {candidates}; chain lengths={counts}"
+        )
+    return candidates[0]
+
+
+def _parse_binder_residues(pdb_path, binder_chain):
+    """Return ``[(chain, residue_id), ...]`` for one validated binder chain."""
+    layout = _pdb_chain_residue_layout(pdb_path)
+    if binder_chain not in layout:
+        raise ValueError(f"binder chain {binder_chain!r} is absent from {pdb_path}")
+    return [
+        (binder_chain, f"{number}{insertion}")
+        for number, insertion in layout[binder_chain]
+    ]
+
+
+def _extract_ligandmpnn_binder_sequence(
+        encoded, binder_chain, layout, input_sequences=None):
+    """Extract the binder segment and verify that every receptor chain stayed fixed."""
+    # LigandMPNN's parse_PDB() builds ``mask_c`` from a sorted chain list and
+    # writes FASTA segments in that order, even when the PDB records first
+    # encounter the chains in a different order.
+    chain_order = sorted(layout)
+    if binder_chain not in layout:
+        raise ValueError(f"binder chain {binder_chain!r} is absent from PDB layout")
+    segments = str(encoded).strip().upper().split(":")
+    if len(segments) != len(chain_order):
+        raise ValueError(
+            f"FASTA has {len(segments)} chain segments, PDB has "
+            f"{len(chain_order)} chains"
+        )
+    if input_sequences is not None:
+        for chain, segment in zip(chain_order, segments):
+            if chain == binder_chain:
+                continue
+            expected = input_sequences.get(chain)
+            if expected is None or segment != expected:
+                raise ValueError(
+                    f"fixed chain {chain} changed during inverse folding"
+                )
+    sequence = segments[chain_order.index(binder_chain)]
+    expected_length = len(layout[binder_chain])
+    if len(sequence) != expected_length:
+        raise ValueError(
+            f"binder FASTA length {len(sequence)} != PDB length {expected_length}"
+        )
+    if not sequence or any(amino_acid not in SCAFFOLD_MUTABLE_AA for amino_acid in sequence):
+        raise ValueError("binder FASTA contains non-standard amino acids")
+    return sequence
 
 
 def _hotspot_positions(template_seq):

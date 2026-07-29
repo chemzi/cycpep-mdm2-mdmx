@@ -155,7 +155,7 @@ print('Test 5: _merge_config')
 cfg = _merge_config({'target_name': '3DAB', 'chain': 'B'}, {'n': 50, 'lengths': [8, 9]})
 check(cfg['target_name'] == 'MDMX', f'target_name={cfg["target_name"]}')
 check(cfg['target_id'] == 'MDMX', f'target_id={cfg["target_id"]}')
-check(cfg['target_pdb'] == os.path.abspath(target_fixture.name),
+check(cfg['target_pdb'] == os.path.realpath(target_fixture.name),
       f'approved coordinate_path={cfg["target_pdb"]}')
 check(cfg['chain'] == 'B', f'chain={cfg["chain"]}')
 check(cfg['hotspots'] == '53,92,95', f'hotspots={cfg["hotspots"]}')
@@ -341,10 +341,17 @@ check(any('LTFLE' in s for s,_ in filtered), 'ATSP-7041 passes')
 print('Test 16: fixed-sequence refold script')
 refold_script = _build_refold_script('ACDEFGHI', '/tmp/refold.pdb')
 check('model.prep_inputs(length=8)' in refold_script, 'refold prepares the sequence length')
-check("model.restart(seq='ACDEFGHI')" in refold_script,
+check("model.restart(seed=0, seq='ACDEFGHI')" in refold_script,
       'restart receives the fixed sequence')
 check('model.set_seq' not in refold_script, 'legacy set_seq call removed')
 check('\nmodel.restart()\n' not in refold_script, 'sequence-resetting restart removed')
+check('model.predict(' in refold_script, 'fixed sequence uses prediction-only API')
+check('model.design_3stage' not in refold_script, 'sequence optimizer is absent')
+check('model.get_seq(get_best=False)' in refold_script, 'model sequence is verified')
+check('pdb_sequences' in refold_script, 'output PDB sequence is independently verified')
+check('rev-parse' in refold_script, 'ColabDesign commit is pinned at runtime')
+check('--untracked-files=no' in refold_script, 'tracked dependency changes are rejected')
+check('"offset" in batch' in refold_script, 'cyclic offset backend capability is checked')
 
 # ── Test 17: RFdiffusion subprocess receives validated activate.d runtime ──
 print('Test 17: RFdiffusion subprocess environment')
@@ -354,6 +361,10 @@ check(SE3_ROOT in rfdiff_env['PYTHONPATH'], 'SE3Transformer is on PYTHONPATH')
 check(RFDIFF_DIR in rfdiff_env['PYTHONPATH'], 'RFdiffusion source is on PYTHONPATH')
 check(f'{RFDIFF_CONDA}/lib' in rfdiff_env['LD_LIBRARY_PATH'],
       'RFdiffusion environment libraries are on LD_LIBRARY_PATH')
+check(
+    _binder_first_contig('A', 25, 109, 10) == '10-10 A25-109/0',
+    'RFdiffusion contig puts cyclic binder before fixed receptor',
+)
 
 # Hydra must receive hotspots as a list, not one comma-containing string.
 captured_run = {}
@@ -367,13 +378,59 @@ subprocess.run = lambda cmd, **kwargs: (
 try:
     check(
         _run_rfdiff('/tmp/target.pdb', 10, 1, '/tmp/out',
-                    'A25-109/0 10-10', hotspots='54,93,96', chain='A'),
+                    _binder_first_contig('A', 25, 109, 10),
+                    hotspots='54,93,96', chain='A'),
         'RFdiffusion command wrapper accepts a successful run',
     )
 finally:
     subprocess.run = original_subprocess_run
 check('ppi.hotspot_res=[A54,A93,A96]' in captured_run['cmd'],
       'Hydra hotspot residues are passed as a list')
+check("contigmap.contigs=['10-10 A25-109/0']" in captured_run['cmd'],
+      'Hydra receives binder-first contig order')
+
+# RFdiffusion may relabel output chains. Discover the binder by residue count
+# and map LigandMPNN FASTA segments using the emitted PDB chain order.
+chain_fixture = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+serial = 1
+# RFdiffusion may emit the generated chain before receptor chain records even
+# though LigandMPNN serializes FASTA segments by sorted chain ID.
+for chain, start, count in [('B', 1, 8), ('A', 25, 3)]:
+    for residue in range(start, start + count):
+        chain_fixture.write(
+            f'ATOM  {serial:5d}  CA  ALA {chain}{residue:4d}    '
+            f'{serial:8.3f}{0.0:8.3f}{0.0:8.3f}'
+            f'{1.00:6.2f}{0.00:6.2f}           C  \n'
+        )
+        serial += 1
+chain_fixture.close()
+layout = _pdb_chain_residue_layout(chain_fixture.name)
+input_sequences = _pdb_chain_sequences(chain_fixture.name)
+check(_infer_binder_chain(chain_fixture.name, 8) == 'B',
+      'binder chain is discovered from emitted residue count')
+check(len(_parse_binder_residues(chain_fixture.name, 'B')) == 8,
+      'only validated binder residues are passed to motif mapping')
+check(
+    _extract_ligandmpnn_binder_sequence(
+        'AAA:ACDEFGHI', 'B', layout, input_sequences
+    ) == 'ACDEFGHI',
+    'LigandMPNN FASTA extraction follows its sorted chain order',
+)
+check_raises(
+    ValueError,
+    lambda: _extract_ligandmpnn_binder_sequence(
+        'GGG:ACDEFGHI', 'B', layout, input_sequences
+    ),
+    'LigandMPNN output that changes the fixed receptor is rejected',
+)
+check_raises(
+    ValueError,
+    lambda: _extract_ligandmpnn_binder_sequence(
+        'ACDEFGHI', 'B', layout
+    ),
+    'malformed multi-chain LigandMPNN FASTA is rejected',
+)
+os.unlink(chain_fixture.name)
 
 # ── Test 18: output directory resolution is permission-safe in CI ──
 print('Test 18: CI-safe output directory resolution')

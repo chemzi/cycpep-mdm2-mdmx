@@ -24,6 +24,9 @@
         "design_batch",
         "candidate_registered",
         "candidate_index_migrated",
+        "prediction_run_started",
+        "prediction_recorded",
+        "prediction_handoff_ready",
         "evaluate_layer_start",
         "candidate_scored",
         "candidate_eliminated",
@@ -90,7 +93,14 @@
         },
         "cyclization_type": {
           "type": "string",
-          "enum": ["head_to_tail_amide"]
+          "oneOf": [
+            {
+              "enum": ["head_to_tail_amide", "head-to-tail_amide"]
+            },
+            {
+              "pattern": "^Cys-Cys_disulfide(?:,linker=[ACDEFGHIKLMNPQRSTVWY]*)?$"
+            }
+          ]
         },
         "cyclization_bonds": {
           "type": "array",
