@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -183,6 +184,44 @@ class DesignReliabilityTests(unittest.TestCase):
             candidates = design_motif_graft(10)
         self.assertEqual(candidates, [])
         self.assertEqual(CandidateIndex.load(), [])
+
+    def test_failed_refold_cannot_reuse_stale_artifacts(self):
+        candidate_dir = TEST_ROOT / "stale-refold"
+        candidate_dir.mkdir(parents=True, exist_ok=True)
+        output_pdb = candidate_dir / "refold.pdb"
+        score_path = Path(f"{output_pdb}.plddt")
+        output_pdb.write_text("stale PDB", encoding="utf-8")
+        score_path.write_text("0.99", encoding="utf-8")
+
+        with patch(
+            "agents.design.subprocess.run",
+            return_value=SimpleNamespace(returncode=1, stderr="expected failure"),
+        ):
+            result = design_module._run_refold("ACDEFGHI", str(output_pdb))
+
+        self.assertIsNone(result)
+        self.assertFalse(output_pdb.exists())
+        self.assertFalse(score_path.exists())
+
+    def test_refold_rejects_saved_pdb_sequence_drift(self):
+        candidate_dir = TEST_ROOT / "drift-refold"
+        candidate_dir.mkdir(parents=True, exist_ok=True)
+        output_pdb = candidate_dir / "refold.pdb"
+        score_path = Path(f"{output_pdb}.plddt")
+
+        def fake_success(*_args, **_kwargs):
+            output_pdb.write_text(
+                "ATOM      1  CA  ALA A   1       1.000   2.000   3.000"
+                "  1.00 90.00           C  \n",
+                encoding="utf-8",
+            )
+            score_path.write_text("0.90", encoding="utf-8")
+            return SimpleNamespace(returncode=0, stderr="")
+
+        with patch("agents.design.subprocess.run", side_effect=fake_success):
+            result = design_module._run_refold("ACDEFGHI", str(output_pdb))
+
+        self.assertIsNone(result)
 
     def test_route_c_generates_200_unique_manifest_handoffs(self):
         state = State.load()

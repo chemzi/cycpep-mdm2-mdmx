@@ -9,6 +9,7 @@ MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当�
 - [English: transferable workflow, structure gate, and calibration](docs/transferable_pipeline.en.md)
 - [前端 API contract、请求示例与状态机](docs/frontend_api_contract.md)
 - [环肽反向折叠：ProteinMPNN 的适用范围与验证要求](docs/cyclic_inverse_folding.md)
+- [Design v5.1.0：固定序列与闭环几何完整性门禁](docs/design_integrity_v5.1.0.md)
 
 ```bash
 python -m target_bootstrap draft --identifier P12345 --type uniprot --output projects/new_target.draft.json
@@ -70,7 +71,7 @@ pip install -r requirements.txt
 
 - `Research` 已有可运行实现
 - `Design` 已有 RFdiffusion 宏环骨架、ProteinMPNN 反向折叠、
-  AfCycDesign 固定序列回折和候选登记逻辑
+  AfCycDesign 固定序列回折、真实闭环原子几何门禁和候选登记逻辑
 - `Prediction` 已有严格 artifact 摄取、七层指标计算、状态判定和断点续跑实现
 - `Planner` / `Critic` 仍在待实现阶段
 
@@ -152,8 +153,17 @@ cycpep-mdm2-mdmx/
 
 ```bash
 python3 test_data_layer.py
+python3 test_design.py
 python3 -m unittest -v test_prediction_pipeline.py
 ./.venv/bin/python -m unittest -v test_reliability_regressions.py
+```
+
+部署环境中的固定序列 GPU 回归测试需要显式启用，普通 CI 会安全跳过：
+
+```bash
+CYCPEP_RUN_GPU_TESTS=1 \
+/root/damodel-tmp/envs/cycpep-prediction/bin/python \
+-m unittest -v test_design_gpu.py
 ```
 
 Prediction 的 Design 交接契约、artifact schema、七层计算定义、状态语义与

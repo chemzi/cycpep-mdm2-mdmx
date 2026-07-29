@@ -98,6 +98,62 @@ ACTIVE_PROJECT_CONFIG['review'] = {
 
 failures = []
 
+
+AA1_TO_3 = {
+    'A': 'ALA', 'C': 'CYS', 'D': 'ASP', 'E': 'GLU', 'F': 'PHE',
+    'G': 'GLY', 'H': 'HIS', 'I': 'ILE', 'K': 'LYS', 'L': 'LEU',
+    'M': 'MET', 'N': 'ASN', 'P': 'PRO', 'Q': 'GLN', 'R': 'ARG',
+    'S': 'SER', 'T': 'THR', 'V': 'VAL', 'W': 'TRP', 'Y': 'TYR',
+}
+
+
+def pdb_atom(serial, atom_name, residue_name, chain, residue_number, xyz):
+    x, y, z = xyz
+    element = atom_name[0]
+    return (
+        f'ATOM  {serial:5d} {atom_name:>4s} {residue_name:>3s} '
+        f'{chain}{residue_number:4d}    '
+        f'{x:8.3f}{y:8.3f}{z:8.3f}{1.00:6.2f}{0.00:6.2f}'
+        f'          {element:>2s}  \n'
+    )
+
+
+def monomer_pdb(
+        sequence, *, chain='A', nc_distance=1.33, sg_distance=2.03,
+        include_terminal_atoms=True):
+    lines, serial = [], 1
+    for index, amino_acid in enumerate(sequence, 1):
+        residue_name = AA1_TO_3[amino_acid]
+        if index == 1 and include_terminal_atoms:
+            lines.append(
+                pdb_atom(serial, 'N', residue_name, chain, index, (0.0, 0.0, 0.0))
+            )
+            serial += 1
+        # Put CA atoms far apart so closure tests cannot accidentally use them.
+        lines.append(
+            pdb_atom(
+                serial, 'CA', residue_name, chain, index,
+                (20.0 + index * 3.0, 0.0, 0.0),
+            )
+        )
+        serial += 1
+        if amino_acid == 'C' and index in (1, len(sequence)):
+            x = 0.0 if index == 1 else sg_distance
+            lines.append(
+                pdb_atom(serial, 'SG', residue_name, chain, index, (x, 2.0, 0.0))
+            )
+            serial += 1
+        if index == len(sequence) and include_terminal_atoms:
+            lines.append(
+                pdb_atom(
+                    serial, 'C', residue_name, chain, index,
+                    (nc_distance, 0.0, 0.0),
+                )
+            )
+            serial += 1
+    return ''.join(lines)
+
+
 def check(cond, msg):
     if not cond:
         failures.append(msg)
@@ -214,34 +270,86 @@ check((0.5, 0.5) not in front_pairs, 'dominated not on front')
 
 # ── Test 9: _ring_closure_check ──
 print('Test 9: _ring_closure_check')
-# Normal case: close CA atoms
-pdb_close = (
-    'ATOM      1  N   ALA A   1       1.000   2.000   3.000  1.00  0.00           N  \n'
-    'ATOM      2  CA  ALA A   1       1.500   2.500   3.500  1.00  0.00           C  \n'
-    'ATOM      3  N   ALA A  12       5.000   6.000   7.000  1.00  0.00           N  \n'
-    'ATOM      4  CA  ALA A  12       5.500   6.500   7.500  1.00  0.00           C  \n'
-)
 tmp1 = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
-tmp1.write(pdb_close)
+tmp1.write(monomer_pdb('ACDEFGHI', nc_distance=1.33))
 tmp1.close()
-rc = _ring_closure_check(tmp1.name)
-check(rc['pass'] is True, f'close CA should pass, got {rc}')
+rc = _ring_closure_check(
+    tmp1.name, 'head-to-tail_amide', sequence='ACDEFGHI'
+)
+check(rc['pass'] is True, f'peptide C-N geometry should pass, got {rc}')
+check(rc['atom_1'] == 'last:C' and rc['atom_2'] == 'first:N',
+      f'head-to-tail must inspect C-N, got {rc}')
+check(rc['distance_angstrom'] == 1.33, f'C-N distance should be recorded, got {rc}')
 os.unlink(tmp1.name)
 
-# Multi-model: should only read first MODEL
-pdb_multi = (
-    'ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00  0.00           C  \n'
-    'ENDMDL\n'
-    'ATOM    100  CA  ALA A   1      99.000  99.000  99.000  1.00  0.00           C  \n'
-    'ATOM    101  CA  ALA A  12      99.000  99.000  99.000  1.00  0.00           C  \n'
-)
+# CA atoms remain far apart, yet a valid C-N bond passes.  Conversely, close CA
+# atoms cannot rescue an invalid C-N distance.
 tmp2 = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
-tmp2.write(pdb_multi)
+tmp2.write(monomer_pdb('ACDEFGHI', nc_distance=3.00))
 tmp2.close()
-rc2 = _ring_closure_check(tmp2.name)
-check(rc2['pass'] is False, f'multi-model (1 CA) should fail, got {rc2}')
-check(rc2.get('n_ca') == 1, f'should report n_ca=1, got {rc2}')
+rc2 = _ring_closure_check(
+    tmp2.name, 'head-to-tail_amide', sequence='ACDEFGHI'
+)
+check(rc2['pass'] is False, f'long peptide C-N distance should fail, got {rc2}')
+check(rc2['reason'] == 'distance_out_of_range',
+      f'failed C-N distance should be auditable, got {rc2}')
 os.unlink(tmp2.name)
+
+tmp3 = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+tmp3.write(monomer_pdb('CACDEFGHIC', sg_distance=2.03))
+tmp3.close()
+rc3 = _ring_closure_check(
+    tmp3.name, 'Cys-Cys_disulfide', sequence='CACDEFGHIC'
+)
+check(rc3['pass'] is True, f'disulfide SG-SG geometry should pass, got {rc3}')
+check(rc3['atom_1'] == 'first:SG' and rc3['atom_2'] == 'last:SG',
+      f'disulfide must inspect SG-SG, got {rc3}')
+os.unlink(tmp3.name)
+
+tmp4 = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+tmp4.write(monomer_pdb('ACDEFGHI'))
+tmp4.close()
+rc4 = _ring_closure_check(
+    tmp4.name, 'Cys-Cys_disulfide', sequence='ACDEFGHI'
+)
+check(rc4['pass'] is False and rc4['reason'] == 'terminal_residues_not_cysteine',
+      f'disulfide requires terminal cysteines, got {rc4}')
+unsupported = _ring_closure_check(tmp4.name, 'stapled_hydrocarbon')
+check(unsupported['pass'] is False and unsupported['reason'] == 'unsupported_cyclization',
+      f'unknown chemistry must fail closed, got {unsupported}')
+os.unlink(tmp4.name)
+
+tmp5 = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+tmp5.write(monomer_pdb('ACDEFGHI', include_terminal_atoms=False))
+tmp5.close()
+missing = _ring_closure_check(
+    tmp5.name, 'head-to-tail_amide', sequence='ACDEFGHI'
+)
+check(missing['pass'] is False and missing['reason'] == 'closure_atom_missing',
+      f'missing closure atoms must fail closed, got {missing}')
+os.unlink(tmp5.name)
+
+tmp6 = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+tmp6.write(monomer_pdb('ACDEFGHI', chain='A'))
+tmp6.write(monomer_pdb('ACDEFGHI', chain='B'))
+tmp6.close()
+ambiguous = _ring_closure_check(
+    tmp6.name, 'head-to-tail_amide', sequence='ACDEFGHI'
+)
+check(ambiguous['pass'] is False and ambiguous['reason'] == 'ambiguous_monomer_chain',
+      f'multi-chain refold must fail closed, got {ambiguous}')
+os.unlink(tmp6.name)
+
+tmp7 = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+tmp7.write(monomer_pdb('CACDEFGHIC', sg_distance=3.50))
+tmp7.close()
+far_disulfide = _ring_closure_check(
+    tmp7.name, 'Cys-Cys_disulfide', sequence='CACDEFGHIC'
+)
+check(far_disulfide['pass'] is False and far_disulfide['reason'] == 'distance_out_of_range',
+      f'long SG-SG distance must fail, got {far_disulfide}')
+os.unlink(tmp7.name)
+
 check(_pdb_residue_range(target_fixture.name, 'B') == (1, 1),
       'approved target chain range parsed without legacy fallback')
 
@@ -294,23 +402,44 @@ State._data['known_dual_binders'] = [
 # ── Test 14: _write_manifest ──
 print('Test 14: _write_manifest + cyclization detection')
 tmp_pdb = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
-tmp_pdb.write(pdb_close)
+tmp_pdb.write(monomer_pdb('CACDEFGHIC', sg_distance=2.03))
 tmp_pdb.close()
 cfg_test = {'target_name': '1YCR', 'target_pdb': '/tmp/test.pdb', 'seed': 42}
 m1 = _write_manifest('C0001', 'CACDEFGHIC', 'route_A_test', 'batch_1', tmp_pdb.name, cfg_test)
 check(m1['cyclization_type'] == 'Cys-Cys_disulfide', f'Cys flanked -> {m1["cyclization_type"]}')
+check(m1['design_pipeline_version'] == DESIGN_PIPELINE_VERSION,
+      f'manifest records Design version {DESIGN_PIPELINE_VERSION}')
 check(m1['backbone_pdb'] == '', 'no backbone -> empty string')
 check(len(m1['refold_pdb_hash']) > 0, 'refold hash present')
-check('pass' in m1['ring_closure'], 'ring_closure has pass')
+check(m1['ring_closure']['pass'] is True, f'disulfide manifest geometry passes: {m1["ring_closure"]}')
 # With cyclization arg
-m2 = _write_manifest('C0002', 'ACDEFGHI', 'route_C_test', 'batch_2', tmp_pdb.name, cfg_test, cyclization='Cys-Cys_disulfide,linker=GGGGS')
-check(m2['cyclization_type'] == 'Cys-Cys_disulfide,linker=GGGGS', f'custom cyclization -> {m2["cyclization_type"]}')
+m2 = _write_manifest(
+    'C0002', 'CACDEFGHIC', 'route_C_test', 'batch_2', tmp_pdb.name,
+    cfg_test, cyclization='Cys-Cys_disulfide,linker=GGGGS',
+)
+check(m2['cyclization_type'] == 'Cys-Cys_disulfide',
+      f'custom description is canonicalized -> {m2["cyclization_type"]}')
+check(m2['cyclization_description'] == 'Cys-Cys_disulfide,linker=GGGGS',
+      'cyclization modifiers remain auditable')
 handoff = _candidate_from_manifest(m2, 0.9)
 check(handoff['manifest_path'] == m2['manifest_path'], 'candidate handoff preserves manifest path')
 check(handoff['design_pdb_path'] == tmp_pdb.name, 'candidate handoff preserves refold PDB')
 check(handoff['cyclization_bonds'][0]['bond_type'] == 'disulfide',
       'candidate handoff preserves cyclization bond intent')
 os.unlink(tmp_pdb.name)
+
+head_pdb = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+head_pdb.write(monomer_pdb('ACDEFGHI', nc_distance=1.33))
+head_pdb.close()
+m3 = _write_manifest(
+    'C0003', 'ACDEFGHI', 'route_C_test', 'batch_3', head_pdb.name,
+    cfg_test, cyclization='head-to-tail_amide,linker=GGGGS',
+)
+check(m3['cyclization_type'] == 'head-to-tail_amide',
+      'head-to-tail modifiers do not corrupt the stable downstream contract')
+check(m3['ring_closure']['pass'] is True,
+      f'head-to-tail manifest carries C-N geometry: {m3["ring_closure"]}')
+os.unlink(head_pdb.name)
 
 # ── Test 15: cheap filter ──
 print('Test 15: cheap pre-filter')
@@ -349,9 +478,30 @@ check('model.predict(' in refold_script, 'fixed sequence uses prediction-only AP
 check('model.design_3stage' not in refold_script, 'sequence optimizer is absent')
 check('model.get_seq(get_best=False)' in refold_script, 'model sequence is verified')
 check('pdb_sequences' in refold_script, 'output PDB sequence is independently verified')
+check('len(pdb_sequences) != 1' in refold_script,
+      'fixed-sequence refold rejects extra PDB chains')
 check('rev-parse' in refold_script, 'ColabDesign commit is pinned at runtime')
 check('--untracked-files=no' in refold_script, 'tracked dependency changes are rejected')
 check('"offset" in batch' in refold_script, 'cyclic offset backend capability is checked')
+
+fixed_pdb = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+fixed_pdb.write(monomer_pdb('ACDEFGHI'))
+fixed_pdb.close()
+check(_verify_fixed_sequence_pdb(fixed_pdb.name, 'ACDEFGHI') == {'A': 'ACDEFGHI'},
+      'host-side verifier accepts the exact saved PDB sequence')
+check_raises(
+    ValueError,
+    lambda: _verify_fixed_sequence_pdb(fixed_pdb.name, 'AAAAAAAA'),
+    'host-side verifier rejects a saved PDB sequence mismatch',
+)
+with open(fixed_pdb.name, 'a') as handle:
+    handle.write(monomer_pdb('ACDEFGHI', chain='B'))
+check_raises(
+    ValueError,
+    lambda: _verify_fixed_sequence_pdb(fixed_pdb.name, 'ACDEFGHI'),
+    'host-side verifier rejects an extra output chain',
+)
+os.unlink(fixed_pdb.name)
 
 # ── Test 17: RFdiffusion subprocess receives validated activate.d runtime ──
 print('Test 17: RFdiffusion subprocess environment')
