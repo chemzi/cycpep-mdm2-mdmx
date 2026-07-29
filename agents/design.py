@@ -63,15 +63,36 @@ CUDA_DATA_DIR = os.environ.get(
     "CUDA_DATA_DIR",
     f"{CYCPEP_CONDA}/lib/python3.10/site-packages/nvidia/cuda_nvcc",
 )
-NP_DATA_ROOT = os.environ.get("NP_DATA")
 DAMODEL_DATA_ROOT = Path("/root/damodel-tmp/novapeptide")
-if NP_DATA_ROOT:
-    DEFAULT_OUTPUT_DIR = Path(NP_DATA_ROOT) / "designs"
-elif DAMODEL_DATA_ROOT.is_dir():
-    DEFAULT_OUTPUT_DIR = DAMODEL_DATA_ROOT / "designs"
-else:
-    DEFAULT_OUTPUT_DIR = ROOT / "data" / "designs"
-OUTPUT_DIR = os.environ.get("CYCPEP_DESIGN_ROOT", str(DEFAULT_OUTPUT_DIR))
+
+
+def _resolve_output_dir(environ=None, damodel_data_root=None):
+    """Resolve a writable design root without assuming /root is accessible."""
+    env = os.environ if environ is None else environ
+    explicit_root = env.get("CYCPEP_DESIGN_ROOT")
+    if explicit_root:
+        return Path(explicit_root)
+
+    np_data_root = env.get("NP_DATA")
+    if np_data_root:
+        return Path(np_data_root) / "designs"
+
+    damodel_root = DAMODEL_DATA_ROOT if damodel_data_root is None else damodel_data_root
+    try:
+        if damodel_root.is_dir():
+            return damodel_root / "designs"
+    except OSError:
+        # GitHub runners and other non-root users cannot stat paths below /root.
+        pass
+
+    runner_temp = env.get("RUNNER_TEMP")
+    if runner_temp:
+        return Path(runner_temp) / "novapeptide" / "designs"
+    return ROOT / "data" / "designs"
+
+
+DEFAULT_OUTPUT_DIR = _resolve_output_dir()
+OUTPUT_DIR = str(DEFAULT_OUTPUT_DIR)
 RFDIFF_TIMESTEPS = int(os.environ.get("RFDIFF_TIMESTEPS", "50"))
 LIGANDMPNN_MODEL_TYPE = os.environ.get("LIGANDMPNN_MODEL_TYPE", "protein_mpnn")
 LIGANDMPNN_CHECKPOINT = os.environ.get(

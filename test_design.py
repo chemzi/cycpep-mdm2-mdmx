@@ -375,6 +375,25 @@ finally:
 check('ppi.hotspot_res=[A54,A93,A96]' in captured_run['cmd'],
       'Hydra hotspot residues are passed as a list')
 
+# ── Test 18: output directory resolution is permission-safe in CI ──
+print('Test 18: CI-safe output directory resolution')
+class _DeniedDamodelPath:
+    def is_dir(self):
+        raise PermissionError(13, 'permission denied', '/root/damodel-tmp/novapeptide')
+
+with tempfile.TemporaryDirectory() as runner_temp:
+    explicit_dir = Path(runner_temp) / 'explicit-designs'
+    resolved_explicit = _resolve_output_dir(
+        {'CYCPEP_DESIGN_ROOT': str(explicit_dir)}, _DeniedDamodelPath())
+    check(resolved_explicit == explicit_dir,
+          'explicit design root bypasses inaccessible /root path')
+
+    resolved_ci = _resolve_output_dir(
+        {'RUNNER_TEMP': runner_temp}, _DeniedDamodelPath())
+    expected_ci = Path(runner_temp) / 'novapeptide' / 'designs'
+    check(resolved_ci == expected_ci,
+          'permission error falls back to GitHub runner temp')
+
 os.unlink(target_fixture.name)
 
 # ── Summary ──
@@ -385,4 +404,4 @@ if failures:
         print(f'  - {f}')
     sys.exit(1)
 else:
-    print('ALL 17 TEST GROUPS PASSED')
+    print('ALL 18 TEST GROUPS PASSED')
