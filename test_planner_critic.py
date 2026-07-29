@@ -76,6 +76,48 @@ class PlannerCriticTests(unittest.TestCase):
         tasks = planner_agent.plan(state=State.load(), candidates=candidates)
         self.assertEqual(tasks[0]["agent"], "critic")
 
+    def test_fresh_branch_designs_instead_of_reusing_parent_candidates(self):
+        """
+        Regression: a non-root node whose scope is empty must ask for design.
+        Falling back to the global pool here makes every new branch re-review its
+        parent's rows and never generate candidates, which stalls the search.
+        """
+        State.update({
+            "research_pipeline_meta": {"run_status": "complete"},
+            "candidate_count": 4,
+        })
+        parent_pool = [
+            {"candidate_id": f"C000{i}", "sequence": "GFEWALAAKCFG",
+             "source_batch": "N0001/route_A_mdm2/L12",
+             "manifest_path": "m.json", "plddt": 0.9}
+            for i in range(1, 5)
+        ]
+        root = {"node_id": "N0001", "depth": 0, "round": 1, "strategy": {}}
+        child = {"node_id": "N0002", "depth": 1, "round": 2, "strategy": {}}
+
+        root_tasks = planner_agent.plan(
+            state=State.load(), node=root, candidates=parent_pool)
+        self.assertEqual(root_tasks[0]["agent"], "critic")
+
+        child_tasks = planner_agent.plan(
+            state=State.load(), node=child, candidates=parent_pool)
+        self.assertEqual(child_tasks[0]["agent"], "design")
+        self.assertIn("no candidates for this node", child_tasks[0]["reason"])
+
+    def test_root_still_sees_untagged_legacy_pool(self):
+        """Root keeps the global fallback so a pre-existing CSV is not ignored."""
+        State.update({
+            "research_pipeline_meta": {"run_status": "complete"},
+            "candidate_count": 1,
+        })
+        legacy = [{
+            "candidate_id": "C9001", "sequence": "AAAAAAAAAAAA",
+            "source_batch": "", "manifest_path": "m.json", "plddt": 0.9,
+        }]
+        root = {"node_id": "N0001", "depth": 0, "round": 1, "strategy": {}}
+        tasks = planner_agent.plan(state=State.load(), node=root, candidates=legacy)
+        self.assertEqual(tasks[0]["agent"], "critic")
+
     def test_critic_empty_pool(self):
         report = critic_agent.review(candidates=[], thresholds={}, log_evidence=True)
         self.assertEqual(report["verdict"], "dead_end")

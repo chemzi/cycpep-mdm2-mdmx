@@ -9,10 +9,10 @@ Planner Agent — 赵嘉策
 from __future__ import annotations
 
 import copy
-from typing import Any, Optional
+from typing import Optional
 
-from data_layer import EvidenceLogger, State
 from agents.search_tree import strategy_branch_key
+from data_layer import EvidenceLogger, State
 
 
 def _has_research(state: dict) -> bool:
@@ -92,10 +92,19 @@ def plan(
         except Exception:
             candidates = []
 
-    # Prefer candidates belonging to this search node; fall back to global pool
-    # only for the root when nothing has been tagged yet.
+    # Each search node judges only its own candidates. An empty scope on a fresh
+    # branch is the signal to design, so it must NOT fall back to the global pool:
+    # doing so would make every new branch re-review its parent's rows, return
+    # critic instead of design, and never generate a candidate of its own.
     node_cands = _candidates_for_node(candidates, node_id)
-    scope = node_cands if node_cands or (node and node.get("depth", 0) > 0) else candidates
+    is_root = not node or node.get("depth", 0) == 0
+    if node_cands:
+        scope = node_cands
+    elif is_root:
+        # Root may inherit an untagged pool from an earlier run or a teammate.
+        scope = candidates
+    else:
+        scope = []
 
     if len(scope) == 0:
         return [{
@@ -181,10 +190,9 @@ def propose_children(
 
     # Default branches: shift budget toward B / C / MDMX, and length scan variants
     mix_b = copy.deepcopy(route_mix)
-    if "route_B" in mix_b or True:
-        mix_b["route_B"] = int(mix_b.get("route_B") or 0) + 100
-        mix_b["route_A_mdm2"] = max(0, int(mix_b.get("route_A_mdm2") or 0) - 50)
-        mix_b["route_A_mdmx"] = max(0, int(mix_b.get("route_A_mdmx") or 0) - 50)
+    mix_b["route_B"] = int(mix_b.get("route_B") or 0) + 100
+    mix_b["route_A_mdm2"] = max(0, int(mix_b.get("route_A_mdm2") or 0) - 50)
+    mix_b["route_A_mdmx"] = max(0, int(mix_b.get("route_A_mdmx") or 0) - 50)
     _try(mix_b, lengths, constraints, "boost_route_B")
 
     mix_c = copy.deepcopy(route_mix)
