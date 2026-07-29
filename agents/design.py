@@ -1,694 +1,1125 @@
 """
-Design Agent — 于嘉乐
-职责：三条设计路线，统一输出格式，写入 CandidateIndex 和 EvidenceLogger
-入口：design_afcyc(target, n, lengths, hotspots) → list[dict]
-      design_motif_graft(n) → list[dict]
-      design_atsp_cyclize(n) → list[dict]
+Design Agent v5 — 于嘉乐
+职责：RFpeptides 生成环肽骨架 → LigandMPNN 序列设计 → AfCycDesign refold 验证
+入口：design_rfpeptides(target_spec, design_config) → list[dict]
+      design_motif_guided(target_spec, design_config) → list[dict]
+      design_atsp_derived(target_spec, design_config) → list[dict]
+      threshold_filter(candidates, thresholds) → list[dict]
+      pareto_front(candidates) → list[dict]
 依赖：from data_layer import EvidenceLogger, CandidateIndex, State, file_hash
-      ColabDesign v1.1.2 / ProteinMPNN v0.1.3
+工具：RFdiffusion (rfdiff_env) / LigandMPNN (rfdiff_env) / AfCycDesign (cycpep)
+
+Agent 职责边界：
+  Design 阶段只做基础验证（能折叠 + 环闭合）。
+  pLDDT > 0.8 的最终过滤由 Prediction Agent (Phase 3 L1) 负责。
 """
 
-import os, sys, json, time, subprocess
+import os, sys, json, time, subprocess, threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from data_layer import EvidenceLogger, CandidateIndex, State, file_hash
-from project_config import load_project_config, target_slug
+from project_config import (
+    load_project_config,
+    required_target_ids,
+    target_slug,
+    target_value,
+    threshold_for_target,
+)
 from structure_resolution import assert_target_structure_ready
 from target_bootstrap import assert_project_approved
 
 
 # ============================================================
-# 常量 — 设计依据
+# 环境路径
 # ============================================================
 
-# 靶点→设计参数映射（来源：research.py TARGETS.pocket_residues，p53 Phe19/Trp23/Leu26 对齐）
-# MDM2 1YCR chain A: Phe19→LEU54, Trp23→VAL93, Leu26→HIS96
-# MDMX 3DAB chain A: Phe19→MET53, Trp23→VAL92, Leu26→PRO95
 ACTIVE_PROJECT_CONFIG = load_project_config()
 
+# 新服务器路径可全部通过环境变量覆盖；默认值对应 damodel 部署。
+CYCPEP_CONDA = os.environ.get(
+    "CYCPEP_CONDA", "/root/damodel-tmp/envs/cycpep-prediction"
+)
+CYCPEP_PYTHON = os.environ.get("CYCPEP_PYTHON", f"{CYCPEP_CONDA}/bin/python")
+RFDIFF_CONDA = os.environ.get(
+    "RFDIFF_CONDA", "/root/damodel-tmp/envs/rfdiffusion-design"
+)
+RFDIFF_PYTHON = os.environ.get("RFDIFF_PYTHON", f"{RFDIFF_CONDA}/bin/python")
+RFDIFF_DIR = os.environ.get(
+    "RFDIFF_DIR", "/root/workspace/NovaPeptide/tools/RFdiffusion"
+)
+LIGANDMPNN_DIR = os.environ.get(
+    "LIGANDMPNN_DIR", "/root/workspace/NovaPeptide/tools/LigandMPNN"
+)
+COLABDESIGN_DIR = os.environ.get(
+    "COLABDESIGN_DIR", "/root/workspace/NovaPeptide/tools/ColabDesign"
+)
+COLABDESIGN_PARAMS = os.environ.get(
+    "COLABDESIGN_PARAMS", f"{COLABDESIGN_DIR}/params"
+)
+SE3_ROOT = os.environ.get("SE3_ROOT", f"{RFDIFF_DIR}/env/SE3Transformer")
+CUDA_DATA_DIR = os.environ.get(
+    "CUDA_DATA_DIR",
+    f"{CYCPEP_CONDA}/lib/python3.10/site-packages/nvidia/cuda_nvcc",
+)
+NP_DATA_ROOT = os.environ.get("NP_DATA")
+DAMODEL_DATA_ROOT = Path("/root/damodel-tmp/novapeptide")
+if NP_DATA_ROOT:
+    DEFAULT_OUTPUT_DIR = Path(NP_DATA_ROOT) / "designs"
+elif DAMODEL_DATA_ROOT.is_dir():
+    DEFAULT_OUTPUT_DIR = DAMODEL_DATA_ROOT / "designs"
+else:
+    DEFAULT_OUTPUT_DIR = ROOT / "data" / "designs"
+OUTPUT_DIR = os.environ.get("CYCPEP_DESIGN_ROOT", str(DEFAULT_OUTPUT_DIR))
+RFDIFF_TIMESTEPS = int(os.environ.get("RFDIFF_TIMESTEPS", "50"))
+LIGANDMPNN_MODEL_TYPE = os.environ.get("LIGANDMPNN_MODEL_TYPE", "protein_mpnn")
+LIGANDMPNN_CHECKPOINT = os.environ.get(
+    "LIGANDMPNN_CHECKPOINT",
+    f"{LIGANDMPNN_DIR}/model_params/proteinmpnn_v_48_020.pt",
+)
+DEFAULT_SEED = None
 
-def _build_hotspot_map() -> dict:
-    mapping = {}
-    for target in ACTIVE_PROJECT_CONFIG["targets"]:
-        structure = target.get("structure") or {}
-        pdb_id = structure.get("pdb_id")
-        spec = {
-            "target_id": target["id"],
-            "pdb_id": pdb_id or target["id"],
-            "coordinate_path": structure.get("coordinate_path"),
-            "chain": structure.get("chain", "A"),
-            "hotspots": ",".join(
-                str(residue) for residue in (target.get("binding_site") or {}).get("residues", [])
-            ),
-            "lengths": (target.get("design") or {}).get("lengths", [10]),
-        }
-        mapping[str(target["id"]).upper()] = spec
-        if pdb_id:
-            mapping[str(pdb_id).upper()] = spec
-    return mapping
+
+# ============================================================
+# 设计常量（Research 产出可覆盖）
+# ============================================================
+
+# 所有设计常量从 Research State 读取（_load_target_spec）。
+_LOCK = threading.Lock()
+CYCLIZATION_PAIRS = [("C", "C"), ("", "")]
+LINKER_MATRIX = ["GGGGS", "GGGS", "GGS", "GS", ""]
+SCAFFOLD_MUTABLE_AA = "ACDEFGHIKLMNPQRSTVWY"
+
+# 便宜预筛参数
+CHEAP_FILTER_TOP_K = 4    # refold 前保留序列数
+HYDROPHOBIC = set("AILMFWV")
+POS_CHARGED = set("KR")
+NEG_CHARGED = set("DE")
 
 
-HOTSPOT_MAP = _build_hotspot_map()
-
-
-def _require_mdm_reference_route(route_name: str):
-    target_ids = {target["id"] for target in ACTIVE_PROJECT_CONFIG["targets"]}
+def _require_mdm_reference_route(route_name):
+    target_ids = set(required_target_ids(ACTIVE_PROJECT_CONFIG))
     if target_ids != {"MDM2", "MDMX"}:
         raise RuntimeError(
             f"{route_name} contains MDM-specific motif knowledge and is disabled for "
             f"project {ACTIVE_PROJECT_CONFIG['project_id']}; provide project-specific motifs instead"
         )
 
-# 已知双靶结合肽种子序列（来源：research.py KNOWN_DUAL_BINDERS）
-# PMI: PMID 34589387; pDI: PMID 19910468; ATSP-7041: PMID 23946421
-MOTIF_TEMPLATES = [
-    {"name": "PMI",        "seq": "TSFAEYWNLLSP"},
-    {"name": "pDI",        "seq": "LTFEHYWAQLTS"},
-    {"name": "ATSP_7041",  "seq": "LTFLEYWAAQSL"},
-]
 
-# Route C: ATSP-7041 环化参数
-# 核心序列来自 research.py KNOWN_DUAL_BINDERS[3]（ATSP-7041 核心 = LTFLEYWAAQSL）
-# 此处取文献报道的 Phe19/Trp23/Leu26(Cba) 三残基保守骨架
-ATSP_CORE = "LTFLEYWAAQSL"
+def _cheap_filter_sequences(seqs, seen_seqs=None, top_k=CHEAP_FILTER_TOP_K):
+    """
+    便宜预筛（无 GPU）：合成可行性 + 基本理化性质。
+    返回 top_k 条最优序列，格式 [(seq, score), ...]
+    """
+    if seen_seqs is None:
+        seen_seqs = set()
+    scored = []
+    for seq in seqs:
+        if seq in seen_seqs:
+            continue
+        violations = _synthesizability_violations(seq)
+        if violations:
+            continue  # 硬淘汰
+        score = _sequence_quality_score(seq)
+        scored.append((seq, score))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:top_k]
 
-# Gly/Ser linker 长度矩阵（阶段13 §3 组长指定范围：5,10,15,20,25,30,35 aa）
-LINKER_MATRIX = ["", "GS", "GGS", "GGGS"]
 
-# Route C 需达到 n 时的扩展方法可用氨基酸
-SCAFFOLD_MUTABLE_AA = "ACDEFGHIKLMNPQRSTVWY"
+def _synthesizability_violations(seq):
+    """
+    检查 Kickoff 定义的可合成性规则。返回违规列表，空列表 = 通过。
+    - 聚集：连续 >4 个疏水氨基酸
+    - 游离 Cys：不在 N/C 端的 Cys
+    - 氧化：Met / Trp（软警告，不硬淘汰）
+    - 脱酰胺：Asn-Gly
+    - Asp-Pro 断裂
+    """
+    v = []
+    # 连续疏水
+    run = 0
+    for aa in seq:
+        if aa in HYDROPHOBIC:
+            run += 1
+        else:
+            run = 0
+        if run > 4:
+            v.append("aggregation")
+            break
+    # 游离 Cys（不在首尾）
+    for i, aa in enumerate(seq):
+        if aa == "C" and i not in (0, len(seq) - 1):
+            v.append("stray_cys")
+            break
+    # Asn-Gly 脱酰胺
+    for i in range(len(seq) - 1):
+        if seq[i:i+2] == "NG":
+            v.append("deamidation_NG")
+            break
+    # Asp-Pro 断裂（环肽中 N→C 也检查）
+    for i in range(len(seq) - 1):
+        if seq[i:i+2] == "DP":
+            v.append("dp_cleavage")
+            break
+    # 首尾连接也要检查（环化后 N-term 和 C-term 相邻）
+    if seq[0] == "G" and seq[-1] == "N":
+        v.append("deamidation_NG_cyclic")
+    if seq[0] == "P" and seq[-1] == "D":
+        v.append("dp_cleavage_cyclic")
+    return v
 
-# 运行路径均可用环境变量覆盖，默认放在仓库内，避免绑定 /root。
-TARGET_ROOT = Path(os.environ.get("CYCPEP_TARGET_ROOT", ROOT / "targets"))
-DESIGN_ROOT = Path(os.environ.get("CYCPEP_DESIGN_ROOT", ROOT / "data" / "designs"))
-COLABDESIGN_ROOT = Path(os.environ.get("COLABDESIGN_ROOT", "/root/ColabDesign"))
-COLABDESIGN_PARAMS = Path(
-    os.environ.get("COLABDESIGN_PARAMS", COLABDESIGN_ROOT / "params")
-)
 
-_LAST_ISSUED_CANDIDATE_NUMBER = 0
+def _sequence_quality_score(seq):
+    """
+    序列质量评分（越高越好），基于：
+    - 疏水/亲水平衡（0.3-0.7 区间最优）
+    - 净电荷适中（-1 到 +1 最优）
+    - 氨基酸多样性
+    """
+    L = len(seq)
+    h = sum(1 for aa in seq if aa in HYDROPHOBIC) / max(L, 1)
+    pos = sum(1 for aa in seq if aa in POS_CHARGED)
+    neg = sum(1 for aa in seq if aa in NEG_CHARGED)
+    net = (pos - neg) / max(L, 1)
+    diversity = len(set(seq)) / max(L, 1)
+
+    # 疏水平衡分：离 0.5 越近越好
+    h_score = 1.0 - abs(h - 0.5) * 2
+    # 电荷分：离 0 越近越好
+    c_score = 1.0 - min(abs(net) * 5, 1.0)
+    # 多样性分：越高越好（但 >0.4 就很好）
+    d_score = min(diversity / 0.5, 1.0)
+
+    total = h_score * 0.4 + c_score * 0.3 + d_score * 0.3
+    # Met/Trp 氧化风险：扣 0.15（软惩罚，不硬淘汰）
+    for aa in seq:
+        if aa in "MW":
+            total -= 0.15
+            break
+    return max(total, 0.0)
 
 
 # ============================================================
-# Route A: ColabDesign 靶点导向环肽设计
+# Route A: RFpeptides 自由生成
 # ============================================================
 
-def design_afcyc(target: str, n: int = 10,
-                 lengths: list = None,
-                 hotspots: str = None,
-                 chain: str = None) -> list[dict]:
-    """
-    用 ColabDesign fixbb + cyclic offset 设计靶点导向环肽。
+def design_rfpeptides(target_spec=None, design_config=None):
+    """RFpeptides → LigandMPNN → AfCycDesign refold"""
+    config = _merge_config(target_spec, design_config)
+    route_name = f"route_A_{target_slug(config['target_id'])}"
+    batch_id = f"batch_rfpep_{config['target_name']}_s{config['seed']}"
+    batch_dir = f"{OUTPUT_DIR}/route_A/{batch_id}"
+    os.makedirs(batch_dir, exist_ok=True)
 
-    每对 (length, i) 生成一个子进程：
-      python <CYCPEP_DESIGN_ROOT>/route_A/<batch>/script_<cid>.py
+    with open(f"{batch_dir}/design_config.json", "w") as f:
+        json.dump(config, f, indent=2, default=str)
 
-    子进程调用 ColabDesign fixbb 模式：
-      mk_af_model(protocol='fixbb') → prep_inputs → add_cyclic_offset →
-      design_3stage(50, 50, 10) → save_pdb
-
-    Args:
-        target: 靶点 PDB ID（如 "1YCR"）
-        n: 每条长度生成的候选数
-        lengths: 环肽长度列表，默认从 HOTSPOT_MAP 读取
-        hotspots: hotspot 残基编号，逗号分隔
-        chain: 靶点链 ID
-
-    Returns:
-        list[dict]: 候选列表，写入 CandidateIndex + EvidenceLogger
-    """
-    assert_project_approved(ACTIVE_PROJECT_CONFIG)
-    target_key = target.upper()
-    if target_key not in HOTSPOT_MAP:
-        raise ValueError(f"unsupported Route A target: {target}; choose from {sorted(HOTSPOT_MAP)}")
-    target_spec = HOTSPOT_MAP[target_key]
-    target_id = target_spec["target_id"]
-    assert_target_structure_ready(ACTIVE_PROJECT_CONFIG, target_id)
-    pdb_id = target_spec["pdb_id"]
-    lengths = lengths or target_spec["lengths"]
-    if any(length < 8 or length > 20 for length in lengths):
-        raise ValueError("v5 product definition requires cyclic peptides of 8-20 aa")
-    hotspots = hotspots or target_spec.get("hotspots", "")
-    chain = chain or target_spec.get("chain", "A")
-
-    coordinate_path = target_spec.get("coordinate_path")
-    if coordinate_path:
-        target_pdb = Path(coordinate_path)
-    else:
-        safe_id = "".join(ch for ch in str(pdb_id) if ch.isalnum() or ch in {"-", "_"})
-        if not safe_id:
-            raise ValueError(f"invalid pdb_id for TARGET_ROOT lookup: {pdb_id}")
-        target_root = TARGET_ROOT.resolve()
-        target_pdb = (target_root / f"{safe_id}.pdb").resolve()
-        if target_pdb.parent != target_root:
-            raise ValueError(f"invalid pdb_id escaped target root: {pdb_id}")
-    if not target_pdb.exists():
-        raise FileNotFoundError(f"靶点 PDB 不存在: {target_pdb}")
-    target_hash = file_hash(str(target_pdb))
-
-    route_name = f"route_structure_{target_slug(target_id)}"
-    batch_id = f"batch_{target_slug(target_id)}_len{'_'.join(map(str, lengths))}"
-    out_dir = DESIGN_ROOT / "route_A" / batch_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    total_generated = 0
-    total_valid = 0
     candidates = []
-    t_batch_start = time.time()
+    total_gen, total_valid = 0, 0
+    t_batch = time.time()
+    target_range = _pdb_residue_range(config["target_pdb"], config["chain"])
 
-    for L in lengths:
-        for i in range(n):
-            total_generated += 1
-            cid = _next_candidate_id()
-            output_path = out_dir / f"{cid}.pdb"
-            script_path = out_dir / f"script_{cid}.py"
+    for L in config["lengths"]:
+        n_designs = max(1, config["n"] // len(config["lengths"]))
+        backbone_dir = f"{batch_dir}/backbones_len{L}"
+        os.makedirs(backbone_dir, exist_ok=True)
+        rfdiff_ok = _run_rfdiff(
+            target_pdb=config["target_pdb"], binder_len=L,
+            n_designs=n_designs, output_prefix=f"{backbone_dir}/bb",
+            contig=f"{config['chain']}{target_range[0]}-{target_range[1]}/0 {L}-{L}",
+            seed=config["seed"],
+            hotspots=config.get("hotspots"),
+            chain=config["chain"])
+        if not rfdiff_ok:
+            print(f"[Route A] RFdiff 失败 len={L}，跳过")
+            continue
 
-            # 写子进程脚本（保留在 out_dir，可复现）
-            script = _build_design_script(
-                str(target_pdb), chain, L, hotspots, str(output_path)
-            )
-            script_path.write_text(script, encoding="utf-8")
+        bb_files = sorted(Path(backbone_dir).glob("bb_*.pdb"))
+        print(f"[Route A] RFdiff 完成, 找到 {len(bb_files)} 个骨架PDB")
+        for bb_path in bb_files[:n_designs]:
+            total_gen += 1
+            mpnn_dir = f"{batch_dir}/mpnn_{bb_path.stem}"
+            os.makedirs(mpnn_dir, exist_ok=True)
+            seqs = _run_ligandmpnn(str(bb_path), mpnn_dir, n_seq=8, target_chain=config["chain"])
+            if not seqs:
+                print(f"[Route A] LigandMPNN 返回 0 条序列: {bb_path.name}")
+                continue
+            # 便宜预筛 → 只 refold top 4
+            filtered = _cheap_filter_sequences(seqs, top_k=4)
+            print(f"[Route A] cheap filter: {len(seqs)}→{len(filtered)} sequences")
 
-            t0 = time.time()
-            result = subprocess.run(
-                [sys.executable, str(script_path)],
-                capture_output=True, text=True, timeout=600,
-                cwd=str(COLABDESIGN_ROOT),
-                env={**os.environ, "XLA_FLAGS": "--xla_gpu_cuda_data_dir=/usr/local/cuda-12.1"}
-            )
-            duration = round(time.time() - t0, 1)
+            for seq, quality_score in filtered:
+                cid = _next_candidate_id()
+                refold_dir = f"{batch_dir}/candidates/{cid}"
+                os.makedirs(refold_dir, exist_ok=True)
+                refold_pdb = f"{refold_dir}/refold.pdb"
+                plddt = _run_refold(seq, refold_pdb)
+                rc = _ring_closure_check(refold_pdb) if os.path.exists(refold_pdb) else {"pass": False}
 
-            seq = ""
-            valid = False
-            pdb_hash = ""
-            if result.returncode == 0 and output_path.exists():
-                seq = _extract_sequence_from_pdb(str(output_path), binder_len=L)
-                pdb_hash = file_hash(str(output_path))
-                valid = len(seq) == L
+                if plddt and rc.get("pass"):
+                    total_valid += 1
+                    manifest = _write_manifest(cid, seq, route_name, batch_id, refold_pdb, config, backbone_pdb=str(bb_path))
+                    candidate = _candidate_from_manifest(
+                        manifest, plddt,
+                        notes={"quality_score": round(quality_score, 3)},
+                    )
+                    CandidateIndex.add(candidate)
+                    EvidenceLogger.log("design", "candidate_registered",
+                        {"candidate": candidate},
+                        targets=[config["target_id"]], phase="design")
+                    candidates.append(candidate)
+                else:
+                    print(f"[Route A] refold失败: {cid} pLDDT={plddt} ring_closed={rc.get('pass')}")
 
-            if valid:
-                total_valid += 1
-                candidate = {
-                    "candidate_id": cid,
-                    "sequence": seq,
-                    "length": L,
-                    "source_route": route_name,
-                    "source_batch": batch_id,
-                    "cyclization_type": "head_to_tail_amide",
-                    "cyclization_bonds": _head_to_tail_bond(L),
-                    "design_pdb_path": str(output_path),
-                    "design_pdb_hash": pdb_hash,
-                    "notes": (
-                        f"colabdesign_fixbb; hotspots={hotspots}; "
-                        "cyclic positional encoding only; covalent closure must be "
-                        "checked and relaxed in Prediction"
-                    ),
-                }
-                candidate = _register_candidate(candidate, {
-                    "design_status": "backbone_generated",
-                    "tool_name": "colabdesign_fixbb_cyclic_offset",
-                    "target_pdb": str(target_pdb),
-                    "target_pdb_hash": target_hash,
-                    "target_chain": chain,
-                    "hotspots": hotspots,
-                    "closure_representation": "cyclic_residue_offset_not_covalent_bond",
-                    "script_path": str(script_path),
-                    "runtime_sec": duration,
-                })
-                candidates.append(candidate)
-            else:
-                EvidenceLogger.error(
-                    agent="design",
-                    error_type="afcyc_failed",
-                    message=f"{cid}: seq_len={len(seq)} expected={L} exit={result.returncode}",
-                    recovery="skip",
-                    trace=result.stderr[:500] if result.stderr else ""
-                )
-
-    duration_batch = round(time.time() - t_batch_start, 1)
-
-    # 记一条 batch 级日志（不是每个候选一条）
-    EvidenceLogger.design_batch(
-        route=route_name,
-        n_generated=total_generated,
-        n_valid=total_valid,
-        tool_name="afcycdesign_colabdesign",
-        tool_version="v1.1.2",
-        duration_sec=duration_batch
-    )
-
+    EvidenceLogger.design_batch(route=route_name, n_generated=total_gen,
+        n_valid=total_valid, tool_name="rfpeptides_pipeline", tool_version="v5",
+        duration_sec=round(time.time()-t_batch, 1))
     return candidates
 
 
-def _build_design_script(pdb_path, chain, length, hotspots, output_path):
-    """生成 ColabDesign 子进程脚本。"""
-    return f"""
-import numpy as np
-from colabdesign import mk_af_model
-
-def add_cyclic_offset(model, offset_type=2):
-    def cyclic_offset(L):
-        i = np.arange(L)
-        ij = np.stack([i, i+L], -1)
-        offset = i[:,None] - i[None,:]
-        c_offset = np.abs(ij[:,None,:,None] - ij[:,None,:]).min((2,3))
-        if offset_type >= 2:
-            a = c_offset < np.abs(offset)
-            c_offset[a] = -c_offset[a]
-        return c_offset * np.sign(offset)
-    idx = model._inputs['residue_index']
-    offset = np.array(idx[:,None] - idx[None,:])
-    if model.protocol in ['fixbb','partial','hallucination']:
-        Ln = 0
-        for L in model._lengths:
-            offset[Ln:Ln+L, Ln:Ln+L] = cyclic_offset(L)
-            Ln += L
-    model._inputs['offset'] = offset
-
-model = mk_af_model(protocol='fixbb', data_dir={str(COLABDESIGN_PARAMS)!r})
-model.prep_inputs(pdb_filename='{pdb_path}', chain='{chain}', binder_len={length}, hotspot='{hotspots}')
-add_cyclic_offset(model)
-model.design_3stage(50, 50, 10)
-model.save_pdb('{output_path}')
-"""
-
-
 # ============================================================
-# Route B: Motif grafting + ProteinMPNN 序列优化
+# Route B: motif 引导生成
 # ============================================================
 
-def design_motif_graft(n: int = 400) -> list[dict]:
-    """
-    从已知双靶结合肽提取 motif，用 ProteinMPNN 做固定位点序列优化。
-
-    算法：
-      1. 从 MOTIF_TEMPLATES 取种子序列
-      2. 对位置 [3,5,8,12,15] 做掩码
-      3. 调 ProteinMPNN 在掩码位点上做 score-based 优化
-      4. 返回最优替换序列
-
-    Args:
-        n: 生成候选总数
-
-    Returns:
-        list[dict]: 候选列表
-    """
-    assert_project_approved(ACTIVE_PROJECT_CONFIG)
-    _require_mdm_reference_route("route_B_motif_graft")
-    route_name = "route_B_motif_graft"
-    batch_id = f"batch_motif_graft_{int(time.time())}"
-    candidates = []
-
-    t0 = time.time()
-    if not _proteinmpnn_adapter_available():
-        EvidenceLogger.error(
-            agent="design",
-            error_type="proteinmpnn_adapter_unavailable",
-            message=(
-                "Expected adapter proteinmpnn.run.get_model/score_seq is unavailable; "
-                "Route B was not executed"
-            ),
-            recovery="implement and test an adapter for the installed ProteinMPNN/LigandMPNN version",
-        )
-        EvidenceLogger.design_batch(
-            route=route_name,
-            n_generated=0,
-            n_valid=0,
-            tool_name="proteinmpnn_motif_graft",
-            tool_version="adapter_unavailable",
-            duration_sec=round(time.time() - t0, 1),
-        )
+def design_motif_guided(target_spec=None, design_config=None):
+    """RFpeptides motif 引导 + LigandMPNN L26 偏置 + refold"""
+    config = _merge_config(target_spec, design_config)
+    _require_mdm_reference_route("route_B_motif")
+    route_name = f"route_B_motif_{target_slug(config['target_id'])}"
+    batch_id = f"batch_motif_s{config['seed']}"
+    spec = _load_target_spec()
+    binders = spec.get("known_dual_binders", [])
+    if not binders:
+        EvidenceLogger.error("design", "no_binders",
+            "known_dual_binders empty in state.json — Research 尚未产出或格式错误",
+            recovery="先跑 Research Agent 产出设计规则再跑 Route B")
         return []
 
-    templates = _motif_templates_from_state()
-    base = n // len(templates)
-    remainder = n % len(templates)
-    quotas = [base + 1 if idx < remainder else base for idx in range(len(templates))]
+    batch_dir = f"{OUTPUT_DIR}/route_B/{batch_id}"
+    os.makedirs(batch_dir, exist_ok=True)
+    with open(f"{batch_dir}/design_config.json", "w") as f:
+        json.dump(config, f, indent=2, default=str)
 
-    for idx, tmpl in enumerate(templates):
-        for i in range(quotas[idx]):
-            if len(candidates) >= n:
-                break
+    templates = [(b.get("sequence") or b.get("seq", ""), b.get("name","tmpl"))
+                 for b in binders if b.get("sequence") or b.get("seq")]
 
-            optimized_seq = _proteinmpnn_optimize(tmpl["seq"])
-            valid = optimized_seq is not None and _validate_sequence(optimized_seq)
-            if not valid:
-                EvidenceLogger.error(
-                    agent="design",
-                    error_type="proteinmpnn_no_valid_output",
-                    message=(
-                        f"template={tmpl['name']}: ProteinMPNN adapter did not return "
-                        "a valid sequence; no candidate was registered"
-                    ),
-                    recovery="install/configure a verified ProteinMPNN adapter or skip Route B",
-                )
+    candidates = []
+    total_gen, total_valid = 0, 0
+    t_batch = time.time()
+    n_per = max(1, config.get("n", 100) // max(1, len(templates)))
+    target_range = _pdb_residue_range(config["target_pdb"], config["chain"])
+
+    for tmpl_seq, tmpl_name in templates:
+        if len(tmpl_seq) < 8:
+            continue
+        L = len(tmpl_seq)
+        tmpl_hotspots = _hotspot_positions(tmpl_seq)
+        backbone_dir = f"{batch_dir}/backbones_{tmpl_name}"
+        os.makedirs(backbone_dir, exist_ok=True)
+        # Route B: motif 约束由 LigandMPNN 的 fixed_residues 实现，不通过 RFdiffusion inpaint_seq
+        rfdiff_ok = _run_rfdiff(target_pdb=config["target_pdb"], binder_len=L,
+            n_designs=n_per, output_prefix=f"{backbone_dir}/bb",
+            contig=f"{config['chain']}{target_range[0]}-{target_range[1]}/0 {L}-{L}",
+            seed=config["seed"],
+            hotspots=config.get("hotspots"),
+            chain=config["chain"])
+        if not rfdiff_ok:
+            print(f"[Route B] RFdiff 失败 {tmpl_name}，跳过")
+            continue
+
+        bb_files = sorted(Path(backbone_dir).glob("bb_*.pdb"))
+        print(f"[Route B] {tmpl_name}: RFdiff 完成, 找到 {len(bb_files)} 个骨架PDB")
+        for bb_path in bb_files[:n_per]:
+            total_gen += 1
+            binder_res = _parse_binder_residues(str(bb_path), config["chain"])
+            fixed_res = _hotspot_fixed_residues(tmpl_hotspots, binder_res) if binder_res else ""
+            mpnn_dir = f"{batch_dir}/mpnn_{bb_path.stem}"
+            os.makedirs(mpnn_dir, exist_ok=True)
+            seqs = _run_ligandmpnn(str(bb_path), mpnn_dir, n_seq=8,
+                target_chain=config["chain"], fixed_residues=fixed_res or None)
+            if not seqs:
+                print(f"[Route B] LigandMPNN 返回 0 条序列: {bb_path.name}")
                 continue
+            # 便宜预筛 → 只 refold top 4
+            filtered = _cheap_filter_sequences(seqs, top_k=4)
+            print(f"[Route B] cheap filter: {len(seqs)}→{len(filtered)} sequences")
 
-            cid = _next_candidate_id()
-            candidate = {
-                "candidate_id": cid,
-                "sequence": optimized_seq,
-                "length": len(optimized_seq),
-                "source_route": route_name,
-                "source_batch": batch_id,
-                "cyclization_type": "head_to_tail_amide",
-                "cyclization_bonds": _head_to_tail_bond(len(optimized_seq)),
-                "notes": f"template={tmpl['name']}; source={tmpl.get('source', 'unknown')}",
-            }
-            candidate = _register_candidate(candidate, {
-                "design_status": "sequence_proposal",
-                "tool_name": "proteinmpnn_motif_graft",
-                "template": tmpl,
-                "structure_required_before_prediction": True,
-            })
-            candidates.append(candidate)
+            for seq, quality_score in filtered:
+                cid = _next_candidate_id()
+                refold_dir = f"{batch_dir}/candidates/{cid}"
+                os.makedirs(refold_dir, exist_ok=True)
+                refold_pdb = f"{refold_dir}/refold.pdb"
+                plddt = _run_refold(seq, refold_pdb)
+                rc = _ring_closure_check(refold_pdb) if os.path.exists(refold_pdb) else {"pass": False}
 
-    duration = round(time.time() - t0, 1)
+                if plddt and rc.get("pass"):
+                    total_valid += 1
+                    manifest = _write_manifest(cid, seq, route_name, batch_id, refold_pdb, config, backbone_pdb=str(bb_path))
+                    candidate = _candidate_from_manifest(
+                        manifest, plddt,
+                        notes={"quality_score": round(quality_score, 3)},
+                    )
+                    CandidateIndex.add(candidate)
+                    EvidenceLogger.log("design", "candidate_registered",
+                        {"candidate": candidate},
+                        targets=[config["target_id"]], phase="design")
+                    candidates.append(candidate)
+                else:
+                    print(f"[Route B] refold失败: {cid} pLDDT={plddt} ring_closed={rc.get('pass')}")
 
-    EvidenceLogger.design_batch(
-        route=route_name,
-        n_generated=n,
-        n_valid=len(candidates),
-        tool_name="proteinmpnn_motif_graft",
-        tool_version="0.1.3",
-        duration_sec=duration
-    )
+    EvidenceLogger.design_batch(route=route_name, n_generated=total_gen,
+        n_valid=total_valid, tool_name="rfpeptides_motif", tool_version="v5",
+        duration_sec=round(time.time()-t_batch, 1))
     return candidates
-
-
-def _proteinmpnn_optimize(template_seq: str) -> str:
-    """
-    调用 ProteinMPNN 对模板序列做固定位点优化。
-    掩码位置：[3, 5, 8, 12, 15] — 对应 p53 Phe19/Trp23/Leu26 锚定残基附近的可变异位点。
-    """
-    try:
-        import torch
-        from proteinmpnn.run import get_model, score_seq
-        import numpy as np
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = get_model(device=device)
-
-        seq = template_seq.upper()
-        masked = list(seq)
-        mask_positions = [p for p in [3, 5, 8, 12, 15] if p < len(masked)]
-        for pos in mask_positions:
-            masked[pos] = "_"
-        masked_seq = "".join(masked)
-
-        scores = score_seq(model, [masked_seq], num_sequential=1)
-        if scores and scores[0]:
-            best = max(scores[0], key=lambda x: x.get("score", 0))
-            return best["seq"]
-
-    except Exception as e:
-        EvidenceLogger.error("design", "proteinmpnn_error", str(e))
-
-    return None
-
-
-def _proteinmpnn_adapter_available() -> bool:
-    try:
-        from proteinmpnn.run import get_model, score_seq
-        return callable(get_model) and callable(score_seq)
-    except (ImportError, AttributeError):
-        return False
 
 
 # ============================================================
 # Route C: ATSP-7041 环化改造
 # ============================================================
 
-def design_atsp_cyclize(n: int = 200) -> list[dict]:
-    """
-    基于 ATSP-7041 scaffold 做环化改造。
-
-    生成策略：
-      1. ATSP 核心与 0/2/3/4 aa Gly/Ser linker 组合；
-      2. 保留 F/W/L 锚点，对其余位点做确定性的单点枚举；
-      3. 所有候选统一声明为首尾酰胺键闭环意图，交由 Prediction 构建和
-         检查真实闭环几何。
-
-    Args:
-        n: 生成候选总数
-
-    Returns:
-        list[dict]: 候选列表
-    """
-    assert_project_approved(ACTIVE_PROJECT_CONFIG)
+def design_atsp_derived(target_spec=None, design_config=None):
+    """ATSP-7041 模板环化：linker × 环化矩阵 + 随机突变扩展 + refold 验证"""
+    config = _merge_config(target_spec, design_config)
     _require_mdm_reference_route("route_C_atsp")
-    route_name = "route_C_atsp"
-    batch_id = f"batch_atsp_{int(time.time())}"
-    candidates = []
+    n = config.get("n", 200)
+    seed = config["seed"]  # _merge_config already resolves None → timestamp
+    import random
+    random.seed(seed)
 
-    t0 = time.time()
+    route_name = f"route_C_atsp_{target_slug(config['target_id'])}"
+    batch_id = f"batch_atsp_{int(time.time())}_s{seed}"
+    batch_dir = f"{OUTPUT_DIR}/route_C/{batch_id}"
+    os.makedirs(batch_dir, exist_ok=True)
 
-    if n < 1:
+    with open(f"{batch_dir}/design_config.json", "w") as f:
+        json.dump(config, f, indent=2)
+
+    # ATSP-7041 核心序列从 Research 数据取
+    spec = _load_target_spec()
+    binders = spec.get("known_dual_binders", [])
+    atsp_seq = None
+    for b in binders:
+        name = b.get("name", "")
+        seq_candidate = b.get("sequence") or b.get("seq", "")
+        if "ATSP" in name.upper() and seq_candidate:
+            atsp_seq = seq_candidate
+            break
+    if not atsp_seq:
+        EvidenceLogger.error("design", "no_atsp",
+            "known_dual_binders 中未找到 ATSP-7041 — Research 尚未产出",
+            recovery="先跑 Research Agent 产出 ATSP-7041 序列再跑 Route C")
         return []
-
+    # Route C 序列设计: linker × 环化 全矩阵
     base_combos = []
     for linker in LINKER_MATRIX:
-        seq = f"{ATSP_CORE}{linker}"
-        base_combos.append((seq, f"linker={linker or 'none'}"))
+        for cn, cc in CYCLIZATION_PAIRS:
+            seq = f"{cn}{atsp_seq}{linker}{cc}"
+            if _validate_sequence(seq):
+                base_combos.append((seq, _describe_cyclize(cn, cc, linker)))
 
+    # 第2级：不够 n 则随机突变扩展
     expanded = list(base_combos)
-    seen = {sequence for sequence, _ in expanded}
-    anchor_positions = {2, 6, 11}  # ATSP_CORE 中的 F/W/L 三锚点，0-based
-    mutable_positions = [
-        pos for pos in range(len(ATSP_CORE)) if pos not in anchor_positions
-    ]
-    for base_seq, desc in base_combos:
-        for pos in mutable_positions:
-            for new_aa in SCAFFOLD_MUTABLE_AA:
-                if new_aa == base_seq[pos]:
-                    continue
-                mutated = base_seq[:pos] + new_aa + base_seq[pos + 1:]
-                if mutated not in seen:
-                    expanded.append((mutated, f"{desc}; mut:{pos + 1}={new_aa}"))
-                    seen.add(mutated)
+    seen_seqs = set(s for s, _ in base_combos)
+    attempts = 0
+    while len(expanded) < n and attempts < n * 10:
+        attempts += 1
+        seq, desc = random.choice(base_combos)
+        pos = random.choice([3, 5, 8, 10, 12])
+        aa = random.choice(SCAFFOLD_MUTABLE_AA)
+        off = 1 if seq and seq[0] == "C" else 0
+        ix = off + min(pos, len(seq)-1)
+        mutated = seq[:ix] + aa + seq[ix+1:]
+        if _validate_sequence(mutated) and mutated not in seen_seqs:
+            seen_seqs.add(mutated)
+            expanded.append((mutated, f"{desc},mut:{pos}={aa}"))
 
-    if n > len(expanded):
-        EvidenceLogger.error(
-            "design",
-            "route_c_requested_too_many",
-            f"requested={n}, deterministic unique library={len(expanded)}",
-            recovery=f"registered the available {len(expanded)} unique candidates",
-        )
+    candidates = []
+    total_gen, total_valid = 0, 0
+    t_batch = time.time()
 
     for seq, desc in expanded[:n]:
-        valid = _validate_sequence(seq)
-        if not valid:
-            EvidenceLogger.error(
-                agent="design",
-                error_type="sequence_invalid",
-                message=f"Route C sequence validation failed: {seq}",
-                recovery="skip",
-            )
-            continue
+        total_gen += 1
         cid = _next_candidate_id()
-        candidate = {
-            "candidate_id": cid,
-            "sequence": seq,
-            "length": len(seq),
-            "source_route": route_name,
-            "source_batch": batch_id,
-            "cyclization_type": "head_to_tail_amide",
-            "cyclization_bonds": _head_to_tail_bond(len(seq)),
-            "notes": f"{desc}; ATSP-derived sequence proposal",
-        }
-        candidate = _register_candidate(candidate, {
-            "design_status": "sequence_proposal",
-            "tool_name": "deterministic_template_enumeration",
-            "parent_scaffold": "ATSP-7041-inspired core",
-            "parent_reference": "PMID:23946421",
-            "structure_required_before_prediction": True,
-        })
-        candidates.append(candidate)
+        refold_dir = f"{batch_dir}/candidates/{cid}"
+        os.makedirs(refold_dir, exist_ok=True)
+        refold_pdb = f"{refold_dir}/refold.pdb"
+        plddt = _run_refold(seq, refold_pdb)
+        rc = _ring_closure_check(refold_pdb) if os.path.exists(refold_pdb) else {"pass": False}
 
-    duration = round(time.time() - t0, 1)
+        if plddt and rc.get("pass"):
+            total_valid += 1
+            manifest = _write_manifest(cid, seq, route_name, batch_id, refold_pdb, config, cyclization=desc)
+            candidate = _candidate_from_manifest(manifest, plddt, notes={"design": desc})
+            CandidateIndex.add(candidate)
+            EvidenceLogger.log("design", "candidate_registered",
+                {"candidate": candidate},
+                targets=[config["target_id"]], phase="design")
+            candidates.append(candidate)
+        else:
+            EvidenceLogger.error("design", "refold_failed",
+                f"{cid}: pLDDT={plddt}", recovery="skip")
 
-    EvidenceLogger.design_batch(
-        route=route_name,
-        n_generated=min(n, len(expanded)),
-        n_valid=len(candidates),
-        tool_name="deterministic_template_enumeration",
-        tool_version="v2_head_to_tail",
-        duration_sec=duration
-    )
+    EvidenceLogger.design_batch(route=route_name, n_generated=total_gen,
+        n_valid=total_valid, tool_name="atsp_derived", tool_version="v5",
+        duration_sec=round(time.time()-t_batch, 1))
     return candidates
 
 
 # ============================================================
-# 共享工具函数
+# 评分 — 阈值过滤 + Pareto 前沿
 # ============================================================
 
-def _validate_sequence(seq: str) -> bool:
-    """
-    序列合法性检查。
-    条件：长度 8-20，仅含标准 20 种氨基酸单字母代码。
-    """
-    valid_aas = set("ACDEFGHIKLMNPQRSTVWY")
-    seq_clean = seq.upper().replace("-", "").replace("*", "")
-    return (8 <= len(seq_clean) <= 20 and
-            all(c in valid_aas for c in seq_clean))
+def threshold_filter(candidates, thresholds, project_config=None):
+    """Apply independent per-target ipSAE and hotspot-coverage gates."""
+    project = project_config or ACTIVE_PROJECT_CONFIG
+    target_ids = required_target_ids(project)
+    passed = []
+    for candidate in candidates:
+        accepted = True
+        for index, target_id in enumerate(target_ids):
+            slug = target_slug(target_id)
+            ipsae_rule = threshold_for_target(thresholds, "L2_ipsae", target_id)
+            hotspot_rule = threshold_for_target(
+                thresholds, "L5_hotspot_coverage", target_id
+            )
+            ipsae_threshold = thresholds.get(
+                f"ipsae_{slug}", ipsae_rule.get("value", 0.6 if index == 0 else 0.5)
+            )
+            hotspot_threshold = thresholds.get(
+                f"hotspot_cov_{slug}",
+                thresholds.get("hotspot_cov", hotspot_rule.get("value", 0.67)),
+            )
+            ipsae = target_value(candidate, target_id, "ipsae")
+            hotspot_cov = target_value(candidate, target_id, "hotspot_cov")
+            if (
+                ipsae is None or float(ipsae) < float(ipsae_threshold)
+                or hotspot_cov is None or float(hotspot_cov) < float(hotspot_threshold)
+            ):
+                accepted = False
+                break
+        if accepted:
+            passed.append(candidate)
+    return passed
 
 
-def _motif_templates_from_state() -> list[dict]:
-    """优先读取 Research 已写入 State 的真实序列，常量只作有标记的 fallback。"""
-    templates = []
-    seen = set()
-    for binder in State.load().get("known_dual_binders", []):
-        sequence = str(binder.get("sequence") or "").upper()
-        if _validate_sequence(sequence) and sequence not in seen:
-            templates.append({
-                "name": binder.get("name") or "research_binder",
-                "seq": sequence,
-                "source": f"research_state PMID:{binder.get('pmid', 'unknown')}",
-            })
-            seen.add(sequence)
-    if templates:
-        return templates
-    return [
-        {**template, "source": "curated_fallback; run Research before production design"}
-        for template in MOTIF_TEMPLATES
-    ]
+def pareto_front(candidates, obj_x=None, obj_y=None, project_config=None):
+    """Return the non-dominated front for configured or explicit objectives."""
+    project = project_config or ACTIVE_PROJECT_CONFIG
+    if obj_x is None:
+        target_ids = required_target_ids(project)
+        objectives = [(target_id, "ipsae") for target_id in target_ids[:2]]
+    else:
+        objectives = [obj_x]
+        if obj_y is not None:
+            objectives.append(obj_y)
+
+    def objective_value(candidate, objective):
+        if isinstance(objective, tuple):
+            return target_value(candidate, objective[0], objective[1]) or 0
+        if ":" in objective:
+            target_id, metric = objective.split(":", 1)
+            return target_value(candidate, target_id, metric) or 0
+        return candidate.get(objective, 0)
+
+    front = []
+    for c1 in candidates:
+        dominated = False
+        for c2 in candidates:
+            if c2 is c1:
+                continue
+            c1_values = [objective_value(c1, objective) for objective in objectives]
+            c2_values = [objective_value(c2, objective) for objective in objectives]
+            if (
+                all(right >= left for left, right in zip(c1_values, c2_values))
+                and any(right > left for left, right in zip(c1_values, c2_values))
+            ):
+                dominated = True
+                break
+        if not dominated:
+            front.append(c1)
+    return front
 
 
-def _head_to_tail_bond(length: int) -> list[dict]:
-    return [{
-        "atom_1": "residue_1:N",
-        "atom_2": f"residue_{length}:C",
-        "bond_type": "amide",
-    }]
+# ============================================================
+# candidate_manifest.json
+# ============================================================
 
-
-def _register_candidate(candidate: dict, manifest_details: dict) -> dict:
-    """先写结构化 manifest，再把同一路径交给共享索引和证据日志。"""
-    if not _validate_sequence(candidate.get("sequence", "")):
-        raise ValueError(f"invalid candidate sequence: {candidate.get('candidate_id')}")
-
-    manifest_dir = DESIGN_ROOT / "manifests"
-    manifest_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = manifest_dir / f"{candidate['candidate_id']}.json"
+def _write_manifest(cid, seq, route, batch_id, refold_pdb, config, backbone_pdb=None, cyclization=None):
+    """每条候选输出 manifest.json"""
+    refold_dir = os.path.dirname(refold_pdb)
+    manifest_path = f"{refold_dir}/manifest.json"
+    rc = _ring_closure_check(refold_pdb) if os.path.exists(refold_pdb) else {}
+    if cyclization is None:
+        cyclization = "Cys-Cys_disulfide" if (seq.startswith("C") and seq.endswith("C")) else "head-to-tail_amide"
     manifest = {
-        "schema_version": "1.0",
-        "created_at": datetime_now_utc(),
-        "candidate": candidate,
-        "design_details": manifest_details,
+        "candidate_id": cid, "sequence": seq, "length": len(seq),
+        "source_route": route, "source_batch": batch_id,
+        "cyclization_type": cyclization,
+        "refold_pdb": refold_pdb,
+        "refold_pdb_hash": file_hash(refold_pdb) if os.path.exists(refold_pdb) else "",
+        "backbone_pdb": backbone_pdb or "",
+        "backbone_pdb_hash": file_hash(backbone_pdb) if (backbone_pdb and os.path.exists(backbone_pdb)) else "",
+        "ring_closure": rc,
+        "design_config_summary": {
+            "project_id": config.get("project_id"),
+            "target": config.get("target_id"),
+            "target_pdb": config.get("target_pdb"),
+            "target_pdb_sha256": config.get("target_pdb_sha256"),
+            "seed": config.get("seed"),
+        }
     }
-    temp_path = manifest_path.with_name(f".{manifest_path.name}.{os.getpid()}.tmp")
-    temp_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    os.replace(temp_path, manifest_path)
-
-    registered = dict(candidate)
-    registered["manifest_path"] = str(manifest_path)
-    CandidateIndex.add(registered)
-    EvidenceLogger.candidate_registered(registered)
-    return registered
+    manifest["manifest_path"] = manifest_path
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+    return manifest
 
 
-def datetime_now_utc() -> str:
-    from datetime import datetime, timezone
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _extract_sequence_from_pdb(pdb_path: str, binder_len: int = None) -> str:
-    """
-    从 PDB 提取 CA 原子序列（单字母）。
-    binder_len：若给定，只取末尾 N 个唯一残基（fixbb 模式 binder 在靶点之后）。
-    """
-    three_to_one = {
-        'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C',
-        'GLN': 'Q', 'GLU': 'E', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
-        'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F', 'PRO': 'P',
-        'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V',
+def _manifest_summary(manifest):
+    return {
+        key: manifest[key]
+        for key in ["candidate_id", "sequence", "refold_pdb_hash", "manifest_path"]
     }
-    seq, seen = [], set()
+
+
+def _candidate_from_manifest(manifest, plddt, notes=None):
+    """Convert a v5 manifest into the stable dev candidate handoff contract."""
+    length = manifest["length"]
+    cyclization = manifest["cyclization_type"]
+    if "head-to-tail_amide" in cyclization:
+        bonds = [{
+            "atom_1": "residue_1:N",
+            "atom_2": f"residue_{length}:C",
+            "bond_type": "amide",
+        }]
+    elif "Cys-Cys_disulfide" in cyclization:
+        bonds = [{
+            "atom_1": "residue_1:SG",
+            "atom_2": f"residue_{length}:SG",
+            "bond_type": "disulfide",
+        }]
+    else:
+        bonds = []
+    note_payload = {**_manifest_summary(manifest), **(notes or {})}
+    return {
+        "candidate_id": manifest["candidate_id"],
+        "sequence": manifest["sequence"],
+        "length": length,
+        "source_route": manifest["source_route"],
+        "source_batch": manifest["source_batch"],
+        "cyclization_type": cyclization,
+        "cyclization_bonds": bonds,
+        "design_pdb_path": manifest["refold_pdb"],
+        "design_pdb_hash": manifest["refold_pdb_hash"],
+        "manifest_path": manifest["manifest_path"],
+        "monomer_plddt": round(float(plddt), 3),
+        "notes": json.dumps(note_payload, ensure_ascii=False),
+    }
+
+
+# ============================================================
+# 工具调用封装
+# ============================================================
+
+def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
+                seed=None, hotspots=None, chain="A"):
+    """RFdiffusion 子进程。hotspots: 逗号分隔的残基号如 '54,93,96'"""
+    cmd = [
+        RFDIFF_PYTHON, f"{RFDIFF_DIR}/scripts/run_inference.py",
+        f"inference.input_pdb={target_pdb}",
+        "inference.cyclic=True",
+        "inference.cyc_chains=a",
+        f"inference.num_designs={n_designs}",
+        f"inference.output_prefix={output_prefix}",
+        f"contigmap.contigs=['{contig}']",
+        f"diffuser.T={RFDIFF_TIMESTEPS}",
+    ]
+    if hotspots:
+        # 补链名前缀: "54,93,96" → "A54,A93,A96"
+        formatted = ",".join(f"{chain}{r.strip()}" for r in hotspots.split(",") if r.strip())
+        if formatted:
+            cmd.append(f"ppi.hotspot_res=[{formatted}]")
+    # RFdiffusion Hydra config 没有 inference.seed 字段，seed 通过 contig 控制
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600,
+            cwd=RFDIFF_DIR,
+            env=_rfdiff_subprocess_env())
+        if r.returncode != 0:
+            print(f"[RFdiff 失败] exit={r.returncode}")
+            print(f"  stderr: {r.stderr[-500:]}")
+            EvidenceLogger.error("design", "rfdiff_failed",
+                f"exit={r.returncode} stderr={r.stderr[-300:]}")
+            return False
+        return True
+    except Exception as e:
+        print(f"[RFdiff 异常] {e}")
+        EvidenceLogger.error("design", "rfdiff_exception", str(e))
+        return False
+
+
+def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, target_chain="A",
+                    fixed_residues=None):
+    """LigandMPNN 子进程。target_chain=受体链，设计除受体外的所有链。
+    fixed_residues: 空格分隔的 chain+resi 列表，如 'B25 B26 B27'，这些残基在 LigandMPNN 中固定不变。"""
+    # 自动检测 binder 链
+    binder_chains = set()
+    try:
+        with open(backbone_pdb) as f:
+            for line in f:
+                if line.startswith("ATOM"):
+                    ch = line[21]
+                    if ch != target_chain:
+                        binder_chains.add(ch)
+    except Exception:
+        pass
+    chains_str = ",".join(sorted(binder_chains)) if binder_chains else "B"
+    cmd = [
+        RFDIFF_PYTHON, f"{LIGANDMPNN_DIR}/run.py",
+        "--model_type", LIGANDMPNN_MODEL_TYPE,
+        f"--checkpoint_protein_mpnn={LIGANDMPNN_CHECKPOINT}",
+        f"--pdb_path={backbone_pdb}",
+        f"--out_folder={output_dir}",
+        f"--batch_size={min(n_seq, 4)}",
+        f"--number_of_batches={max(1, n_seq // 4)}",
+        "--temperature=0.1", "--seed=42",
+        f"--chains_to_design={chains_str}",
+    ]
+    if fixed_residues:
+        cmd.append(f"--fixed_residues={fixed_residues}")
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
+            cwd=LIGANDMPNN_DIR,
+            env=_rfdiff_subprocess_env())
+        if r.returncode != 0:
+            print(f"[LigandMPNN 失败] exit={r.returncode} stderr={r.stderr[-300:]}")
+            return []
+        seqs = []
+        for fa in sorted(Path(output_dir).glob("**/*.fa"))[:1]:  # 一个 PDB 只出一个 FASTA
+            with open(fa) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line.startswith(">") or not line:
+                        continue
+                    # LigandMPNN 输出: "受体序列:设计序列"，只取 binder 部分
+                    if ":" in line:
+                        line = line.split(":")[-1]
+                    # 跳过全 G 或单氨基酸重复（LigandMPNN baseline）
+                    if len(set(line)) <= 2:
+                        continue
+                    if line not in seqs:
+                        seqs.append(line)
+        return seqs[:n_seq]
+    except Exception as e:
+        EvidenceLogger.error("design", "ligandmpnn_exception", str(e))
+        return []
+
+
+def _rfdiff_subprocess_env():
+    """Reproduce the validated rfdiffusion-design ``activate.d`` runtime."""
+    env = dict(os.environ)
+    python_version = os.environ.get("RFDIFF_PYTHON_VERSION", "3.10")
+    site_packages = f"{RFDIFF_CONDA}/lib/python{python_version}/site-packages"
+    python_paths = [SE3_ROOT, RFDIFF_DIR]
+    if env.get("PYTHONPATH"):
+        python_paths.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(python_paths)
+    env["DGLBACKEND"] = "pytorch"
+
+    library_paths = [
+        f"{RFDIFF_CONDA}/lib",
+        f"{site_packages}/torch/lib",
+        *(
+            f"{site_packages}/nvidia/{package}/lib"
+            for package in [
+                "cusolver", "cuda_nvrtc", "cuda_runtime", "cublas", "cusparse",
+                "nvjitlink", "cuda_cupti", "cufft", "cudnn", "nccl", "curand", "nvtx",
+            ]
+        ),
+    ]
+    if env.get("LD_LIBRARY_PATH"):
+        library_paths.append(env["LD_LIBRARY_PATH"])
+    env["LD_LIBRARY_PATH"] = os.pathsep.join(library_paths)
+    return env
+
+
+def _build_refold_script(sequence, output_pdb):
+    """Build an AfCycDesign script that keeps ``sequence`` fixed on restart."""
+    if not _validate_sequence(sequence):
+        raise ValueError("refold sequence must contain 8-20 standard amino acids")
+    L = len(sequence)
+    return f"""
+import sys, numpy as np
+sys.path.insert(0, {COLABDESIGN_DIR!r})
+from colabdesign import mk_af_model, clear_mem
+
+model = mk_af_model(protocol='hallucination', data_dir={COLABDESIGN_PARAMS!r})
+model.prep_inputs(length={L})
+model.restart(seq={sequence!r})
+
+i = np.arange({L})
+ij = np.stack([i, i+{L}], -1)
+offset = i[:,None] - i[None,:]
+c_offset = np.abs(ij[:,None,:,None] - ij[None,:,None,:]).min((2,3))
+a = c_offset < np.abs(offset)
+c_offset[a] = -c_offset[a]
+c_offset = c_offset * np.sign(offset)
+idx = np.array(model._inputs['residue_index'])
+off = np.array(idx[:,None] - idx[None,:])
+off[:{L}, :{L}] = c_offset
+model._inputs['offset'] = off
+
+model.design_3stage(100, 100, 20)
+model.save_pdb({str(output_pdb)!r}, get_best=True)
+plddt = float(np.mean(model.aux['plddt']))
+with open({f'{output_pdb}.plddt'!r}, 'w') as pf:
+    pf.write(str(plddt))
+clear_mem()
+"""
+
+
+def _run_refold(sequence, output_pdb):
+    """
+    AfCycDesign refold：hallucination 折叠固定序列为环肽。
+    只做基础折叠验证。pLDDT > 0.8 的最终过滤由 Prediction Agent 的 L1 负责。
+    """
+    script = _build_refold_script(sequence, output_pdb)
+    spath = f"/tmp/refold_{os.getpid()}_{hash(sequence) % 100000}.py"
+    with open(spath, "w") as f:
+        f.write(script)
+    try:
+        r = subprocess.run([CYCPEP_PYTHON, spath], capture_output=True, text=True,
+            timeout=1200,
+            env={**os.environ,
+                 "XLA_FLAGS": f"--xla_gpu_cuda_data_dir={CUDA_DATA_DIR}"})
+        if r.returncode != 0:
+            EvidenceLogger.error("design", "refold_nonzero",
+                f"exit={r.returncode} stderr={r.stderr[-200:]}")
+        plddt_file = f"{output_pdb}.plddt"
+        if os.path.exists(plddt_file):
+            with open(plddt_file) as pf:
+                return float(pf.read().strip())
+        return None
+    except Exception as e:
+        EvidenceLogger.error("design", "refold_exception", str(e))
+        return None
+    finally:
+        try:
+            os.unlink(spath)
+        except OSError:
+            pass
+
+
+def _ring_closure_check(pdb_path):
+    """检查 N-Cα 到 C-Cα 距离 < 7Å（只读第一个 MODEL）"""
+    try:
+        with open(pdb_path) as f:
+            lines = f.readlines()
+        # 只取第一个 MODEL（避免 recycle 拼接干扰）
+        ca = []
+        for l in lines:
+            if l.startswith("ENDMDL"):
+                break
+            if l.startswith("ATOM") and " CA " in l:
+                ca.append(l)
+        if len(ca) < 2:
+            return {"pass": False, "reason": "too_few_CA", "n_ca": len(ca)}
+        n_term = [float(ca[0][30:38]), float(ca[0][38:46]), float(ca[0][46:54])]
+        c_term = [float(ca[-1][30:38]), float(ca[-1][38:46]), float(ca[-1][46:54])]
+        dist = sum((a-b)**2 for a,b in zip(n_term, c_term)) ** 0.5
+        return {"pass": dist < 7.0, "n_ca_dist": round(dist, 2)}
+    except Exception:
+        return {"pass": False, "reason": "io_error"}
+
+
+# ============================================================
+# 共享工具
+# ============================================================
+
+def _pdb_residue_range(pdb_path, chain="A"):
+    """解析 PDB 指定链的残基范围，返回 (min_resi, max_resi)。"""
+    min_r, max_r = None, None
     try:
         with open(pdb_path) as f:
             for line in f:
-                if line.startswith("ATOM") and line[12:16].strip() == "CA":
-                    chain = line[21].strip()
-                    resid = line[22:26].strip()
-                    key = (chain, resid)
-                    if key not in seen:
-                        seen.add(key)
-                        seq.append(three_to_one.get(line[17:20].strip(), "X"))
-    except FileNotFoundError:
-        return ""
+                if line.startswith("ATOM") and line[21] == chain:
+                    r = int(line[22:26].strip())
+                    if min_r is None or r < min_r:
+                        min_r = r
+                    if max_r is None or r > max_r:
+                        max_r = r
+    except Exception as e:
+        EvidenceLogger.error("design", "pdb_parse_failed",
+            f"Cannot parse approved coordinate artifact {pdb_path} chain {chain}: {e}.",
+            recovery="verify target PDB path")
+        raise ValueError(f"cannot parse target PDB chain {chain}: {pdb_path}") from e
+    if min_r is None:
+        EvidenceLogger.error("design", "pdb_empty_chain",
+            f"No atoms found in approved coordinate artifact {pdb_path} chain {chain}.")
+        raise ValueError(f"target PDB contains no atoms for chain {chain}: {pdb_path}")
+    return min_r, max_r
 
-    if binder_len and len(seq) >= binder_len:
-        seq = seq[-binder_len:]
-    return "".join(seq)
+
+def _parse_binder_residues(pdb_path, target_chain="A"):
+    """解析 backbone PDB 中 binder 链的残基号列表，返回 [(chain, resi), ...]"""
+    residues = []
+    try:
+        with open(pdb_path) as f:
+            for line in f:
+                if line.startswith("ATOM") and " CA " in line:
+                    ch = line[21]
+                    if ch != target_chain:
+                        resi = line[22:26].strip()
+                        # 去重：同一 chain+resi 只记一次
+                        key = (ch, resi)
+                        if not residues or residues[-1] != key:
+                            residues.append(key)
+    except Exception:
+        pass
+    return residues
 
 
-def _next_candidate_id() -> str:
+def _hotspot_positions(template_seq):
+    """在模板序列中检测 F/W/L hotspot 位置，返回 {0-based_position: aa}"""
+    hotspots = {}
+    for i, aa in enumerate(template_seq):
+        if aa in "FWL":
+            hotspots[i] = aa
+    return hotspots
+
+
+def _hotspot_fixed_residues(hotspots, binder_residues):
+    """将模板 hotspot 位置映射为 LigandMPNN fixed_residues 字符串。
+    固定 F/W 锚点，L 位置留给 LigandMPNN 自由设计（L26 偏置）。
+    hotspots: _hotspot_positions() 返回的 {pos: aa} dict
     """
-    从 State 读当前计数器 → 格式化为 CXXXX → 返回。
-    EvidenceLogger.candidate_registered() 会自动 +1。
-    因此下一个调用者拿到的 ID 自动递增。
+    fixed = []
+    for i, aa in hotspots.items():
+        if aa in "FW" and i < len(binder_residues):
+            # W23/F19 锚点：固定不变
+            ch, resi = binder_residues[i]
+            fixed.append(f"{ch}{resi}")
+        # L 残基不固定，让 backbone 几何自然偏置小氨基酸
+    return " ".join(fixed)
+
+
+def _validate_sequence(seq):
+    valid = set("ACDEFGHIKLMNPQRSTVWY")
+    s = seq.upper().replace("-","").replace("*","")
+    return 8 <= len(s) <= 20 and all(c in valid for c in s)
+
+
+def _next_candidate_id():
+    with _LOCK:
+        s = State.load()
+        s["candidate_count"] = s.get("candidate_count", 0) + 1
+        State.save(s)
+        return f"C{s['candidate_count']:04d}"
+
+
+def _describe_cyclize(n_term, c_term, linker):
+    parts = []
+    if n_term == "C" and c_term == "C":
+        parts.append("Cys-Cys_disulfide")
+    elif n_term == "" and c_term == "":
+        parts.append("head-to-tail_amide")
+    else:
+        parts.append(f"{n_term or 'X'}-{c_term or 'X'}")
+    if linker:
+        parts.append(f"linker={linker}")
+    return ",".join(parts)
+
+
+def _load_target_spec():
     """
-    global _LAST_ISSUED_CANDIDATE_NUMBER
-    count = int(State.load().get("candidate_count", 0))
-    existing_numbers = []
-    for row in CandidateIndex.load():
-        candidate_id = row.get("candidate_id", "")
-        if candidate_id.startswith("C") and candidate_id[1:].isdigit():
-            existing_numbers.append(int(candidate_id[1:]))
-    next_number = max(
-        [count, _LAST_ISSUED_CANDIDATE_NUMBER, *existing_numbers],
-        default=0,
-    ) + 1
-    _LAST_ISSUED_CANDIDATE_NUMBER = next_number
-    return f"C{next_number:04d}"
+    从 State 读取 Research 产出的设计规则。
+    若 Research 未运行则返回空结构（Route B/C 会报错退出）。
+    """
+    s = State.load()
+    # 设计规则：Trp23 不变 / Phe19 ≤ Phe体积 / Leu26 换小脂肪族
+    design_rules = s.get("design_rules", {}) or s.get("pocket_differences", {})
+    return {
+        "targets": s.get("targets", {}),
+        "pocket_differences": s.get("pocket_differences", {}),
+        "known_dual_binders": s.get("known_dual_binders", []),
+        "design_rules": design_rules,
+    }
+
+
+def _merge_config(target_spec, design_config):
+    """Merge run controls with the approved target and coordinate artifact.
+
+    Target identity, chain, hotspots, and coordinate path are security-sensitive
+    project inputs.  They come from the approved project config; callers may
+    select a configured target but may not replace those fields ad hoc.
+    """
+    ts = target_spec or {}
+    dc = design_config or {}
+    project = ACTIVE_PROJECT_CONFIG
+    assert_project_approved(project)
+
+    default_target = project["targets"][0]["id"]
+    target_ref = (
+        dc.get("target_id") or ts.get("target_id") or ts.get("id")
+        or dc.get("target_name") or ts.get("target_name")
+        or default_target
+    )
+    target = assert_target_structure_ready(project, target_ref)
+    structure = target.get("structure") or {}
+    coordinate_value = structure.get("coordinate_path")
+    if not coordinate_value:
+        raise RuntimeError(
+            f"approved target {target['id']} has no structure.coordinate_path; "
+            "materialize and approve the coordinate artifact before Design"
+        )
+    coordinate_path = Path(coordinate_value).expanduser().resolve()
+    if not coordinate_path.is_file():
+        raise FileNotFoundError(
+            f"approved coordinate artifact does not exist: {coordinate_path}"
+        )
+
+    requested_path = dc.get("target_pdb") or ts.get("target_pdb")
+    if requested_path and Path(requested_path).expanduser().resolve() != coordinate_path:
+        raise ValueError("target_pdb cannot override the approved coordinate_path")
+
+    chain = structure.get("chain")
+    if not chain:
+        raise RuntimeError(f"approved target {target['id']} has no structure.chain")
+    requested_chain = dc.get("chain") or ts.get("chain")
+    if requested_chain and requested_chain != chain:
+        raise ValueError("chain cannot override the approved target chain")
+
+    binding_site = target.get("binding_site") or {}
+    hotspots = ",".join(str(residue) for residue in binding_site.get("residues", []))
+    requested_hotspots = dc.get("hotspots") or ts.get("hotspots")
+    if requested_hotspots and requested_hotspots != hotspots:
+        raise ValueError("hotspots cannot override the approved binding site")
+
+    lengths = dc.get("lengths") or ts.get("lengths") or (
+        target.get("design") or {}
+    ).get("lengths", [10, 12, 14])
+    lengths = [int(length) for length in lengths]
+    if not lengths or any(length < 8 or length > 20 for length in lengths):
+        raise ValueError("cyclic peptide lengths must be between 8 and 20 residues")
+
+    n = dc.get("n") if dc.get("n") is not None else ts.get("n", 100)
+    n = int(n)
+    if n < 1:
+        raise ValueError("n must be at least 1")
+
+    seed = dc.get("seed") if dc.get("seed") is not None else ts.get("seed")
+    if seed is None:
+        seed = DEFAULT_SEED if DEFAULT_SEED is not None else int(time.time())
+
+    return {
+        "project_id": project["project_id"],
+        "target_id": target["id"],
+        "target_name": target["id"],
+        "target_pdb": str(coordinate_path),
+        "target_pdb_sha256": structure.get("coordinate_sha256"),
+        "pdb_id": structure.get("pdb_id"),
+        "chain": chain,
+        "hotspots": hotspots,
+        "lengths": lengths,
+        "n": n,
+        "seed": seed,
+    }
 
 
 # ============================================================
-# 主入口
+# 兼容旧 API
+# ============================================================
+
+def design_afcyc(target=None, n=10, lengths=None, hotspots=None, chain=None, seed=None):
+    import warnings
+    warnings.warn("deprecated, use design_rfpeptides", DeprecationWarning)
+    target_spec = {}
+    if target is not None:
+        target_spec["target_name"] = target
+    if chain is not None:
+        target_spec["chain"] = chain
+    if hotspots is not None:
+        target_spec["hotspots"] = hotspots
+    return design_rfpeptides(
+        target_spec=target_spec,
+        design_config={"n": n, "lengths": lengths or [10], "seed": seed})
+
+
+def design_motif_graft(n=400, seed=None):
+    import warnings
+    warnings.warn("deprecated, use design_motif_guided", DeprecationWarning)
+    return design_motif_guided(design_config={"n": n, "seed": seed})
+
+
+def design_atsp_cyclize(n=200, seed=None):
+    import warnings
+    warnings.warn("deprecated, use design_atsp_derived", DeprecationWarning)
+    return design_atsp_derived(design_config={"n": n, "seed": seed})
+
+
+# ============================================================
+# 兼容旧 dual_target_score（保留但不推荐）
+# ============================================================
+
+def dual_target_score(iptm_mdm2, iptm_mdmx):
+    """旧版加权组合打分（被 Pareto 前沿替代，保留兼容）"""
+    import warnings
+    warnings.warn("dual_target_score deprecated, use threshold_filter+pareto_front",
+                  DeprecationWarning)
+    combined = (iptm_mdm2 + iptm_mdmx) / 2
+    asymmetry = abs(iptm_mdm2 - iptm_mdmx)
+    return {
+        "dual_score": round(combined - 0.5 * asymmetry, 4),
+        "combined": round(combined, 4),
+        "asymmetry": round(asymmetry, 4),
+        "passed": iptm_mdm2 > 0.7 and iptm_mdmx > 0.55 and asymmetry < 0.25,
+    }
+
+
+# ============================================================
+# CLI
 # ============================================================
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Design Agent — 三条环肽设计路线",
-        epilog="示例: python agents/design.py --route A --target 1YCR --n 5 --lengths 8,10"
-    )
-    parser.add_argument("--route", choices=["A", "B", "C", "all"], default="all",
-                        help="设计路线。all = 全部三条")
-    parser.add_argument("--target", default="1YCR",
-                        help="靶点 PDB ID（Route A 专用）")
-    parser.add_argument("--n", type=int, default=10,
-                        help="每条长度/每条路线生成的候选数")
-    parser.add_argument("--lengths", default="8,10,12",
-                        help="环肽长度，逗号分隔（Route A 专用）")
-    parser.add_argument("--hotspots", default=None,
-                        help="hotspot 残基编号，逗号分隔（Route A 专用）")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description="Design Agent v5")
+    p.add_argument("--route", choices=["A","B","C","all"], default="all")
+    p.add_argument("--target", default=None,
+                   help="configured target ID or PDB ID; defaults to the first approved target")
+    p.add_argument("--n", type=int, default=10)
+    p.add_argument("--lengths", default="10,12,14")
+    p.add_argument("--hotspots", default=None)
+    p.add_argument("--chain", default=None,
+                   help="must match the approved target chain when provided")
+    p.add_argument("--seed", type=int, default=None)
+    args = p.parse_args()
 
     lengths = [int(x) for x in args.lengths.split(",")]
-    t_start = time.time()
-    all_candidates = []
+    ts = {}
+    if args.chain:
+        ts["chain"] = args.chain
+    if args.target:
+        ts["target_name"] = args.target
+    if args.hotspots:
+        ts["hotspots"] = args.hotspots
+    dc = {"n": args.n, "lengths": lengths, "seed": args.seed}
 
-    if args.route in ("A", "all"):
-        print(f"[Route A] target={args.target}, n={args.n}, lengths={lengths}")
-        all_candidates.extend(
-            design_afcyc(args.target, args.n, lengths, args.hotspots))
+    all_cands = []
+    if args.route in ("A","all"):
+        print(f"[Route A v5] target={args.target}, n={args.n}, len={lengths}")
+        result = design_rfpeptides(target_spec=ts, design_config=dc)
+        all_cands.extend(result)
+        print(f"[Route A] 完成: {len(result)} candidates")
+    if args.route in ("B","all"):
+        print(f"[Route B v5] n={args.n}")
+        result = design_motif_guided(target_spec=ts, design_config=dc)
+        all_cands.extend(result)
+        print(f"[Route B] 完成: {len(result)} candidates")
+    if args.route in ("C","all"):
+        print(f"[Route C v5] n={args.n}")
+        result = design_atsp_derived(target_spec=ts, design_config=dc)
+        all_cands.extend(result)
+        print(f"[Route C] 完成: {len(result)} candidates")
 
-    if args.route in ("B", "all"):
-        print(f"[Route B] motif grafting, n={args.n}")
-        all_candidates.extend(design_motif_graft(args.n))
-
-    if args.route in ("C", "all"):
-        print(f"[Route C] ATSP-7041 cyclize, n={args.n}")
-        all_candidates.extend(design_atsp_cyclize(args.n))
-
-    elapsed = round(time.time() - t_start, 1)
-    print(f"\n{'='*50}")
-    print(f"总计: {len(all_candidates)} 条候选, 耗时 {elapsed}s")
-    print(f"统计: {CandidateIndex.stats()}")
+    print(f"\nDone: {len(all_cands)} candidates")
+    print(CandidateIndex.stats())
