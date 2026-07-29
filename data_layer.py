@@ -275,23 +275,25 @@ class EvidenceLogger:
 
     @classmethod
     def critic_review(cls, issues: list, passed: bool, summary: str,
-                      recommendation: str, metrics: dict):
+                      recommendation: str, metrics: dict,
+                      round_num: int = None):
         return cls.log("critic", "critic_review", {
             "issues": issues, "pass": passed,
             "summary": summary, "recommendation": recommendation,
             "metrics_snapshot": metrics
         }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
-                phase="critic")
+                phase="critic", round_num=round_num)
 
     @classmethod
     def planner_adjust(cls, trigger_event_id: str, old_strategy: dict,
-                       new_strategy: dict, reason: str):
+                       new_strategy: dict, reason: str,
+                       round_num: int = None):
         cls.log("planner", "planner_adjust", {
             "trigger_event_id": trigger_event_id,
             "old_strategy": old_strategy, "new_strategy": new_strategy,
             "reason": reason
         }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
-                phase="iterate")
+                phase="iterate", round_num=round_num)
 
     @classmethod
     def error(cls, agent: str, error_type: str, message: str,
