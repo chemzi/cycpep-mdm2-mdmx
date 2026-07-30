@@ -534,8 +534,8 @@ try:
     )
 finally:
     subprocess.run = original_subprocess_run
-check('ppi.hotspot_res=[A54,A93,A96]' in captured_run['cmd'],
-      'Hydra hotspot residues are passed as a list')
+check("ppi.hotspot_res=['A54','A93','A96']" in captured_run['cmd'],
+      'Hydra hotspot residues are passed as quoted strings')
 check("contigmap.contigs=['10-10 A25-109/0']" in captured_run['cmd'],
       'Hydra receives binder-first contig order')
 

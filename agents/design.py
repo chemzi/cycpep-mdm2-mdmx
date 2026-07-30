@@ -156,7 +156,8 @@ def _require_mdm_reference_route(route_name):
 def _cheap_filter_sequences(seqs, seen_seqs=None, top_k=CHEAP_FILTER_TOP_K):
     """
     便宜预筛（无 GPU）：合成可行性 + 基本理化性质。
-    返回 top_k 条最优序列，格式 [(seq, score), ...]
+    返回 top_k 条最优序列，格式 [(seq, score), ...]。
+    选中的序列会回写到 ``seen_seqs`` 供跨 backbone 去重。
     """
     if seen_seqs is None:
         seen_seqs = set()
@@ -170,7 +171,10 @@ def _cheap_filter_sequences(seqs, seen_seqs=None, top_k=CHEAP_FILTER_TOP_K):
         score = _sequence_quality_score(seq)
         scored.append((seq, score))
     scored.sort(key=lambda x: x[1], reverse=True)
-    return scored[:top_k]
+    result = scored[:top_k]
+    for seq, _score in result:
+        seen_seqs.add(seq)
+    return result
 
 
 def _synthesizability_violations(seq):
@@ -265,6 +269,7 @@ def design_rfpeptides(target_spec=None, design_config=None):
     total_gen, total_valid = 0, 0
     t_batch = time.time()
     target_range = _pdb_residue_range(config["target_pdb"], config["chain"])
+    seen_seqs = set()  # deduplicate across backbones within this batch
 
     for L in config["lengths"]:
         n_designs = max(1, config["n"] // len(config["lengths"]))
@@ -297,14 +302,16 @@ def design_rfpeptides(target_spec=None, design_config=None):
                 continue
             mpnn_dir = f"{batch_dir}/mpnn_{bb_path.stem}"
             os.makedirs(mpnn_dir, exist_ok=True)
+            mpnn_seed = (config["seed"] + total_gen) % 2**31
             seqs = _run_ligandmpnn(
-                str(bb_path), mpnn_dir, n_seq=8, binder_chain=binder_chain
+                str(bb_path), mpnn_dir, n_seq=8, binder_chain=binder_chain,
+                seed=mpnn_seed,
             )
             if not seqs:
                 print(f"[Route A] LigandMPNN 返回 0 条序列: {bb_path.name}")
                 continue
-            # 便宜预筛 → 只 refold top 4
-            filtered = _cheap_filter_sequences(seqs, top_k=4)
+            # 便宜预筛 → 只 refold top 4（跨 backbone 去重）
+            filtered = _cheap_filter_sequences(seqs, seen_seqs=seen_seqs, top_k=4)
             print(f"[Route A] cheap filter: {len(seqs)}→{len(filtered)} sequences")
 
             for seq, quality_score in filtered:
@@ -377,6 +384,7 @@ def design_motif_guided(target_spec=None, design_config=None):
     t_batch = time.time()
     n_per = max(1, config.get("n", 100) // max(1, len(templates)))
     target_range = _pdb_residue_range(config["target_pdb"], config["chain"])
+    seen_seqs = set()  # deduplicate across templates and backbones
 
     for tmpl_seq, tmpl_name in templates:
         if len(tmpl_seq) < 8:
@@ -414,13 +422,15 @@ def design_motif_guided(target_spec=None, design_config=None):
             fixed_res = _hotspot_fixed_residues(tmpl_hotspots, binder_res) if binder_res else ""
             mpnn_dir = f"{batch_dir}/mpnn_{bb_path.stem}"
             os.makedirs(mpnn_dir, exist_ok=True)
+            mpnn_seed = (config["seed"] + total_gen) % 2**31
             seqs = _run_ligandmpnn(str(bb_path), mpnn_dir, n_seq=8,
-                binder_chain=binder_chain, fixed_residues=fixed_res or None)
+                binder_chain=binder_chain, fixed_residues=fixed_res or None,
+                seed=mpnn_seed)
             if not seqs:
                 print(f"[Route B] LigandMPNN 返回 0 条序列: {bb_path.name}")
                 continue
-            # 便宜预筛 → 只 refold top 4
-            filtered = _cheap_filter_sequences(seqs, top_k=4)
+            # 便宜预筛 → 只 refold top 4（跨模板去重）
+            filtered = _cheap_filter_sequences(seqs, seen_seqs=seen_seqs, top_k=4)
             print(f"[Route B] cheap filter: {len(seqs)}→{len(filtered)} sequences")
 
             for seq, quality_score in filtered:
@@ -503,7 +513,7 @@ def design_atsp_derived(target_spec=None, design_config=None):
     for linker in LINKER_MATRIX:
         for cn, cc in CYCLIZATION_PAIRS:
             seq = f"{cn}{atsp_seq}{linker}{cc}"
-            if _validate_sequence(seq):
+            if _validate_sequence(seq) and not _synthesizability_violations(seq):
                 base_combos.append((seq, _describe_cyclize(cn, cc, linker)))
 
     # 第2级：不够 n 则随机突变扩展
@@ -518,7 +528,7 @@ def design_atsp_derived(target_spec=None, design_config=None):
         off = 1 if seq and seq[0] == "C" else 0
         ix = off + min(pos, len(seq)-1)
         mutated = seq[:ix] + aa + seq[ix+1:]
-        if _validate_sequence(mutated) and mutated not in seen_seqs:
+        if _validate_sequence(mutated) and not _synthesizability_violations(mutated) and mutated not in seen_seqs:
             seen_seqs.add(mutated)
             expanded.append((mutated, f"{desc},mut:{pos}={aa}"))
 
@@ -775,8 +785,8 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
         f"diffuser.T={RFDIFF_TIMESTEPS}",
     ]
     if hotspots:
-        # 补链名前缀: "54,93,96" → "A54,A93,A96"
-        formatted = ",".join(f"{chain}{r.strip()}" for r in hotspots.split(",") if r.strip())
+        # 补链名前缀: "54,93,96" → "'A54','A93','A96'"（Hydra 要求每个残基加引号）
+        formatted = ",".join(f"'{chain}{r.strip()}'" for r in hotspots.split(",") if r.strip())
         if formatted:
             cmd.append(f"ppi.hotspot_res=[{formatted}]")
     # RFdiffusion Hydra config 没有 inference.seed 字段，seed 通过 contig 控制
@@ -798,7 +808,7 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
 
 
 def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, binder_chain=None,
-                    fixed_residues=None):
+                    fixed_residues=None, seed=42):
     """LigandMPNN subprocess with an explicitly validated binder chain.
 
     The RFdiffusion output chain labels are discovered from the emitted PDB,
@@ -838,7 +848,7 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, binder_chain=None,
         f"--out_folder={output_dir}",
         f"--batch_size={batch_size}",
         f"--number_of_batches={number_of_batches}",
-        "--temperature=0.1", "--seed=42",
+        "--temperature=0.1", f"--seed={seed}",
         "--fasta_seq_separation=:",
         f"--chains_to_design={binder_chain}",
     ]
@@ -1033,7 +1043,9 @@ def _run_refold(sequence, output_pdb):
         r = subprocess.run([CYCPEP_PYTHON, spath], capture_output=True, text=True,
             timeout=1200,
             env={**os.environ,
-                 "XLA_FLAGS": f"--xla_gpu_cuda_data_dir={CUDA_DATA_DIR}"})
+                 "XLA_FLAGS": f"--xla_gpu_cuda_data_dir={CUDA_DATA_DIR}",
+                 "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
+                 "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.80"})
         if r.returncode != 0:
             EvidenceLogger.error("design", "refold_nonzero",
                 f"exit={r.returncode} stderr={r.stderr[-200:]}")
@@ -1233,27 +1245,41 @@ def _ring_closure_check(pdb_path, cyclization_type, sequence=None):
 # ============================================================
 
 def _pdb_residue_range(pdb_path, chain="A"):
-    """解析 PDB 指定链的残基范围，返回 (min_resi, max_resi)。"""
-    min_r, max_r = None, None
+    """Parse the residue range of the *longest contiguous segment* for a PDB
+    chain, ignoring isolated outlier residues such as purification tags or
+    crystallographic additives that carry extreme residue numbers.
+    """
+    residues = set()
     try:
         with open(pdb_path) as f:
             for line in f:
                 if line.startswith("ATOM") and line[21] == chain:
                     r = int(line[22:26].strip())
-                    if min_r is None or r < min_r:
-                        min_r = r
-                    if max_r is None or r > max_r:
-                        max_r = r
+                    residues.add(r)
     except Exception as e:
         EvidenceLogger.error("design", "pdb_parse_failed",
             f"Cannot parse approved coordinate artifact {pdb_path} chain {chain}: {e}.",
             recovery="verify target PDB path")
         raise ValueError(f"cannot parse target PDB chain {chain}: {pdb_path}") from e
-    if min_r is None:
+    if not residues:
         EvidenceLogger.error("design", "pdb_empty_chain",
             f"No atoms found in approved coordinate artifact {pdb_path} chain {chain}.")
         raise ValueError(f"target PDB contains no atoms for chain {chain}: {pdb_path}")
-    return min_r, max_r
+
+    sorted_res = sorted(residues)
+    # Split into contiguous segments (gap > 50 = new segment)
+    segments = []
+    seg_start = sorted_res[0]
+    prev = seg_start
+    for r in sorted_res[1:]:
+        if r - prev > 50:
+            segments.append((seg_start, prev))
+            seg_start = r
+        prev = r
+    segments.append((seg_start, prev))
+    # Return the longest segment
+    best = max(segments, key=lambda s: s[1] - s[0])
+    return best[0], best[1]
 
 
 def _pdb_chain_residue_layout(pdb_path):
