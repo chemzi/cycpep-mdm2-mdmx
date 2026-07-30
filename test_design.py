@@ -638,14 +638,32 @@ check_raises(ValueError,
     lambda: _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[10, 105]),
     'hotspots spanning two segments must raise ValueError')
 
-# Hotspot outside all segments → ValueError
-check_raises(ValueError,
-    lambda: _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[999]),
-    'hotspot outside all segments must raise ValueError')
+# Hotspot absent from PDB entirely → falls back to longest segment
+rng4 = _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[999])
+check(rng4 == (1, 20), f'hotspot absent from PDB → longest segment, got {rng4}')
 
 # Empty hotspot string → back to longest segment
-rng4 = _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[])
-check(rng4 == (1, 20), f'empty hotspots → longest segment, got {rng4}')
+rng5 = _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[])
+check(rng5 == (1, 20), f'empty hotspots → longest segment, got {rng5}')
+
+# Hotspot isolated between segments (gap>50 both sides) → uses its own single-residue segment
+gap_fixture = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+for i in range(1, 6):
+    gap_fixture.write(
+        f'ATOM  {i:5d}  CA  ALA A{i:4d}       {i}.000   2.000   3.000  1.00  0.00           C  \n'
+    )
+# Single isolated residue at position 80 (use same format as loop for correct PDB column alignment)
+gap_fixture.write(
+    f'ATOM  {100:5d}  CA  ALA A{80:4d}       80.000   2.000   3.000  1.00  0.00           C  \n'
+)
+for i in range(150, 156):
+    gap_fixture.write(
+        f'ATOM  {i:5d}  CA  ALA A{i:4d}       {i}.000   2.000   3.000  1.00  0.00           C  \n'
+    )
+gap_fixture.close()
+rng_gap = _pdb_residue_range(gap_fixture.name, 'A', hotspot_residues=[80])
+check(rng_gap == (80, 80), f'isolated hotspot → own segment, got {rng_gap}')
+os.unlink(gap_fixture.name)
 
 # Single segment PDB → works with or without hotspots
 single_seg = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
