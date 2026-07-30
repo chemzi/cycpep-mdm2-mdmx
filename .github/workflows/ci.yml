@@ -66,5 +66,8 @@ jobs:
       - name: Test planner and critic
         run: python test_planner_critic.py
 
+      - name: Test orchestrator control flow
+        run: python test_orchestrator.py
+
       - name: Orchestrator dry-run smoke test
         run: python scripts/run_pipeline.py --dry-run --max-nodes 6 --beam-width 2 --max-steps 12

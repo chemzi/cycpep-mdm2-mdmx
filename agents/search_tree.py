@@ -167,6 +167,14 @@ class SearchTree:
     # ------------------------------------------------------------------
     def mark_expanding(self, node_id: Optional[str] = None) -> dict:
         node = self._require(node_id or self.active_id)
+        # A terminal node must never be re-opened for execution. Without this
+        # guard, a pruned child left in active_id (or a passed node reached on
+        # --resume) would be flipped back to "expanding" and re-run.
+        if node["status"] in ("passed", "dead_end", "pruned"):
+            raise ValueError(
+                f"cannot expand terminal node {node['node_id']} "
+                f"(status={node['status']})"
+            )
         node["status"] = "expanding"
         return node
 
@@ -196,6 +204,10 @@ class SearchTree:
         node["critic_verdict"] = "done"
         if node["node_id"] in self.frontier:
             self.frontier = [n for n in self.frontier if n != node["node_id"]]
+        # A passed node is a terminal success; drop it as the active head so a
+        # --resume run recognises the finished state instead of re-running it.
+        if self.active_id == node["node_id"]:
+            self.active_id = None
         return node
 
     def mark_dead_end(self, node_id: Optional[str] = None, verdict: str = "dead_end") -> dict:
@@ -204,6 +216,8 @@ class SearchTree:
         node["critic_verdict"] = verdict if verdict in ("backtrack", "dead_end") else "dead_end"
         if node["node_id"] in self.frontier:
             self.frontier = [n for n in self.frontier if n != node["node_id"]]
+        if self.active_id == node["node_id"]:
+            self.active_id = None
         return node
 
     def mark_pruned(self, node_id: str) -> dict:
@@ -211,6 +225,11 @@ class SearchTree:
         node["status"] = "pruned"
         if node_id in self.frontier:
             self.frontier = [n for n in self.frontier if n != node_id]
+        # Beam pruning can hit the current active child. Clearing active_id here
+        # stops run_once_node from picking it up and mark_expanding() reviving a
+        # node that the beam already decided to drop.
+        if self.active_id == node_id:
+            self.active_id = None
         return node
 
     def update_checkpoint(self, node_id: Optional[str] = None, **fields) -> dict:
@@ -328,6 +347,17 @@ class SearchTree:
                 if node_id not in self.frontier:
                     self.frontier.append(node_id)
         return node
+
+    def select_active(self) -> Optional[dict]:
+        """
+        Return the node the orchestrator should work on next: the current active
+        node if it is still live, otherwise the next live frontier node. Never
+        returns a passed / dead_end / pruned node.
+        """
+        node = self.active_node()
+        if node is not None and node["status"] in ("open", "expanding", "evaluated"):
+            return node
+        return self.pick_next()
 
     def pick_next(self) -> Optional[dict]:
         """Pick next frontier node that is still open / expanding / evaluated."""

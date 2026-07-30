@@ -193,14 +193,26 @@ def mock_predict(state: dict, node: dict, task: dict) -> dict:
     First two candidates of each batch get weak scores (fail clearance);
     later ones get strong scores so critic can eventually advance/done
     after backtracking to a better branch.
+
+    Scoring targets exactly the candidate_ids the Planner handed over. Falling
+    back to a separate source_batch filter here (as an earlier version did)
+    stranded legacy root candidates that had no batch tag: they were scoped in
+    by the Planner but never scored, so --resume looped on Prediction forever.
     """
     candidates = CandidateIndex.load()
     node_id = node.get("node_id") or ""
+    target_ids = set(task.get("candidate_ids") or [])
     scored = []
     for idx, row in enumerate(candidates):
-        batch = str(row.get("source_batch") or "")
-        if node_id and not batch.startswith(f"{node_id}/"):
-            continue
+        cid = row.get("candidate_id")
+        if target_ids:
+            if cid not in target_ids:
+                continue
+        else:
+            # No explicit ids: fall back to this node's own batch.
+            batch = str(row.get("source_batch") or "")
+            if node_id and not (batch.startswith(f"{node_id}/") or batch == node_id):
+                continue
         if row.get("plddt") not in (None, ""):
             continue
         # Branch quality: boost_route_C / length_shift / positive_control get good scores
@@ -287,12 +299,10 @@ def _execute(task: dict, state: dict, node: dict, dry_run: bool) -> dict:
     if agent == "prediction":
         return mock_predict(state, node, task)
     if agent == "critic":
-        all_cands = CandidateIndex.load()
-        node_id = node.get("node_id") or ""
-        scoped = [
-            c for c in all_cands
-            if str(c.get("source_batch") or "").startswith(f"{node_id}/")
-        ] or all_cands
+        # Same scoping rule as the Planner: a node reviews only its own rows.
+        # No `or all_cands` fallback — an empty child branch must never be judged
+        # on its parent's candidates (which could even mark it passed by mistake).
+        scoped = planner_agent.scope_candidates(node, CandidateIndex.load())
         report = critic_agent.review(
             candidates=scoped,
             thresholds=state.get("thresholds") or State.load().get("thresholds"),
@@ -303,87 +313,77 @@ def _execute(task: dict, state: dict, node: dict, dry_run: bool) -> dict:
     raise ValueError(f"unknown agent: {agent}")
 
 
+# Bound the in-node plan→execute chain (research→design→predict→critic is 4).
+INNER_STEP_CAP = 8
+
+
+def _checkpoint_scope(tree: SearchTree, node: dict, thresholds_ref=None):
+    scope = planner_agent.scope_candidates(node, CandidateIndex.load())
+    tree.update_checkpoint(
+        node["node_id"],
+        candidate_ids=[c["candidate_id"] for c in scope if c.get("candidate_id")],
+        stats_snapshot=CandidateIndex.stats() if CandidateIndex.load() else {},
+        thresholds_ref=thresholds_ref,
+    )
+
+
 def run_once_node(tree: SearchTree, dry_run: bool = True) -> dict:
     """Plan → execute → (if critic) react for the active node. Returns step summary."""
-    node = tree.active_node()
+    node = tree.select_active()
     if node is None:
-        node = tree.pick_next()
-    if node is None:
-        return {"status": "stopped", "reason": "no active / frontier node"}
+        return {"status": "stopped", "reason": "no live node"}
 
     tree.mark_expanding(node["node_id"])
-    state = State.load()
-    tasks = planner_agent.plan(state=state, tree=tree, node=node)
-    print(f"\n[node {node['node_id']}] depth={node['depth']} round={node['round']} status={node['status']}")
+    print(f"\n[node {node['node_id']}] depth={node['depth']} round={node['round']} status=expanding")
     print(f"  strategy constraints: {(node.get('strategy') or {}).get('constraints')}")
-    _print_tasks(tasks)
 
-    last_result = None
-    for task in tasks:
-        if task["agent"] == "critic":
-            # Critic is handled after ensuring score path; still execute here
-            last_result = _execute(task, State.load(), node, dry_run)
-            break
-        last_result = _execute(task, State.load(), node, dry_run)
-        print(f"  executed {task['agent']}: {last_result.get('status')}")
-
-        # Re-plan after each upstream step so research→design→predict chains in one node
-        state = State.load()
-        follow = planner_agent.plan(
-            state=state,
-            tree=tree,
-            node=node,
-            candidates=CandidateIndex.load(),
+    # Chain upstream steps (research→design→prediction) until the Planner asks
+    # for a Critic review or the node stops making progress. The Critic scope is
+    # decided by the Planner's rule, never a global fallback.
+    report = None
+    stalled = False
+    last_sig = None
+    for _ in range(INNER_STEP_CAP):
+        tasks = planner_agent.plan(
+            state=State.load(), tree=tree, node=node, candidates=CandidateIndex.load()
         )
-        if follow and follow[0]["agent"] != task["agent"]:
-            print("  re-plan after step:")
-            _print_tasks(follow)
-            for nxt in follow:
-                if nxt["agent"] == "critic":
-                    last_result = _execute(nxt, State.load(), node, dry_run)
-                    break
-                last_result = _execute(nxt, State.load(), node, dry_run)
-                print(f"  executed {nxt['agent']}: {last_result.get('status')}")
+        if not tasks:
             break
+        task = tasks[0]
+        sig = (task.get("agent"), task.get("action"), tuple(task.get("candidate_ids") or ()))
+        if sig == last_sig:
+            # Same request twice → the upstream step produced no progress.
+            stalled = True
+            print("  upstream produced no progress; halting node")
+            break
+        last_sig = sig
+        _print_tasks([task])
+        if task["agent"] == "critic":
+            report = _execute(task, State.load(), node, dry_run)
+            break
+        result = _execute(task, State.load(), node, dry_run)
+        print(f"  executed {task['agent']}: {result.get('status')}")
 
-    # If we never hit critic (e.g. only research), mark evaluated and stop this tick
-    if not isinstance(last_result, dict) or "verdict" not in last_result:
-        # Force a critic pass if candidates are scored
-        cands = CandidateIndex.load()
-        if cands and any(c.get("plddt") not in (None, "") for c in cands):
-            node_id = node.get("node_id") or ""
-            scoped = [
-                c for c in cands
-                if str(c.get("source_batch") or "").startswith(f"{node_id}/")
-            ] or cands
-            last_result = critic_agent.review(
-                candidates=scoped,
-                thresholds=State.load().get("thresholds"),
-                round_num=node.get("round"),
-            )
-        else:
-            tree.mark_evaluated(node["node_id"])
-            tree.update_checkpoint(
-                node["node_id"],
-                candidate_ids=[c["candidate_id"] for c in CandidateIndex.load() if c.get("candidate_id")],
-                stats_snapshot=CandidateIndex.stats() if CandidateIndex.load() else {},
-            )
+    if report is None:
+        # Never reached the Critic this tick.
+        _checkpoint_scope(tree, node)
+        if stalled:
+            # Cannot advance this branch; retire it so it leaves the frontier and
+            # the loop does not spin re-picking a node that can make no progress.
+            tree.mark_dead_end(node["node_id"], verdict="dead_end")
             tree.persist()
-            return {"status": "continued", "node_id": node["node_id"], "result": last_result}
+            return {"status": "stalled", "node_id": node["node_id"]}
+        tree.mark_evaluated(node["node_id"])
+        tree.persist()
+        return {"status": "continued", "node_id": node["node_id"]}
 
-    report = last_result
     verdict = report.get("verdict")
     print(f"  critic verdict={verdict} status={report.get('status')}")
     print(f"  summary: {report.get('summary')}")
     for issue in report.get("issues") or []:
         print(f"    - [{issue.get('code')}] {issue.get('message')}")
 
-    tree.update_checkpoint(
-        node["node_id"],
-        candidate_ids=[c["candidate_id"] for c in CandidateIndex.load() if c.get("candidate_id")],
-        stats_snapshot=CandidateIndex.stats(),
-        thresholds_ref="state.thresholds",
-    )
+    _checkpoint_scope(tree, node, thresholds_ref="state.thresholds")
     tree.mark_evaluated(node["node_id"], critic_verdict=verdict)
 
     if verdict == "done":
@@ -392,13 +392,9 @@ def run_once_node(tree: SearchTree, dry_run: bool = True) -> dict:
         return {"status": "passed", "node_id": node["node_id"], "report": report}
 
     if verdict == "advance":
-        # Deepen with a refined child strategy
         proposals = planner_agent.propose_children(node, report, max_proposals=1)
         if proposals and not tree.budget_exhausted():
-            child = tree.advance(
-                proposals[0],
-                trigger_event_id=report.get("event_id"),
-            )
+            child = tree.advance(proposals[0], trigger_event_id=report.get("event_id"))
             EvidenceLogger.planner_adjust(
                 trigger_event_id=report.get("event_id") or "unknown",
                 old_strategy=node.get("strategy") or {},
@@ -407,23 +403,30 @@ def run_once_node(tree: SearchTree, dry_run: bool = True) -> dict:
                 round_num=child.get("round"),
             )
             print(f"  advance → child {child['node_id']}")
+            tree.persist()
+            return {"status": "advanced", "node_id": node["node_id"], "report": report}
+        # Cannot deepen (budget spent / nothing new): keep this node as a lead but
+        # take it off the frontier so it is not re-reviewed on the next tick.
+        if node["node_id"] in tree.frontier:
+            tree.frontier = [n for n in tree.frontier if n != node["node_id"]]
+        if tree.active_id == node["node_id"]:
+            tree.active_id = None
+        print("  advance requested but cannot expand (budget); node kept as lead")
         tree.persist()
-        return {"status": "advanced", "node_id": node["node_id"], "report": report}
+        return {"status": "advance_blocked", "node_id": node["node_id"], "report": report}
 
     # backtrack / dead_end
-    # Root has no parent: keep it as a live branching point and spawn a child.
+    # Root has no parent: keep it as a live branching point and spawn a sibling.
     if not node.get("parent_id"):
-        tree.mark_evaluated(node["node_id"], critic_verdict=verdict)
-        adj = planner_agent.adjust(
-            report=report,
-            tree=tree,
-            parent=node,
-            max_proposals=1,
-        )
+        adj = planner_agent.adjust(report=report, tree=tree, parent=node, max_proposals=1)
         print(
             f"  root branch → adjust status={adj.get('status')} "
             f"child={adj.get('child_node_id')}"
         )
+        if adj.get("status") != "adjusted":
+            # Root cannot spawn a new sibling (budget spent / all tried) → the
+            # search is exhausted; retire the root so the loop terminates.
+            tree.mark_dead_end(node["node_id"], verdict="dead_end")
         tree.persist()
         return {
             "status": "rebranched_root",
@@ -437,16 +440,22 @@ def run_once_node(tree: SearchTree, dry_run: bool = True) -> dict:
         tree.persist()
         return {"status": "root_dead_end", "node_id": node["node_id"], "report": report}
 
-    adj = planner_agent.adjust(
-        report=report,
-        tree=tree,
-        parent=parent,
-        max_proposals=1,
-    )
+    adj = planner_agent.adjust(report=report, tree=tree, parent=parent, max_proposals=1)
     print(
         f"  backtrack → parent {parent['node_id']}; "
         f"adjust status={adj.get('status')} child={adj.get('child_node_id')}"
     )
+    if adj.get("status") != "adjusted":
+        # Parent has no untried branch left → retire it and step one level up so
+        # an ancestor may still spawn. If none remains live the loop will stop.
+        tree.mark_dead_end(parent["node_id"], verdict="dead_end")
+        grandparent_id = parent.get("parent_id")
+        if grandparent_id and tree.get(grandparent_id):
+            gp = tree.get(grandparent_id)
+            if gp["status"] not in ("dead_end", "pruned", "passed"):
+                tree.active_id = grandparent_id
+                if grandparent_id not in tree.frontier:
+                    tree.frontier.insert(0, grandparent_id)
     tree.persist()
     return {"status": "backtracked", "node_id": node["node_id"], "report": report, "adjust": adj}
 
@@ -477,33 +486,26 @@ def run_pipeline(
 
     history = []
     for step in range(1, max_steps + 1):
-        if tree.budget_exhausted() and not (
-            tree.active_node() and tree.active_node()["status"] in ("open", "expanding", "evaluated")
-        ):
-            print(f"\n[orchestrator] max_nodes={max_nodes} reached; stopping")
-            break
-        if tree.active_node() is None and tree.pick_next() is None:
-            print("\n[orchestrator] frontier empty; stopping")
+        # A live node is one still open/expanding/evaluated. run_once_node retires
+        # branches it cannot expand, so when nothing live remains the search is
+        # genuinely finished — no separate budget/frontier special-casing needed.
+        if tree.select_active() is None:
+            print("\n[orchestrator] no live node left; stopping")
             break
 
         print(f"\n===== step {step} =====")
         summary = run_once_node(tree, dry_run=dry_run)
         history.append(summary)
-        if summary.get("status") == "passed":
+        status = summary.get("status")
+        if status == "passed":
             print("\n[orchestrator] PASSED — metric clearance path found")
             break
-        if summary.get("status") == "root_dead_end":
+        if status == "root_dead_end":
             print("\n[orchestrator] root dead-end — no parent to backtrack to")
             break
-        if summary.get("status") == "stopped":
+        if status == "stopped":
+            print("\n[orchestrator] nothing left to run; stopping")
             break
-        # If adjust failed to spawn and frontier empty, stop
-        if summary.get("status") in ("backtracked", "rebranched_root"):
-            adj = summary.get("adjust") or {}
-            if adj.get("status") in ("no_untried_branch", "budget_exhausted", "spawn_failed"):
-                if tree.pick_next() is None:
-                    print(f"\n[orchestrator] cannot expand further ({adj.get('status')})")
-                    break
 
     best = tree.best_leaf()
     tree.persist()

@@ -104,6 +104,57 @@ class PlannerCriticTests(unittest.TestCase):
         self.assertEqual(child_tasks[0]["agent"], "design")
         self.assertIn("no candidates for this node", child_tasks[0]["reason"])
 
+    def test_partial_scoring_routes_remaining_to_prediction(self):
+        """
+        Regression (review P1-2): when only some candidates in scope are scored,
+        the Planner must send the still-unscored ids back to Prediction, not jump
+        to Critic (which would flag them as a hard failure and backtrack).
+        """
+        State.update({
+            "research_pipeline_meta": {"run_status": "complete"},
+            "candidate_count": 3,
+        })
+        node = {"node_id": "N0007", "depth": 1, "round": 2, "strategy": {}}
+        cands = [
+            {"candidate_id": "C0001", "sequence": "GFEWALAAKCFG",
+             "source_batch": "N0007/route_A_mdm2/L12", "manifest_path": "m.json", "plddt": 0.9},
+            {"candidate_id": "C0002", "sequence": "GFEWALAAKCFH",
+             "source_batch": "N0007/route_A_mdm2/L12", "manifest_path": "m.json"},
+            {"candidate_id": "C0003", "sequence": "GFEWALAAKCFI",
+             "source_batch": "N0007/route_A_mdm2/L12", "manifest_path": "m.json"},
+        ]
+        tasks = planner_agent.plan(state=State.load(), node=node, candidates=cands)
+        self.assertEqual(tasks[0]["agent"], "prediction")
+        # Only the unscored ids are handed over, not the already-scored C0001.
+        self.assertEqual(sorted(tasks[0]["candidate_ids"]), ["C0002", "C0003"])
+
+    def test_adjust_budget_exhausted_leaves_state_and_evidence_untouched(self):
+        """
+        Regression (review P2-3): a budget-exhausted adjust must NOT bump round,
+        rewrite design_budget, or log planner_adjust — otherwise the loop keeps
+        re-adjusting a parent that can never spawn a child.
+        """
+        tree = SearchTree(path=DATA_DIR / "search_tree.json", beam_width=3, max_nodes=1)
+        root = tree.init_root()  # node_count == max_nodes → budget exhausted
+        before = State.load()
+        round_before = int(before.get("round") or 1)
+        budget_before = copy.deepcopy(before.get("design_budget"))
+        report = {
+            "event_id": "evt_budget",
+            "issues": [{"code": "duplicate_sequences", "message": "dup"}],
+            "recommendation": "raise diversity",
+            "verdict": "backtrack",
+        }
+        result = planner_agent.adjust(report=report, tree=tree, parent=root)
+        self.assertEqual(result["status"], "budget_exhausted")
+        self.assertIsNone(result["child_node_id"])
+        after = State.load()
+        self.assertEqual(int(after.get("round") or 1), round_before)
+        self.assertEqual(after.get("design_budget"), budget_before)
+        log_path = EVIDENCE_DIR / "evidence_log.jsonl"
+        log = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+        self.assertNotIn("planner_adjust", log)
+
     def test_root_still_sees_untagged_legacy_pool(self):
         """Root keeps the global fallback so a pre-existing CSV is not ignored."""
         State.update({

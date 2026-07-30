@@ -218,6 +218,54 @@ class SearchTreeTests(unittest.TestCase):
         self.assertIsNotNone(nxt)
         self.assertEqual(nxt["node_id"], b["node_id"])
 
+    def test_beam_prune_clears_active_id(self):
+        """
+        Regression (review P2-4): if the beam prunes the active child, active_id
+        must be cleared so the orchestrator does not revive an out-of-beam node.
+        """
+        tree = self._tree(beam_width=1, max_nodes=10)
+        root = tree.init_root()
+        first = tree.add_child(root["node_id"], {
+            "route_mix": {"route_A_mdm2": 1}, "lengths": [10], "constraints": {"i": 1},
+        }, activate=True)
+        self.assertEqual(tree.active_id, first["node_id"])
+        # Adding a second child under beam_width=1 prunes the first (older) child.
+        second = tree.add_child(root["node_id"], {
+            "route_mix": {"route_A_mdm2": 2}, "lengths": [12], "constraints": {"i": 2},
+        }, activate=False)
+        self.assertEqual(tree.get(first["node_id"])["status"], "pruned")
+        # The pruned node was active; active_id must not still point at it.
+        self.assertNotEqual(tree.active_id, first["node_id"])
+        # select_active must skip the pruned node entirely.
+        self.assertNotEqual((tree.select_active() or {}).get("node_id"), first["node_id"])
+
+    def test_mark_expanding_rejects_terminal_nodes(self):
+        """Regression (review P2-4/6): terminal nodes must never be re-expanded."""
+        tree = self._tree()
+        root = tree.init_root()
+        child = tree.advance({
+            "route_mix": {"route_A_mdm2": 1}, "lengths": [10], "constraints": {},
+        })
+        for marker in (tree.mark_passed, tree.mark_dead_end, tree.mark_pruned):
+            marker(child["node_id"])
+            with self.assertRaises(ValueError):
+                tree.mark_expanding(child["node_id"])
+
+    def test_mark_passed_clears_active_for_resume(self):
+        """
+        Regression (review P2-6): a passed node must drop out of active_id so a
+        --resume run recognises the finished state instead of re-running Critic.
+        """
+        tree = self._tree()
+        root = tree.init_root()
+        child = tree.advance({
+            "route_mix": {"route_A_mdm2": 1}, "lengths": [10], "constraints": {},
+        })
+        tree.mark_passed(child["node_id"])
+        self.assertIsNone(tree.active_id)
+        # Nothing live remains, so select_active returns None (search finished).
+        self.assertIsNone(tree.select_active())
+
 
 if __name__ == "__main__":
     unittest.main()

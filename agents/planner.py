@@ -30,16 +30,22 @@ def _has_research(state: dict) -> bool:
     return False
 
 
-def _any_scored(candidates: list) -> bool:
-    for row in candidates:
-        for key in (
-            "plddt", "ipsae_mdm2", "ipsae_mdmx", "l1_pass", "l2_pass",
-            "all_layers_pass", "metric_clearance",
-        ):
-            val = row.get(key)
-            if val not in (None, ""):
-                return True
+_SCORE_KEYS = (
+    "plddt", "ipsae_mdm2", "ipsae_mdmx", "l1_pass", "l2_pass",
+    "all_layers_pass", "metric_clearance",
+)
+
+
+def _row_scored(row: dict) -> bool:
+    """A candidate is 'scored' once any prediction-derived field is populated."""
+    for key in _SCORE_KEYS:
+        if row.get(key) not in (None, ""):
+            return True
     return False
+
+
+def _any_scored(candidates: list) -> bool:
+    return any(_row_scored(row) for row in (candidates or []))
 
 
 def _candidates_for_node(candidates: list, node_id: Optional[str]) -> list:
@@ -50,6 +56,25 @@ def _candidates_for_node(candidates: list, node_id: Optional[str]) -> list:
         if str(c.get("source_batch") or "").startswith(f"{node_id}/")
         or str(c.get("source_batch") or "") == node_id
     ]
+
+
+def scope_candidates(node: Optional[dict], candidates: list) -> list:
+    """
+    The candidates a node is responsible for — the single source of truth for
+    scoping, shared by the Planner and the orchestrator's Critic step.
+
+    A non-root node sees ONLY its own tagged rows; an empty result is the signal
+    to design, never a licence to borrow the parent's rows. The root may inherit
+    an untagged legacy pool (e.g. a pre-existing CSV) so it is not ignored.
+    """
+    node_id = (node or {}).get("node_id")
+    node_cands = _candidates_for_node(candidates, node_id)
+    if node_cands:
+        return node_cands
+    is_root = not node or node.get("depth", 0) == 0
+    if is_root:
+        return list(candidates or [])
+    return []
 
 
 def plan(
@@ -92,19 +117,8 @@ def plan(
         except Exception:
             candidates = []
 
-    # Each search node judges only its own candidates. An empty scope on a fresh
-    # branch is the signal to design, so it must NOT fall back to the global pool:
-    # doing so would make every new branch re-review its parent's rows, return
-    # critic instead of design, and never generate a candidate of its own.
-    node_cands = _candidates_for_node(candidates, node_id)
-    is_root = not node or node.get("depth", 0) == 0
-    if node_cands:
-        scope = node_cands
-    elif is_root:
-        # Root may inherit an untagged pool from an earlier run or a teammate.
-        scope = candidates
-    else:
-        scope = []
+    # Each search node judges only its own candidates (see scope_candidates).
+    scope = scope_candidates(node, candidates)
 
     if len(scope) == 0:
         return [{
@@ -122,17 +136,22 @@ def plan(
             "round": round_num,
         }]
 
-    if not _any_scored(scope):
+    # Route the candidates that still lack scores back to Prediction. Only when
+    # every candidate in scope is scored do we hand off to the Critic. A partial
+    # prediction must not jump to Critic, which would flag the unscored rows as a
+    # hard failure and backtrack an otherwise viable branch.
+    unscored = [c for c in scope if not _row_scored(c)]
+    if unscored:
         return [{
             "agent": "prediction",
             "action": "score",
             "phase": "evaluate",
-            "reason": "candidates exist but none are scored for this node",
+            "reason": f"{len(unscored)} of {len(scope)} candidate(s) still need scoring",
             "needs_gpu": True,
             "node_id": node_id,
             "round": round_num,
             "candidate_ids": [
-                c.get("candidate_id") for c in scope if c.get("candidate_id")
+                c.get("candidate_id") for c in unscored if c.get("candidate_id")
             ],
         }]
 
@@ -283,29 +302,20 @@ def adjust(
         "adjust after critic: " + (", ".join(reason_parts) if reason_parts else "unspecified")
     )
 
-    # Persist budget into state (deep-aware)
-    s = State.load()
-    s["design_budget"] = copy.deepcopy(new_strategy.get("route_mix") or s.get("design_budget"))
-    s["round"] = int(s.get("round") or 1) + 1
-    State.save(s)
-
-    EvidenceLogger.planner_adjust(
-        trigger_event_id=trigger_event_id or "unknown",
-        old_strategy=old_strategy,
-        new_strategy=new_strategy,
-        reason=reason,
-        round_num=int(s.get("round") or 1),
-    )
-
-    child_node_id = None
-    if tree is not None and parent.get("node_id"):
+    # Feasibility of spawning a child MUST be decided before mutating state or
+    # writing evidence. Otherwise a budget-exhausted or already-tried branch still
+    # bumps state.round, rewrites design_budget, and logs a planner_adjust that
+    # never produced a node — the loop then keeps re-adjusting the same parent.
+    can_spawn = tree is not None and bool(parent.get("node_id"))
+    child = None
+    if can_spawn:
         if tree.budget_exhausted():
             return {
                 "status": "budget_exhausted",
                 "old_strategy": old_strategy,
                 "new_strategy": new_strategy,
                 "trigger_event_id": trigger_event_id,
-                "reason": reason,
+                "reason": "max_nodes reached; not spawning",
                 "proposals": proposals,
                 "child_node_id": None,
             }
@@ -317,7 +327,6 @@ def adjust(
                 activate=True,
                 enqueue=True,
             )
-            child_node_id = child["node_id"]
         except (ValueError, RuntimeError) as exc:
             return {
                 "status": "spawn_failed",
@@ -329,6 +338,20 @@ def adjust(
                 "child_node_id": None,
             }
 
+    # Commit state + evidence only now that we know the adjustment sticks.
+    s = State.load()
+    s["design_budget"] = copy.deepcopy(new_strategy.get("route_mix") or s.get("design_budget"))
+    s["round"] = int(s.get("round") or 1) + 1
+    State.save(s)
+
+    EvidenceLogger.planner_adjust(
+        trigger_event_id=trigger_event_id or "unknown",
+        old_strategy=old_strategy,
+        new_strategy=new_strategy,
+        reason=reason,
+        round_num=int(child["round"]) if child else int(s.get("round") or 1),
+    )
+
     return {
         "status": "adjusted",
         "old_strategy": old_strategy,
@@ -336,5 +359,5 @@ def adjust(
         "trigger_event_id": trigger_event_id,
         "reason": reason,
         "proposals": proposals,
-        "child_node_id": child_node_id,
+        "child_node_id": child["node_id"] if child else None,
     }
