@@ -55,3 +55,6 @@ jobs:
 
       - name: Test threshold research
         run: python test_threshold_research.py
+
+      - name: Test Design agent
+        run: python test_design.py
