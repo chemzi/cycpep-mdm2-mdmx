@@ -268,7 +268,9 @@ def design_rfpeptides(target_spec=None, design_config=None):
     candidates = []
     total_gen, total_valid = 0, 0
     t_batch = time.time()
-    target_range = _pdb_residue_range(config["target_pdb"], config["chain"])
+    _hotspots = _parse_hotspot_residues(config.get("hotspots", ""))
+    target_range = _pdb_residue_range(config["target_pdb"], config["chain"],
+                                      hotspot_residues=_hotspots)
     seen_seqs = set()  # deduplicate across backbones within this batch
 
     for L in config["lengths"]:
@@ -327,7 +329,7 @@ def design_rfpeptides(target_spec=None, design_config=None):
                     else {"pass": False, "reason": "refold_pdb_missing"}
                 )
 
-                if plddt and rc.get("pass"):
+                if plddt is not None and rc.get("pass"):
                     total_valid += 1
                     manifest = _write_manifest(
                         cid, seq, route_name, batch_id, refold_pdb, config,
@@ -383,7 +385,9 @@ def design_motif_guided(target_spec=None, design_config=None):
     total_gen, total_valid = 0, 0
     t_batch = time.time()
     n_per = max(1, config.get("n", 100) // max(1, len(templates)))
-    target_range = _pdb_residue_range(config["target_pdb"], config["chain"])
+    _hotspots = _parse_hotspot_residues(config.get("hotspots", ""))
+    target_range = _pdb_residue_range(config["target_pdb"], config["chain"],
+                                      hotspot_residues=_hotspots)
     seen_seqs = set()  # deduplicate across templates and backbones
 
     for tmpl_seq, tmpl_name in templates:
@@ -446,7 +450,7 @@ def design_motif_guided(target_spec=None, design_config=None):
                     else {"pass": False, "reason": "refold_pdb_missing"}
                 )
 
-                if plddt and rc.get("pass"):
+                if plddt is not None and rc.get("pass"):
                     total_valid += 1
                     manifest = _write_manifest(
                         cid, seq, route_name, batch_id, refold_pdb, config,
@@ -516,6 +520,15 @@ def design_atsp_derived(target_spec=None, design_config=None):
             if _validate_sequence(seq) and not _synthesizability_violations(seq):
                 base_combos.append((seq, _describe_cyclize(cn, cc, linker)))
 
+    if not base_combos:
+        EvidenceLogger.error("design", "route_c_empty",
+            f"All {len(LINKER_MATRIX) * len(CYCLIZATION_PAIRS)} ATSP cyclization "
+            "combos failed the synthesizability gate — no viable sequences.",
+            recovery="review ATSP-7041 sequence and cyclization pairs for "
+                     "synthesizability conflicts (NG deamidation, DP cleavage, "
+                     "stray Cys, aggregation)")
+        return []
+
     # 第2级：不够 n 则随机突变扩展
     expanded = list(base_combos)
     seen_seqs = set(s for s, _ in base_combos)
@@ -526,7 +539,8 @@ def design_atsp_derived(target_spec=None, design_config=None):
         pos = random.choice([3, 5, 8, 10, 12])
         aa = random.choice(SCAFFOLD_MUTABLE_AA)
         off = 1 if seq and seq[0] == "C" else 0
-        ix = off + min(pos, len(seq)-1)
+        tail_guard = 1 if seq and seq[-1] == "C" else 0
+        ix = min(off + pos, len(seq) - 1 - tail_guard)
         mutated = seq[:ix] + aa + seq[ix+1:]
         if _validate_sequence(mutated) and not _synthesizability_violations(mutated) and mutated not in seen_seqs:
             seen_seqs.add(mutated)
@@ -549,7 +563,7 @@ def design_atsp_derived(target_spec=None, design_config=None):
             else {"pass": False, "reason": "refold_pdb_missing"}
         )
 
-        if plddt and rc.get("pass"):
+        if plddt is not None and rc.get("pass"):
             total_valid += 1
             manifest = _write_manifest(
                 cid, seq, route_name, batch_id, refold_pdb, config,
@@ -884,7 +898,8 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, binder_chain=None,
                             "design", "ligandmpnn_fasta_invalid",
                             f"{fa}: {exc}", recovery="skip malformed output",
                         )
-                        return []
+                        is_generated_record = False
+                        continue
                     is_generated_record = False
                     # 跳过全 G 或单氨基酸重复（LigandMPNN baseline）
                     if len(set(line)) <= 2:
@@ -1244,10 +1259,29 @@ def _ring_closure_check(pdb_path, cyclization_type, sequence=None):
 # 共享工具
 # ============================================================
 
-def _pdb_residue_range(pdb_path, chain="A"):
-    """Parse the residue range of the *longest contiguous segment* for a PDB
-    chain, ignoring isolated outlier residues such as purification tags or
-    crystallographic additives that carry extreme residue numbers.
+def _parse_hotspot_residues(hotspots_str):
+    """Parse a comma-separated hotspot string (e.g. ``"54,93,96"``) into a
+    list of int residue numbers.  Returns ``None`` when the string is empty.
+    """
+    if not hotspots_str or not str(hotspots_str).strip():
+        return None
+    return [int(r.strip()) for r in str(hotspots_str).split(",") if r.strip()]
+
+
+def _pdb_residue_range(pdb_path, chain="A", hotspot_residues=None):
+    """Return (first, last) residue numbers for the chain segment that should
+    be used as the receptor contig window.
+
+    A gap > 50 residue numbers splits the chain into segments; by default the
+    **longest** segment wins (this ignores crystallographic outliers such as
+    ILE 500 in 3DAB).
+
+    When *hotspot_residues* (iterable of int residue numbers) is provided, the
+    function **validates that every hotspot falls inside a single contiguous
+    segment** and returns that segment — even if it is shorter than another.
+    If hotspots span multiple segments or lie outside all segments it raises
+    ``ValueError``, preventing a contig that silently excludes approved
+    binding-site residues.
     """
     residues = set()
     try:
@@ -1277,8 +1311,40 @@ def _pdb_residue_range(pdb_path, chain="A"):
             seg_start = r
         prev = r
     segments.append((seg_start, prev))
-    # Return the longest segment
-    best = max(segments, key=lambda s: s[1] - s[0])
+
+    if hotspot_residues:
+        hotspot_set = {int(r) for r in hotspot_residues}
+        # Which segments cover at least one hotspot?
+        covering = []
+        for s_start, s_end in segments:
+            covered = {r for r in hotspot_set if s_start <= r <= s_end}
+            if covered:
+                covering.append((s_start, s_end, covered))
+        if not covering:
+            raise ValueError(
+                f"No contiguous segment of chain {chain} contains any "
+                f"binding-site residue {sorted(hotspot_set)}. "
+                f"PDB segments: {segments}"
+            )
+        all_covered = set().union(*(c[2] for c in covering))
+        if all_covered != hotspot_set:
+            missing = sorted(hotspot_set - all_covered)
+            raise ValueError(
+                f"Binding-site residues {missing} not found in any "
+                f"contiguous segment of chain {chain}. Segments: {segments}"
+            )
+        if len(covering) > 1:
+            raise ValueError(
+                f"Binding-site residues span multiple segments of chain "
+                f"{chain}: {[(c[0], c[1], sorted(c[2])) for c in covering]}. "
+                f"Cannot build a single contig covering all hotspots."
+            )
+        # All hotspots in one segment — use it even if shorter than another
+        best = (covering[0][0], covering[0][1])
+    else:
+        # No hotspot guidance → longest segment (backward compatible)
+        best = max(segments, key=lambda s: s[1] - s[0])
+
     return best[0], best[1]
 
 
@@ -1288,7 +1354,7 @@ def _pdb_chain_residue_layout(pdb_path):
     model_seen = False
     with open(pdb_path) as handle:
         for line in handle:
-            if line.startswith("MODEL"):
+            if line.startswith("MODEL "):
                 if model_seen:
                     break
                 model_seen = True
@@ -1325,7 +1391,7 @@ def _pdb_chain_sequences(pdb_path):
     model_seen = False
     with open(pdb_path) as handle:
         for line in handle:
-            if line.startswith("MODEL"):
+            if line.startswith("MODEL "):
                 if model_seen:
                     break
                 model_seen = True
@@ -1463,6 +1529,8 @@ def _hotspot_fixed_residues(hotspots, binder_residues):
 
 
 def _validate_sequence(seq):
+    if not isinstance(seq, str):
+        return False
     valid = set("ACDEFGHIKLMNPQRSTVWY")
     s = seq.upper().replace("-","").replace("*","")
     return 8 <= len(s) <= 20 and all(c in valid for c in s)
@@ -1569,6 +1637,11 @@ def _merge_config(target_spec, design_config):
     seed = dc.get("seed") if dc.get("seed") is not None else ts.get("seed")
     if seed is None:
         seed = DEFAULT_SEED if DEFAULT_SEED is not None else int(time.time())
+    seed = int(seed)
+    if seed < 0 or seed > 2**31 - 1:
+        raise ValueError(
+            f"seed must be in [0, {2**31 - 1}] (int32 non-negative), got {seed}"
+        )
 
     return {
         "project_id": project["project_id"],

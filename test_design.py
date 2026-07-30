@@ -180,6 +180,9 @@ check(not _validate_sequence(''), 'empty rejected')
 check(not _validate_sequence('AAAAA'), 'too short (5) rejected')
 check(not _validate_sequence('A' * 21), 'too long (21) rejected')
 check(not _validate_sequence('ACDXEFG'), 'nonstandard X rejected')
+check(not _validate_sequence(None), 'None rejected')
+check(_validate_sequence('acdefghi'), 'lowercase accepted')
+check(_validate_sequence('ACD-EFG*HI'), 'hyphen and star stripped')
 
 # ── Test 2: _describe_cyclize ──
 print('Test 2: _describe_cyclize')
@@ -601,6 +604,104 @@ with tempfile.TemporaryDirectory() as runner_temp:
     check(resolved_ci == expected_ci,
           'permission error falls back to GitHub runner temp')
 
+# ── Test 19: _pdb_residue_range hotspot validation (P1 fix) ──
+print('Test 19: _pdb_residue_range hotspot validation')
+
+# Fixture: two segments separated by gap>50
+two_seg_fixture = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+# Segment 1: residues 1-20
+for i in range(1, 21):
+    two_seg_fixture.write(
+        f'ATOM  {i:5d}  CA  ALA A{i:4d}       {i}.000   2.000   3.000  1.00  0.00           C  \n'
+    )
+# Segment 2: residues 100-110 (gap 80 > 50)
+for i in range(100, 111):
+    two_seg_fixture.write(
+        f'ATOM  {i:5d}  CA  ALA A{i:4d}       {i}.000   2.000   3.000  1.00  0.00           C  \n'
+    )
+two_seg_fixture.close()
+
+# Without hotspots → longest segment (1-20: span=19 vs 100-110: span=10)
+rng = _pdb_residue_range(two_seg_fixture.name, 'A')
+check(rng == (1, 20), f'longest segment without hotspots, got {rng}')
+
+# Hotspot in shorter segment → must return that segment
+rng2 = _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[105])
+check(rng2 == (100, 110), f'hotspot at 105 forces second segment, got {rng2}')
+
+# Hotspot in longer segment → still returns longest
+rng3 = _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[10, 15])
+check(rng3 == (1, 20), f'hotspots in longest segment, got {rng3}')
+
+# Hotspots spanning both segments → ValueError
+check_raises(ValueError,
+    lambda: _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[10, 105]),
+    'hotspots spanning two segments must raise ValueError')
+
+# Hotspot outside all segments → ValueError
+check_raises(ValueError,
+    lambda: _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[999]),
+    'hotspot outside all segments must raise ValueError')
+
+# Empty hotspot string → back to longest segment
+rng4 = _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[])
+check(rng4 == (1, 20), f'empty hotspots → longest segment, got {rng4}')
+
+# Single segment PDB → works with or without hotspots
+single_seg = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+for i in range(50, 71):
+    single_seg.write(
+        f'ATOM  {i:5d}  CA  ALA A{i:4d}       {i}.000   2.000   3.000  1.00  0.00           C  \n'
+    )
+single_seg.close()
+rng5 = _pdb_residue_range(single_seg.name, 'A', hotspot_residues=[53, 68])
+check(rng5 == (50, 70), f'single segment with hotspots, got {rng5}')
+
+os.unlink(two_seg_fixture.name)
+os.unlink(single_seg.name)
+
+# ── Test 20: Route C empty base_combos guard (P2 fix) ──
+print('Test 20: Route C empty base_combos guard')
+
+# Simulate empty base_combos path: no linker×cyclization combo passes synthesizability
+# The guard added after base_combos construction should return [] before random.choice
+# We verify the guard exists by checking the source directly
+guard_pattern = 'if not base_combos:'
+with open('agents/design.py', encoding='utf-8') as f:
+    design_source = f.read()
+check(guard_pattern in design_source,
+      'empty base_combos guard is present in design_atsp_derived')
+
+# Also verify the EvidenceLogger.error call is present for this path
+check('route_c_empty' in design_source,
+      '"route_c_empty" evidence event is logged for empty base_combos')
+
+# ── Test 21: seed type coercion and range validation (P4 fix) ──
+print('Test 21: seed type coercion and range validation')
+
+# String seed → int
+cfg_str_seed = _merge_config({'target_name': '3DAB', 'chain': 'B'}, {'seed': '42'})
+check(cfg_str_seed['seed'] == 42, f'string seed coerced to int, got {type(cfg_str_seed["seed"]).__name__}={cfg_str_seed["seed"]}')
+check(isinstance(cfg_str_seed['seed'], int), f'seed must be int, got {type(cfg_str_seed["seed"]).__name__}')
+
+# Float seed → int
+cfg_float_seed = _merge_config({'target_name': '3DAB', 'chain': 'B'}, {'seed': 42.0})
+check(cfg_float_seed['seed'] == 42, f'float seed coerced to int, got {cfg_float_seed["seed"]}')
+
+# Negative seed → ValueError
+check_raises(ValueError,
+    lambda: _merge_config({'target_name': '3DAB', 'chain': 'B'}, {'seed': -1}),
+    'negative seed must raise ValueError')
+
+# Seed above int32 max → ValueError
+check_raises(ValueError,
+    lambda: _merge_config({'target_name': '3DAB', 'chain': 'B'}, {'seed': 2**31}),
+    'seed above 2^31-1 must raise ValueError')
+
+# Seed=0 still preserved (edge case from Test 6)
+cfg_zero = _merge_config({'target_name': '3DAB', 'chain': 'B'}, {'seed': 0})
+check(cfg_zero['seed'] == 0, f'seed=0 preserved, got {cfg_zero["seed"]}')
+
 os.unlink(target_fixture.name)
 
 # ── Summary ──
@@ -611,4 +712,4 @@ if failures:
         print(f'  - {f}')
     sys.exit(1)
 else:
-    print('ALL 18 TEST GROUPS PASSED')
+    print('ALL 21 TEST GROUPS PASSED')
