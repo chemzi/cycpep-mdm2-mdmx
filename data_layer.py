@@ -24,7 +24,7 @@
         # 准入下一阶段
         ...
 """
-import json, csv, hashlib, os, statistics, uuid
+import json, csv, hashlib, os, statistics, tempfile, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -37,6 +37,7 @@ from project_config import (
     target_value,
     threshold_for_target,
 )
+from threshold_contract import merge_thresholds, normalize_thresholds
 
 ROOT = Path(__file__).resolve().parent
 ACTIVE_PROJECT_CONFIG = load_project_config()
@@ -54,6 +55,22 @@ EVIDENCE_DIR = Path(os.environ.get("CYCPEP_EVIDENCE_DIR", _DEFAULT_EVIDENCE_DIR)
 STATE_PATH = DATA_DIR / "state.json"
 LOG_PATH   = EVIDENCE_DIR / "evidence_log.jsonl"
 INDEX_PATH = DATA_DIR / "candidate_index.csv"
+
+
+def _write_json_atomic(path: str | Path, payload: dict):
+    """Write JSON beside its destination and atomically replace the old file."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    handle, temp_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+        os.replace(temp_name, destination)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
 
 # v5: 七层指标电池主列。旧列名保留做 alias（见 _ALIAS_MAP），不破坏已有代码。
 INDEX_COLUMNS = [
@@ -151,12 +168,11 @@ class State:
     def load(cls) -> dict:
         if STATE_PATH.exists():
             return json.loads(STATE_PATH.read_text(encoding="utf-8"))
-        return cls._default.copy()
+        return json.loads(json.dumps(cls._default))
     
     @classmethod
     def save(cls, data: dict):
-        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_atomic(STATE_PATH, data)
     
     @classmethod
     def update(cls, patches: dict):
@@ -171,6 +187,89 @@ class State:
         s = cls.load()
         s.setdefault("iteration_history", []).append(entry)
         cls.save(s)
+
+    @classmethod
+    def sync_project_config(cls, config: dict) -> dict:
+        """Make the approved config authoritative for target identity in state."""
+        state = cls.load()
+        previous_targets = set((state.get("targets") or {}).keys())
+        previous_digest = state.get("approved_digest") or (
+            ((state.get("project_config") or {}).get("review") or {}).get("approved_digest")
+        )
+        approved_digest = (config.get("review") or {}).get("approved_digest")
+        config_changed = bool(previous_digest and approved_digest and previous_digest != approved_digest)
+        if config_changed:
+            # Strong evidence from a different approved target/config is not transferable.
+            state["thresholds"] = {}
+        state["project"] = config.get("name", config["project_id"])
+        state["project_id"] = config["project_id"]
+        state["project_config"] = json.loads(json.dumps(config))
+        state["approved_digest"] = approved_digest
+        # Deliberate replacement: removed targets must not survive a re-approval.
+        state["targets"] = {
+            target["id"]: {key: value for key, value in target.items() if key != "id"}
+            for target in config.get("targets", [])
+        }
+        cls.save(state)
+        current_targets = set(state["targets"])
+        EvidenceLogger.log("research", "state_project_config_sync", {
+            "previous_approved_digest": previous_digest,
+            "approved_digest": approved_digest,
+            "config_changed": config_changed,
+            "required_target_ids": list(required_target_ids(config)),
+            "removed_targets": sorted(previous_targets - current_targets),
+            "final_targets": sorted(current_targets),
+            "thresholds_cleared": config_changed,
+        }, phase="research")
+        return state
+
+    @classmethod
+    def sync_thresholds_from_cache(cls, cache_path: str | Path) -> dict:
+        """Recover/merge canonical Research thresholds from a validated cache.
+
+        The threshold cache is the durable Research artifact. ``state.json`` is
+        its evidence-aware runtime projection and may safely be rebuilt.
+        """
+        path = Path(cache_path)
+        state = cls.load()
+        status = "complete"
+        error = None
+        incoming = {}
+        if not path.exists():
+            status = "cache_missing"
+        else:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                incoming = payload.get("thresholds", payload) if isinstance(payload, dict) else {}
+            except (OSError, json.JSONDecodeError) as exc:
+                status = "cache_invalid"
+                error = f"{type(exc).__name__}: {str(exc)[:160]}"
+
+        existing, existing_audit = normalize_thresholds(state.get("thresholds") or {})
+        if status == "complete":
+            merged, audit = merge_thresholds(existing, incoming)
+        else:
+            merged = existing
+            audit = {
+                "cache_keys": [], "final_keys": list(merged),
+                "overwritten": [], "skipped": [], "conflict_reasons": {},
+                "state_normalization": existing_audit,
+                "cache_normalization": {"input_keys": [], "canonical_keys": [], "conflicts": []},
+            }
+        state["thresholds"] = merged
+        cls.save(state)
+        EvidenceLogger.log("research", "threshold_cache_sync", {
+            "status": status,
+            "cache_path": str(path),
+            "cache_keys": audit["cache_keys"],
+            "final_keys": audit["final_keys"],
+            "overwritten": audit["overwritten"],
+            "skipped": audit["skipped"],
+            "conflict_reasons": audit["conflict_reasons"],
+            "normalization_conflicts": audit["cache_normalization"].get("conflicts", []),
+            "error": error,
+        }, phase="research")
+        return {"state": state, "status": status, "audit": audit, "error": error}
 
 
 # ============================================================
