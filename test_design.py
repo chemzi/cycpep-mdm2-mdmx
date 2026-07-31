@@ -382,10 +382,14 @@ n, attempts = 10, 0
 while len(expanded) < n and attempts < n * 10:
     attempts += 1
     seq, desc = random.choice(orig)
-    pos = random.choice([3, 5, 8, 10, 12])
     aa = random.choice('ACDEFGHIKLMNPQRSTVWY')
     off = 1 if seq and seq[0] == 'C' else 0
-    ix = off + min(pos, len(seq) - 1)
+    tail_guard = 1 if seq and seq[-1] == 'C' else 0
+    max_pos = len(seq) - off - tail_guard
+    if max_pos < 2:
+        continue
+    pos = random.randint(1, max_pos)
+    ix = off + pos - 1
     mut = seq[:ix] + aa + seq[ix + 1:]
     if _validate_sequence(mut) and mut not in seen:
         seen.add(mut)
@@ -541,6 +545,22 @@ check("ppi.hotspot_res=['A54','A93','A96']" in captured_run['cmd'],
       'Hydra hotspot residues are passed as quoted strings')
 check("contigmap.contigs=['10-10 A25-109/0']" in captured_run['cmd'],
       'Hydra receives binder-first contig order')
+check("inference.seed" not in str(captured_run['cmd']),
+      'seed omitted when None')
+
+# With explicit seed it must appear in the Hydra command
+captured_run2 = {}
+subprocess.run = lambda cmd, **kwargs: (
+    captured_run2.update({'cmd': cmd, 'kwargs': kwargs}) or _SuccessfulRun()
+)
+try:
+    _run_rfdiff('/tmp/target.pdb', 10, 1, '/tmp/out',
+                _binder_first_contig('A', 25, 109, 10),
+                seed=42, chain='A')
+finally:
+    subprocess.run = original_subprocess_run
+check("inference.seed=42" in captured_run2['cmd'],
+      'seed propagated to RFdiffusion command')
 
 # RFdiffusion may relabel output chains. Discover the binder by residue count
 # and map LigandMPNN FASTA segments using the emitted PDB chain order.
