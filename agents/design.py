@@ -14,7 +14,7 @@ Agent 职责边界：
   pLDDT > 0.8 的最终过滤由 Prediction Agent (Phase 3 L1) 负责。
 """
 
-import math, os, sys, json, time, subprocess, threading
+import math, os, sys, json, time, subprocess, tempfile, threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -163,6 +163,8 @@ def _cheap_filter_sequences(seqs, seen_seqs=None, top_k=CHEAP_FILTER_TOP_K):
         seen_seqs = set()
     scored = []
     for seq in seqs:
+        if not isinstance(seq, str) or not seq:
+            continue
         if seq in seen_seqs:
             continue
         violations = _synthesizability_violations(seq)
@@ -172,6 +174,12 @@ def _cheap_filter_sequences(seqs, seen_seqs=None, top_k=CHEAP_FILTER_TOP_K):
         scored.append((seq, score))
     scored.sort(key=lambda x: x[1], reverse=True)
     result = scored[:top_k]
+    if not result and seqs:
+        EvidenceLogger.log("design", "cheap_filter_empty", {
+            "total": len(seqs),
+            "already_seen": len([s for s in seqs if s in seen_seqs]),
+            "top_k": top_k,
+        })
     for seq, _score in result:
         seen_seqs.add(seq)
     return result
@@ -186,6 +194,8 @@ def _synthesizability_violations(seq):
     - 脱酰胺：Asn-Gly
     - Asp-Pro 断裂
     """
+    if not seq:
+        return []
     v = []
     # 连续疏水
     run = 0
@@ -295,7 +305,7 @@ def design_rfpeptides(target_spec=None, design_config=None):
         for bb_path in bb_files[:n_designs]:
             total_gen += 1
             try:
-                binder_chain = _infer_binder_chain(str(bb_path), L)
+                binder_chain = _infer_binder_chain(str(bb_path), L, receptor_chain=config["chain"])
             except ValueError as exc:
                 EvidenceLogger.error(
                     "design", "rfdiff_binder_chain_invalid",
@@ -415,14 +425,14 @@ def design_motif_guided(target_spec=None, design_config=None):
         for bb_path in bb_files[:n_per]:
             total_gen += 1
             try:
-                binder_chain = _infer_binder_chain(str(bb_path), L)
+                binder_chain = _infer_binder_chain(str(bb_path), L, receptor_chain=config["chain"])
+                binder_res = _parse_binder_residues(str(bb_path), binder_chain)
             except ValueError as exc:
                 EvidenceLogger.error(
                     "design", "rfdiff_binder_chain_invalid",
                     f"{bb_path}: {exc}", recovery="skip ambiguous backbone",
                 )
                 continue
-            binder_res = _parse_binder_residues(str(bb_path), binder_chain)
             fixed_res = _hotspot_fixed_residues(tmpl_hotspots, binder_res) if binder_res else ""
             mpnn_dir = f"{batch_dir}/mpnn_{bb_path.stem}"
             os.makedirs(mpnn_dir, exist_ok=True)
@@ -536,11 +546,14 @@ def design_atsp_derived(target_spec=None, design_config=None):
     while len(expanded) < n and attempts < n * 10:
         attempts += 1
         seq, desc = random.choice(base_combos)
-        pos = random.choice([3, 5, 8, 10, 12])
         aa = random.choice(SCAFFOLD_MUTABLE_AA)
         off = 1 if seq and seq[0] == "C" else 0
         tail_guard = 1 if seq and seq[-1] == "C" else 0
-        ix = min(off + pos, len(seq) - 1 - tail_guard)
+        max_pos = len(seq) - off - tail_guard  # mutable core length
+        if max_pos < 2:
+            continue  # nowhere to mutate without breaking a terminal Cys
+        pos = random.randint(1, max_pos)
+        ix = off + pos - 1
         mutated = seq[:ix] + aa + seq[ix+1:]
         if _validate_sequence(mutated) and not _synthesizability_violations(mutated) and mutated not in seen_seqs:
             seen_seqs.add(mutated)
@@ -594,6 +607,16 @@ def threshold_filter(candidates, thresholds, project_config=None):
     """Apply independent per-target ipSAE and hotspot-coverage gates."""
     project = project_config or ACTIVE_PROJECT_CONFIG
     target_ids = required_target_ids(project)
+
+    def _safe_float(value):
+        """Return float(value) or None when the value is missing / empty."""
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+
     passed = []
     for candidate in candidates:
         accepted = True
@@ -604,17 +627,20 @@ def threshold_filter(candidates, thresholds, project_config=None):
                 thresholds, "L5_hotspot_coverage", target_id
             )
             ipsae_threshold = thresholds.get(
-                f"ipsae_{slug}", ipsae_rule.get("value", 0.6 if index == 0 else 0.5)
+                f"ipsae_{slug}",
+                thresholds.get("ipsae",
+                    ipsae_rule.get("value", 0.6 if index == 0 else 0.5))
             )
             hotspot_threshold = thresholds.get(
                 f"hotspot_cov_{slug}",
-                thresholds.get("hotspot_cov", hotspot_rule.get("value", 0.67)),
+                thresholds.get("hotspot_cov",
+                    hotspot_rule.get("value", 0.67)),
             )
-            ipsae = target_value(candidate, target_id, "ipsae")
-            hotspot_cov = target_value(candidate, target_id, "hotspot_cov")
+            ipsae_val = _safe_float(target_value(candidate, target_id, "ipsae"))
+            hotspot_val = _safe_float(target_value(candidate, target_id, "hotspot_cov"))
             if (
-                ipsae is None or float(ipsae) < float(ipsae_threshold)
-                or hotspot_cov is None or float(hotspot_cov) < float(hotspot_threshold)
+                ipsae_val is None or ipsae_val < float(ipsae_threshold)
+                or hotspot_val is None or hotspot_val < float(hotspot_threshold)
             ):
                 accepted = False
                 break
@@ -634,12 +660,22 @@ def pareto_front(candidates, obj_x=None, obj_y=None, project_config=None):
         if obj_y is not None:
             objectives.append(obj_y)
 
+    def _safe_objective(val):
+        """Return float(val); missing / empty values become -inf so they
+        never dominate a candidate that has real data for that objective."""
+        if val in (None, ""):
+            return float("-inf")
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return float("-inf")
+
     def objective_value(candidate, objective):
         if isinstance(objective, tuple):
-            return target_value(candidate, objective[0], objective[1]) or 0
+            return _safe_objective(target_value(candidate, objective[0], objective[1]))
         if ":" in objective:
             target_id, metric = objective.split(":", 1)
-            return target_value(candidate, target_id, metric) or 0
+            return _safe_objective(target_value(candidate, target_id, metric))
         return candidate.get(objective, 0)
 
     front = []
@@ -734,8 +770,8 @@ def _candidate_from_manifest(manifest, plddt, notes=None):
     cyclization = manifest["cyclization_type"]
     if "head-to-tail_amide" in cyclization:
         bonds = [{
-            "atom_1": "residue_1:N",
-            "atom_2": f"residue_{length}:C",
+            "atom_1": f"residue_{length}:C",
+            "atom_2": "residue_1:N",
             "bond_type": "amide",
         }]
     elif "Cys-Cys_disulfide" in cyclization:
@@ -803,7 +839,8 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
         formatted = ",".join(f"'{chain}{r.strip()}'" for r in hotspots.split(",") if r.strip())
         if formatted:
             cmd.append(f"ppi.hotspot_res=[{formatted}]")
-    # RFdiffusion Hydra config 没有 inference.seed 字段，seed 通过 contig 控制
+    if seed is not None:
+        cmd.append(f"inference.seed={seed}")
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600,
             cwd=RFDIFF_DIR,
@@ -876,7 +913,14 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, binder_chain=None,
             print(f"[LigandMPNN 失败] exit={r.returncode} stderr={r.stderr[-300:]}")
             return []
         seqs = []
-        for fa in sorted(Path(output_dir).glob("**/*.fa"))[:1]:  # 一个 PDB 只出一个 FASTA
+        fa_files = sorted(Path(output_dir).glob("**/*.fa"))
+        if len(fa_files) > 1:
+            EvidenceLogger.log("design", "ligandmpnn_multiple_fasta",
+                f"LigandMPNN produced {len(fa_files)} FASTA files for "
+                f"{backbone_pdb}; only the first ({fa_files[0].name}) "
+                "will be processed. This may indicate a multi-chain output "
+                "that this pipeline does not yet support.")
+        for fa in fa_files[:1]:
             with open(fa) as fh:
                 is_generated_record = False
                 for line in fh:
@@ -901,8 +945,8 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, binder_chain=None,
                         is_generated_record = False
                         continue
                     is_generated_record = False
-                    # 跳过全 G 或单氨基酸重复（LigandMPNN baseline）
-                    if len(set(line)) <= 2:
+                    # 跳过纯 homopolymer（LigandMPNN baseline artifact）
+                    if len(set(line)) <= 1:
                         continue
                     if line not in seqs:
                         seqs.append(line)
@@ -1044,7 +1088,10 @@ def _run_refold(sequence, output_pdb):
     只做基础折叠验证。pLDDT > 0.8 的最终过滤由 Prediction Agent 的 L1 负责。
     """
     script = _build_refold_script(sequence, output_pdb)
-    spath = f"/tmp/refold_{os.getpid()}_{hash(sequence) % 100000}.py"
+    spath = os.path.join(
+        tempfile.gettempdir(),
+        f"refold_{os.getpid()}_{hash(sequence) % 100000}.py"
+    )
     plddt_file = f"{output_pdb}.plddt"
     # A failed retry must never inherit a PDB or score produced by an older run.
     for stale_artifact in (output_pdb, plddt_file):
@@ -1449,8 +1496,14 @@ def _verify_fixed_sequence_pdb(pdb_path, requested_sequence):
     return observed
 
 
-def _infer_binder_chain(pdb_path, expected_length):
-    """Require one unique emitted chain with the requested binder length."""
+def _infer_binder_chain(pdb_path, expected_length, receptor_chain=None):
+    """Return the RFdiffusion-generated binder chain.
+
+    When *receptor_chain* is provided it is excluded from consideration
+    (RFdiffusion may keep the receptor chain label unchanged while the
+    binder receives a new label).  Without it the function falls back to
+    strict length uniqueness.
+    """
     layout = _pdb_chain_residue_layout(pdb_path)
     if len(layout) < 2:
         raise ValueError(
@@ -1461,6 +1514,10 @@ def _infer_binder_chain(pdb_path, expected_length):
         chain for chain, residues in layout.items()
         if len(residues) == int(expected_length)
     ]
+    if receptor_chain and len(candidates) > 1:
+        narrowed = [c for c in candidates if c != receptor_chain]
+        if len(narrowed) == 1:
+            return narrowed[0]
     if len(candidates) != 1:
         counts = {chain: len(residues) for chain, residues in layout.items()}
         raise ValueError(
@@ -1649,6 +1706,8 @@ def _merge_config(target_spec, design_config):
     seed = dc.get("seed") if dc.get("seed") is not None else ts.get("seed")
     if seed is None:
         seed = DEFAULT_SEED if DEFAULT_SEED is not None else int(time.time())
+        print(f"[Design] seed not specified — auto-generated seed={seed} "
+              f"(pass --seed to reproduce this run)")
     seed = int(seed)
     if seed < 0 or seed > 2**31 - 1:
         raise ValueError(
