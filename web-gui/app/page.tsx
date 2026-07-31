@@ -1,20 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-type View = "总览" | "靶点与审核" | "候选池" | "最终交付" | "证据链" | "连接";
 type Envelope<T> = { data?: T; error?: { code: string; message: string } };
-type Target = { id: string; uniprot?: string; required?: boolean; binding_site?: { residues?: number[]; status?: string }; structure?: { pdb_id?: string; chain?: string; coordinate_artifact_id?: string }; structure_plan?: { coordinates_ready?: boolean; chain_reviewed?: boolean; binding_site_reviewed?: boolean; ready_for_design?: boolean } };
-type Draft = { draft_id: string; project_id?: string; name?: string; objective?: string; targets: Target[]; review?: { status?: string; revision?: number; content_digest?: string; blocking_issues?: string[]; warnings?: string[] } };
 type Candidate = { candidate_id: string; sequence: string; source_route?: string; final_status?: string; layers: boolean[]; all_layers_pass: boolean; artifact_id?: string; last_updated?: string };
-type Evidence = { event_id?: string; timestamp?: string; agent?: string; event_type?: string; phase?: string; candidate_id?: string };
-type Snapshot = { source: { mode: "local" | "ssh"; connected: boolean; host?: string }; project: { project_id?: string; name?: string; config?: { targets?: Target[] }; targets: string[] }; state: { phase?: string; round?: number; candidate_count?: number; iteration_history: unknown[]; thresholds_ready: boolean }; stats: { total_candidates?: number; all_layers_pass?: number; finalized?: number }; candidates: Candidate[]; recent_evidence: Evidence[]; integrity_warnings: string[] };
+type Evidence = { event_id?: string; timestamp?: string; agent?: string; event_type?: string; phase?: string; candidate_id?: string; [key: string]: unknown };
+type Snapshot = { source: { mode: "local" | "ssh"; connected: boolean; host?: string }; project: { project_id?: string; name?: string; targets: string[] }; state: { phase?: string; round?: number; candidate_count?: number; iteration_history: unknown[]; thresholds_ready: boolean }; stats: { total_candidates?: number; all_layers_pass?: number; finalized?: number }; candidates: Candidate[]; recent_evidence: Evidence[]; integrity_warnings: string[] };
 type Settings = { apiBase: string; polling: number; autoRefresh: boolean };
+type RightTab = "评分" | "证据" | "决策记录" | "参数";
+type BottomTab = "运行日志" | "GPU 队列" | "Artifacts";
+type MolViewer = { addModel(data: string, format: string): void; setStyle(selection: object, style: object): void; zoomTo(): void; render(): void; clear(): void; addSurface(type: unknown, style: object): void };
+
+declare global { interface Window { $3Dmol?: { createViewer(element: HTMLElement, options: object): MolViewer; SurfaceType: { VDW: unknown } } } }
 
 const DEFAULT_SETTINGS: Settings = { apiBase: "/api/v1", polling: 5, autoRefresh: true };
-const NAV: View[] = ["总览", "靶点与审核", "候选池", "最终交付", "证据链", "连接"];
 const join = (base: string, path: string) => `${base.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
-const layerCount = (candidate: Candidate) => candidate.layers.filter(Boolean).length;
+const AGENTS = [
+  { id: "research", label: "Research", detail: "靶点、热点、正对照" },
+  { id: "design", label: "Design", detail: "候选生成与闭环几何" },
+  { id: "evaluate", label: "Prediction", detail: "结构预测与 L1–L7" },
+  { id: "critic", label: "Critic", detail: "失败审查与策略调整" },
+];
 
 async function api<T>(base: string, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(join(base, path), { ...init, headers: { "Content-Type": "application/json", ...(init?.headers || {}) }, cache: "no-store" });
@@ -34,86 +40,128 @@ function useSettings() {
 
 export default function Home() {
   const { value: settings, save } = useSettings();
-  const [view, setView] = useState<View>("总览");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  const [connectionId, setConnectionId] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [selectedId, setSelectedId] = useState("");
+  const [rightTab, setRightTab] = useState<RightTab>("评分");
+  const [bottomTab, setBottomTab] = useState<BottomTab>("运行日志");
+  const [connectionOpen, setConnectionOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [connectionId, setConnectionId] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState("");
-  const notify = (message: string) => { setToast(message); window.setTimeout(() => setToast(""), 3200); };
+  const notify = (text: string) => { setToast(text); window.setTimeout(() => setToast(""), 3200); };
+
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const next = connectionId ? await api<Snapshot>(settings.apiBase, "connections/ssh/snapshot", { method: "POST", body: JSON.stringify({ connection_id: connectionId }) }) : await api<Snapshot>(settings.apiBase, "snapshot");
-      setSnapshot(next); setError("");
-    } catch (cause) { setSnapshot(null); setError(cause instanceof Error ? cause.message : "无法连接数据服务"); }
+      const data = connectionId
+        ? await api<Snapshot>(settings.apiBase, "connections/ssh/snapshot", { method: "POST", body: JSON.stringify({ connection_id: connectionId }) })
+        : await api<Snapshot>(settings.apiBase, "snapshot");
+      setSnapshot(data); setError("");
+    } catch (cause) { setSnapshot(null); setError(cause instanceof Error ? cause.message : "连接失败"); }
     finally { setLoading(false); }
   }, [connectionId, settings.apiBase]);
+
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => { if (!settings.autoRefresh) return; const id = window.setInterval(() => void refresh(), Math.max(2, settings.polling) * 1000); return () => window.clearInterval(id); }, [refresh, settings.autoRefresh, settings.polling]);
+  useEffect(() => { const rows = snapshot?.candidates || []; if (!rows.some(row => row.candidate_id === selectedId)) setSelectedId(rows[0]?.candidate_id || ""); }, [snapshot, selectedId]);
 
-  const projectName = draft?.name || snapshot?.project.name || "未连接项目";
-  const sourceLabel = snapshot?.source.mode === "ssh" ? `SSH · ${snapshot.source.host}` : snapshot ? "同机工作目录" : "数据服务未连接";
-  return <main className="shell">
-    <aside className="sidebar"><div className="brand"><div className="brand-mark"><span/><span/><span/></div><div><strong>CycPep Studio</strong><small>真实运行态控制台</small></div></div><div className="project-switcher"><span className="eyebrow">当前上下文</span><button onClick={() => setView("靶点与审核")}><span><b>{projectName}</b><small>{draft ? `草稿 · ${draft.draft_id}` : sourceLabel}</small></span><i>→</i></button></div><nav>{NAV.map(item => <button key={item} className={view === item ? "active" : ""} onClick={() => setView(item)}><span className="nav-icon">{item === "连接" ? "⌁" : "◇"}</span>{item}{item === "候选池" && snapshot && <em>{snapshot.candidates.length}</em>}</button>)}</nav><div className="sidebar-bottom"><div className={`system-status ${snapshot ? "" : "offline"}`}><i/> {snapshot ? "真实数据已连接" : "未连接真实数据"}<span>{sourceLabel}</span></div></div></aside>
-    <section className="workspace"><header className="topbar"><div><span className="eyebrow">SOURCE OF TRUTH · DATA LAYER</span><h1>{view}</h1></div><div className="top-actions"><button className="ghost" onClick={() => void refresh()} disabled={loading}>↻ {loading ? "读取中" : "刷新"}</button><button className="primary" disabled={Boolean(connectionId)} title={connectionId ? "SSH 模式当前为只读" : ""} onClick={() => setCreateOpen(true)}>＋ 新建靶点草稿</button></div></header>
-      {error && view !== "连接" && <Disconnected message={error} onConnect={() => setView("连接")}/>}
-      {!error && view === "总览" && <Overview snapshot={snapshot}/>}
-      {!error && view === "靶点与审核" && <TargetReview draft={draft} snapshot={snapshot} settings={settings} onDraft={setDraft} notify={notify}/>}
-      {!error && view === "候选池" && <Candidates snapshot={snapshot}/>}
-      {!error && view === "最终交付" && <Deliverables snapshot={snapshot} settings={settings}/>}
-      {!error && view === "证据链" && <EvidencePanel snapshot={snapshot}/>}
-      {view === "连接" && <ConnectionPanel settings={settings} save={save} onSnapshot={(next, id) => { setSnapshot(next); setConnectionId(id); setError(""); notify("已连接并读取真实运行态"); }} notify={notify}/>}
+  const selected = snapshot?.candidates.find(row => row.candidate_id === selectedId) || null;
+  const artifactCount = snapshot?.candidates.filter(row => row.artifact_id).length || 0;
+  const source = snapshot?.source.mode === "ssh" ? `SSH · ${snapshot.source.host}` : snapshot ? "同机数据层" : "未连接";
+
+  return <main className="workbench">
+    <header className="workbench-header">
+      <div className="wordmark"><span className="mark"><i/><i/><i/></span><div><b>CycPep Studio</b><small>AI DRUG DISCOVERY WORKBENCH</small></div></div>
+      <div className="project-context"><span>PROJECT</span><b>{snapshot?.project.name || "No verified project"}</b><small>{snapshot?.project.targets?.join(" · ") || "—"}</small></div>
+      <div className="header-actions"><span className={`connection-pill ${snapshot ? "online" : ""}`}><i/>{source}</span><button onClick={() => void refresh()} disabled={loading}>{loading ? "同步中" : "↻ 同步"}</button><button onClick={() => setConnectionOpen(true)}>连接</button><button className="accent" disabled={Boolean(connectionId)} onClick={() => setCreateOpen(true)}>新建靶点</button></div>
+    </header>
+
+    <section className="workbench-main">
+      <aside className="agent-rail">
+        <div className="section-label"><span>AGENT WORKFLOW</span><em>{snapshot?.state.phase || "NO RUN"}</em></div>
+        <div className="agent-flow">{AGENTS.map((agent, index) => {
+          const events = snapshot?.recent_evidence.filter(event => event.phase === agent.id || event.agent === agent.id).length || 0;
+          const active = snapshot?.state.phase === agent.id || (agent.id === "evaluate" && snapshot?.state.phase === "prediction");
+          return <button key={agent.id} className={active ? "active" : events ? "observed" : ""} onClick={() => { setRightTab("证据"); }}><span className="agent-index">0{index + 1}</span><div><b>{agent.label}</b><small>{agent.detail}</small></div><em>{active ? "运行态" : events ? `${events} events` : "无记录"}</em></button>;
+        })}</div>
+        <div className="candidate-rail"><div className="section-label"><span>CANDIDATES</span><em>{snapshot?.candidates.length || 0}</em></div><input placeholder="搜索候选…" aria-label="搜索候选"/><div className="candidate-list">{snapshot?.candidates.slice(0, 12).map(row => <button key={row.candidate_id} className={selectedId === row.candidate_id ? "active" : ""} onClick={() => setSelectedId(row.candidate_id)}><div><b>{row.candidate_id}</b><code>{row.sequence}</code></div><span>{row.layers.filter(Boolean).length}/7</span></button>)}{!snapshot?.candidates.length && <p>数据层中没有候选</p>}</div></div>
+      </aside>
+
+      <section className="structure-stage">
+        <div className="stage-toolbar"><div><span>STRUCTURE WORKSPACE</span><b>{selected?.candidate_id || "No candidate selected"}</b></div><select value={selectedId} onChange={event => setSelectedId(event.target.value)} disabled={!snapshot?.candidates.length}><option value="">选择候选</option>{snapshot?.candidates.map(row => <option key={row.candidate_id}>{row.candidate_id}</option>)}</select><div className="stage-meta"><span>{selected?.source_route || "route 未记录"}</span><span>{selected?.artifact_id ? "HASH VERIFIED" : "NO ARTIFACT"}</span></div></div>
+        <StructureViewer candidate={selected} apiBase={settings.apiBase}/>
+        <div className="structure-status"><span><i className="receptor"/>Receptor</span><span><i className="peptide"/>Cyclic peptide</span><em>{selected?.artifact_id ? `artifact ${selected.artifact_id}` : "等待 Prediction 注册真实坐标 artifact"}</em></div>
+        {snapshot?.integrity_warnings.length ? <div className="integrity-alert"><b>STATE INTEGRITY</b><span>{snapshot.integrity_warnings.join(" · ")}</span></div> : null}
+      </section>
+
+      <aside className="inspector">
+        <div className="tab-strip">{(["评分", "证据", "决策记录", "参数"] as RightTab[]).map(tab => <button key={tab} className={rightTab === tab ? "active" : ""} onClick={() => setRightTab(tab)}>{tab}</button>)}</div>
+        <Inspector tab={rightTab} snapshot={snapshot} candidate={selected}/>
+      </aside>
     </section>
-    {createOpen && <CreateDialog settings={settings} onClose={() => setCreateOpen(false)} onCreated={(next) => { setDraft(next); setCreateOpen(false); setView("靶点与审核"); notify(`已切换到草稿 ${next.draft_id}`); }}/>} {toast && <div className="toast">✓ {toast}</div>}
+
+    <section className="bottom-dock"><div className="dock-tabs">{(["运行日志", "GPU 队列", "Artifacts"] as BottomTab[]).map(tab => <button key={tab} className={bottomTab === tab ? "active" : ""} onClick={() => setBottomTab(tab)}>{tab}{tab === "Artifacts" && <em>{artifactCount}</em>}</button>)}<span>LIVE SOURCE · {source}</span></div><BottomDock tab={bottomTab} snapshot={snapshot} apiBase={settings.apiBase}/></section>
+
+    {!snapshot && <div className="offline-overlay"><div><span>NO VERIFIED SOURCE</span><h1>连接真实工作环境</h1><p>Workbench 不会用示例候选、假进度或演示模型填充空白。</p><code>{error || "等待数据适配层"}</code><button onClick={() => setConnectionOpen(true)}>配置连接</button></div></div>}
+    {connectionOpen && <ConnectionDialog settings={settings} save={save} onClose={() => setConnectionOpen(false)} onConnected={(data, id) => { setSnapshot(data); setConnectionId(id); setError(""); setConnectionOpen(false); notify("已连接真实数据源"); }} notify={notify}/>}
+    {createOpen && <CreateDialog settings={settings} onClose={() => setCreateOpen(false)} onCreated={draft => { setCreateOpen(false); notify(`已创建并切换到草稿 ${draft.draft_id}`); }}/>}
+    {toast && <div className="toast">{toast}</div>}
   </main>;
 }
 
-function Disconnected({ message, onConnect }: { message: string; onConnect: () => void }) { return <section className="panel honest-empty"><span className="eyebrow">NO VERIFIED SOURCE</span><h2>未连接真实工作环境</h2><p>当前不展示项目、候选、进度或结构，避免把演示数据误认为运行结果。</p><code>{message}</code><button className="primary" onClick={onConnect}>配置数据连接</button></section>; }
+function StructureViewer({ candidate, apiBase }: { candidate: Candidate | null; apiBase: string }) {
+  const element = useRef<HTMLDivElement>(null);
+  const viewer = useRef<MolViewer | null>(null);
+  const [state, setState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [message, setMessage] = useState("");
+  const [style, setStyleMode] = useState<"cartoon" | "sticks" | "surface">("cartoon");
 
-function Overview({ snapshot }: { snapshot: Snapshot | null }) {
-  if (!snapshot) return null;
-  return <>{snapshot.integrity_warnings.length > 0 && <section className="integrity-warning"><b>state.json 完整性警告</b><span>{snapshot.integrity_warnings.join(" · ")}</span><p>界面不会自行推断或补写这些字段。</p></section>}<section className="hero-grid"><article className="status-card dark-card"><div className="card-heading"><span>真实运行阶段</span><b className="live">{snapshot.state.phase || "未记录"}</b></div><div className="stage-title"><strong>{(snapshot.state.phase || "UNKNOWN").toUpperCase()}</strong><span>{snapshot.state.round ?? "—"}</span></div><p>数据源：{snapshot.source.mode === "ssh" ? `SSH ${snapshot.source.host}` : "适配层所在工作目录"}</p></article><article className="status-card metric-card"><span className="eyebrow">CANDIDATE INDEX</span><div className="big-number">{snapshot.stats.total_candidates ?? snapshot.candidates.length}</div><p>来自 CandidateIndex.load()，不是界面计数器</p></article><article className="status-card metric-card"><span className="eyebrow">ALL LAYERS PASS</span><div className="big-number">{snapshot.stats.all_layers_pass ?? 0}</div><p>只有 all_layers_pass=true 才计入</p></article></section><section className="panel truth-table"><div className="panel-title"><div><span className="eyebrow">RUNTIME STATE</span><h2>{snapshot.project.name || "未命名项目"}</h2></div><span className="tag">{snapshot.project.project_id || "project_id 缺失"}</span></div><div className="fact-grid"><div><span>靶点</span><b>{snapshot.project.targets.length ? snapshot.project.targets.join(" · ") : "未记录"}</b></div><div><span>轮次</span><b>{snapshot.state.round ?? "未记录"}</b></div><div><span>阈值</span><b>{snapshot.state.thresholds_ready ? "已记录" : "未记录"}</b></div><div><span>证据事件</span><b>{snapshot.recent_evidence.length}</b></div></div></section></>;
+  useEffect(() => {
+    if (!candidate?.artifact_id || !element.current) { setState("idle"); setMessage(""); viewer.current?.clear(); viewer.current?.render(); return; }
+    let cancelled = false;
+    const load = async () => {
+      setState("loading");
+      try {
+        if (!window.$3Dmol) await new Promise<void>((resolve, reject) => { const existing = document.querySelector("script[data-3dmol]"); if (existing) { existing.addEventListener("load", () => resolve(), { once: true }); return; } const script = document.createElement("script"); script.src = "https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.4.2/3Dmol-min.js"; script.dataset["3dmol"] = "true"; script.onload = () => resolve(); script.onerror = () => reject(new Error("3Dmol.js 加载失败")); document.head.appendChild(script); });
+        const response = await fetch(join(apiBase, `artifacts/${candidate.artifact_id}/coordinates`), { cache: "no-store" });
+        if (!response.ok) throw new Error(`坐标接口返回 HTTP ${response.status}`);
+        const coordinates = await response.text();
+        if (cancelled || !element.current || !window.$3Dmol) return;
+        const instance = window.$3Dmol.createViewer(element.current, { backgroundColor: "#07110f", antialias: true });
+        instance.addModel(coordinates, response.headers.get("content-type")?.includes("mmcif") ? "cif" : "pdb");
+        instance.setStyle({}, { cartoon: { color: "spectrum" } }); instance.zoomTo(); instance.render(); viewer.current = instance; setState("ready");
+      } catch (cause) { if (!cancelled) { setState("error"); setMessage(cause instanceof Error ? cause.message : "坐标加载失败"); } }
+    };
+    void load(); return () => { cancelled = true; };
+  }, [candidate?.artifact_id, apiBase]);
+
+  const applyStyle = (next: "cartoon" | "sticks" | "surface") => { setStyleMode(next); const instance = viewer.current; if (!instance || !window.$3Dmol) return; instance.setStyle({}, next === "cartoon" ? { cartoon: { color: "spectrum" } } : next === "sticks" ? { stick: { colorscheme: "Jmol" } } : { cartoon: { color: "#4bb891" } }); if (next === "surface") instance.addSurface(window.$3Dmol.SurfaceType.VDW, { opacity: 0.72, color: "#235c4c" }); instance.render(); };
+  return <div className="viewer-shell"><div ref={element} className="viewer-canvas"/>{state === "idle" && <div className="viewer-empty"><div className="empty-orbit"><i/><i/><i/></div><span>VERIFIED ARTIFACT REQUIRED</span><h2>尚无可加载的真实结构</h2><p>只有七层全清、manifest 存在且 SHA-256 匹配的 PDB/mmCIF 才会在此显示。</p></div>}{state === "loading" && <div className="viewer-message">正在验证并加载坐标…</div>}{state === "error" && <div className="viewer-message error">{message}</div>}{state === "ready" && <div className="viewer-controls">{(["cartoon", "sticks", "surface"] as const).map(item => <button key={item} className={style === item ? "active" : ""} onClick={() => applyStyle(item)}>{item}</button>)}</div>}</div>;
 }
 
-function TargetReview({ draft, snapshot, settings, onDraft, notify }: { draft: Draft | null; snapshot: Snapshot | null; settings: Settings; onDraft: (d: Draft) => void; notify: (s: string) => void }) {
-  const targets = draft?.targets || snapshot?.project.config?.targets || [];
-  const [selectedId, setSelectedId] = useState("");
-  useEffect(() => { if (!targets.some(t => t.id === selectedId)) setSelectedId(targets[0]?.id || ""); }, [targets, selectedId]);
-  const target = targets.find(t => t.id === selectedId);
-  const [chain, setChain] = useState(""); const [residues, setResidues] = useState("");
-  useEffect(() => { setChain(target?.structure?.chain || ""); setResidues((target?.binding_site?.residues || []).join(", ")); }, [target]);
-  if (!draft) return <section className="panel honest-empty"><span className="eyebrow">READ ONLY</span><h2>当前是运行态，不是可编辑草稿</h2><p>新建草稿后，界面会使用服务端返回的 draft_id 和 targets 切换到该草稿；这里不再硬编码 MDM2/MDMX。</p></section>;
-  const saveTarget = async () => { if (!target) return; try { const next = await api<Draft>(settings.apiBase, `project-drafts/${draft.draft_id}/targets/${encodeURIComponent(target.id)}`, { method: "PATCH", body: JSON.stringify({ structure: { ...(target.structure || {}), chain }, binding_site: { ...(target.binding_site || {}), residues: residues.split(",").map(x => Number(x.trim())).filter(Number.isFinite), status: "user_reviewed" } }) }); onDraft(next); notify("服务端已保存新 revision"); } catch (cause) { notify(cause instanceof Error ? cause.message : "保存失败"); } };
-  const approve = async () => { try { const next = await api<Draft>(settings.apiBase, `project-drafts/${draft.draft_id}/approve`, { method: "POST", body: "{}" }); onDraft(next); notify("服务端已批准并固化摘要"); } catch (cause) { notify(cause instanceof Error ? cause.message : "批准失败"); } };
-  return <section className="content-two-col review-layout"><article className="panel"><div className="panel-title"><div><span className="eyebrow">SERVER DRAFT · REVISION {draft.review?.revision ?? "—"}</span><h2>{draft.name || draft.project_id}</h2></div><span className="tag">{draft.review?.status || "draft"}</span></div><div className="form-grid"><label>当前靶点<select value={selectedId} onChange={e => setSelectedId(e.target.value)}>{targets.map(t => <option key={t.id} value={t.id}>{t.id}{t.required === false ? "（可选）" : ""}</option>)}</select></label><label>目标类型<input value={draft.objective || "未记录"} readOnly/></label><label>UniProt<input value={target?.uniprot || "未记录"} readOnly/></label><label>结构来源<input value={target?.structure?.pdb_id || "未选择"} readOnly/></label><label>Target chain<input value={chain} onChange={e => setChain(e.target.value.toUpperCase())}/></label><label>结合位点 residues<input value={residues} onChange={e => setResidues(e.target.value)}/></label></div><div className="review-checks"><Check ok={Boolean(target?.uniprot)} label="靶点身份已解析"/><Check ok={Boolean(target?.structure_plan?.chain_reviewed)} label="Target chain 已审核"/><Check ok={Boolean(target?.structure_plan?.binding_site_reviewed)} label="结合位点已审核"/><Check ok={Boolean(target?.structure_plan?.coordinates_ready)} label="真实坐标已物化并校验 hash"/></div><div className="form-actions"><button className="ghost" onClick={() => void saveTarget()}>保存到后端</button><button className="primary" disabled={Boolean(draft.review?.blocking_issues?.length)} onClick={() => void approve()}>批准并固化摘要</button></div></article><aside className="panel audit-panel"><span className="eyebrow">REVIEW GATE</span><h2>{draft.review?.blocking_issues?.length ? "仍有阻断项" : "可提交批准"}</h2><p>{draft.review?.blocking_issues?.join(" · ") || "服务端未报告阻断项"}</p><div className="digest"><span>content digest</span><code>{draft.review?.content_digest || "未生成"}</code></div>{draft.review?.warnings?.map(x => <div className="audit-note" key={x}>{x}</div>)}</aside></section>;
-}
-function Check({ ok, label }: { ok: boolean; label: string }) { return <div className={ok ? "check ok" : "check"}><i>{ok ? "✓" : "!"}</i><span>{label}</span></div>; }
-
-function Candidates({ snapshot }: { snapshot: Snapshot | null }) {
-  const [query, setQuery] = useState(""); const [selected, setSelected] = useState<Candidate | null>(null);
-  const rows = useMemo(() => (snapshot?.candidates || []).filter(c => `${c.candidate_id} ${c.sequence} ${c.source_route}`.toLowerCase().includes(query.toLowerCase())), [snapshot, query]);
-  useEffect(() => { if (selected && !rows.some(x => x.candidate_id === selected.candidate_id)) setSelected(null); }, [rows, selected]);
-  return <section className="content-two-col"><article className="panel candidate-browser"><div className="toolbar"><input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索真实候选 ID、序列或路线…"/></div><div className="table-wrap"><table><thead><tr><th>候选</th><th>序列</th><th>路线</th><th>七层进度</th><th>状态</th></tr></thead><tbody>{rows.map(c => <tr key={c.candidate_id} onClick={() => setSelected(c)} className={selected?.candidate_id === c.candidate_id ? "selected" : ""}><td><b>{c.candidate_id}</b></td><td className="sequence">{c.sequence}</td><td>{c.source_route || "—"}</td><td>{layerCount(c)}/7</td><td>{c.final_status || "未记录"}</td></tr>)}</tbody></table>{rows.length === 0 && <div className="empty">CandidateIndex 中没有候选</div>}</div></article><aside className="panel detail-panel">{selected ? <><span className="eyebrow">CANDIDATE DETAIL</span><h2>{selected.candidate_id}</h2><div className="gate-list">{selected.layers.map((pass, i) => <div key={i}><span>L{i + 1}</span><b className={pass ? "pass" : "pending-dot"}>{pass ? "通过" : "未通过 / 未运行"}</b></div>)}</div><div className="not-deliverable">{selected.all_layers_pass ? "七层判定已全清" : "不得标记为科学交付"}</div></> : <p className="empty">选择候选查看数据层记录</p>}</aside></section>;
+function Inspector({ tab, snapshot, candidate }: { tab: RightTab; snapshot: Snapshot | null; candidate: Candidate | null }) {
+  if (tab === "评分") return <div className="inspector-body"><div className="score-head"><span>SEVEN-LAYER BATTERY</span><b>{candidate ? `${candidate.layers.filter(Boolean).length}/7` : "—"}</b></div><div className="layer-list">{["环肽质量", "界面置信度", "界面物理", "环化几何", "设计意图", "鲁棒性", "可设计性"].map((label, index) => <div key={label}><span>L{index + 1}<small>{label}</small></span><b className={candidate?.layers[index] ? "pass" : "pending"}>{candidate?.layers[index] ? "PASS" : "NO PASS"}</b></div>)}</div><div className={`delivery-gate ${candidate?.all_layers_pass ? "pass" : ""}`}><span>DELIVERY GATE</span><b>{candidate?.all_layers_pass ? "SCIENTIFICALLY CLEARED" : "NOT DELIVERABLE"}</b></div></div>;
+  if (tab === "证据") { const events = snapshot?.recent_evidence.filter(event => !candidate || !event.candidate_id || event.candidate_id === candidate.candidate_id).slice(-18).reverse() || []; return <div className="inspector-body event-list">{events.map((event, index) => <article key={event.event_id || index}><i/><div><b>{event.event_type || "unknown_event"}</b><span>{event.agent || "unknown"} · {event.phase || "no phase"}</span></div><time>{event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : "—"}</time></article>)}{!events.length && <p className="empty-copy">没有对应证据事件</p>}</div>; }
+  if (tab === "决策记录") { const decisions = snapshot?.recent_evidence.filter(event => ["critic", "planner"].includes(String(event.agent)) || String(event.event_type).includes("error")).slice(-20).reverse() || []; return <div className="inspector-body"><div className="reasoning-note"><b>DECISION TRACE</b><p>仅展示工具、证据、判定与恢复动作，不展示模型隐藏思维链。</p></div><div className="decision-list">{decisions.map((event, index) => <article key={event.event_id || index}><span>{event.agent}</span><b>{event.event_type}</b><small>{event.timestamp || "无时间"}</small></article>)}{!decisions.length && <p className="empty-copy">EvidenceLogger 中没有 Critic / Planner 决策</p>}</div></div>; }
+  return <div className="inspector-body parameter-list"><div><span>Project ID</span><code>{snapshot?.project.project_id || "缺失"}</code></div><div><span>Round</span><code>{snapshot?.state.round ?? "未记录"}</code></div><div><span>Thresholds</span><code>{snapshot?.state.thresholds_ready ? "已载入" : "未载入"}</code></div><div><span>Polling</span><code>由本机连接偏好控制</code></div><p>参数写入 API 尚未实现；此处保持只读，避免界面改值却未影响真实运行。</p></div>;
 }
 
-function Deliverables({ snapshot, settings }: { snapshot: Snapshot | null; settings: Settings }) {
-  const deliverable = (snapshot?.candidates || []).filter(c => c.all_layers_pass); const withArtifacts = deliverable.filter(c => c.artifact_id);
-  return <section className="deliverable-grid"><article className="panel viewer-panel"><div className="panel-title"><div><span className="eyebrow">VERIFIED STRUCTURE ARTIFACTS</span><h2>真实结构产物</h2></div></div>{withArtifacts.length ? <div className="artifact-list">{withArtifacts.map(c => <button key={c.candidate_id}>{c.candidate_id}<small>{c.artifact_id}</small></button>)}</div> : <div className="viewer-empty"><b>没有可验证的结构 artifact</b><p>不会加载 1YCR、3DAB 或任何示例模型。只有候选七层全清，且后端返回 opaque artifact ID 后才启用三维查看。</p></div>}</article><aside className="panel delivery-card"><span className="eyebrow">DELIVERY GATE</span><h2>最终产物</h2><div className="delivery-state"><b>{deliverable.length}</b><span>all_layers_pass=true</span></div><div className="api-contract"><b>坐标读取接口</b><code>GET {join(settings.apiBase, "artifacts/{artifact_id}/coordinates")}</code><span>当前适配层尚未开放该接口，所以查看器保持禁用。</span></div></aside></section>;
+function BottomDock({ tab, snapshot, apiBase }: { tab: BottomTab; snapshot: Snapshot | null; apiBase: string }) {
+  if (tab === "GPU 队列") return <div className="dock-empty"><b>GPU QUEUE API NOT CONNECTED</b><span>当前没有任务队列接口，因此不伪造显存、排队位置或 ETA。</span></div>;
+  if (tab === "Artifacts") { const rows = snapshot?.candidates.filter(row => row.artifact_id) || []; return <div className="artifact-table">{rows.map(row => <div key={row.candidate_id}><b>{row.candidate_id}</b><code>{row.artifact_id}</code><span>SHA-256 verified</span><a href={join(apiBase, `artifacts/${row.artifact_id}/coordinates`)} download>下载坐标</a></div>)}{!rows.length && <div className="dock-empty"><b>NO VERIFIED ARTIFACTS</b><span>没有满足 all_layers_pass、manifest 与 hash 校验的坐标文件。</span></div>}</div>; }
+  const events = snapshot?.recent_evidence.slice(-12).reverse() || []; return <div className="log-console">{events.map((event, index) => <div key={event.event_id || index}><time>{event.timestamp || "—"}</time><span>{event.agent || "system"}</span><b>{event.event_type || "event"}</b><em>{event.candidate_id || event.phase || ""}</em></div>)}{!events.length && <div className="dock-empty"><b>NO RUNTIME EVENTS</b><span>等待 EvidenceLogger 写入真实运行记录。</span></div>}</div>;
 }
 
-function EvidencePanel({ snapshot }: { snapshot: Snapshot | null }) { const events = snapshot?.recent_evidence || []; return <section className="panel"><div className="panel-title"><div><span className="eyebrow">APPEND-ONLY LOG</span><h2>EvidenceLogger 最近事件</h2></div><span className="tag">{events.length}</span></div><div className="evidence-list">{[...events].reverse().map((e, i) => <article key={e.event_id || i}><time>{e.timestamp || "无时间"}</time><b>{e.event_type || "unknown_event"}</b><span>{e.agent || "unknown_agent"} · {e.phase || "无阶段"}{e.candidate_id ? ` · ${e.candidate_id}` : ""}</span></article>)}{!events.length && <div className="empty">EvidenceLogger 中没有事件</div>}</div></section>; }
-
-function ConnectionPanel({ settings, save, onSnapshot, notify }: { settings: Settings; save: (s: Settings) => void; onSnapshot: (s: Snapshot, id: string) => void; notify: (s: string) => void }) {
+function ConnectionDialog({ settings, save, onClose, onConnected, notify }: { settings: Settings; save: (s: Settings) => void; onClose: () => void; onConnected: (s: Snapshot, id: string) => void; notify: (s: string) => void }) {
   const [apiBase, setApiBase] = useState(settings.apiBase); const [mode, setMode] = useState<"local" | "ssh">("local"); const [host, setHost] = useState(""); const [username, setUsername] = useState(""); const [port, setPort] = useState(22); const [keyAlias, setKeyAlias] = useState(""); const [root, setRoot] = useState(""); const [busy, setBusy] = useState(false);
-  const connect = async () => { setBusy(true); try { save({ ...settings, apiBase }); if (mode === "local") onSnapshot(await api<Snapshot>(apiBase, "snapshot"), ""); else { const result = await api<{ connection_id: string; snapshot: Snapshot }>(apiBase, "connections/ssh", { method: "POST", body: JSON.stringify({ host, username, port, key_alias: keyAlias, workspace_root: root }) }); onSnapshot(result.snapshot, result.connection_id); } } catch (cause) { notify(cause instanceof Error ? cause.message : "连接失败"); } finally { setBusy(false); } };
-  return <section className="content-two-col connection-layout"><article className="panel"><span className="eyebrow">ADAPTER</span><h2>数据服务</h2><label className="field">API 地址<input value={apiBase} onChange={e => setApiBase(e.target.value)} placeholder="http://127.0.0.1:8765/api/v1"/></label><div className="mode-tabs"><button className={mode === "local" ? "active" : ""} onClick={() => setMode("local")}>服务器同机模式</button><button className={mode === "ssh" ? "active" : ""} onClick={() => setMode("ssh")}>SSH 远端模式</button></div>{mode === "local" ? <div className="connection-note"><b>UI 与计算环境在同一台服务器</b><p>适配层直接通过项目的 data_layer.py 读取 state、候选索引和证据日志。UI 本身不接触文件路径。</p></div> : <div className="form-grid ssh-grid"><label>主机<input value={host} onChange={e => setHost(e.target.value)} placeholder="gpu.example.edu"/></label><label>端口<input type="number" value={port} onChange={e => setPort(Number(e.target.value))}/></label><label>用户名<input value={username} onChange={e => setUsername(e.target.value)} placeholder="researcher"/></label><label>密钥别名<input value={keyAlias} onChange={e => setKeyAlias(e.target.value)} placeholder="gpu1"/></label><label className="wide">远端项目目录<input value={root} onChange={e => setRoot(e.target.value)} placeholder="/srv/cycpep/project"/></label></div>}<button className="primary full" disabled={busy} onClick={() => void connect()}>{busy ? "连接中…" : "测试并使用此连接"}</button></article><aside className="panel security-card"><span className="eyebrow">SSH SECURITY</span><h2>浏览器不接触密钥</h2><p>密码与私钥输入被刻意移除。管理员先在适配层主机登记密钥文件，再给网页一个不敏感的别名。</p><ul><li>强制 known_hosts 主机指纹校验</li><li>强制 BatchMode，禁止交互式密码</li><li>SSH 参数不经过 shell 拼接</li><li>连接 ID 仅保存在适配层内存</li></ul></aside></section>;
+  const connect = async () => { setBusy(true); try { save({ ...settings, apiBase }); if (mode === "local") onConnected(await api<Snapshot>(apiBase, "snapshot"), ""); else { const result = await api<{ connection_id: string; snapshot: Snapshot }>(apiBase, "connections/ssh", { method: "POST", body: JSON.stringify({ host, username, port, key_alias: keyAlias, workspace_root: root }) }); onConnected(result.snapshot, result.connection_id); } } catch (cause) { notify(cause instanceof Error ? cause.message : "连接失败"); } finally { setBusy(false); } };
+  return <div className="modal-backdrop"><section className="modal"><button className="modal-close" onClick={onClose}>×</button><span className="modal-kicker">RUNTIME CONNECTION</span><h2>连接真实工作环境</h2><label>API 地址<input value={apiBase} onChange={event => setApiBase(event.target.value)} placeholder="http://127.0.0.1:8765/api/v1"/></label><div className="mode-tabs"><button className={mode === "local" ? "active" : ""} onClick={() => setMode("local")}>服务器同机</button><button className={mode === "ssh" ? "active" : ""} onClick={() => setMode("ssh")}>SSH 只读</button></div>{mode === "ssh" && <div className="modal-grid"><label>Host<input value={host} onChange={event => setHost(event.target.value)}/></label><label>Port<input type="number" value={port} onChange={event => setPort(Number(event.target.value))}/></label><label>User<input value={username} onChange={event => setUsername(event.target.value)}/></label><label>Key alias<input value={keyAlias} onChange={event => setKeyAlias(event.target.value)}/></label><label className="wide">Remote project root<input value={root} onChange={event => setRoot(event.target.value)}/></label></div>}<p className="security-copy">浏览器不接收密码或私钥。SSH 密钥必须预先登记在适配层主机。</p><button className="modal-primary" disabled={busy} onClick={() => void connect()}>{busy ? "验证中…" : "验证并连接"}</button></section></div>;
 }
 
-function CreateDialog({ settings, onClose, onCreated }: { settings: Settings; onClose: () => void; onCreated: (d: Draft) => void }) {
-  const [identifier, setIdentifier] = useState(""); const [kind, setKind] = useState("auto"); const [objective, setObjective] = useState("binder"); const [epitope, setEpitope] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
-  const submit = async () => { setBusy(true); setError(""); try { const next = await api<Draft>(settings.apiBase, "project-drafts", { method: "POST", body: JSON.stringify({ identifier, identifier_type: kind, organism_id: 9606, objective, epitope: epitope || undefined }) }); if (!next.draft_id || !Array.isArray(next.targets)) throw new Error("服务端响应缺少 draft_id 或 targets，已拒绝伪造草稿"); onCreated(next); } catch (cause) { setError(cause instanceof Error ? cause.message : "创建失败"); } finally { setBusy(false); } };
-  return <div className="dialog-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}><section className="dialog"><button className="dialog-close" onClick={onClose}>×</button><span className="eyebrow">SERVER-SIDE BOOTSTRAP</span><h2>新建真实靶点草稿</h2><p>创建成功后立即切换到服务端返回的草稿；后端失败时不会生成本地替代品。</p><div className="form-grid"><label>标识符<input value={identifier} onChange={e => setIdentifier(e.target.value)} placeholder="Gene / UniProt / PDB" autoFocus/></label><label>标识类型<select value={kind} onChange={e => setKind(e.target.value)}><option value="auto">自动识别</option><option value="gene">Gene</option><option value="uniprot">UniProt</option><option value="pdb">PDB</option></select></label><label>目标模式<select value={objective} onChange={e => setObjective(e.target.value)}><option value="binder">单靶 binder</option><option value="multi_target_binder">多靶 binder</option></select></label><label>表位描述<input value={epitope} onChange={e => setEpitope(e.target.value)} placeholder="可留空，后续审核"/></label></div>{error && <div className="inline-error">{error}</div>}<div className="form-actions"><button className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={!identifier.trim() || busy} onClick={() => void submit()}>{busy ? "服务端解析中…" : "创建并切换"}</button></div></section></div>;
+function CreateDialog({ settings, onClose, onCreated }: { settings: Settings; onClose: () => void; onCreated: (d: { draft_id: string }) => void }) {
+  const [identifier, setIdentifier] = useState(""); const [kind, setKind] = useState("auto"); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
+  const create = async () => { setBusy(true); try { const draft = await api<{ draft_id: string; targets: unknown[] }>(settings.apiBase, "project-drafts", { method: "POST", body: JSON.stringify({ identifier, identifier_type: kind, organism_id: 9606, objective: "binder" }) }); if (!draft.draft_id || !Array.isArray(draft.targets)) throw new Error("服务端响应缺少真实 draft_id/targets"); onCreated(draft); } catch (cause) { setError(cause instanceof Error ? cause.message : "创建失败"); } finally { setBusy(false); } };
+  return <div className="modal-backdrop"><section className="modal compact"><button className="modal-close" onClick={onClose}>×</button><span className="modal-kicker">TARGET BOOTSTRAP</span><h2>新建靶点草稿</h2><label>Gene / UniProt / PDB<input value={identifier} onChange={event => setIdentifier(event.target.value)} autoFocus/></label><label>标识类型<select value={kind} onChange={event => setKind(event.target.value)}><option value="auto">自动识别</option><option value="gene">Gene</option><option value="uniprot">UniProt</option><option value="pdb">PDB</option></select></label>{error && <div className="modal-error">{error}</div>}<button className="modal-primary" disabled={!identifier.trim() || busy} onClick={() => void create()}>{busy ? "解析中…" : "由后端创建草稿"}</button></section></div>;
 }

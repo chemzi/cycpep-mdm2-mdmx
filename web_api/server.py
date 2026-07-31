@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -36,6 +37,7 @@ STORE = Path(os.environ.get("CYCPEP_WEB_STORE", ROOT / "data" / "web_api"))
 DRAFTS = STORE / "drafts"
 COORDINATES = Path(os.environ.get("CYCPEP_TARGET_ROOT", ROOT / "data" / "targets"))
 CONNECTIONS: dict[str, dict] = {}
+ARTIFACTS: dict[str, dict] = {}
 HOST_RE = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:]+\])$")
 USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 ALIAS_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,31}$")
@@ -62,13 +64,54 @@ def _truthy(value) -> bool:
     return value is True or str(value).casefold() == "true"
 
 
+def _artifact_roots() -> list[Path]:
+    configured = os.environ.get("CYCPEP_ARTIFACT_ROOTS")
+    roots = configured.split(os.pathsep) if configured else [str(ROOT)]
+    return [Path(root).expanduser().resolve() for root in roots if root]
+
+
+def _register_coordinate_artifact(row: dict) -> str | None:
+    """Register a hash-verified, final candidate coordinate without exposing its path."""
+    if not _truthy(row.get("all_layers_pass")):
+        return None
+    coordinate = row.get("design_pdb_path")
+    expected = str(row.get("design_pdb_hash") or "").removeprefix("sha256:").lower()
+    manifest = row.get("manifest_path")
+    if not coordinate or not expected or not manifest:
+        return None
+    path = Path(coordinate).expanduser()
+    manifest_path = Path(manifest).expanduser()
+    if not path.is_absolute():
+        path = ROOT / path
+    if not manifest_path.is_absolute():
+        manifest_path = ROOT / manifest_path
+    try:
+        path = path.resolve(strict=True)
+        manifest_path.resolve(strict=True)
+        if not any(path.is_relative_to(root) and manifest_path.resolve().is_relative_to(root)
+                   for root in _artifact_roots()):
+            return None
+    except (OSError, RuntimeError):
+        return None
+    if path.suffix.casefold() not in {".pdb", ".cif", ".mmcif"}:
+        return None
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        return None
+    artifact_id = "art_" + hashlib.sha256(
+        f"{row.get('candidate_id')}:{actual}".encode()
+    ).hexdigest()[:24]
+    ARTIFACTS[artifact_id] = {
+        "path": path, "sha256": actual,
+        "format": "pdb" if path.suffix.casefold() == ".pdb" else "cif",
+        "candidate_id": row.get("candidate_id"),
+    }
+    return artifact_id
+
+
 def _candidate_payload(row: dict) -> dict:
     layers = [_truthy(row.get(f"l{i}_pass")) for i in range(1, 8)]
-    artifact_id = None
-    manifest = row.get("manifest_path")
-    if manifest:
-        # The adapter may later register a verified manifest. Never expose the path.
-        artifact_id = f"candidate:{row.get('candidate_id')}" if Path(manifest).exists() else None
+    artifact_id = _register_coordinate_artifact(row)
     return {
         "candidate_id": row.get("candidate_id"),
         "sequence": row.get("sequence"),
@@ -221,6 +264,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, projects)
             if path == "/api/v1/snapshot":
                 return self._json(200, local_snapshot())
+            artifact_match = re.fullmatch(r"/api/v1/artifacts/(art_[a-f0-9]{24})/coordinates", path)
+            if artifact_match:
+                artifact = ARTIFACTS.get(artifact_match.group(1))
+                if not artifact:
+                    return self._json(404, error={"code": "artifact_not_found", "message": "Verified artifact is not registered"})
+                payload = artifact["path"].read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "chemical/x-pdb" if artifact["format"] == "pdb" else "chemical/x-mmcif")
+                self.send_header("X-Artifact-SHA256", artifact["sha256"])
+                self.send_header("Cache-Control", "private, no-store")
+                self.send_header("Access-Control-Allow-Origin", os.environ.get("CYCPEP_UI_ORIGIN", "http://localhost:3000"))
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
             match = re.fullmatch(r"/api/v1/project-drafts/(drf_[A-Za-z0-9]+)", path)
             if match:
                 return self._json(200, _read_json(_draft_path(match.group(1))))

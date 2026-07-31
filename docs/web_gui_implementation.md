@@ -4,7 +4,10 @@
 
 ## 1. 结论与真实性边界
 
-Web GUI 现在是数据层的只读运行态投影，加上项目草稿的审核入口。它不再内置 MDM2/MDMX 项目、候选、阶段进度、证据或示例三维模型。后端不可达时，界面只显示“未连接真实工作环境”。
+Web GUI 现在是以真实结构为中心的 AI Drug Discovery Workbench。左侧呈现 Agent
+Workflow 和候选，中间保留最大空间给真实三维结构，右侧呈现七层评分、证据、结构化决策记录
+和只读参数，底部呈现运行日志、GPU 队列与 Artifact。它不再内置 MDM2/MDMX 项目、候选、
+阶段进度、证据或示例三维模型。后端不可达时，界面只显示“未连接真实工作环境”。
 
 当前可以真实完成的操作：
 
@@ -22,8 +25,7 @@ SSH 模式当前是严格只读；远端项目创建、审核修改和任务启�
 当前没有实现，因此 UI 明确保持禁用的能力：
 
 - Research/Design/Prediction 的异步任务队列与取消。
-- 坐标 artifact 注册表及 `GET /artifacts/{artifact_id}/coordinates`。
-- 三维结构渲染。没有真实、已登记的坐标 artifact 时不显示模型。
+- SSH 远端坐标 artifact 转发。
 - 持久化的用户、权限、审计主体和 SSH 连接配置。
 
 ## 2. 数据源映射
@@ -88,19 +90,23 @@ flowchart LR
 | GET | `/api/v1/project-drafts/{draft_id}` | 已实现 |
 | PATCH | `/api/v1/project-drafts/{draft_id}/targets/{target_id}` | 已实现 |
 | POST | `/api/v1/project-drafts/{draft_id}/approve` | 已实现 |
-| GET | `/api/v1/artifacts/{artifact_id}/coordinates` | 未实现；UI 不显示模型 |
+| GET | `/api/v1/artifacts/{artifact_id}/coordinates` | 已实现；仅返回七层全清且 manifest/hash 验证通过的本地坐标 |
 | POST/GET | run queue endpoints | 未实现 |
 
 ## 6. 结构可视化接入要求
 
-可视化必须依次满足：候选记录 `all_layers_pass=true`；manifest 与坐标文件存在；后端重新计算 SHA-256 并与记录匹配；artifact registry 生成 opaque `artifact_id`；坐标接口只从 registry 解析文件并返回 PDB/mmCIF。浏览器不得提交路径或下载 URL。完成这些条件后，再接入 3Dmol.js 或 Mol* 渲染接口返回的内容。此前不展示任何示例或占位“分子”。
+可视化依次要求：候选记录 `all_layers_pass=true`；manifest 与坐标文件存在；坐标位于
+`CYCPEP_ARTIFACT_ROOTS` allow-list 内；后端重新计算 SHA-256 并与索引记录匹配；registry
+生成 opaque `artifact_id`；坐标接口只从 registry 返回 PDB/mmCIF。浏览器不得提交路径或
+下载 URL。当前 UI 使用 3Dmol.js 渲染接口返回的真实内容；任一条件不满足时只展示明确的
+空工作区，不展示示例分子。
 
 ## 7. 上线前剩余工程
 
 1. 增加身份认证、项目级授权、CORS allow-list 和审计 actor。
 2. 把内存 SSH connection ID 换成加密、短时、服务端持久化 session。
-3. 实现 artifact registry 与坐标流式读取，阻止目录穿越和任意 URL。
-4. 实现 run 数据模型、GPU 串行队列、子进程隔离和 digest 二次校验。
+3. 将当前进程内 artifact registry 换成持久化 registry，并补远端 SSH artifact 转发。
+4. 实现 run 数据模型、SSE 事件流、GPU 串行队列、子进程隔离和 digest 二次校验。
 5. 给每个项目隔离 `CYCPEP_DATA_DIR`/`CYCPEP_EVIDENCE_DIR`，避免多项目 import 全局状态串线。
 6. 将已批准 config 用 `State.sync_project_config()` 同步后再允许 Research/Design。
 7. 为本地、SSH、draft create/switch、断线、旧 state 完整性警告和 artifact gate 增加集成测试。
