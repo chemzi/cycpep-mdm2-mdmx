@@ -121,6 +121,15 @@ Schema 位于 [`prediction_pipeline/artifacts.schema.json`](../prediction_pipeli
 
 `ipsae_pae_cutoff=10 Å`、接触距离和 seed 聚类距离属于方法参数，会写入 record；它们与 Research 提供的候选筛选阈值分开管理。
 
+靶标热点始终使用已审批 target PDB 的原始残基编号。ColabDesign 等 predictor
+可能把输出靶标链改成从 1 开始、负数或其他内部编号；Prediction v1.1.0 会先验证
+输出靶标链与已审批坐标的序列和长度完全一致，再按序列顺序恢复原始 PDB 编号。
+映射使用的 target PDB 路径和完整 SHA-256 会写入 provenance。跨 predictor 的 L6
+靶标对齐也优先使用已验证的相同序列顺序，避免不同编号体系造成假性不收敛。
+
+Prediction 管线版本参与 config/cache digest。编号算法或其他指标实现升级后，旧 run
+不能以 resume 方式冒充新版本结果，需要建立新 run ID 重新摄取 artifact。
+
 ## 5. 状态语义
 
 - `finalized`：七层数值全部通过，且每个阈值都有可用于最终清关的来源/校准证据。

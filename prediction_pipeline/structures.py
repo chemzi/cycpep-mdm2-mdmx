@@ -285,6 +285,7 @@ def interface_hotspot_metrics(
     binder_chain: str,
     hotspots: list[int],
     cutoff: float,
+    target_residue_numbers: list[int] | None = None,
 ) -> dict:
     if target_chain not in structure.chains or binder_chain not in structure.chains:
         raise ContractError(
@@ -293,6 +294,14 @@ def interface_hotspot_metrics(
         )
     target_residues = structure.chains[target_chain]
     binder_residues = structure.chains[binder_chain]
+    if (
+        target_residue_numbers is not None
+        and len(target_residue_numbers) != len(target_residues)
+    ):
+        raise ContractError(
+            "target_residue_mapping_mismatch",
+            "canonical target residue numbering must match the predicted target length",
+        )
     binder_atoms = np.asarray([
         atom.coord
         for residue in binder_residues
@@ -302,14 +311,18 @@ def interface_hotspot_metrics(
     if binder_atoms.size == 0:
         raise ContractError("interface_atoms_missing", "binder has no heavy atoms")
     contacts: set[int] = set()
-    for residue in target_residues:
+    for index, residue in enumerate(target_residues):
         atoms = np.asarray([
             atom.coord for atom in residue.atoms.values() if atom.element != "H"
         ])
         if atoms.size and float(np.min(np.linalg.norm(
             atoms[:, None, :] - binder_atoms[None, :, :], axis=2
         ))) <= cutoff:
-            contacts.add(residue.number)
+            contacts.add(
+                target_residue_numbers[index]
+                if target_residue_numbers is not None
+                else residue.number
+            )
     try:
         configured = {int(value) for value in hotspots}
     except (TypeError, ValueError) as exc:
@@ -328,6 +341,39 @@ def interface_hotspot_metrics(
     }
 
 
+def canonical_target_residue_numbers(
+    reference: Structure,
+    reference_chain: str,
+    prediction: Structure,
+    prediction_chain: str,
+) -> list[int]:
+    """Map a predictor's target residues back to reviewed PDB numbering.
+
+    ColabDesign preserves target sequence order but may rewrite PDB residue
+    numbers, including negative values for discontinuous source numbering.
+    Mapping by verified sequence order keeps hotspot IDs in the approved target
+    coordinate system without trusting predictor-specific residue IDs.
+    """
+    reference_residues = reference.chains.get(reference_chain, [])
+    prediction_residues = prediction.chains.get(prediction_chain, [])
+    reference_sequence = "".join(item.one_letter for item in reference_residues)
+    prediction_sequence = "".join(item.one_letter for item in prediction_residues)
+    if (
+        not reference_residues
+        or len(reference_residues) != len(prediction_residues)
+        or reference_sequence != prediction_sequence
+    ):
+        raise ContractError(
+            "target_residue_mapping_mismatch",
+            "reviewed and predicted target chains must have identical residue order: "
+            f"reference={reference.path}:{reference_chain} "
+            f"({len(reference_residues)} residues), "
+            f"prediction={prediction.path}:{prediction_chain} "
+            f"({len(prediction_residues)} residues)",
+        )
+    return [residue.number for residue in reference_residues]
+
+
 def target_aligned_binder_rmsd(
     mobile: Structure,
     reference: Structure,
@@ -335,15 +381,27 @@ def target_aligned_binder_rmsd(
     mobile_binder_chain: str,
     reference_binder_chain: str,
 ) -> float:
-    mobile_target = {residue.key: residue for residue in mobile.chains.get(target_chain, [])}
-    reference_target = {
-        residue.key: residue for residue in reference.chains.get(target_chain, [])
-    }
-    common = sorted(set(mobile_target) & set(reference_target))
+    mobile_residues = mobile.chains.get(target_chain, [])
+    reference_residues = reference.chains.get(target_chain, [])
+    same_sequence_order = (
+        bool(mobile_residues)
+        and len(mobile_residues) == len(reference_residues)
+        and "".join(item.one_letter for item in mobile_residues)
+        == "".join(item.one_letter for item in reference_residues)
+    )
+    if same_sequence_order:
+        residue_pairs = zip(mobile_residues, reference_residues)
+    else:
+        mobile_target = {residue.key: residue for residue in mobile_residues}
+        reference_target = {residue.key: residue for residue in reference_residues}
+        common = sorted(set(mobile_target) & set(reference_target))
+        residue_pairs = (
+            (mobile_target[key], reference_target[key]) for key in common
+        )
     target_mobile, target_reference = [], []
-    for key in common:
-        left = mobile_target[key].atoms.get("CA")
-        right = reference_target[key].atoms.get("CA")
+    for mobile_residue, reference_residue in residue_pairs:
+        left = mobile_residue.atoms.get("CA")
+        right = reference_residue.atoms.get("CA")
         if left is not None and right is not None:
             target_mobile.append(left.coord)
             target_reference.append(right.coord)

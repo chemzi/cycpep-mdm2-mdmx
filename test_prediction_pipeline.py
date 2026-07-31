@@ -25,11 +25,14 @@ from prediction_pipeline.metrics import (
 from prediction_pipeline.pipeline import PredictionPipeline
 from prediction_pipeline.structures import (
     apply_transform,
+    canonical_target_residue_numbers,
     exact_sequence_chain,
+    interface_hotspot_metrics,
     kabsch_transform,
     mean_plddt,
     parse_pdb,
     rmsd,
+    target_aligned_binder_rmsd,
     terminal_bond_distance,
 )
 
@@ -52,9 +55,15 @@ def atom_line(serial, atom, residue, chain, number, xyz, bfactor=90.0):
     )
 
 
-def chain_pdb(sequence, chain, *, shift=(0.0, 0.0, 0.0), bfactor=90.0, start=1):
+def chain_pdb(
+    sequence, chain, *, shift=(0.0, 0.0, 0.0), bfactor=90.0,
+    start=1, residue_numbers=None,
+):
     lines, serial = [], start
     for index, amino_acid in enumerate(sequence, 1):
+        residue_number = (
+            residue_numbers[index - 1] if residue_numbers is not None else index
+        )
         base = np.array([index * 1.2, 0.0, 0.0]) + np.asarray(shift)
         for atom, delta in (
             ("N", (-0.4, 0, 0)),
@@ -67,7 +76,7 @@ def chain_pdb(sequence, chain, *, shift=(0.0, 0.0, 0.0), bfactor=90.0, start=1):
                 atom,
                 ONE_TO_THREE[amino_acid],
                 chain,
-                index,
+                residue_number,
                 base + np.asarray(delta),
                 bfactor,
             ))
@@ -203,6 +212,51 @@ class StructureAndParserTests(unittest.TestCase):
         mobile = reference @ rotation + np.array([4.0, -3.0, 2.0])
         aligned = apply_transform(mobile, kabsch_transform(mobile, reference))
         self.assertLess(rmsd(aligned, reference), 1e-10)
+
+    def test_target_numbering_maps_predictor_ids_to_reviewed_pdb_ids(self):
+        reference_path = self.root / "reviewed_target.pdb"
+        reference, _ = chain_pdb(
+            "AAA", "A", residue_numbers=[53, 92, 95]
+        )
+        reference_path.write_text(reference + "END\n", encoding="utf-8")
+
+        prediction_path = self.root / "renumbered_complex.pdb"
+        target, serial = chain_pdb(
+            "AAA", "A", residue_numbers=[1, -476, -475]
+        )
+        binder, _ = chain_pdb(
+            SEQUENCE, "B", shift=(0, 1.5, 0), start=serial
+        )
+        prediction_path.write_text(target + binder + "END\n", encoding="utf-8")
+
+        reviewed = parse_pdb(reference_path)
+        prediction = parse_pdb(prediction_path)
+        numbers = canonical_target_residue_numbers(
+            reviewed, "A", prediction, "A"
+        )
+        self.assertEqual(numbers, [53, 92, 95])
+        interface = interface_hotspot_metrics(
+            prediction, "A", "B", [53, 92, 95], 4.5,
+            target_residue_numbers=numbers,
+        )
+        self.assertEqual(interface["covered_hotspots"], [53, 92, 95])
+        self.assertEqual(interface["interface_target_residues"], [53, 92, 95])
+
+        reference_complex_path = self.root / "reviewed_complex.pdb"
+        reference_binder, _ = chain_pdb(
+            SEQUENCE, "B", shift=(0, 1.5, 0), start=serial
+        )
+        reference_complex_path.write_text(
+            reference + reference_binder + "END\n", encoding="utf-8"
+        )
+        self.assertLess(
+            target_aligned_binder_rmsd(
+                prediction,
+                parse_pdb(reference_complex_path),
+                "A", "B", "B",
+            ),
+            1e-10,
+        )
 
     def test_ipsae_matches_official_residue_specific_d0_definition(self):
         pae = np.full((5, 5), 30.0)
@@ -405,6 +459,58 @@ class PredictionPipelineTests(unittest.TestCase):
         self.assertEqual(resumed["cache_hits"], 1)
         notes = CandidateIndex.find("C0001")["notes"]
         self.assertEqual(notes.count("prediction_run=test_run"), 1)
+
+    def test_pipeline_restores_reviewed_hotspot_numbers_after_predictor_renumbering(self):
+        reference = self._register_candidate()
+        self._write_complete_artifacts(reference)
+        reviewed_target = self.root / "reviewed_target.pdb"
+        content, _ = chain_pdb(
+            "AAA", "A", residue_numbers=[53, 92, 95]
+        )
+        reviewed_target.write_text(content + "END\n", encoding="utf-8")
+
+        project = project_config()
+        for target in project["targets"]:
+            target["structure"].update({
+                "coordinate_path": str(reviewed_target),
+                "coordinate_sha256": hashlib.sha256(
+                    reviewed_target.read_bytes()
+                ).hexdigest(),
+            })
+            target["binding_site"]["residues"] = [53, 92, 95]
+        content_for_digest = json.loads(json.dumps(project))
+        content_for_digest.pop("review")
+        project["review"]["approved_digest"] = hashlib.sha256(
+            json.dumps(
+                content_for_digest,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+        summary = self._pipeline(
+            thresholds=justified_thresholds(), project=project
+        ).run()
+        self.assertEqual(summary["status_counts"], {"finalized": 1})
+        record = json.loads(
+            (self.run_root / "test_run" / "records" / "C0001.json").read_text()
+        )
+        for target_id in ("MDM2", "MDMX"):
+            self.assertEqual(
+                record["metrics"]["targets"][target_id]["hotspot_cov"], 1.0
+            )
+        hotspot_provenance = [
+            item for item in record["provenance"]
+            if item.get("metric") == "targets.MDMX.hotspot_cov"
+        ][0]
+        self.assertEqual(
+            hotspot_provenance["details"]["covered_hotspots"], [53, 92, 95]
+        )
+        self.assertEqual(
+            hotspot_provenance["target_numbering"]["mapping"],
+            "reviewed_target_sequence_order",
+        )
 
     def test_withdrawn_artifacts_clear_authoritative_and_display_metrics(self):
         reference = self._register_candidate()

@@ -35,6 +35,7 @@ from .contracts import (
 from .metrics import calculate_ipsae, load_pae, pose_convergence
 from .structures import (
     backbone_rmsd,
+    canonical_target_residue_numbers,
     exact_sequence_chain,
     infer_chain_by_length,
     interface_hotspot_metrics,
@@ -44,8 +45,9 @@ from .structures import (
 )
 
 
-RUN_SCHEMA_VERSION = 1
-RECORD_SCHEMA_VERSION = 1
+PREDICTION_PIPELINE_VERSION = "1.1.0"
+RUN_SCHEMA_VERSION = 2
+RECORD_SCHEMA_VERSION = 2
 LAYER_KEYS = tuple(f"l{number}_pass" for number in range(1, 8))
 SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 
@@ -147,7 +149,10 @@ class PredictionPipeline:
 
         self.project_digest = object_sha256(project)
         self.thresholds_digest = object_sha256(self.thresholds)
-        self.config_digest = object_sha256(self.config.to_dict())
+        self.config_digest = object_sha256({
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
+            "method_config": self.config.to_dict(),
+        })
         batch_identity = {
             "rows": [
                 {
@@ -170,10 +175,56 @@ class PredictionPipeline:
         self.run_dir = self.run_root / run_id
         self.records_dir = self.run_dir / "records"
         self.handoff_path = self.run_dir / "prediction_handoff.json"
+        self._target_reference_cache: dict[str, tuple[Any, Path, str]] = {}
+
+    def _canonical_target_numbering(
+        self,
+        target_id: str,
+        target_config: dict,
+        prediction_structure,
+        target_chain: str,
+    ) -> tuple[list[int] | None, dict | None]:
+        """Return reviewed PDB numbering for a predictor-renumbered target."""
+        structure_config = target_config.get("structure") or {}
+        raw_path = str(structure_config.get("coordinate_path") or "").strip()
+        if not raw_path:
+            return None, None
+        if target_id not in self._target_reference_cache:
+            path = Path(raw_path).expanduser().resolve()
+            if not path.is_file():
+                raise ContractError(
+                    "target_coordinates_missing",
+                    f"{target_id} reviewed coordinates missing: {path}",
+                )
+            observed_sha = file_sha256(path)
+            declared_sha = str(
+                structure_config.get("coordinate_sha256") or ""
+            ).strip().lower()
+            if declared_sha and declared_sha != observed_sha:
+                raise ContractError(
+                    "target_coordinates_hash_mismatch",
+                    f"{target_id} reviewed coordinate SHA-256 changed",
+                )
+            self._target_reference_cache[target_id] = (
+                parse_pdb(path), path, observed_sha
+            )
+        reference, path, observed_sha = self._target_reference_cache[target_id]
+        numbers = canonical_target_residue_numbers(
+            reference,
+            target_chain,
+            prediction_structure,
+            target_chain,
+        )
+        return numbers, {
+            "mapping": "reviewed_target_sequence_order",
+            "reference_artifact": str(path),
+            "reference_sha256": observed_sha,
+        }
 
     def _run_manifest(self) -> dict:
         return {
             "schema_version": RUN_SCHEMA_VERSION,
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
             "batch_digest": self.batch_digest,
             "project_id": self.project.get("project_id"),
@@ -466,12 +517,21 @@ class PredictionPipeline:
             if predictions:
                 primary_complex = self._primary(predictions)
                 hotspots = (target_config.get("binding_site") or {}).get("residues") or []
+                canonical_numbers, numbering_provenance = (
+                    self._canonical_target_numbering(
+                        target_id,
+                        target_config,
+                        primary_complex["structure"],
+                        configured_chain,
+                    )
+                )
                 interface = interface_hotspot_metrics(
                     primary_complex["structure"],
                     configured_chain,
                     primary_complex["binder_chain"],
                     hotspots,
                     self.config.interface_distance_angstrom,
+                    target_residue_numbers=canonical_numbers,
                 )
                 target_metrics.update({
                     "hotspot_cov": interface["hotspot_cov"],
@@ -483,6 +543,7 @@ class PredictionPipeline:
                     "artifact": str(primary_complex["pdb"]["path"]),
                     "sha256": primary_complex["pdb"]["sha256"],
                     "details": interface,
+                    "target_numbering": numbering_provenance,
                 })
             else:
                 self._issue(
@@ -635,6 +696,7 @@ class PredictionPipeline:
         metrics = record["metrics"]
         prediction_meta = {
             "schema_version": RECORD_SCHEMA_VERSION,
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
             "record_path": str(self._record_path(candidate.candidate_id)),
             "record_sha256": record["record_sha256"],
@@ -728,6 +790,7 @@ class PredictionPipeline:
         candidate_id = record["candidate"]["candidate_id"]
         prediction_meta = {
             "schema_version": RECORD_SCHEMA_VERSION,
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
             "record_path": str(self._record_path(candidate_id)),
             "record_sha256": record["record_sha256"],
@@ -848,6 +911,7 @@ class PredictionPipeline:
         status = self._status_from_battery(battery)
         record = {
             "schema_version": RECORD_SCHEMA_VERSION,
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
             "created_at": _utcnow(),
             "candidate": candidate.snapshot(),
@@ -870,7 +934,7 @@ class PredictionPipeline:
 
         tool_trace = {
             "tool_name": "prediction_pipeline",
-            "tool_version": str(RECORD_SCHEMA_VERSION),
+            "tool_version": PREDICTION_PIPELINE_VERSION,
             "input_params": {
                 "run_id": self.run_id,
                 "artifact_digest": artifact_digest,
@@ -921,6 +985,7 @@ class PredictionPipeline:
         record_path = self._record_path(candidate_id)
         record = {
             "schema_version": RECORD_SCHEMA_VERSION,
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
             "created_at": _utcnow(),
             "candidate": {
@@ -1004,7 +1069,8 @@ class PredictionPipeline:
                 "issues": record.get("issues", []),
             })
         handoff = {
-            "schema_version": 1,
+            "schema_version": RUN_SCHEMA_VERSION,
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
             "created_at": _utcnow(),
             "project_id": self.project.get("project_id"),
