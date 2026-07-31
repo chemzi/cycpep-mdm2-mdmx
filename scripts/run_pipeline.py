@@ -327,6 +327,67 @@ def _checkpoint_scope(tree: SearchTree, node: dict, thresholds_ref=None):
     )
 
 
+def _backtrack_failed_node(tree: SearchTree, node: dict, report: dict) -> dict:
+    """Backtrack a failed node and immediately try an unvisited sibling."""
+    verdict = report.get("verdict") or "backtrack"
+
+    # Root has no parent, so keep it as the branching point and create a child.
+    if not node.get("parent_id"):
+        if node.get("status") == "expanding":
+            tree.mark_evaluated(node["node_id"], critic_verdict=verdict)
+        adj = planner_agent.adjust(
+            report=report, tree=tree, parent=node, max_proposals=1
+        )
+        print(
+            f"  root branch → adjust status={adj.get('status')} "
+            f"child={adj.get('child_node_id')}"
+        )
+        if adj.get("status") != "adjusted":
+            tree.mark_dead_end(node["node_id"], verdict="dead_end")
+        tree.persist()
+        return {
+            "status": "rebranched_root",
+            "node_id": node["node_id"],
+            "report": report,
+            "adjust": adj,
+        }
+
+    parent = tree.backtrack(node["node_id"], verdict=verdict)
+    if parent is None:
+        tree.persist()
+        return {
+            "status": "root_dead_end",
+            "node_id": node["node_id"],
+            "report": report,
+        }
+
+    adj = planner_agent.adjust(
+        report=report, tree=tree, parent=parent, max_proposals=1
+    )
+    print(
+        f"  backtrack → parent {parent['node_id']}; "
+        f"adjust status={adj.get('status')} child={adj.get('child_node_id')}"
+    )
+    if adj.get("status") != "adjusted":
+        # Parent has no untried branch left. Retire it and expose its parent so
+        # a higher ancestor may still branch on the next orchestrator step.
+        tree.mark_dead_end(parent["node_id"], verdict="dead_end")
+        grandparent_id = parent.get("parent_id")
+        if grandparent_id and tree.get(grandparent_id):
+            grandparent = tree.get(grandparent_id)
+            if grandparent["status"] not in ("dead_end", "pruned", "passed"):
+                tree.active_id = grandparent_id
+                if grandparent_id not in tree.frontier:
+                    tree.frontier.insert(0, grandparent_id)
+    tree.persist()
+    return {
+        "status": "backtracked",
+        "node_id": node["node_id"],
+        "report": report,
+        "adjust": adj,
+    }
+
+
 def run_once_node(tree: SearchTree, dry_run: bool = True) -> dict:
     """Plan → execute → (if critic) react for the active node. Returns step summary."""
     node = tree.select_active()
@@ -368,11 +429,41 @@ def run_once_node(tree: SearchTree, dry_run: bool = True) -> dict:
         # Never reached the Critic this tick.
         _checkpoint_scope(tree, node)
         if stalled:
-            # Cannot advance this branch; retire it so it leaves the frontier and
-            # the loop does not spin re-picking a node that can make no progress.
-            tree.mark_dead_end(node["node_id"], verdict="dead_end")
-            tree.persist()
-            return {"status": "stalled", "node_id": node["node_id"]}
+            # Zero-output Design / Prediction is a branch failure, not a reason
+            # to abandon the whole search. Record the failure, then use exactly
+            # the same backtrack→adjust→sibling path as a Critic dead_end.
+            failed_agent = last_sig[0] if last_sig else "planner"
+            trigger_event_id = EvidenceLogger.log(
+                agent=failed_agent,
+                event_type="error",
+                payload={
+                    "error_type": "upstream_no_progress",
+                    "error_message": (
+                        f"{failed_agent} repeated without producing progress "
+                        f"for node {node['node_id']}"
+                    ),
+                    "recovery_action": "backtrack and try an unvisited sibling",
+                    "node_id": node["node_id"],
+                },
+                phase="design" if failed_agent == "design" else "evaluate",
+                round_num=node.get("round"),
+            )
+            stalled_report = {
+                "event_id": trigger_event_id,
+                "verdict": "dead_end",
+                "passed": False,
+                "issues": [{
+                    "code": "upstream_no_progress",
+                    "message": "upstream step produced no candidates or scores",
+                    "owner_hint": failed_agent,
+                }],
+                "recommendation": "backtrack and try an unvisited sibling strategy",
+                "summary": (
+                    f"verdict=dead_end; node={node['node_id']}; "
+                    "reason=upstream_no_progress"
+                ),
+            }
+            return _backtrack_failed_node(tree, node, stalled_report)
         tree.mark_evaluated(node["node_id"])
         tree.persist()
         return {"status": "continued", "node_id": node["node_id"]}
@@ -415,49 +506,7 @@ def run_once_node(tree: SearchTree, dry_run: bool = True) -> dict:
         tree.persist()
         return {"status": "advance_blocked", "node_id": node["node_id"], "report": report}
 
-    # backtrack / dead_end
-    # Root has no parent: keep it as a live branching point and spawn a sibling.
-    if not node.get("parent_id"):
-        adj = planner_agent.adjust(report=report, tree=tree, parent=node, max_proposals=1)
-        print(
-            f"  root branch → adjust status={adj.get('status')} "
-            f"child={adj.get('child_node_id')}"
-        )
-        if adj.get("status") != "adjusted":
-            # Root cannot spawn a new sibling (budget spent / all tried) → the
-            # search is exhausted; retire the root so the loop terminates.
-            tree.mark_dead_end(node["node_id"], verdict="dead_end")
-        tree.persist()
-        return {
-            "status": "rebranched_root",
-            "node_id": node["node_id"],
-            "report": report,
-            "adjust": adj,
-        }
-
-    parent = tree.backtrack(node["node_id"], verdict=verdict or "backtrack")
-    if parent is None:
-        tree.persist()
-        return {"status": "root_dead_end", "node_id": node["node_id"], "report": report}
-
-    adj = planner_agent.adjust(report=report, tree=tree, parent=parent, max_proposals=1)
-    print(
-        f"  backtrack → parent {parent['node_id']}; "
-        f"adjust status={adj.get('status')} child={adj.get('child_node_id')}"
-    )
-    if adj.get("status") != "adjusted":
-        # Parent has no untried branch left → retire it and step one level up so
-        # an ancestor may still spawn. If none remains live the loop will stop.
-        tree.mark_dead_end(parent["node_id"], verdict="dead_end")
-        grandparent_id = parent.get("parent_id")
-        if grandparent_id and tree.get(grandparent_id):
-            gp = tree.get(grandparent_id)
-            if gp["status"] not in ("dead_end", "pruned", "passed"):
-                tree.active_id = grandparent_id
-                if grandparent_id not in tree.frontier:
-                    tree.frontier.insert(0, grandparent_id)
-    tree.persist()
-    return {"status": "backtracked", "node_id": node["node_id"], "report": report, "adjust": adj}
+    return _backtrack_failed_node(tree, node, report)
 
 
 def run_pipeline(

@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent
 TEST_ROOT = Path(tempfile.mkdtemp(prefix="cycpep-orchestrator-"))
@@ -144,6 +145,56 @@ class OrchestratorTests(unittest.TestCase):
             state=State.load(), tree=tree, node=root, candidates=CandidateIndex.load()
         )
         self.assertEqual(follow[0]["agent"], "critic")
+
+    def test_zero_output_child_backtracks_to_sibling(self):
+        """
+        Regression: Design can return success while generating zero candidates.
+        The failed child must backtrack and create an untried sibling, rather
+        than clearing active/frontier and terminating the entire search.
+        """
+        State.update({
+            "research_pipeline_meta": {"run_status": "complete"},
+            "candidate_count": 0,
+        })
+        tree = SearchTree(
+            path=DATA_DIR / "search_tree.json", beam_width=2, max_nodes=6
+        )
+        root = tree.init_root()
+        first_strategy = planner_agent.propose_children(
+            root, max_proposals=1
+        )[0]
+        child = tree.add_child(root["node_id"], first_strategy)
+
+        with patch.object(
+            run_pipeline,
+            "mock_design",
+            return_value={"status": "ok", "candidate_ids": []},
+        ):
+            result = run_pipeline.run_once_node(tree, dry_run=True)
+
+        self.assertEqual(result["status"], "backtracked")
+        self.assertEqual(tree.get(child["node_id"])["status"], "dead_end")
+        sibling_id = result["adjust"]["child_node_id"]
+        self.assertIsNotNone(sibling_id)
+        self.assertNotEqual(sibling_id, child["node_id"])
+        self.assertEqual(tree.get(sibling_id)["parent_id"], root["node_id"])
+        self.assertEqual(tree.active_id, sibling_id)
+        self.assertEqual(tree.select_active()["node_id"], sibling_id)
+
+        entries = _evidence_entries()
+        stalled = [
+            e for e in entries
+            if e.get("event_type") == "error"
+            and e.get("error_type") == "upstream_no_progress"
+        ]
+        self.assertEqual(len(stalled), 1)
+        adjustments = [
+            e for e in entries if e.get("event_type") == "planner_adjust"
+        ]
+        self.assertEqual(len(adjustments), 1)
+        self.assertEqual(
+            adjustments[0]["trigger_event_id"], stalled[0]["event_id"]
+        )
 
 
 if __name__ == "__main__":
