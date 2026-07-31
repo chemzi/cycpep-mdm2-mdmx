@@ -316,6 +316,35 @@ def _execute(task: dict, state: dict, node: dict, dry_run: bool) -> dict:
 # Bound the in-node plan→execute chain (research→design→predict→critic is 4).
 INNER_STEP_CAP = 8
 
+# Evidence phase per agent, so a stalled step is logged under the phase that
+# actually failed instead of a blanket "evaluate".
+PHASE_BY_AGENT = {
+    "research": "research",
+    "design": "design",
+    "prediction": "evaluate",
+    "critic": "critic",
+}
+
+# Honest terminal statuses when a failed node cannot spawn / rebranch. These map
+# adjust()'s outcome to a search-level status so history and the UI don't claim a
+# rebranch that never happened.
+_EXHAUSTED_STATUS = {
+    "budget_exhausted": "search_budget_exhausted",
+    "no_untried_branch": "search_exhausted",
+    "spawn_failed": "branch_spawn_failed",
+}
+
+# Statuses that mean the orchestrator loop should stop this run.
+TERMINAL_STATUSES = {
+    "passed",
+    "root_dead_end",
+    "stopped",
+    "blocked",
+    "search_budget_exhausted",
+    "search_exhausted",
+    "branch_spawn_failed",
+}
+
 
 def _checkpoint_scope(tree: SearchTree, node: dict, thresholds_ref=None):
     scope = planner_agent.scope_candidates(node, CandidateIndex.load())
@@ -328,63 +357,174 @@ def _checkpoint_scope(tree: SearchTree, node: dict, thresholds_ref=None):
 
 
 def _backtrack_failed_node(tree: SearchTree, node: dict, report: dict) -> dict:
-    """Backtrack a failed node and immediately try an unvisited sibling."""
+    """
+    Backtrack a failed node and immediately try an unvisited sibling.
+
+    Used for a real Critic dead_end/backtrack and for a zero-output Design (the
+    only upstream stall that is genuinely a per-branch strategy failure). The
+    returned status is honest: it says "rebranched" only when a child was really
+    created, and maps an exhausted/failed adjust() to a distinct search status.
+    """
     verdict = report.get("verdict") or "backtrack"
+    # A synthetic orchestrator failure (zero-output Design) had no Critic review,
+    # so we must not stamp a Critic verdict on the node.
+    synthetic = report.get("source") == "orchestrator"
+    critic_verdict = None if synthetic else verdict
+    termination_reason = report.get("termination_reason")
+    failure_source = report.get("failed_agent")
 
     # Root has no parent, so keep it as the branching point and create a child.
     if not node.get("parent_id"):
         if node.get("status") == "expanding":
-            tree.mark_evaluated(node["node_id"], critic_verdict=verdict)
-        adj = planner_agent.adjust(
-            report=report, tree=tree, parent=node, max_proposals=1
-        )
+            tree.mark_evaluated(node["node_id"], critic_verdict=critic_verdict)
+        adj = planner_agent.adjust(report=report, tree=tree, parent=node, max_proposals=1)
         print(
             f"  root branch → adjust status={adj.get('status')} "
             f"child={adj.get('child_node_id')}"
         )
-        if adj.get("status") != "adjusted":
-            tree.mark_dead_end(node["node_id"], verdict="dead_end")
+        if adj.get("status") == "adjusted":
+            tree.persist()
+            return {
+                "status": "rebranched_root",
+                "node_id": node["node_id"],
+                "report": report,
+                "adjust": adj,
+            }
+        # Could not spawn a new root sibling → the search is over; retire the root.
+        tree.mark_dead_end(
+            node["node_id"],
+            critic_verdict=critic_verdict,
+            termination_reason=termination_reason,
+            failure_source=failure_source,
+        )
         tree.persist()
         return {
-            "status": "rebranched_root",
+            "status": _EXHAUSTED_STATUS.get(adj.get("status"), "search_exhausted"),
             "node_id": node["node_id"],
             "report": report,
             "adjust": adj,
         }
 
-    parent = tree.backtrack(node["node_id"], verdict=verdict)
+    parent = tree.backtrack(
+        node["node_id"],
+        verdict=verdict,
+        critic_verdict=critic_verdict,
+        termination_reason=termination_reason,
+        failure_source=failure_source,
+    )
     if parent is None:
         tree.persist()
-        return {
-            "status": "root_dead_end",
-            "node_id": node["node_id"],
-            "report": report,
-        }
+        return {"status": "root_dead_end", "node_id": node["node_id"], "report": report}
 
-    adj = planner_agent.adjust(
-        report=report, tree=tree, parent=parent, max_proposals=1
-    )
+    adj = planner_agent.adjust(report=report, tree=tree, parent=parent, max_proposals=1)
     print(
         f"  backtrack → parent {parent['node_id']}; "
         f"adjust status={adj.get('status')} child={adj.get('child_node_id')}"
     )
-    if adj.get("status") != "adjusted":
-        # Parent has no untried branch left. Retire it and expose its parent so
-        # a higher ancestor may still branch on the next orchestrator step.
-        tree.mark_dead_end(parent["node_id"], verdict="dead_end")
-        grandparent_id = parent.get("parent_id")
-        if grandparent_id and tree.get(grandparent_id):
-            grandparent = tree.get(grandparent_id)
-            if grandparent["status"] not in ("dead_end", "pruned", "passed"):
-                tree.active_id = grandparent_id
-                if grandparent_id not in tree.frontier:
-                    tree.frontier.insert(0, grandparent_id)
+    if adj.get("status") == "adjusted":
+        tree.persist()
+        return {
+            "status": "backtracked_and_rebranched",
+            "node_id": node["node_id"],
+            "report": report,
+            "adjust": adj,
+        }
+
+    # Parent has no untried branch left. Retire it and, if a live ancestor still
+    # exists, expose it so a higher level may branch on the next step.
+    tree.mark_dead_end(parent["node_id"], verdict="dead_end")
+    grandparent_id = parent.get("parent_id")
+    if grandparent_id and tree.get(grandparent_id):
+        grandparent = tree.get(grandparent_id)
+        if grandparent["status"] not in ("dead_end", "pruned", "passed"):
+            tree.active_id = grandparent_id
+            if grandparent_id not in tree.frontier:
+                tree.frontier.insert(0, grandparent_id)
+            tree.persist()
+            return {
+                "status": "backtracked_to_ancestor",
+                "node_id": node["node_id"],
+                "report": report,
+                "adjust": adj,
+            }
     tree.persist()
     return {
-        "status": "backtracked",
+        "status": _EXHAUSTED_STATUS.get(adj.get("status"), "search_exhausted"),
         "node_id": node["node_id"],
         "report": report,
         "adjust": adj,
+    }
+
+
+def _handle_stall(tree: SearchTree, node: dict, last_sig) -> dict:
+    """
+    An upstream step ran but the Planner immediately asked for the same task
+    again → it produced no progress. Recovery depends on *which* agent stalled:
+
+      - design: a zero-output Design is a genuine per-branch strategy failure.
+        Backtrack to the parent and try an unvisited sibling strategy.
+      - prediction: zero scores almost always means the scorer/GPU/service
+        failed, not that the Design route is wrong. A different Design strategy
+        cannot fix infrastructure, so we block (retryable on --resume) instead of
+        burning the whole tree cycling Design strategies.
+      - research: a project-level dependency. Block the search; no Design sibling
+        is meaningful until research completes.
+    """
+    failed_agent = last_sig[0] if last_sig else "planner"
+    phase = PHASE_BY_AGENT.get(failed_agent, "iterate")
+    event_id = EvidenceLogger.log(
+        agent=failed_agent,
+        event_type="error",
+        payload={
+            "error_type": "upstream_no_progress",
+            "error_message": (
+                f"{failed_agent} repeated without producing progress "
+                f"for node {node['node_id']}"
+            ),
+            "recovery_action": (
+                "backtrack and try an unvisited sibling strategy"
+                if failed_agent == "design"
+                else f"block search; {failed_agent} failure is not a Design-strategy problem"
+            ),
+            "failure_scope": "branch" if failed_agent == "design" else "search",
+            "node_id": node["node_id"],
+        },
+        phase=phase,
+        round_num=node.get("round"),
+    )
+
+    if failed_agent == "design":
+        report = {
+            "event_id": event_id,
+            "source": "orchestrator",
+            "verdict": "dead_end",
+            "passed": False,
+            "failed_agent": "design",
+            "failure_scope": "branch",
+            "termination_reason": "design_no_output",
+            "issues": [{
+                "code": "upstream_no_progress",
+                "message": "design produced no candidates",
+                "owner_hint": "design",
+            }],
+            "recommendation": "backtrack and try an unvisited sibling strategy",
+            "summary": f"verdict=dead_end; node={node['node_id']}; reason=design_no_output",
+        }
+        return _backtrack_failed_node(tree, node, report)
+
+    # research / prediction: do NOT mutate the Design strategy and do NOT spawn a
+    # sibling. Leave the node live (non-terminal) so a later --resume can retry
+    # once the upstream service recovers, and stop this run.
+    retryable = failed_agent == "prediction"
+    print(f"  {failed_agent} no progress → blocking search (retryable={retryable})")
+    tree.persist()
+    return {
+        "status": "blocked",
+        "node_id": node["node_id"],
+        "failed_agent": failed_agent,
+        "termination_reason": f"{failed_agent}_no_progress",
+        "retryable": retryable,
+        "event_id": event_id,
     }
 
 
@@ -428,45 +568,11 @@ def run_once_node(tree: SearchTree, dry_run: bool = True) -> dict:
     if report is None:
         # Never reached the Critic this tick.
         _checkpoint_scope(tree, node)
-        if stalled:
-            # Zero-output Design / Prediction is a branch failure, not a reason
-            # to abandon the whole search. Record the failure, then use exactly
-            # the same backtrack→adjust→sibling path as a Critic dead_end.
-            failed_agent = last_sig[0] if last_sig else "planner"
-            trigger_event_id = EvidenceLogger.log(
-                agent=failed_agent,
-                event_type="error",
-                payload={
-                    "error_type": "upstream_no_progress",
-                    "error_message": (
-                        f"{failed_agent} repeated without producing progress "
-                        f"for node {node['node_id']}"
-                    ),
-                    "recovery_action": "backtrack and try an unvisited sibling",
-                    "node_id": node["node_id"],
-                },
-                phase="design" if failed_agent == "design" else "evaluate",
-                round_num=node.get("round"),
-            )
-            stalled_report = {
-                "event_id": trigger_event_id,
-                "verdict": "dead_end",
-                "passed": False,
-                "issues": [{
-                    "code": "upstream_no_progress",
-                    "message": "upstream step produced no candidates or scores",
-                    "owner_hint": failed_agent,
-                }],
-                "recommendation": "backtrack and try an unvisited sibling strategy",
-                "summary": (
-                    f"verdict=dead_end; node={node['node_id']}; "
-                    "reason=upstream_no_progress"
-                ),
-            }
-            return _backtrack_failed_node(tree, node, stalled_report)
-        tree.mark_evaluated(node["node_id"])
-        tree.persist()
-        return {"status": "continued", "node_id": node["node_id"]}
+        if not stalled:
+            tree.mark_evaluated(node["node_id"])
+            tree.persist()
+            return {"status": "continued", "node_id": node["node_id"]}
+        return _handle_stall(tree, node, last_sig)
 
     verdict = report.get("verdict")
     print(f"  critic verdict={verdict} status={report.get('status')}")
@@ -546,14 +652,8 @@ def run_pipeline(
         summary = run_once_node(tree, dry_run=dry_run)
         history.append(summary)
         status = summary.get("status")
-        if status == "passed":
-            print("\n[orchestrator] PASSED — metric clearance path found")
-            break
-        if status == "root_dead_end":
-            print("\n[orchestrator] root dead-end — no parent to backtrack to")
-            break
-        if status == "stopped":
-            print("\n[orchestrator] nothing left to run; stopping")
+        if status in TERMINAL_STATUSES:
+            print(f"\n[orchestrator] stopping (status={status})")
             break
 
     best = tree.best_leaf()

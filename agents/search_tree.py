@@ -26,6 +26,10 @@ NODE_STATUSES = (
 
 CRITIC_VERDICTS = ("advance", "backtrack", "dead_end", "done", None)
 
+# Sentinel so callers can pass critic_verdict=None explicitly (a synthetic
+# orchestrator failure that had no Critic review) versus not passing it at all.
+_UNSET = object()
+
 DEFAULT_STRATEGY = {
     "route_mix": {
         "route_A_mdm2": 400,
@@ -210,10 +214,27 @@ class SearchTree:
             self.active_id = None
         return node
 
-    def mark_dead_end(self, node_id: Optional[str] = None, verdict: str = "dead_end") -> dict:
+    def mark_dead_end(
+        self,
+        node_id: Optional[str] = None,
+        verdict: str = "dead_end",
+        critic_verdict=_UNSET,
+        termination_reason: Optional[str] = None,
+        failure_source: Optional[str] = None,
+    ) -> dict:
         node = self._require(node_id or self.active_id)
         node["status"] = "dead_end"
-        node["critic_verdict"] = verdict if verdict in ("backtrack", "dead_end") else "dead_end"
+        # Only record a Critic verdict when the failure actually came from the
+        # Critic. Synthetic orchestrator failures (e.g. zero-output Design) pass
+        # critic_verdict=None so we never claim a Critic review that never ran.
+        if critic_verdict is _UNSET:
+            node["critic_verdict"] = verdict if verdict in ("backtrack", "dead_end") else "dead_end"
+        else:
+            node["critic_verdict"] = critic_verdict
+        if termination_reason is not None:
+            node["termination_reason"] = termination_reason
+        if failure_source is not None:
+            node["failure_source"] = failure_source
         if node["node_id"] in self.frontier:
             self.frontier = [n for n in self.frontier if n != node["node_id"]]
         if self.active_id == node["node_id"]:
@@ -314,13 +335,22 @@ class SearchTree:
         self,
         node_id: Optional[str] = None,
         verdict: str = "backtrack",
+        critic_verdict=_UNSET,
+        termination_reason: Optional[str] = None,
+        failure_source: Optional[str] = None,
     ) -> Optional[dict]:
         """
         Mark node dead_end and move active_id to its parent.
         Returns the parent node, or None if already at root.
         Does NOT invent a sibling — caller should call add_child / propose_children.
         """
-        node = self.mark_dead_end(node_id or self.active_id, verdict=verdict)
+        node = self.mark_dead_end(
+            node_id or self.active_id,
+            verdict=verdict,
+            critic_verdict=critic_verdict,
+            termination_reason=termination_reason,
+            failure_source=failure_source,
+        )
         parent_id = node.get("parent_id")
         if not parent_id:
             self.active_id = None

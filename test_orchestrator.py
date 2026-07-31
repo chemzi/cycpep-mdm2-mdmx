@@ -6,6 +6,14 @@ These lock in the control-flow fixes from the PR review:
   P2-3  a max_nodes=1 run does not inflate state.round or re-review the root
   P2-5  legacy untagged root candidates get scored (no Prediction loop)
   P2-6  --resume after a pass does not re-run the Critic
+
+Second review round (agent-classified recovery + honest statuses):
+  only zero-output Design backtracks and spawns a sibling
+  zero-scoring Prediction / stalled Research block instead of mutating Design
+  exhausted / no-untried adjust() returns an honest search-level status
+  synthetic upstream failures record termination_reason, not a faked verdict
+  State.round is projected onto the spawned child's tree round
+  a persisted terminal dead-end is not re-executed on resume
 """
 import copy
 import json
@@ -172,8 +180,15 @@ class OrchestratorTests(unittest.TestCase):
         ):
             result = run_pipeline.run_once_node(tree, dry_run=True)
 
-        self.assertEqual(result["status"], "backtracked")
-        self.assertEqual(tree.get(child["node_id"])["status"], "dead_end")
+        self.assertEqual(result["status"], "backtracked_and_rebranched")
+        dead = tree.get(child["node_id"])
+        self.assertEqual(dead["status"], "dead_end")
+        # Synthetic upstream failure must NOT fake a Critic verdict; it records a
+        # termination reason and the agent that stalled instead.
+        self.assertIsNone(dead.get("critic_verdict"))
+        self.assertEqual(dead.get("termination_reason"), "design_no_output")
+        self.assertEqual(dead.get("failure_source"), "design")
+
         sibling_id = result["adjust"]["child_node_id"]
         self.assertIsNotNone(sibling_id)
         self.assertNotEqual(sibling_id, child["node_id"])
@@ -188,6 +203,8 @@ class OrchestratorTests(unittest.TestCase):
             and e.get("error_type") == "upstream_no_progress"
         ]
         self.assertEqual(len(stalled), 1)
+        self.assertEqual(stalled[0]["phase"], "design")
+        self.assertEqual(stalled[0]["failure_scope"], "branch")
         adjustments = [
             e for e in entries if e.get("event_type") == "planner_adjust"
         ]
@@ -195,6 +212,194 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(
             adjustments[0]["trigger_event_id"], stalled[0]["event_id"]
         )
+
+    def test_root_zero_output_design_spawns_child(self):
+        """Root Design zero-output with budget left → rebranch a root child,
+        keep the root as an evaluated branching point (no faked Critic verdict)."""
+        State.update({
+            "research_pipeline_meta": {"run_status": "complete"},
+            "candidate_count": 0,
+        })
+        tree = SearchTree(path=DATA_DIR / "search_tree.json", beam_width=2, max_nodes=6)
+        root = tree.init_root()
+
+        with patch.object(
+            run_pipeline, "mock_design",
+            return_value={"status": "ok", "candidate_ids": []},
+        ):
+            result = run_pipeline.run_once_node(tree, dry_run=True)
+
+        self.assertEqual(result["status"], "rebranched_root")
+        child_id = result["adjust"]["child_node_id"]
+        self.assertIsNotNone(child_id)
+        self.assertEqual(tree.get(child_id)["parent_id"], root["node_id"])
+        self.assertEqual(tree.get(root["node_id"])["status"], "evaluated")
+        self.assertIsNone(tree.get(root["node_id"]).get("critic_verdict"))
+        # State.round tracks the newly created node, not a blind +1.
+        self.assertEqual(int(State.load()["round"]), int(tree.get(child_id)["round"]))
+
+    def test_root_zero_output_design_budget_one_is_exhausted(self):
+        """Root Design zero-output but max_nodes=1 → honest search_budget_exhausted,
+        no sibling, round untouched, no planner_adjust."""
+        State.update({
+            "research_pipeline_meta": {"run_status": "complete"},
+            "candidate_count": 0,
+        })
+        tree = SearchTree(path=DATA_DIR / "search_tree.json", beam_width=2, max_nodes=1)
+        root = tree.init_root()
+
+        with patch.object(
+            run_pipeline, "mock_design",
+            return_value={"status": "ok", "candidate_ids": []},
+        ):
+            result = run_pipeline.run_once_node(tree, dry_run=True)
+
+        self.assertEqual(result["status"], "search_budget_exhausted")
+        self.assertEqual(tree.get(root["node_id"])["status"], "dead_end")
+        self.assertIsNone(tree.get(root["node_id"]).get("critic_verdict"))
+        self.assertEqual(tree.node_count(), 1)
+        self.assertEqual(int(State.load().get("round") or 1), 1)
+        adjustments = [
+            e for e in _evidence_entries() if e.get("event_type") == "planner_adjust"
+        ]
+        self.assertEqual(adjustments, [])
+
+    def test_non_root_zero_output_no_untried_branch_is_search_exhausted(self):
+        """Non-root Design zero-output where the parent has no untried strategy
+        → search_exhausted; do not claim a rebranch."""
+        State.update({
+            "research_pipeline_meta": {"run_status": "complete"},
+            "candidate_count": 0,
+        })
+        tree = SearchTree(path=DATA_DIR / "search_tree.json", beam_width=2, max_nodes=6)
+        root = tree.init_root()
+        strat = planner_agent.propose_children(root, max_proposals=1)[0]
+        child = tree.add_child(root["node_id"], strat)
+
+        with patch.object(
+            run_pipeline, "mock_design",
+            return_value={"status": "ok", "candidate_ids": []},
+        ), patch.object(planner_agent, "propose_children", return_value=[]):
+            result = run_pipeline.run_once_node(tree, dry_run=True)
+
+        self.assertEqual(result["status"], "search_exhausted")
+        self.assertEqual(tree.get(child["node_id"])["status"], "dead_end")
+        self.assertEqual(tree.get(root["node_id"])["status"], "dead_end")
+        self.assertIsNone(tree.select_active())
+
+    def test_prediction_no_progress_blocks_without_changing_design(self):
+        """Zero-scoring Prediction is an infrastructure failure: block (retryable)
+        and never mutate the Design strategy or spawn a sibling."""
+        root_id = "N0001"
+        State.update({
+            "research_pipeline_meta": {"run_status": "complete"},
+            "candidate_count": 1,
+            "thresholds": {},
+        })
+        CandidateIndex.add({
+            "candidate_id": "C1001",
+            "sequence": "GFEWALAAKCFG",
+            "source_batch": f"{root_id}/route_A_mdm2/L12",
+            "manifest_path": "m.json",
+        })
+        tree = SearchTree(path=DATA_DIR / "search_tree.json", beam_width=2, max_nodes=6)
+        root = tree.init_root()
+        self.assertEqual(root["node_id"], root_id)
+
+        with patch.object(
+            run_pipeline, "mock_predict", return_value={"status": "ok", "scored": []},
+        ):
+            result = run_pipeline.run_once_node(tree, dry_run=True)
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["failed_agent"], "prediction")
+        self.assertTrue(result["retryable"])
+        # No Design re-branch: node count unchanged, no planner_adjust.
+        self.assertEqual(tree.node_count(), 1)
+        self.assertNotEqual(tree.get(root_id)["status"], "dead_end")
+        entries = _evidence_entries()
+        self.assertEqual(
+            [e for e in entries if e.get("event_type") == "planner_adjust"], []
+        )
+        err = [
+            e for e in entries
+            if e.get("event_type") == "error"
+            and e.get("error_type") == "upstream_no_progress"
+        ]
+        self.assertEqual(len(err), 1)
+        self.assertEqual(err[0]["phase"], "evaluate")
+        self.assertEqual(err[0]["failure_scope"], "search")
+
+    def test_research_no_progress_blocks_and_logs_research_phase(self):
+        """Research no-progress must be logged under phase=research and block the
+        search, not enter Design sibling expansion."""
+        tree = SearchTree(path=DATA_DIR / "search_tree.json", beam_width=2, max_nodes=6)
+        root = tree.init_root()
+
+        with patch.object(run_pipeline, "mock_research", return_value={"status": "ok"}):
+            result = run_pipeline.run_once_node(tree, dry_run=True)
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["failed_agent"], "research")
+        self.assertFalse(result["retryable"])
+        self.assertEqual(tree.node_count(), 1)
+        entries = _evidence_entries()
+        self.assertEqual(
+            [e for e in entries if e.get("event_type") == "planner_adjust"], []
+        )
+        err = [
+            e for e in entries
+            if e.get("event_type") == "error"
+            and e.get("error_type") == "upstream_no_progress"
+        ]
+        self.assertEqual(len(err), 1)
+        self.assertEqual(err[0]["phase"], "research")
+
+    def test_adjust_projects_state_round_onto_child_round(self):
+        """P2 round drift: after adjust spawns a child, State.round equals the
+        child's tree round rather than a blind increment of a drifted counter."""
+        State.update({
+            "research_pipeline_meta": {"run_status": "complete"},
+            "candidate_count": 0,
+            "round": 5,  # simulate a drifted global counter
+        })
+        tree = SearchTree(path=DATA_DIR / "search_tree.json", beam_width=2, max_nodes=6)
+        root = tree.init_root(round_num=1)
+        report = {
+            "event_id": "evt-round",
+            "verdict": "backtrack",
+            "issues": [{"code": "low_diversity"}],
+            "recommendation": "try sibling",
+        }
+        adj = planner_agent.adjust(report=report, tree=tree, parent=root, max_proposals=1)
+        self.assertEqual(adj["status"], "adjusted")
+        child = tree.get(adj["child_node_id"])
+        self.assertEqual(child["round"], 2)
+        self.assertEqual(int(State.load()["round"]), child["round"])
+
+    def test_resume_terminal_dead_end_not_reexecuted(self):
+        """After a synthetic dead-end child is persisted, a reloaded tree must not
+        re-execute that terminal node."""
+        State.update({
+            "research_pipeline_meta": {"run_status": "complete"},
+            "candidate_count": 0,
+        })
+        tree = SearchTree(path=DATA_DIR / "search_tree.json", beam_width=2, max_nodes=6)
+        root = tree.init_root()
+        strat = planner_agent.propose_children(root, max_proposals=1)[0]
+        child = tree.add_child(root["node_id"], strat)
+        with patch.object(
+            run_pipeline, "mock_design",
+            return_value={"status": "ok", "candidate_ids": []},
+        ):
+            run_pipeline.run_once_node(tree, dry_run=True)
+        tree.persist()
+
+        reloaded = SearchTree.load(DATA_DIR / "search_tree.json")
+        self.assertEqual(reloaded.get(child["node_id"])["status"], "dead_end")
+        active = reloaded.select_active()
+        self.assertIsNotNone(active)
+        self.assertNotEqual(active["node_id"], child["node_id"])
 
 
 if __name__ == "__main__":

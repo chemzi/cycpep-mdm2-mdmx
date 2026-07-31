@@ -339,9 +339,17 @@ def adjust(
             }
 
     # Commit state + evidence only now that we know the adjustment sticks.
+    # The tree node round is the single source of truth: project State.round onto
+    # the round of the node we just created, rather than a blind +1. A blind
+    # increment drifts after a deep backtrack spawns a shallow sibling (e.g.
+    # grandchild round 3 fails → new root sibling round 2, but a +1 would push
+    # State.round to 4 while the active node is round 2).
     s = State.load()
     s["design_budget"] = copy.deepcopy(new_strategy.get("route_mix") or s.get("design_budget"))
-    s["round"] = int(s.get("round") or 1) + 1
+    if child is not None:
+        s["round"] = int(child["round"])
+    else:
+        s["round"] = int(s.get("round") or 1) + 1
     State.save(s)
 
     EvidenceLogger.planner_adjust(
