@@ -161,6 +161,7 @@ def _cheap_filter_sequences(seqs, seen_seqs=None, top_k=CHEAP_FILTER_TOP_K):
     """
     if seen_seqs is None:
         seen_seqs = set()
+    seqs = list(seqs or [])
     scored = []
     for seq in seqs:
         if not isinstance(seq, str) or not seq:
@@ -177,7 +178,7 @@ def _cheap_filter_sequences(seqs, seen_seqs=None, top_k=CHEAP_FILTER_TOP_K):
     if not result and seqs:
         EvidenceLogger.log("design", "cheap_filter_empty", {
             "total": len(seqs),
-            "already_seen": len([s for s in seqs if s in seen_seqs]),
+            "already_seen": sum(1 for s in seqs if isinstance(s, str) and s in seen_seqs),
             "top_k": top_k,
         })
     for seq, _score in result:
@@ -195,9 +196,9 @@ def _synthesizability_violations(seq):
     - Asp-Pro 断裂
     """
     if not seq:
-        return []
+        return ["empty_sequence"]
     v = []
-    # 连续疏水
+    # 连续疏水（线性扫描）
     run = 0
     for aa in seq:
         if aa in HYDROPHOBIC:
@@ -207,6 +208,22 @@ def _synthesizability_violations(seq):
         if run > 4:
             v.append("aggregation")
             break
+    # 环化交界面：N端和C端环化后相邻，检查跨边界的连续疏水
+    if "aggregation" not in v:
+        tail_run = 0
+        for aa in reversed(seq):
+            if aa in HYDROPHOBIC:
+                tail_run += 1
+            else:
+                break
+        head_run = 0
+        for aa in seq:
+            if aa in HYDROPHOBIC:
+                head_run += 1
+            else:
+                break
+        if tail_run + head_run > 4:
+            v.append("aggregation")
     # 游离 Cys（不在首尾）
     for i, aa in enumerate(seq):
         if aa == "C" and i not in (0, len(seq) - 1):
@@ -306,7 +323,7 @@ def design_rfpeptides(target_spec=None, design_config=None):
             total_gen += 1
             try:
                 binder_chain = _infer_binder_chain(str(bb_path), L, receptor_chain=config["chain"])
-            except ValueError as exc:
+            except (OSError, UnicodeError, ValueError) as exc:
                 EvidenceLogger.error(
                     "design", "rfdiff_binder_chain_invalid",
                     f"{bb_path}: {exc}", recovery="skip ambiguous backbone",
@@ -323,7 +340,7 @@ def design_rfpeptides(target_spec=None, design_config=None):
                 print(f"[Route A] LigandMPNN 返回 0 条序列: {bb_path.name}")
                 continue
             # 便宜预筛 → 只 refold top 4（跨 backbone 去重）
-            filtered = _cheap_filter_sequences(seqs, seen_seqs=seen_seqs, top_k=4)
+            filtered = _cheap_filter_sequences(seqs, seen_seqs=seen_seqs, top_k=CHEAP_FILTER_TOP_K)
             print(f"[Route A] cheap filter: {len(seqs)}→{len(filtered)} sequences")
 
             for seq, quality_score in filtered:
@@ -401,7 +418,7 @@ def design_motif_guided(target_spec=None, design_config=None):
     seen_seqs = set()  # deduplicate across templates and backbones
 
     for tmpl_seq, tmpl_name in templates:
-        if len(tmpl_seq) < 8:
+        if len(tmpl_seq) < 8 or len(tmpl_seq) > 20:
             continue
         L = len(tmpl_seq)
         tmpl_hotspots = _hotspot_positions(tmpl_seq)
@@ -427,7 +444,7 @@ def design_motif_guided(target_spec=None, design_config=None):
             try:
                 binder_chain = _infer_binder_chain(str(bb_path), L, receptor_chain=config["chain"])
                 binder_res = _parse_binder_residues(str(bb_path), binder_chain)
-            except ValueError as exc:
+            except (OSError, UnicodeError, ValueError) as exc:
                 EvidenceLogger.error(
                     "design", "rfdiff_binder_chain_invalid",
                     f"{bb_path}: {exc}", recovery="skip ambiguous backbone",
@@ -444,7 +461,7 @@ def design_motif_guided(target_spec=None, design_config=None):
                 print(f"[Route B] LigandMPNN 返回 0 条序列: {bb_path.name}")
                 continue
             # 便宜预筛 → 只 refold top 4（跨模板去重）
-            filtered = _cheap_filter_sequences(seqs, seen_seqs=seen_seqs, top_k=4)
+            filtered = _cheap_filter_sequences(seqs, seen_seqs=seen_seqs, top_k=CHEAP_FILTER_TOP_K)
             print(f"[Route B] cheap filter: {len(seqs)}→{len(filtered)} sequences")
 
             for seq, quality_score in filtered:
@@ -617,6 +634,14 @@ def threshold_filter(candidates, thresholds, project_config=None):
         except (ValueError, TypeError):
             return None
 
+    def _resolve_threshold(*candidates):
+        """Return the first candidate that passes _safe_float."""
+        for value in candidates:
+            resolved = _safe_float(value)
+            if resolved is not None:
+                return resolved
+        return None
+
     passed = []
     for candidate in candidates:
         accepted = True
@@ -626,21 +651,25 @@ def threshold_filter(candidates, thresholds, project_config=None):
             hotspot_rule = threshold_for_target(
                 thresholds, "L5_hotspot_coverage", target_id
             )
-            ipsae_threshold = thresholds.get(
-                f"ipsae_{slug}",
-                thresholds.get("ipsae",
-                    ipsae_rule.get("value", 0.6 if index == 0 else 0.5))
+            ipsae_threshold = _resolve_threshold(
+                thresholds.get(f"ipsae_{slug}"),
+                thresholds.get("ipsae"),
+                ipsae_rule.get("value"),
+                0.6 if index == 0 else 0.5,
             )
-            hotspot_threshold = thresholds.get(
-                f"hotspot_cov_{slug}",
-                thresholds.get("hotspot_cov",
-                    hotspot_rule.get("value", 0.67)),
+            hotspot_threshold = _resolve_threshold(
+                thresholds.get(f"hotspot_cov_{slug}"),
+                thresholds.get("hotspot_cov"),
+                hotspot_rule.get("value"),
+                0.67,
             )
             ipsae_val = _safe_float(target_value(candidate, target_id, "ipsae"))
             hotspot_val = _safe_float(target_value(candidate, target_id, "hotspot_cov"))
             if (
-                ipsae_val is None or ipsae_val < float(ipsae_threshold)
-                or hotspot_val is None or hotspot_val < float(hotspot_threshold)
+                ipsae_threshold is None or ipsae_val is None
+                or ipsae_val < ipsae_threshold
+                or hotspot_threshold is None or hotspot_val is None
+                or hotspot_val < hotspot_threshold
             ):
                 accepted = False
                 break
@@ -676,7 +705,7 @@ def pareto_front(candidates, obj_x=None, obj_y=None, project_config=None):
         if ":" in objective:
             target_id, metric = objective.split(":", 1)
             return _safe_objective(target_value(candidate, target_id, metric))
-        return candidate.get(objective, 0)
+        return _safe_objective(candidate.get(objective))
 
     front = []
     for c1 in candidates:
@@ -839,8 +868,6 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
         formatted = ",".join(f"'{chain}{r.strip()}'" for r in hotspots.split(",") if r.strip())
         if formatted:
             cmd.append(f"ppi.hotspot_res=[{formatted}]")
-    if seed is not None:
-        cmd.append(f"inference.seed={seed}")
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600,
             cwd=RFDIFF_DIR,
@@ -889,7 +916,7 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, binder_chain=None,
             recovery="skip",
         )
         return []
-    batch_size = min(max(1, int(n_seq)), 4)
+    batch_size = min(max(1, int(n_seq)), int(os.environ.get("LIGANDMPNN_MAX_BATCH_SIZE", "4")))
     number_of_batches = max(1, (int(n_seq) + batch_size - 1) // batch_size)
     cmd = [
         RFDIFF_PYTHON, f"{LIGANDMPNN_DIR}/run.py",
@@ -915,11 +942,11 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, binder_chain=None,
         seqs = []
         fa_files = sorted(Path(output_dir).glob("**/*.fa"))
         if len(fa_files) > 1:
-            EvidenceLogger.log("design", "ligandmpnn_multiple_fasta",
-                f"LigandMPNN produced {len(fa_files)} FASTA files for "
-                f"{backbone_pdb}; only the first ({fa_files[0].name}) "
-                "will be processed. This may indicate a multi-chain output "
-                "that this pipeline does not yet support.")
+            EvidenceLogger.log("design", "ligandmpnn_multiple_fasta", {
+                "backbone_pdb": str(backbone_pdb),
+                "fasta_count": len(fa_files),
+                "selected_fasta": str(fa_files[0]),
+            })
         for fa in fa_files[:1]:
             with open(fa) as fh:
                 is_generated_record = False
@@ -937,7 +964,7 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, binder_chain=None,
                         line = _extract_ligandmpnn_binder_sequence(
                             line, binder_chain, layout, input_sequences
                         )
-                    except ValueError as exc:
+                    except (OSError, UnicodeError, ValueError) as exc:
                         EvidenceLogger.error(
                             "design", "ligandmpnn_fasta_invalid",
                             f"{fa}: {exc}", recovery="skip malformed output",
@@ -1184,7 +1211,7 @@ def _first_model_residues(pdb_path):
                     float(line[start:end])
                     for start, end in ((30, 38), (38, 46), (46, 54))
                 )
-            except ValueError as exc:
+            except (OSError, UnicodeError, ValueError) as exc:
                 raise ValueError("invalid_atom_coordinate") from exc
             if not all(math.isfinite(value) for value in coordinate):
                 raise ValueError("nonfinite_atom_coordinate")
@@ -1219,7 +1246,7 @@ def _ring_closure_check(pdb_path, cyclization_type, sequence=None):
         canonical = _canonical_cyclization_type(
             cyclization_type, sequence=sequence
         )
-    except ValueError as exc:
+    except (OSError, UnicodeError, ValueError) as exc:
         return {
             "pass": False,
             "reason": "unsupported_cyclization",
@@ -1499,30 +1526,30 @@ def _verify_fixed_sequence_pdb(pdb_path, requested_sequence):
 def _infer_binder_chain(pdb_path, expected_length, receptor_chain=None):
     """Return the RFdiffusion-generated binder chain.
 
-    When *receptor_chain* is provided it is excluded from consideration
-    (RFdiffusion may keep the receptor chain label unchanged while the
-    binder receives a new label).  Without it the function falls back to
-    strict length uniqueness.
+    When *receptor_chain* is provided it is unconditionally excluded before
+    length matching, preventing the receptor from being mistaken for the
+    binder when they happen to share the same residue count.
     """
     layout = _pdb_chain_residue_layout(pdb_path)
-    if len(layout) < 2:
+    chain_ids = set(layout)
+    if receptor_chain and receptor_chain in chain_ids:
+        chain_ids.discard(receptor_chain)
+    if len(chain_ids) < 1:
         raise ValueError(
-            f"RFdiffusion binder complex requires at least two chains, got "
-            f"{sorted(layout)}"
+            f"RFdiffusion output has no non-receptor chain; "
+            f"chains={sorted(layout)}, receptor={receptor_chain!r}"
         )
     candidates = [
-        chain for chain, residues in layout.items()
-        if len(residues) == int(expected_length)
+        chain for chain in chain_ids
+        if len(layout[chain]) == int(expected_length)
     ]
-    if receptor_chain and len(candidates) > 1:
-        narrowed = [c for c in candidates if c != receptor_chain]
-        if len(narrowed) == 1:
-            return narrowed[0]
     if len(candidates) != 1:
-        counts = {chain: len(residues) for chain, residues in layout.items()}
+        counts = {chain: len(layout[chain]) for chain in layout}
+        detail = f"candidates={candidates}, lengths={counts}"
+        if receptor_chain:
+            detail += f", receptor={receptor_chain!r}"
         raise ValueError(
-            f"expected one {expected_length}-residue binder chain, "
-            f"found {candidates}; chain lengths={counts}"
+            f"expected one {expected_length}-residue binder chain; {detail}"
         )
     return candidates[0]
 

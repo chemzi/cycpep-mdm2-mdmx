@@ -548,7 +548,9 @@ check("contigmap.contigs=['10-10 A25-109/0']" in captured_run['cmd'],
 check("inference.seed" not in str(captured_run['cmd']),
       'seed omitted when None')
 
-# With explicit seed it must appear in the Hydra command
+# RFdiffusion does not support per-run seeds at the GPU/DGL level;
+# _run_rfdiff intentionally ignores the seed parameter.  The seed is
+# still honoured by LigandMPNN, AfCycDesign, and Route C mutation.
 captured_run2 = {}
 subprocess.run = lambda cmd, **kwargs: (
     captured_run2.update({'cmd': cmd, 'kwargs': kwargs}) or _SuccessfulRun()
@@ -559,8 +561,8 @@ try:
                 seed=42, chain='A')
 finally:
     subprocess.run = original_subprocess_run
-check("inference.seed=42" in captured_run2['cmd'],
-      'seed propagated to RFdiffusion command')
+check("inference.seed" not in str(captured_run2['cmd']),
+      'seed intentionally omitted (RFdiffusion GPU non-deterministic)')
 
 # RFdiffusion may relabel output chains. Discover the binder by residue count
 # and map LigandMPNN FASTA segments using the emitted PDB chain order.
