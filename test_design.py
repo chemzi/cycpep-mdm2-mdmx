@@ -61,7 +61,7 @@ target_fixture.write(
 )
 target_fixture.close()
 ACTIVE_PROJECT_CONFIG = load_project_config(raw={
-    'project_id': 'design_v5_test',
+    'project_id': 'design_v5_mdm2_mdmx_test',
     'targets': [
         {
             'id': 'MDM2',

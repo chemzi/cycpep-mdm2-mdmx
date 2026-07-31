@@ -626,13 +626,14 @@ def threshold_filter(candidates, thresholds, project_config=None):
     target_ids = required_target_ids(project)
 
     def _safe_float(value):
-        """Return float(value) or None when the value is missing / empty."""
+        """Return float(value); return None for missing, empty, or non-finite values."""
         if value in (None, ""):
             return None
         try:
-            return float(value)
+            number = float(value)
         except (ValueError, TypeError):
             return None
+        return number if math.isfinite(number) else None
 
     def _resolve_threshold(*candidates):
         """Return the first candidate that passes _safe_float."""
@@ -642,35 +643,54 @@ def threshold_filter(candidates, thresholds, project_config=None):
                 return resolved
         return None
 
+    # MDM2/MDMX provisional legacy defaults — only for the bundled example project.
+    _pid = project.get("project_id", "").casefold()
+    _is_mdm_project = "mdm2" in _pid or "mdmx" in _pid
     passed = []
     for candidate in candidates:
         accepted = True
+        rejection_reason = None
         for index, target_id in enumerate(target_ids):
             slug = target_slug(target_id)
             ipsae_rule = threshold_for_target(thresholds, "L2_ipsae", target_id)
             hotspot_rule = threshold_for_target(
                 thresholds, "L5_hotspot_coverage", target_id
             )
-            ipsae_threshold = _resolve_threshold(
+            _ipsae_candidates = [
                 thresholds.get(f"ipsae_{slug}"),
                 thresholds.get("ipsae"),
                 ipsae_rule.get("value"),
-                0.6 if index == 0 else 0.5,
-            )
-            hotspot_threshold = _resolve_threshold(
+            ]
+            if _is_mdm_project:
+                _ipsae_candidates.append(0.6 if index == 0 else 0.5)
+            ipsae_threshold = _resolve_threshold(*_ipsae_candidates)
+
+            _hotspot_candidates = [
                 thresholds.get(f"hotspot_cov_{slug}"),
                 thresholds.get("hotspot_cov"),
                 hotspot_rule.get("value"),
-                0.67,
-            )
+            ]
+            if _is_mdm_project:
+                _hotspot_candidates.append(0.67)
+            hotspot_threshold = _resolve_threshold(*_hotspot_candidates)
             ipsae_val = _safe_float(target_value(candidate, target_id, "ipsae"))
             hotspot_val = _safe_float(target_value(candidate, target_id, "hotspot_cov"))
-            if (
-                ipsae_threshold is None or ipsae_val is None
-                or ipsae_val < ipsae_threshold
-                or hotspot_threshold is None or hotspot_val is None
-                or hotspot_val < hotspot_threshold
-            ):
+            if ipsae_threshold is None:
+                rejected_by = f"missing_ipsae_threshold_{slug}"
+            elif hotspot_threshold is None:
+                rejected_by = f"missing_hotspot_threshold_{slug}"
+            elif ipsae_val is None:
+                rejected_by = f"ipsae_nil_{slug}"
+            elif hotspot_val is None:
+                rejected_by = f"hotspot_nil_{slug}"
+            elif ipsae_val < ipsae_threshold:
+                rejected_by = f"ipsae_below_{slug}"
+            elif hotspot_val < hotspot_threshold:
+                rejected_by = f"hotspot_below_{slug}"
+            else:
+                rejected_by = None
+            if rejected_by:
+                rejection_reason = rejected_by
                 accepted = False
                 break
         if accepted:
@@ -903,7 +923,7 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, binder_chain=None,
     try:
         layout = _pdb_chain_residue_layout(backbone_pdb)
         input_sequences = _pdb_chain_sequences(backbone_pdb)
-    except (OSError, ValueError) as exc:
+    except (OSError, UnicodeError, ValueError) as exc:
         EvidenceLogger.error(
             "design", "ligandmpnn_backbone_invalid", str(exc), recovery="skip"
         )
@@ -916,7 +936,12 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, binder_chain=None,
             recovery="skip",
         )
         return []
-    batch_size = min(max(1, int(n_seq)), int(os.environ.get("LIGANDMPNN_MAX_BATCH_SIZE", "4")))
+    try:
+        configured_max = int(os.environ.get("LIGANDMPNN_MAX_BATCH_SIZE", "4"))
+    except (ValueError, TypeError):
+        configured_max = 4
+    configured_max = max(1, min(configured_max, 32))
+    batch_size = min(max(1, int(n_seq)), configured_max)
     number_of_batches = max(1, (int(n_seq) + batch_size - 1) // batch_size)
     cmd = [
         RFDIFF_PYTHON, f"{LIGANDMPNN_DIR}/run.py",
@@ -1321,7 +1346,7 @@ def _ring_closure_check(pdb_path, cyclization_type, sequence=None):
             "distance_angstrom": round(distance, 3),
             "ideal_geometry": ideal_min <= distance <= ideal_max,
         }
-    except (OSError, ValueError) as exc:
+    except (OSError, UnicodeError, ValueError) as exc:
         return {
             **base,
             "reason": "pdb_parse_failed",
@@ -1526,21 +1551,27 @@ def _verify_fixed_sequence_pdb(pdb_path, requested_sequence):
 def _infer_binder_chain(pdb_path, expected_length, receptor_chain=None):
     """Return the RFdiffusion-generated binder chain.
 
-    When *receptor_chain* is provided it is unconditionally excluded before
-    length matching, preventing the receptor from being mistaken for the
-    binder when they happen to share the same residue count.
+    The RFdiffusion output must contain at least two chains (receptor + binder).
+    When *receptor_chain* is provided it must be present in the PDB and is
+    unconditionally excluded before length matching.
     """
     layout = _pdb_chain_residue_layout(pdb_path)
-    chain_ids = set(layout)
-    if receptor_chain and receptor_chain in chain_ids:
-        chain_ids.discard(receptor_chain)
-    if len(chain_ids) < 1:
+    if len(layout) < 2:
         raise ValueError(
-            f"RFdiffusion output has no non-receptor chain; "
-            f"chains={sorted(layout)}, receptor={receptor_chain!r}"
+            f"RFdiffusion complex must contain at least two chains, got "
+            f"{sorted(layout)}"
         )
+    if receptor_chain:
+        if receptor_chain not in layout:
+            raise ValueError(
+                f"expected receptor chain {receptor_chain!r} not found in "
+                f"RFdiffusion output; chains={sorted(layout)}"
+            )
+        candidate_chains = set(layout) - {receptor_chain}
+    else:
+        candidate_chains = set(layout)
     candidates = [
-        chain for chain in chain_ids
+        chain for chain in candidate_chains
         if len(layout[chain]) == int(expected_length)
     ]
     if len(candidates) != 1:
@@ -1734,7 +1765,8 @@ def _merge_config(target_spec, design_config):
     if seed is None:
         seed = DEFAULT_SEED if DEFAULT_SEED is not None else int(time.time())
         print(f"[Design] seed not specified — auto-generated seed={seed} "
-              f"(pass --seed to reproduce this run)")
+              f"(controls LigandMPNN + Route C; RFdiffusion backbone "
+              f"generation is GPU non-deterministic)")
     seed = int(seed)
     if seed < 0 or seed > 2**31 - 1:
         raise ValueError(
