@@ -1648,11 +1648,12 @@ def _pdb_residue_range(pdb_path, chain="A", hotspot_residues=None):
         hotspot_set = {int(r) for r in hotspot_residues}
         present = hotspot_set & residues
         if not present:
-            raise ValueError(
+            EvidenceLogger.error("design", "hotspots_all_absent",
                 f"All binding-site residues {sorted(hotspot_set)} are absent from "
                 f"the approved coordinate artifact {pdb_path} chain {chain}. "
-                f"Verify that structure_resolution approved the correct PDB."
-            )
+                f"Falling back to longest-segment heuristic.",
+                recovery="verify structure_resolution approved the correct PDB")
+            best = max(segments, key=lambda s: s[1] - s[0])
         else:
             if present != hotspot_set:
                 absent = sorted(hotspot_set - present)

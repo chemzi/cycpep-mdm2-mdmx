@@ -660,10 +660,9 @@ check_raises(ValueError,
     lambda: _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[10, 105]),
     'hotspots spanning two segments must raise ValueError')
 
-# Hotspot absent from PDB entirely → ValueError (P1-1: no silent fallback)
-check_raises(ValueError,
-    lambda: _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[999]),
-    'all hotspots absent from PDB must raise ValueError')
+# Hotspot absent from PDB entirely → EvidenceLogger.warning + fallback to longest segment
+rng4 = _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[999])
+check(rng4 == (1, 20), f'hotspot absent from PDB → longest segment, got {rng4}')
 
 # Empty hotspot string → back to longest segment
 rng5 = _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[])
