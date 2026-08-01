@@ -243,6 +243,7 @@ def pose_convergence(
         metadata = item.get("metadata_values") or {}
         tool = str(metadata.get("tool") or "").strip()
         model_family = str(metadata.get("model_family") or "").strip()
+        model_id = str(metadata.get("model_id") or "").strip()
         revision = str(
             metadata.get("tool_commit")
             or metadata.get("tool_version")
@@ -253,6 +254,7 @@ def pose_convergence(
             name for name, value in (
                 ("metadata.tool", tool),
                 ("metadata.model_family", model_family),
+                ("metadata.model_id", model_id),
                 ("metadata.tool_commit/tool_version", revision),
             )
             if not value
@@ -284,17 +286,22 @@ def pose_convergence(
             "tool_key": tool.casefold(),
             "model_family": model_family,
             "model_family_key": model_family.casefold(),
+            "model_id": model_id,
+            "model_id_key": model_id.casefold(),
             "revision": revision,
             "seed": metadata_seed,
             "pdb_sha256": item["pdb"]["sha256"],
         })
 
-    run_keys = [(item["tool_key"], item["seed"]) for item in identities]
+    run_keys = [
+        (item["tool_key"], item["model_id_key"], item["seed"])
+        for item in identities
+    ]
     duplicate_runs = sorted({key for key in run_keys if run_keys.count(key) > 1})
     if duplicate_runs:
         raise ContractError(
             "l6_prediction_duplicate",
-            f"duplicate predictor/seed evidence: {duplicate_runs}",
+            f"duplicate predictor/model/seed evidence: {duplicate_runs}",
         )
     pdb_hashes = [item["pdb_sha256"] for item in identities]
     duplicate_hashes = sorted({value for value in pdb_hashes if pdb_hashes.count(value) > 1})
@@ -358,6 +365,7 @@ def pose_convergence(
             {
                 "tool": item["tool"],
                 "model_family": item["model_family"],
+                "model_id": item["model_id"],
                 "revision": item["revision"],
                 "seed": item["seed"],
                 "pdb_sha256": item["pdb_sha256"],

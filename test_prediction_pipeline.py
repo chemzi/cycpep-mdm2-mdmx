@@ -23,6 +23,7 @@ from prediction_pipeline.metrics import (
     parse_rosetta_interface_output,
 )
 from prediction_pipeline.pipeline import PredictionPipeline
+from scripts.run_prediction_predictors import parse_ensemble_members
 from prediction_pipeline.structures import (
     apply_transform,
     canonical_target_residue_numbers,
@@ -187,6 +188,20 @@ class StructureAndParserTests(unittest.TestCase):
             _assert_cyclic_offset_supported(repository, use_multimer=False)
         module.write_text('def relative(batch): return "offset" in batch\n')
         _assert_cyclic_offset_supported(repository, use_multimer=False)
+
+    def test_prediction_runner_pairs_seeds_with_distinct_af2_models(self):
+        self.assertEqual(
+            parse_ensemble_members("0,1,2"),
+            [(0, 0), (1, 1), (2, 2)],
+        )
+        self.assertEqual(
+            parse_ensemble_members("3,4", "1,4"),
+            [(3, 1), (4, 4)],
+        )
+        with self.assertRaisesRegex(ContractError, "duplicate evidence"):
+            parse_ensemble_members("0,1,2", legacy_model_number=0)
+        with self.assertRaisesRegex(ContractError, "exactly one value"):
+            parse_ensemble_members("0,1,2", "0,1")
 
     def test_terminal_distance_requires_actual_c_and_n_atoms(self):
         path = self.root / "monomer.pdb"
@@ -373,6 +388,10 @@ class PredictionPipelineTests(unittest.TestCase):
                     "tool_version": "1.0.0" if predictor == "Boltz" else None,
                     "model_family": (
                         "AlphaFold2" if predictor == "ColabDesign" else "Boltz-1"
+                    ),
+                    "model_id": (
+                        f"alphafold2_model_{index}"
+                        if predictor == "ColabDesign" else "boltz1_model_0"
                     ),
                     "seed": seed,
                     "requested_sequence": SEQUENCE,
@@ -623,6 +642,7 @@ class PredictionPipelineTests(unittest.TestCase):
                     "tool": "ColabDesign",
                     "tool_commit": "a" * 40,
                     "model_family": "AlphaFold2",
+                    "model_id": f"alphafold2_model_{prediction['seed']}",
                     "seed": prediction["seed"],
                 })
                 metadata.pop("tool_version", None)
@@ -686,6 +706,7 @@ class PredictionPipelineTests(unittest.TestCase):
             metadata_path = bundle_path.parent / duplicate["metadata"]
             metadata = json.loads(metadata_path.read_text())
             metadata["seed"] = 0
+            metadata["model_id"] = "alphafold2_model_0"
             metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
         bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
 
@@ -711,6 +732,7 @@ class PredictionPipelineTests(unittest.TestCase):
                 "tool": "ColabFold",
                 "tool_version": "1.5.5",
                 "model_family": "AlphaFold2",
+                "model_id": "alphafold2_model_2",
                 "seed": third["seed"],
             })
             metadata.pop("tool_commit", None)
@@ -755,8 +777,8 @@ class PredictionPipelineTests(unittest.TestCase):
         ).run()
 
         self.assertEqual(State.load()["candidate_count"], 1270)
-        self.assertEqual(summary["pipeline_version"], "1.2.0")
-        self.assertEqual(State.load()["prediction"]["pipeline_version"], "1.2.0")
+        self.assertEqual(summary["pipeline_version"], "1.2.1")
+        self.assertEqual(State.load()["prediction"]["pipeline_version"], "1.2.1")
 
     def test_declared_artifact_hash_mismatch_is_invalid(self):
         reference = self._register_candidate()

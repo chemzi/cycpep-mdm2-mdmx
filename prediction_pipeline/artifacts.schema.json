@@ -58,7 +58,7 @@
         "pae_sha256": {"$ref": "#/$defs/sha256"},
         "metadata": {
           "type": "string",
-          "description": "Required for L6. JSON must record tool, tool_commit or tool_version, model_family, and seed."
+          "description": "Required for L6. JSON must record tool, tool_commit or tool_version, model_family, model_id, and seed."
         },
         "metadata_sha256": {"$ref": "#/$defs/sha256"},
         "binder_chain": {"type": "string", "minLength": 1}

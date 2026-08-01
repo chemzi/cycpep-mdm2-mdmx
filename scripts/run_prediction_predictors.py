@@ -52,6 +52,56 @@ DEFAULT_CUDA = os.environ.get(
 )
 
 
+def parse_ensemble_members(
+    seeds_raw: str,
+    model_numbers_raw: str | None = None,
+    legacy_model_number: int | None = None,
+) -> list[tuple[int, int]]:
+    """Return distinct ``(seed, AF2 model_number)`` ensemble members.
+
+    Fixed-weight ColabDesign inference with dropout disabled is deterministic:
+    changing only ``seed`` produces byte-identical structures.  Production
+    ensembles therefore pair seeds with distinct AF2 parameter models.
+    """
+    try:
+        seeds = [int(value) for value in seeds_raw.split(",") if value.strip()]
+    except ValueError as exc:
+        raise ContractError("seed_list_invalid", "--seeds must contain integers") from exc
+    if len(set(seeds)) != len(seeds) or not seeds:
+        raise ContractError("seed_list_invalid", "--seeds must contain unique integers")
+
+    if model_numbers_raw:
+        try:
+            models = [
+                int(value) for value in model_numbers_raw.split(",") if value.strip()
+            ]
+        except ValueError as exc:
+            raise ContractError(
+                "model_list_invalid", "--model-numbers must contain integers"
+            ) from exc
+    elif legacy_model_number is not None:
+        models = [int(legacy_model_number)] * len(seeds)
+    else:
+        models = list(range(len(seeds)))
+
+    if len(models) != len(seeds):
+        raise ContractError(
+            "ensemble_length_mismatch",
+            "--model-numbers must contain exactly one value per seed",
+        )
+    if any(model < 0 or model > 4 for model in models):
+        raise ContractError(
+            "model_list_invalid", "ColabDesign AF2 model numbers must be within 0-4"
+        )
+    if len(set(models)) != len(models):
+        raise ContractError(
+            "ensemble_model_duplicate",
+            "dropout-free inference requires distinct AF2 model numbers; changing "
+            "only the seed produces duplicate evidence",
+        )
+    return list(zip(seeds, models))
+
+
 def _relative(path: Path, base: Path) -> str:
     try:
         return str(path.relative_to(base))
@@ -153,9 +203,9 @@ def run(args) -> dict:
     ]
     if not rows:
         raise ContractError("no_candidates", "no matching Design candidates")
-    seeds = [int(value) for value in args.seeds.split(",") if value.strip()]
-    if len(set(seeds)) != len(seeds) or not seeds:
-        raise ContractError("seed_list_invalid", "--seeds must contain unique integers")
+    ensemble = parse_ensemble_members(
+        args.seeds, args.model_numbers, args.model_number
+    )
 
     artifacts_root = Path(args.artifacts_root).expanduser().resolve()
     summaries = []
@@ -164,7 +214,11 @@ def run(args) -> dict:
         candidate_dir = artifacts_root / candidate.candidate_id
         candidate_dir.mkdir(parents=True, exist_ok=True)
 
-        monomer_dir = candidate_dir / "colabdesign_monomer" / f"seed_{seeds[0]}"
+        primary_seed, primary_model = ensemble[0]
+        monomer_dir = (
+            candidate_dir / "colabdesign_monomer"
+            / f"model_{primary_model}_seed_{primary_seed}"
+        )
         monomer_command = build_colabdesign_command(
             python=args.python,
             sequence=candidate.sequence,
@@ -172,15 +226,15 @@ def run(args) -> dict:
             data_dir=args.data_dir,
             colabdesign_dir=args.colabdesign_dir,
             expected_commit=config.colabdesign_commit,
-            seed=seeds[0],
-            model_number=args.model_number,
+            seed=primary_seed,
+            model_number=primary_model,
             num_recycles=args.num_recycles,
         )
         _run_one(monomer_command, monomer_dir, args)
         global_artifacts = {
             "monomer_predictions": [
                 _prediction_entry(
-                    monomer_dir, "ColabDesign", seeds[0], primary=True
+                    monomer_dir, "ColabDesign", primary_seed, primary=True
                 )
             ]
         }
@@ -189,9 +243,10 @@ def run(args) -> dict:
         for target_id in required_targets:
             target_pdb, target_chain = target_inputs[target_id]
             predictions = []
-            for index, seed in enumerate(seeds):
+            for index, (seed, model_number) in enumerate(ensemble):
                 output_dir = (
-                    candidate_dir / "colabdesign_complex" / target_id / f"seed_{seed}"
+                    candidate_dir / "colabdesign_complex" / target_id
+                    / f"model_{model_number}_seed_{seed}"
                 )
                 command = build_colabdesign_command(
                     python=args.python,
@@ -201,7 +256,7 @@ def run(args) -> dict:
                     colabdesign_dir=args.colabdesign_dir,
                     expected_commit=config.colabdesign_commit,
                     seed=seed,
-                    model_number=args.model_number,
+                    model_number=model_number,
                     num_recycles=args.num_recycles,
                     target_pdb=target_pdb,
                     target_chain=target_chain,
@@ -267,7 +322,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--colabdesign-dir", default=DEFAULT_COLABDESIGN)
     parser.add_argument("--cuda-data-dir", default=DEFAULT_CUDA)
     parser.add_argument("--seeds", default="0,1,2")
-    parser.add_argument("--model-number", type=int, default=0)
+    parser.add_argument(
+        "--model-numbers",
+        help="comma-separated AF2 models paired with --seeds; default 0,1,2,...",
+    )
+    parser.add_argument(
+        "--model-number",
+        type=int,
+        help="legacy single-model option; valid only when exactly one seed is used",
+    )
     parser.add_argument("--num-recycles", type=int, default=3)
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--prodigy", help="path/name of the PRODIGY executable")

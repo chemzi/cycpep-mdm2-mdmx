@@ -117,13 +117,13 @@ Schema 位于 [`prediction_pipeline/artifacts.schema.json`](../prediction_pipeli
 | L3 | PRODIGY 输出 + Rosetta InterfaceAnalyzer score | `dg` 来自 PRODIGY；`sc`、`dSASA_int` 来自 Rosetta | pending；歧义/格式损坏为 invalid |
 | L4 | primary monomer + post-relax PDB/metadata | metadata 必须核对工具版本、protocol、输入/输出哈希、序列、环化类型并声明已应用共价闭环拓扑；随后计算真正的末位残基 `C` 到首位残基 `N` 距离 | 缺 post-relax 或 provenance 为 pending；哈希、序列、拓扑声明冲突为 invalid；有值但硬门失败为 invalid |
 | L5 | primary complex PDB + project binding site | 4.5 Å 重原子接触；热点覆盖率与是否命中已审阅位点 | pending |
-| L6 | 每靶标至少 3 个模型、至少 2 个独立模型家族 | 逐项核对 metadata 中的 tool、版本、model_family 和 seed；拒绝重复 tool/seed 与重复 PDB；靶蛋白共同 CA 做 Kabsch 后计算 binder backbone RMSD，跨工具 RMSD 取中位数，seed convergence 为 2 Å 簇最大占比 | provenance、独立模型家族或 seed 不足为 pending；声明与 metadata 冲突为 invalid |
+| L6 | 每靶标至少 3 个模型、至少 2 个独立模型家族 | 逐项核对 metadata 中的 tool、版本、model_family、model_id 和 seed；拒绝重复 tool/model/seed 与重复 PDB；靶蛋白共同 CA 做 Kabsch 后计算 binder backbone RMSD，跨模型家族 RMSD 取中位数，ensemble convergence 为 2 Å 簇最大占比 | provenance、独立模型家族或 ensemble 成员不足为 pending；声明与 metadata 冲突为 invalid |
 | L7 | primary monomer + Design backbone | 等残基顺序的 N/CA/C Kabsch backbone RMSD | pending |
 
 `ipsae_pae_cutoff=10 Å`、接触距离和 seed 聚类距离属于方法参数，会写入 record；它们与 Research 提供的候选筛选阈值分开管理。
 
 靶标热点始终使用已审批 target PDB 的原始残基编号。ColabDesign 等 predictor
-可能把输出靶标链改成从 1 开始、负数或其他内部编号；Prediction v1.2.0 会先验证
+可能把输出靶标链改成从 1 开始、负数或其他内部编号；Prediction v1.2.1 会先验证
 输出靶标链与已审批坐标的序列和长度完全一致，再按序列顺序恢复原始 PDB 编号。
 映射使用的 target PDB 路径和完整 SHA-256 会写入 provenance。跨 predictor 的 L6
 靶标对齐也优先使用已验证的相同序列顺序，避免不同编号体系造成假性不收敛。
@@ -131,7 +131,10 @@ Schema 位于 [`prediction_pipeline/artifacts.schema.json`](../prediction_pipeli
 L6 将底层模型家族视为独立性的边界。ColabDesign 和 ColabFold 都基于
 AlphaFold2 时只计为一个模型家族，不能通过修改 `predictor` 字符串充当两种独立
 证据。每个参与 L6 的 metadata 必须包含 `tool`、`tool_commit` 或
-`tool_version`、`model_family` 和 `seed`，并与 artifact 声明逐项一致。
+`tool_version`、`model_family`、`model_id` 和 `seed`，并与 artifact 声明逐项一致。
+ColabDesign 在 `dropout=False` 且固定 AF2 参数模型时是确定性的，只改变 seed 会
+产生完全相同的 PDB。批量 runner 因此默认把 seed 0/1/2 分别配给 AF2 model
+0/1/2；也可用 `--model-numbers` 显式指定一一对应的模型列表。
 
 Prediction 管线版本参与 config/cache digest。编号算法或其他指标实现升级后，旧 run
 不能以 resume 方式冒充新版本结果，需要建立新 run ID 重新摄取 artifact。
@@ -163,6 +166,7 @@ cd /root/workspace/NovaPeptide/cycpep-mdm2-mdmx
   scripts/run_prediction_predictors.py \
   --artifacts-root /root/damodel-tmp/novapeptide/prediction_artifacts \
   --seeds 0,1,2 \
+  --model-numbers 0,1,2 \
   --prodigy prodigy \
   --resume
 ```

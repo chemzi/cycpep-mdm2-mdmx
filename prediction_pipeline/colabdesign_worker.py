@@ -203,6 +203,7 @@ def run(args: argparse.Namespace) -> dict:
             "tool_commit": observed_commit,
             "model_family": "AlphaFold2",
             "model_variant": "multimer" if args.use_multimer else "monomer",
+            "model_id": f"alphafold2_model_{args.model_number}",
             "protocol": protocol,
             "requested_sequence": sequence,
             "observed_sequence": observed_sequences[0],
