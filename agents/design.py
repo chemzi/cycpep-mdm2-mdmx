@@ -14,7 +14,7 @@ Agent 职责边界：
   pLDDT > 0.8 的最终过滤由 Prediction Agent (Phase 3 L1) 负责。
 """
 
-import math, os, sys, json, time, subprocess, tempfile, threading, hashlib, copy, shutil
+import math, os, sys, json, time, subprocess, tempfile, threading, hashlib, copy, shutil, warnings
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -87,18 +87,26 @@ def _resolve_output_dir(environ=None, damodel_data_root=None):
 
 DEFAULT_OUTPUT_DIR = _resolve_output_dir()
 OUTPUT_DIR = str(DEFAULT_OUTPUT_DIR)
+_raw_ts = os.environ.get("RFDIFF_TIMESTEPS") or "50"
 try:
-    RFDIFF_TIMESTEPS = max(1, int(os.environ.get("RFDIFF_TIMESTEPS") or "50"))
+    RFDIFF_TIMESTEPS = max(1, int(_raw_ts))
 except (ValueError, TypeError):
+    warnings.warn(
+        f"RFDIFF_TIMESTEPS={os.environ.get('RFDIFF_TIMESTEPS')!r} is invalid, "
+        f"falling back to default=50"
+    )
     RFDIFF_TIMESTEPS = 50
 LIGANDMPNN_MODEL_TYPE = os.environ.get("LIGANDMPNN_MODEL_TYPE") or "protein_mpnn"
 LIGANDMPNN_CHECKPOINT = os.environ.get("LIGANDMPNN_CHECKPOINT") or f"{LIGANDMPNN_DIR}/model_params/proteinmpnn_v_48_020.pt"
 DESIGN_PIPELINE_VERSION = "5.1.0"
 
-# Module-level flag for _verify_colabdesign_runtime() (P3-3).
+# Module-level state for _verify_colabdesign_runtime() (P3-3).
 # Only cache *success* — a transient failure (GPU OOM, env hiccup) must
 # not permanently disable the check for the lifetime of the process (P1).
-_COLABDESIGN_OFFSET_VERIFIED = False
+# Cached signature binds to the concrete ColabDesign environment so that
+# switching CYCPEP_PYTHON / COLABDESIGN_DIR / COLABDESIGN_PARAMS
+# mid-process triggers a re-verification (P1 reviewer feedback).
+_VERIFIED_RUNTIME_SIGNATURE = None
 
 
 def _verify_colabdesign_runtime():
@@ -106,16 +114,25 @@ def _verify_colabdesign_runtime():
     non-zero residue_index offsets (P2: renamed from _check_colabdesign_loads).
 
     Runs in a subprocess (ColabDesign needs ``CYCPEP_PYTHON``, not the main
-    process interpreter).  On success the module-level flag is set so every
-    subsequent refold skips the functional gate (P1-3).
+    process interpreter).  On success the module-level signature is set so
+    every subsequent refold targeting the *same* environment skips the
+    functional gate (P1-3).
+
+    Set ``CYCPEP_SKIP_COLABDESIGN_VERIFY=1`` to bypass the check entirely
+    (orchestrator-managed GPU allocation; P1 reviewer feedback).
     """
-    global _COLABDESIGN_OFFSET_VERIFIED
-    # Fast-path check before acquiring the lock (P2-2/P3-3).
-    if _COLABDESIGN_OFFSET_VERIFIED:
+    global _VERIFIED_RUNTIME_SIGNATURE
+    if os.environ.get("CYCPEP_SKIP_COLABDESIGN_VERIFY") == "1":
+        return
+    sig = (CYCPEP_PYTHON, COLABDESIGN_DIR, COLABDESIGN_PARAMS)
+    if _VERIFIED_RUNTIME_SIGNATURE == sig:
         return
     # Double-checked locking: only one thread may run the GPU subprocess.
+    # NOTE: this only serialises within the *same* Python process.  When the
+    # orchestrator launches multiple worker processes, use
+    # CYCPEP_SKIP_COLABDESIGN_VERIFY=1 with a single pre-flight check instead.
     with _LOCK:
-        if _COLABDESIGN_OFFSET_VERIFIED:
+        if _VERIFIED_RUNTIME_SIGNATURE == sig:
             return
         script = f"""
 import sys, numpy as np
@@ -131,7 +148,13 @@ aux = model.predict(
     sample_models=False, dropout=False, hard=True, soft=False,
     verbose=False, return_aux=True,
 )
-_ = float(np.mean(aux['plddt']))
+plddt = np.array(aux['plddt'])
+if not np.isfinite(plddt).all():
+    raise RuntimeError(
+        f'ColabDesign pLDDT contains non-finite values: '
+        f'nan={np.isnan(plddt).sum()} inf={np.isinf(plddt).sum()}'
+    )
+_ = float(np.mean(plddt))
 idx = np.array(model._inputs['residue_index'])
 off = np.array(idx[:, None] - idx[None, :])
 if not np.any(off):
@@ -161,7 +184,7 @@ print('COLABDESIGN_OFFSET_OK')
                 EvidenceLogger.error("design", "colabdesign_offset_check_failed",
                     "functional test did not emit success marker")
                 return
-            _COLABDESIGN_OFFSET_VERIFIED = True
+            _VERIFIED_RUNTIME_SIGNATURE = sig
         except (subprocess.SubprocessError, OSError) as exc:
             EvidenceLogger.error("design", "colabdesign_offset_check_error", str(exc))
         finally:
@@ -208,12 +231,15 @@ SCAFFOLD_MUTABLE_AA = "ACDEFGHIKLMNPQRSTVWY"
 #
 # Route A 已改为全局两阶段收集→排序→取 top K 条（Pass1: 收集所有 backbone
 # 序列，Pass2: 全局 cheap filter）以避免 backbone 顺序偏差。Route B 同理。
-# CHEAP_FILTER_TOP_K 控制每个 backbone 内部预筛保留的序列数上限，不再约束
+# CHEAP_FILTER_MAX_KEEP 控制每个 backbone 内部预筛保留的序列数上限，不再约束
 # 最终候选数。
 try:
-    CHEAP_FILTER_TOP_K = max(1, int(os.environ.get("CHEAP_FILTER_TOP_K") or "4"))
+    CHEAP_FILTER_MAX_KEEP = max(1, int(
+        os.environ.get("CHEAP_FILTER_MAX_KEEP")
+        or os.environ.get("CHEAP_FILTER_TOP_K")
+        or "4"))
 except (ValueError, TypeError):
-    CHEAP_FILTER_TOP_K = 4
+    CHEAP_FILTER_MAX_KEEP = 4
 HYDROPHOBIC = set("AILMFWV")
 POS_CHARGED = set("KR")
 NEG_CHARGED = set("DE")
@@ -231,16 +257,25 @@ def _require_mdm_reference_route(route_name):
 def _load_existing_sequences():
     """Return sequences already registered in CandidateIndex for cross-batch dedup.
 
-    Returns ``None`` when the index is unreadable so callers can choose
-    whether to proceed without dedup or abort (P2: no silent degradation).
+    By default, an unreadable index raises ``RuntimeError`` — RFdiffusion +
+    LigandMPNN + AfCycDesign refold is too expensive to risk duplicates (P1).
+    Set ``CYCPEP_ALLOW_WITHOUT_DEDUP=1`` to downgrade to a warning and
+    proceed without dedup (testing / one-off exploration).
     """
     try:
         rows = CandidateIndex.load()
     except (OSError, UnicodeError, ValueError) as exc:
-        EvidenceLogger.error("design", "candidate_index_unavailable",
-            str(exc),
-            recovery="cross-batch dedup disabled; candidates may duplicate")
-        return None
+        if os.environ.get("CYCPEP_ALLOW_WITHOUT_DEDUP") == "1":
+            EvidenceLogger.error("design", "candidate_index_unavailable",
+                str(exc),
+                recovery="cross-batch dedup disabled; candidates may duplicate")
+            return None
+        raise RuntimeError(
+            "CandidateIndex is unavailable — cross-batch dedup cannot be "
+            "guaranteed, which risks duplicating expensive RFdiffusion / "
+            "LigandMPNN / AfCycDesign work.  Set CYCPEP_ALLOW_WITHOUT_DEDUP=1 "
+            "to proceed without dedup, or fix the index and retry."
+        ) from exc
     return {
         str(row.get("sequence") or "").upper()
         for row in rows
@@ -248,7 +283,7 @@ def _load_existing_sequences():
     }
 
 
-def _cheap_filter_sequences(seqs, seen_seqs=None, top_k=CHEAP_FILTER_TOP_K):
+def _cheap_filter_sequences(seqs, seen_seqs=None, top_k=CHEAP_FILTER_MAX_KEEP):
     """
     便宜预筛（无 GPU）：合成可行性 + 基本理化性质。
     返回 top_k 条最优序列，格式 [(seq, score), ...]。
@@ -1451,7 +1486,7 @@ source = open(af_modules.__file__, encoding='utf-8').read()
 # rename after an upstream refactor), the module-level functional smoke test
 # (_verify_colabdesign_runtime) serves as a fallback gate (P1-3).
 if '"offset" in batch' not in source and "'offset' in batch" not in source:
-    if not {_COLABDESIGN_OFFSET_VERIFIED}:
+    if not {_VERIFIED_RUNTIME_SIGNATURE is not None}:
         raise RuntimeError(
             'ColabDesign backend does not consume cyclic pairwise offset '
             'and module-level functional verification has not passed — '
@@ -1533,7 +1568,7 @@ def _run_refold(sequence, output_pdb):
     只做基础折叠验证。pLDDT > 0.8 的最终过滤由 Prediction Agent 的 L1 负责。
     """
     # Lazily verify ColabDesign cyclic-offset wiring once per process (P1-3).
-    if not _COLABDESIGN_OFFSET_VERIFIED:
+    if _VERIFIED_RUNTIME_SIGNATURE is None:
         _verify_colabdesign_runtime()
     script = _build_refold_script(sequence, output_pdb)
     spath = os.path.join(
