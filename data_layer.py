@@ -228,7 +228,9 @@ class EvidenceLogger:
         cls.log("design", "candidate_registered", {"candidate": candidate},
                 targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
                 phase="design")
-        cls._increment_counter()
+        # candidate_count is exclusively managed by _next_candidate_id() in
+        # agents/design.py.  Calling _increment_counter() here would double-
+        # count every candidate (P0-3).
 
     @classmethod
     def evaluate_layer_start(cls, layer: int, n_candidates: int, thresholds: dict):

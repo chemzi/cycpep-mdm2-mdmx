@@ -14,7 +14,7 @@ Agent 职责边界：
   pLDDT > 0.8 的最终过滤由 Prediction Agent (Phase 3 L1) 负责。
 """
 
-import math, os, sys, json, time, subprocess, tempfile, threading, hashlib, copy
+import math, os, sys, json, time, subprocess, tempfile, threading, hashlib, copy, shutil
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -75,7 +75,10 @@ def _resolve_output_dir(environ=None, damodel_data_root=None):
             return damodel_root / "designs"
     except OSError:
         # GitHub runners and other non-root users cannot stat paths below /root.
-        pass
+        # P2-4: log the fallback so unexpected output locations are traceable.
+        EvidenceLogger.log("design", "output_dir_fallback",
+            {"reason": "cannot access default output root",
+             "attempted": str(damodel_root)})
 
     runner_temp = env.get("RUNNER_TEMP")
     if runner_temp:
@@ -92,6 +95,74 @@ except (ValueError, TypeError):
 LIGANDMPNN_MODEL_TYPE = os.environ.get("LIGANDMPNN_MODEL_TYPE") or "protein_mpnn"
 LIGANDMPNN_CHECKPOINT = os.environ.get("LIGANDMPNN_CHECKPOINT") or f"{LIGANDMPNN_DIR}/model_params/proteinmpnn_v_48_020.pt"
 DESIGN_PIPELINE_VERSION = "5.1.0"
+
+# Module-level flags for _check_colabdesign_loads() (P3-3).
+_COLABDESIGN_OFFSET_VERIFIED = False
+_COLABDESIGN_CHECK_FAILED = False
+
+
+def _check_colabdesign_loads():
+    """Functional smoke test: verify ColabDesign can load and run.
+
+    Runs in a subprocess (ColabDesign needs ``CYCPEP_PYTHON``, not the main
+    process interpreter).  On success the module-level flag is set so every
+    subsequent refold skips the functional gate (P1-3).
+    """
+    global _COLABDESIGN_OFFSET_VERIFIED, _COLABDESIGN_CHECK_FAILED
+    # Fast-path check before acquiring the lock (P2-2/P3-3).
+    if _COLABDESIGN_OFFSET_VERIFIED or _COLABDESIGN_CHECK_FAILED:
+        return
+    # Double-checked locking: only one thread may run the GPU subprocess.
+    with _LOCK:
+        if _COLABDESIGN_OFFSET_VERIFIED or _COLABDESIGN_CHECK_FAILED:
+            return
+        script = f"""
+import sys, numpy as np
+sys.path.insert(0, {COLABDESIGN_DIR!r})
+from colabdesign import mk_af_model, clear_mem
+model = mk_af_model(protocol='hallucination', data_dir={COLABDESIGN_PARAMS!r})
+model.prep_inputs(length=8)
+model.restart(seed=0, seq='AAAAAAAA')
+idx = np.array(model._inputs['residue_index'])
+off = np.array(idx[:, None] - idx[None, :])
+if not np.any(off):
+    raise RuntimeError('ColabDesign residue_index offset matrix is all-zero')
+del model
+clear_mem()
+print('COLABDESIGN_OFFSET_OK')
+"""
+        spath = os.path.join(
+            tempfile.gettempdir(),
+            f"_cd_offset_check_{os.getpid()}.py",
+        )
+        with open(spath, "w") as f:
+            f.write(script)
+        try:
+            r = subprocess.run([CYCPEP_PYTHON, spath], capture_output=True, text=True,
+                timeout=120,
+                env={**os.environ,
+                     "XLA_FLAGS": f"--xla_gpu_cuda_data_dir={CUDA_DATA_DIR}",
+                     "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
+                     "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.20"})
+            if r.returncode != 0:
+                _COLABDESIGN_CHECK_FAILED = True  # P3-3: don't retry
+                EvidenceLogger.error("design", "colabdesign_offset_check_failed",
+                    f"exit={r.returncode} stderr={r.stderr[-300:]}")
+                return
+            if "COLABDESIGN_OFFSET_OK" not in (r.stdout or ""):
+                _COLABDESIGN_CHECK_FAILED = True  # P3-3: don't retry
+                EvidenceLogger.error("design", "colabdesign_offset_check_failed",
+                    "functional test did not emit success marker")
+                return
+            _COLABDESIGN_OFFSET_VERIFIED = True
+        except (subprocess.SubprocessError, OSError) as exc:
+            _COLABDESIGN_CHECK_FAILED = True  # P3-3: don't retry
+            EvidenceLogger.error("design", "colabdesign_offset_check_error", str(exc))
+        finally:
+            try:
+                os.unlink(spath)
+            except OSError:
+                pass
 
 # Geometry gates are deliberately labelled as compatibility checks.  A model
 # whose terminal atoms are close enough for a covalent bond is suitable for
@@ -129,9 +200,10 @@ SCAFFOLD_MUTABLE_AA = "ACDEFGHIKLMNPQRSTVWY"
 
 # 便宜预筛参数
 #
-# WARNING: 当前实现对每个 backbone 独立取 top_k，跨 backbone 共享 seen_seqs。
-# 如果 early backbone 的序列质量极高，late backbone 的序列全被去重/排挤，
-# 反之亦然 — 方向偏差不可控。长期应改为全局收集 → 全局排序取 top K%。
+# Route A 已改为全局两阶段收集→排序→取 top K%（Pass1: 收集所有 backbone
+# 序列，Pass2: 全局 cheap filter）以避免 backbone 顺序偏差。Route B 同理。
+# CHEAP_FILTER_TOP_K 仅用于 Route B 的每个 backbone 内部预筛上限，不再约束
+# 最终候选数。
 try:
     CHEAP_FILTER_TOP_K = max(1, int(os.environ.get("CHEAP_FILTER_TOP_K") or "4"))
 except (ValueError, TypeError):
@@ -153,13 +225,17 @@ def _require_mdm_reference_route(route_name):
 def _load_existing_sequences():
     """Return sequences already registered in CandidateIndex for cross-batch dedup."""
     try:
-        entries = getattr(CandidateIndex, "_entries", [])
-        return {e["sequence"] for e in entries if isinstance(e, dict) and "sequence" in e}
-    except (AttributeError, TypeError, KeyError) as exc:
+        rows = CandidateIndex.load()
+    except (OSError, UnicodeError, ValueError) as exc:
         EvidenceLogger.error("design", "candidate_index_unavailable",
-            f"Cannot read CandidateIndex for cross-batch dedup: {exc}",
+            str(exc),
             recovery="cross-batch dedup disabled; candidates may duplicate")
         return set()
+    return {
+        str(row.get("sequence") or "").upper()
+        for row in rows
+        if isinstance(row, dict) and row.get("sequence")
+    }
 
 
 def _cheap_filter_sequences(seqs, seen_seqs=None, top_k=CHEAP_FILTER_TOP_K):
@@ -212,6 +288,7 @@ def _synthesizability_violations(seq):
     """
     if not seq:
         return ["empty_sequence"]
+    seq = seq.upper()  # P1-2: normalise case for all downstream checks
     v = []
     # 连续疏水（线性扫描）
     run = 0
@@ -256,10 +333,11 @@ def _synthesizability_violations(seq):
         if seq[i:i+2] == "DP":
             v.append("dp_cleavage")
             break
-    # 首尾连接也要检查（环化后 N-term 和 C-term 相邻，两个方向都查）
-    if (seq[0] == "G" and seq[-1] == "N") or (seq[0] == "N" and seq[-1] == "G"):
+    # 环化连接 bond：C-term(seq[-1]) → N-term(seq[0])
+    junction = seq[-1] + seq[0]
+    if junction == "NG":
         v.append("deamidation_NG_cyclic")
-    if (seq[0] == "P" and seq[-1] == "D") or (seq[0] == "D" and seq[-1] == "P"):
+    if junction == "DP":
         v.append("dp_cleavage_cyclic")
     return v
 
@@ -272,6 +350,7 @@ def _sequence_quality_score(seq):
     - 氨基酸多样性
     """
     L = len(seq)
+    seq = seq.upper()  # normalise case for all downstream checks
     h = sum(1 for aa in seq if aa in HYDROPHOBIC) / max(L, 1)
     pos = sum(1 for aa in seq if aa in POS_CHARGED)
     neg = sum(1 for aa in seq if aa in NEG_CHARGED)
@@ -315,6 +394,10 @@ def design_rfpeptides(target_spec=None, design_config=None):
                                       hotspot_residues=_hotspots)
     seen_seqs = _load_existing_sequences()  # cross-batch dedup via CandidateIndex
 
+    # Pass 1: RFdiffusion + LigandMPNN → collect all raw sequences across
+    # every backbone so global scoring is not biased by backbone order (P1-2).
+    backbone_entries = []  # (bb_path, binder_chain, raw_seqs)
+
     for L in config["lengths"]:
         n_designs = max(1, config["n"] // len(config["lengths"]))
         backbone_dir = os.path.join(batch_dir, f"backbones_len{L}")
@@ -332,7 +415,12 @@ def design_rfpeptides(target_spec=None, design_config=None):
             print(f"[Route A] RFdiff 失败 len={L}，跳过")
             continue
 
-        bb_files = sorted(Path(backbone_dir).glob("bb_*.pdb"), key=lambda p: int(p.stem.split('_')[-1]))
+        def _bb_sort_key(p):
+            try:
+                return int(p.stem.split('_')[-1])
+            except (ValueError, IndexError):
+                return 0  # P1-1: non-standard filename, sort to front
+        bb_files = sorted(Path(backbone_dir).glob("bb_*.pdb"), key=_bb_sort_key)
         print(f"[Route A] RFdiff 完成, 找到 {len(bb_files)} 个骨架PDB")
         for bb_path in bb_files[:n_designs]:
             total_gen += 1
@@ -354,44 +442,68 @@ def design_rfpeptides(target_spec=None, design_config=None):
             if not seqs:
                 print(f"[Route A] LigandMPNN 返回 0 条序列: {bb_path.name}")
                 continue
-            # 便宜预筛 → 只 refold top 4（跨 backbone 去重）
-            filtered = _cheap_filter_sequences(seqs, seen_seqs=seen_seqs, top_k=CHEAP_FILTER_TOP_K)
-            print(f"[Route A] cheap filter: {len(seqs)}→{len(filtered)} sequences")
+            backbone_entries.append((bb_path, binder_chain, seqs))
 
-            for seq, quality_score in filtered:
-                cid = _next_candidate_id()
-                refold_dir = os.path.join(batch_dir, "candidates", cid)
-                os.makedirs(refold_dir, exist_ok=True)
-                refold_pdb = os.path.join(refold_dir, "refold.pdb")
-                plddt = _run_refold(seq, refold_pdb)
-                cyclization = _infer_cyclization_type(seq)
-                try:
-                    rc = (
-                        _ring_closure_check(refold_pdb, cyclization, sequence=seq)
-                        if os.path.exists(refold_pdb)
-                        else {"pass": False, "reason": "refold_pdb_missing"}
-                    )
-                except (ValueError, OSError) as exc:
-                    rc = {"pass": False, "reason": f"closure_check_error: {exc}"}
+    # Pass 2: global cheap filter — score ALL sequences together so early
+    # backbones cannot starve later ones (P1-2).
+    all_raw_seqs = []
+    bb_lookup = {}  # seq.upper() → [(bb_path, binder_chain), ...]  (P2-1)
+    for bb_path, binder_chain, seqs in backbone_entries:
+        for s in seqs:
+            key = s.upper() if isinstance(s, str) else ""
+            if key:
+                bb_lookup.setdefault(key, []).append((bb_path, binder_chain))
+        all_raw_seqs.extend(seqs)
 
-                if plddt is not None and rc.get("pass"):
-                    total_valid += 1
-                    manifest = _write_manifest(
-                        cid, seq, route_name, batch_id, refold_pdb, config,
-                        backbone_pdb=str(bb_path), cyclization=cyclization,
-                        ring_closure=rc,
-                    )
-                    candidate = _candidate_from_manifest(
-                        manifest, plddt,
-                        notes={"quality_score": round(quality_score, 3)},
-                    )
-                    CandidateIndex.add(candidate)
-                    EvidenceLogger.log("design", "candidate_registered",
-                        {"candidate": candidate},
-                        targets=[config["target_id"]], phase="design")
-                    candidates.append(candidate)
-                else:
-                    print(f"[Route A] refold失败: {cid} pLDDT={plddt} ring_closed={rc.get('pass')}")
+    filtered = _cheap_filter_sequences(all_raw_seqs, seen_seqs=seen_seqs, top_k=config["n"])
+    print(f"[Route A] global cheap filter: {len(all_raw_seqs)}→{len(filtered)} sequences")
+
+    for seq, quality_score in filtered:
+        bb_list = bb_lookup.get(seq)
+        if not bb_list:
+            continue
+        # Use the first backbone that produced this sequence; if multiple
+        # backbones produced the same sequence, note it in the manifest.
+        bb_path, binder_chain = bb_list[0]
+        bb_alternatives = [str(bp) for bp, _ in bb_list[1:]] if len(bb_list) > 1 else []
+        cid = _next_candidate_id()
+        refold_dir = os.path.join(batch_dir, "candidates", cid)
+        os.makedirs(refold_dir, exist_ok=True)
+        refold_pdb = os.path.join(refold_dir, "refold.pdb")
+        plddt = _run_refold(seq, refold_pdb)
+        cyclization = _infer_cyclization_type(seq)
+        try:
+            rc = (
+                _ring_closure_check(refold_pdb, cyclization, sequence=seq)
+                if os.path.exists(refold_pdb)
+                else {"pass": False, "reason": "refold_pdb_missing"}
+            )
+        except (ValueError, OSError) as exc:
+            rc = {"pass": False, "reason": f"closure_check_error: {exc}"}
+
+        if plddt is not None and rc.get("pass"):
+            total_valid += 1
+            try:
+                manifest = _write_manifest(
+                    cid, seq, route_name, batch_id, refold_pdb, config,
+                    backbone_pdb=str(bb_path), cyclization=cyclization,
+                    ring_closure=rc, bb_alternatives=bb_alternatives,
+                )
+            except ValueError as exc:
+                EvidenceLogger.error("design", "manifest_cyclization_mismatch",
+                    str(exc), recovery="skip mismatched candidate (P1-7)")
+                continue
+            candidate = _candidate_from_manifest(
+                manifest, plddt,
+                notes={"quality_score": round(quality_score, 3)},
+            )
+            CandidateIndex.add(candidate)
+            EvidenceLogger.log("design", "candidate_registered",
+                {"candidate": candidate},
+                targets=[config["target_id"]], phase="design")
+            candidates.append(candidate)
+        else:
+            print(f"[Route A] refold失败: {cid} pLDDT={plddt} ring_closed={rc.get('pass')}")
 
     EvidenceLogger.design_batch(route=route_name, n_generated=total_gen,
         n_valid=total_valid, tool_name="rfpeptides_pipeline",
@@ -435,14 +547,18 @@ def design_motif_guided(target_spec=None, design_config=None):
                                       hotspot_residues=_hotspots)
     seen_seqs = _load_existing_sequences()  # cross-batch dedup via CandidateIndex
 
+    # Pass 1: RFdiffusion + LigandMPNN → collect all raw sequences across
+    # every template and backbone (P2-3: same two-pass pattern as Route A).
+    backbone_entries = []  # (bb_path, binder_chain, raw_seqs)
+
     for tmpl_seq, tmpl_name in templates:
         if len(tmpl_seq) < 8 or len(tmpl_seq) > 20:
             continue
         L = len(tmpl_seq)
         tmpl_hotspots = _hotspot_positions(tmpl_seq)
-        backbone_dir = os.path.join(batch_dir, f"backbones_{tmpl_name}")
+        safe_name = "".join(c if c.isascii() and (c.isalnum() or c=="_") else "_" for c in tmpl_name)
+        backbone_dir = os.path.join(batch_dir, f"backbones_{safe_name}")
         os.makedirs(backbone_dir, exist_ok=True)
-        # Route B: motif 约束由 LigandMPNN 的 fixed_residues 实现，不通过 RFdiffusion inpaint_seq
         rfdiff_ok = _run_rfdiff(target_pdb=config["target_pdb"], binder_len=L,
             n_designs=n_per, output_prefix=f"{backbone_dir}/bb",
             contig=_binder_first_contig(
@@ -455,7 +571,12 @@ def design_motif_guided(target_spec=None, design_config=None):
             print(f"[Route B] RFdiff 失败 {tmpl_name}，跳过")
             continue
 
-        bb_files = sorted(Path(backbone_dir).glob("bb_*.pdb"), key=lambda p: int(p.stem.split('_')[-1]))
+        def _bb_sort_key(p):
+            try:
+                return int(p.stem.split('_')[-1])
+            except (ValueError, IndexError):
+                return 0
+        bb_files = sorted(Path(backbone_dir).glob("bb_*.pdb"), key=_bb_sort_key)
         print(f"[Route B] {tmpl_name}: RFdiff 完成, 找到 {len(bb_files)} 个骨架PDB")
         for bb_path in bb_files[:n_per]:
             total_gen += 1
@@ -469,6 +590,12 @@ def design_motif_guided(target_spec=None, design_config=None):
                 )
                 continue
             fixed_res = _hotspot_fixed_residues(tmpl_hotspots, binder_res) if binder_res else ""
+            if tmpl_hotspots and not fixed_res:
+                EvidenceLogger.error("design", "hotspot_anchors_all_out_of_range",
+                    f"template {tmpl_name!r} has {len(tmpl_hotspots)} hotspot(s) "
+                    f"but none mapped to binder residues (binder_len={len(binder_res) if binder_res else 0}); "
+                    f"Route B proceeds without fixed residues — motif guidance is DEACTIVATED",
+                    recovery="verify template-to-backbone alignment or adjust hotspot positions")
             mpnn_dir = os.path.join(batch_dir, f"mpnn_{bb_path.stem}")
             os.makedirs(mpnn_dir, exist_ok=True)
             mpnn_seed = (config["seed"] + total_gen) % 2**31
@@ -478,45 +605,71 @@ def design_motif_guided(target_spec=None, design_config=None):
             if not seqs:
                 print(f"[Route B] LigandMPNN 返回 0 条序列: {bb_path.name}")
                 continue
-            # 便宜预筛 → 只 refold top 4（跨模板去重）
-            filtered = _cheap_filter_sequences(seqs, seen_seqs=seen_seqs, top_k=CHEAP_FILTER_TOP_K)
-            print(f"[Route B] cheap filter: {len(seqs)}→{len(filtered)} sequences")
+            backbone_entries.append((bb_path, binder_chain, seqs))
 
-            for seq, quality_score in filtered:
-                cid = _next_candidate_id()
-                refold_dir = os.path.join(batch_dir, "candidates", cid)
-                os.makedirs(refold_dir, exist_ok=True)
-                refold_pdb = os.path.join(refold_dir, "refold.pdb")
-                plddt = _run_refold(seq, refold_pdb)
-                cyclization = _infer_cyclization_type(seq)
-                try:
-                    rc = (
-                        _ring_closure_check(refold_pdb, cyclization, sequence=seq)
-                        if os.path.exists(refold_pdb)
-                        else {"pass": False, "reason": "refold_pdb_missing"}
-                    )
-                except (ValueError, OSError) as exc:
-                    rc = {"pass": False, "reason": f"closure_check_error: {exc}"}
+    # Pass 2: global cheap filter — score ALL sequences together (P2-3).
+    all_raw_seqs = []
+    bb_lookup = {}
+    for bb_path, binder_chain, seqs in backbone_entries:
+        for s in seqs:
+            key = s.upper() if isinstance(s, str) else ""
+            if key:
+                bb_lookup.setdefault(key, []).append((bb_path, binder_chain))
+        all_raw_seqs.extend(seqs)
 
-                if plddt is not None and rc.get("pass"):
-                    total_valid += 1
-                    manifest = _write_manifest(
-                        cid, seq, route_name, batch_id, refold_pdb, config,
-                        backbone_pdb=str(bb_path), cyclization=cyclization,
-                        ring_closure=rc,
-                    )
-                    candidate = _candidate_from_manifest(
-                        manifest, plddt,
-                        notes={"quality_score": round(quality_score, 3)},
-                    )
-                    CandidateIndex.add(candidate)
-                    EvidenceLogger.log("design", "candidate_registered",
-                        {"candidate": candidate},
-                        targets=[config["target_id"]], phase="design")
-                    candidates.append(candidate)
-                else:
-                    print(f"[Route B] refold失败: {cid} pLDDT={plddt} ring_closed={rc.get('pass')}")
+    filtered = _cheap_filter_sequences(all_raw_seqs, seen_seqs=seen_seqs, top_k=config["n"])
+    print(f"[Route B] global cheap filter: {len(all_raw_seqs)}→{len(filtered)} sequences")
 
+    for seq, quality_score in filtered:
+        bb_list = bb_lookup.get(seq)
+        if not bb_list:
+            continue
+        bb_path, binder_chain = bb_list[0]
+        bb_alternatives = [str(bp) for bp, _ in bb_list[1:]] if len(bb_list) > 1 else []
+        cid = _next_candidate_id()
+        refold_dir = os.path.join(batch_dir, "candidates", cid)
+        os.makedirs(refold_dir, exist_ok=True)
+        refold_pdb = os.path.join(refold_dir, "refold.pdb")
+        plddt = _run_refold(seq, refold_pdb)
+        cyclization = _infer_cyclization_type(seq)
+        try:
+            rc = (
+                _ring_closure_check(refold_pdb, cyclization, sequence=seq)
+                if os.path.exists(refold_pdb)
+                else {"pass": False, "reason": "refold_pdb_missing"}
+            )
+        except (ValueError, OSError) as exc:
+            rc = {"pass": False, "reason": f"closure_check_error: {exc}"}
+
+        if plddt is not None and rc.get("pass"):
+            total_valid += 1
+            try:
+                manifest = _write_manifest(
+                    cid, seq, route_name, batch_id, refold_pdb, config,
+                    backbone_pdb=str(bb_path), cyclization=cyclization,
+                    ring_closure=rc, bb_alternatives=bb_alternatives,
+                )
+            except ValueError as exc:
+                EvidenceLogger.error("design", "manifest_cyclization_mismatch",
+                    str(exc), recovery="skip mismatched candidate (P1-7)")
+                continue
+            candidate = _candidate_from_manifest(
+                manifest, plddt,
+                notes={"quality_score": round(quality_score, 3)},
+            )
+            CandidateIndex.add(candidate)
+            EvidenceLogger.log("design", "candidate_registered",
+                {"candidate": candidate},
+                targets=[config["target_id"]], phase="design")
+            candidates.append(candidate)
+        else:
+            print(f"[Route B] refold失败: {cid} pLDDT={plddt} ring_closed={rc.get('pass')}")
+
+    if total_gen == 0 and templates:
+        EvidenceLogger.error("design", "route_b_all_templates_filtered",
+            f"{len(templates)} template(s) provided but none passed the "
+            f"length gate (8–20 residues); check known_dual_binders sequences",
+            recovery="verify Research output contains valid-length binders")
     EvidenceLogger.design_batch(route=route_name, n_generated=total_gen,
         n_valid=total_valid, tool_name="rfpeptides_motif",
         tool_version=DESIGN_PIPELINE_VERSION,
@@ -525,11 +678,12 @@ def design_motif_guided(target_spec=None, design_config=None):
 
 
 # ============================================================
-# Route C: ATSP-7041 环化改造
+# Route C: binder 模板环化改造（适配 Research 任意产出）
 # ============================================================
 
 def design_atsp_derived(target_spec=None, design_config=None):
-    """ATSP-7041 模板环化：linker × 环化矩阵 + 随机突变扩展 + refold 验证"""
+    """模板环化：linker × 环化矩阵 + 随机突变扩展 + refold 验证
+    ── 适配 Research 产出的任意 binder，不再死绑 ATSP-7041。"""
     config = _merge_config(target_spec, design_config)
     _require_mdm_reference_route("route_C_atsp")
     n = config.get("n", 200)
@@ -538,49 +692,76 @@ def design_atsp_derived(target_spec=None, design_config=None):
     rng = random.Random(seed)
 
     route_name = f"route_C_atsp_{target_slug(config['target_id'])}"
-    batch_id = f"batch_atsp_{int(time.time())}_s{seed}"
+    batch_id = f"batch_atsp_{int(time.time())}_s{seed}_{os.urandom(4).hex()}"
     batch_dir = os.path.join(OUTPUT_DIR, "route_C", batch_id)
     os.makedirs(batch_dir, exist_ok=True)
 
     with open(os.path.join(batch_dir, "design_config.json"), "w") as f:
         json.dump(config, f, indent=2)
 
-    # ATSP-7041 核心序列从 Research 数据取
+    # 从 Research 已知 binder 中选模板：优先 ATSP-7041，否则取第一个有序列的
     spec = _load_target_spec()
     binders = spec.get("known_dual_binders", [])
-    atsp_seq = None
+    template_seq = None
+    template_name = None
+    fallback = None
     for b in binders:
-        name = b.get("name", "")
         seq_candidate = b.get("sequence") or b.get("seq", "")
-        if "ATSP" in name.upper() and seq_candidate:
-            atsp_seq = seq_candidate
+        if not seq_candidate or not _validate_sequence(seq_candidate):
+            continue
+        if fallback is None:
+            fallback = (seq_candidate, b.get("name", "unknown"))
+        if "ATSP" in b.get("name", "").upper():
+            template_seq, template_name = seq_candidate, b["name"]
             break
-    if not atsp_seq:
-        EvidenceLogger.error("design", "no_atsp",
-            "known_dual_binders 中未找到 ATSP-7041 — Research 尚未产出",
-            recovery="先跑 Research Agent 产出 ATSP-7041 序列再跑 Route C")
+    if template_seq is None and fallback is not None:
+        template_seq, template_name = fallback
+        EvidenceLogger.log("design", "route_c_fallback_binder", {
+            "template": template_name,
+            "sequence": template_seq,
+            "note": "ATSP-7041 not found in Research output; using first available "
+                    "binder as cyclization template",
+        })
+    if not template_seq:
+        EvidenceLogger.error("design", "no_binder_for_route_c",
+            "known_dual_binders 中无可用的 binder 序列 — 先跑 Research Agent",
+            recovery="确保 Research 产出的 known_dual_binders 包含带 sequence 的条目")
         return []
+    # 标准化模板序列：去除小写/修饰符，与 _validate_sequence 的内部归一化一致，
+    # 否则 AfCycDesign refold 收到非标准氨基酸会静默失败（P0-3）。
+    template_seq = template_seq.upper().replace("-", "").replace("*", "")
     # Route C 序列设计: linker × 环化 全矩阵
     base_combos = []
     for linker in LINKER_MATRIX:
         for cn, cc in CYCLIZATION_PAIRS:
-            seq = f"{cn}{atsp_seq}{linker}{cc}"
-            if _validate_sequence(seq) and not _synthesizability_violations(seq):
+            seq = f"{cn}{template_seq}{linker}{cc}"
+            if not _validate_sequence(seq):
+                continue
+            violations = _synthesizability_violations(seq)
+            # head-to-tail 环化允许内部 Cys；只有二硫键环化才要求只有末端 Cys
+            if cn == "" and cc == "":
+                violations = [v for v in violations if "stray_cys" not in v]
+            if not violations:
                 base_combos.append((seq, _describe_cyclize(cn, cc, linker)))
 
     if not base_combos:
         EvidenceLogger.error("design", "route_c_empty",
-            f"All {len(LINKER_MATRIX) * len(CYCLIZATION_PAIRS)} ATSP cyclization "
-            "combos failed the synthesizability gate — no viable sequences.",
-            recovery="review ATSP-7041 sequence and cyclization pairs for "
+            f"All {len(LINKER_MATRIX) * len(CYCLIZATION_PAIRS)} cyclization "
+            "combos for template {template_name!r} failed the synthesizability "
+            "gate — no viable sequences.",
+            recovery="review template sequence and cyclization pairs for "
                      "synthesizability conflicts (NG deamidation, DP cleavage, "
                      "stray Cys, aggregation)")
         return []
 
-    # 第2级：不够 n 则随机突变扩展
-    expanded = list(base_combos)
+    # 第2级：不够 n 则随机突变扩展；基础组合需先按已有序列去重
+    # F/W/L 药效团位点保护在 L730 通过 if seq[ix] in "FWL": continue 实现
     seen_seqs = _load_existing_sequences()
-    seen_seqs.update(s.upper() for s, _ in base_combos)
+    expanded = []
+    for s, d in base_combos:
+        if s not in seen_seqs:
+            seen_seqs.add(s)
+            expanded.append((s, d))
     attempts = 0
     while len(expanded) < n and attempts < n * 10:
         attempts += 1
@@ -593,10 +774,21 @@ def design_atsp_derived(target_spec=None, design_config=None):
             continue  # nowhere to mutate without breaking a terminal Cys
         pos = rng.randint(1, max_pos)
         ix = off + pos - 1
+        # 保护 F/W/L 药效团位点（ATSP-7041 核心锚点）
+        if seq[ix] in "FWL":
+            continue
+        # 同义突变不改变序列，浪费 attempts budget（P1-4）
+        if aa == seq[ix]:
+            continue
         mutated = seq[:ix] + aa + seq[ix+1:]
-        if _validate_sequence(mutated) and not _synthesizability_violations(mutated) and mutated not in seen_seqs:
-            seen_seqs.add(mutated)
-            expanded.append((mutated, f"{desc},mut:{ix+1}={aa}"))
+        if _validate_sequence(mutated) and mutated not in seen_seqs:
+            violations = _synthesizability_violations(mutated)
+            # head-to-tail 父本允许内部 Cys（只有 Cys-Cys 环化才严格要求末端 Cys）
+            if seq[0] != "C" and seq[-1] != "C":
+                violations = [v for v in violations if "stray_cys" not in v]
+            if not violations:
+                seen_seqs.add(mutated)
+                expanded.append((mutated, f"{desc},mut:{ix+1}={aa}"))
 
     if len(expanded) < n:
         EvidenceLogger.log("design", "route_c_under_target", {
@@ -631,10 +823,15 @@ def design_atsp_derived(target_spec=None, design_config=None):
 
         if plddt is not None and rc.get("pass"):
             total_valid += 1
-            manifest = _write_manifest(
-                cid, seq, route_name, batch_id, refold_pdb, config,
-                cyclization=cyclization_type, ring_closure=rc,
-            )
+            try:
+                manifest = _write_manifest(
+                    cid, seq, route_name, batch_id, refold_pdb, config,
+                    cyclization=cyclization_type, ring_closure=rc,
+                )
+            except ValueError as exc:
+                EvidenceLogger.error("design", "manifest_cyclization_mismatch",
+                    str(exc), recovery="skip mismatched candidate (P1-7)")
+                continue
             candidate = _candidate_from_manifest(manifest, plddt, notes={"design": desc})
             CandidateIndex.add(candidate)
             EvidenceLogger.log("design", "candidate_registered",
@@ -692,50 +889,70 @@ def threshold_filter(candidates, thresholds, project_config=None):
                     "hotspot_cov=0.67) may be used when per-target configuration "
                     "is absent; calibrate against positive/negative controls",
         })
+    # Pre-resolve per-target thresholds once (P3-1).  None of these depend on
+    # individual candidates, so hoisting them out of the inner loop avoids
+    # repeated dict lookups and legacy-fallback checks.
+    _target_thresholds = []  # (target_id, slug, ipsae_threshold, hotspot_threshold)
+    for target_id in target_ids:
+        slug = target_slug(target_id)
+        ipsae_rule = threshold_for_target(thresholds, "L2_ipsae", target_id)
+        hotspot_rule = threshold_for_target(thresholds, "L5_hotspot_coverage", target_id)
+        _ipsae_candidates = [
+            thresholds.get(f"ipsae_{slug}"),
+            thresholds.get("ipsae"),
+            ipsae_rule.get("value"),
+        ]
+        ipsae_threshold = _resolve_threshold(*_ipsae_candidates)
+        ipsae_from_legacy = False
+        if _is_mdm_project and ipsae_threshold is None:
+            _LEGACY_MDM_THRESHOLDS = {"mdm2": 0.6, "mdmx": 0.5}
+            ipsae_threshold = _LEGACY_MDM_THRESHOLDS.get(slug)
+            if ipsae_threshold is not None:
+                ipsae_from_legacy = True
+        if ipsae_from_legacy:
+            if os.environ.get("CYCPEP_ALLOW_UNVALIDATED_MDM_THRESHOLDS") != "1":
+                EvidenceLogger.error("design", "mdm_threshold_rejected", {
+                    "threshold": "ipsae", "value": ipsae_threshold, "target": slug,
+                    "remediation": "calibrate per-target ipsae threshold in "
+                                    "project_config, or set "
+                                    "CYCPEP_ALLOW_UNVALIDATED_MDM_THRESHOLDS=1",
+                })
+                return []
+            EvidenceLogger.error("design", "mdm_uncalibrated_threshold_used", {
+                "threshold": "ipsae", "value": ipsae_threshold, "target": slug,
+                "remediation": "calibrate per-target ipsae threshold against "
+                                "positive/negative controls in project_config",
+            })
+        _hotspot_candidates = [
+            thresholds.get(f"hotspot_cov_{slug}"),
+            thresholds.get("hotspot_cov"),
+            hotspot_rule.get("value"),
+        ]
+        hotspot_threshold = _resolve_threshold(*_hotspot_candidates)
+        hotspot_from_legacy = False
+        if _is_mdm_project and hotspot_threshold is None:
+            hotspot_threshold = 0.67
+            hotspot_from_legacy = True
+        if hotspot_from_legacy:
+            if os.environ.get("CYCPEP_ALLOW_UNVALIDATED_MDM_THRESHOLDS") != "1":
+                EvidenceLogger.error("design", "mdm_threshold_rejected", {
+                    "threshold": "hotspot_cov", "value": 0.67, "target": slug,
+                    "remediation": "calibrate per-target hotspot_cov threshold "
+                                    "in project_config, or set "
+                                    "CYCPEP_ALLOW_UNVALIDATED_MDM_THRESHOLDS=1",
+                })
+                return []
+            EvidenceLogger.error("design", "mdm_uncalibrated_threshold_used", {
+                "threshold": "hotspot_cov", "value": 0.67, "target": slug,
+                "remediation": "calibrate per-target hotspot_cov threshold "
+                                "against positive/negative controls",
+            })
+        _target_thresholds.append((target_id, slug, ipsae_threshold, hotspot_threshold))
+
     passed = []
     for candidate in candidates:
         accepted = True
-        rejection_reason = None
-        for index, target_id in enumerate(target_ids):
-            slug = target_slug(target_id)
-            ipsae_rule = threshold_for_target(thresholds, "L2_ipsae", target_id)
-            hotspot_rule = threshold_for_target(
-                thresholds, "L5_hotspot_coverage", target_id
-            )
-            _ipsae_candidates = [
-                thresholds.get(f"ipsae_{slug}"),
-                thresholds.get("ipsae"),
-                ipsae_rule.get("value"),
-            ]
-            if _is_mdm_project:
-                _LEGACY_MDM_THRESHOLDS = {"mdm2": 0.6, "mdmx": 0.5}
-                _ipsae_candidates.append(_LEGACY_MDM_THRESHOLDS.get(slug))
-            ipsae_threshold = _resolve_threshold(*_ipsae_candidates)
-            if _is_mdm_project and ipsae_threshold in (0.6, 0.5):
-                EvidenceLogger.error("design", "mdm_uncalibrated_threshold_used", {
-                    "threshold": "ipsae",
-                    "value": ipsae_threshold,
-                    "target": slug,
-                    "remediation": "calibrate per-target ipsae threshold against "
-                                    "positive/negative controls in project_config",
-                })
-
-            _hotspot_candidates = [
-                thresholds.get(f"hotspot_cov_{slug}"),
-                thresholds.get("hotspot_cov"),
-                hotspot_rule.get("value"),
-            ]
-            if _is_mdm_project:
-                _hotspot_candidates.append(0.67)
-            hotspot_threshold = _resolve_threshold(*_hotspot_candidates)
-            if _is_mdm_project and hotspot_threshold == 0.67:
-                EvidenceLogger.error("design", "mdm_uncalibrated_threshold_used", {
-                    "threshold": "hotspot_cov",
-                    "value": 0.67,
-                    "target": slug,
-                    "remediation": "calibrate per-target hotspot_cov threshold "
-                                    "against positive/negative controls",
-                })
+        for target_id, slug, ipsae_threshold, hotspot_threshold in _target_thresholds:
             ipsae_val = _safe_float(target_value(candidate, target_id, "ipsae"))
             hotspot_val = _safe_float(target_value(candidate, target_id, "hotspot_cov"))
             if ipsae_threshold is None:
@@ -753,7 +970,6 @@ def threshold_filter(candidates, thresholds, project_config=None):
             else:
                 rejected_by = None
             if rejected_by:
-                rejection_reason = rejected_by
                 accepted = False
                 break
         if accepted:
@@ -762,73 +978,26 @@ def threshold_filter(candidates, thresholds, project_config=None):
 
 
 def pareto_front(candidates, obj_x=None, obj_y=None, project_config=None):
-    """Return the non-dominated front for configured or explicit objectives.
+    """Thin wrapper around data_layer.compute_pareto_front().
 
-    Complexity: O(n²) pairwise comparisons.  Acceptable for typical Design
-    batch sizes (≤ 1000 candidates ≈ 1 M comparisons)."""
-
+    The data-layer implementation handles missing objectives (exclude),
+    mixed direction (maximize / minimize), per-target metrics, and
+    candidate-ID validity — do NOT maintain a duplicate algorithm here.
+    """
     project = project_config or ACTIVE_PROJECT_CONFIG
     if obj_x is None:
         target_ids = required_target_ids(project)
-        objectives = [(target_id, "ipsae") for target_id in target_ids[:2]]
+        # data_layer expects {"target": ..., "metric": ..., "direction": ...}
+        objectives = tuple(
+            {"target": tid, "metric": "ipsae", "direction": "maximize"}
+            for tid in target_ids[:2]
+        )
     else:
-        objectives = [obj_x]
-        if obj_y is not None:
-            objectives.append(obj_y)
+        objectives = (obj_x,) if obj_y is None else (obj_x, obj_y)
 
-    def _safe_objective(val):
-        """Return float(val); missing, empty, or non-finite values become -inf
-        so they never dominate a candidate that has real data for that objective."""
-        if val in (None, ""):
-            return float("-inf")
-        try:
-            result = float(val)
-        except (ValueError, TypeError):
-            return float("-inf")
-        if not math.isfinite(result):
-            return float("-inf")
-        return result
-
-    def objective_value(candidate, objective):
-        if isinstance(objective, tuple):
-            return _safe_objective(target_value(candidate, objective[0], objective[1]))
-        if ":" in objective:
-            target_id, metric = objective.split(":", 1)
-            return _safe_objective(target_value(candidate, target_id, metric))
-        return _safe_objective(candidate.get(objective))
-
-    # Precompute objective vectors so each objective_value / target_value
-    # call runs once per candidate instead of O(N²) times in the inner loop.
-    _id_to_values = {}
-    for c in candidates:
-        _vals = []
-        for obj in objectives:
-            if isinstance(obj, tuple):
-                _vals.append(_safe_objective(target_value(c, obj[0], obj[1])))
-            elif ":" in obj:
-                tid, met = obj.split(":", 1)
-                _vals.append(_safe_objective(target_value(c, tid, met)))
-            else:
-                _vals.append(_safe_objective(c.get(obj)))
-        _id_to_values[id(c)] = _vals
-
-    front = []
-    for c1 in candidates:
-        dominated = False
-        c1_values = _id_to_values[id(c1)]
-        for c2 in candidates:
-            if c2 is c1:
-                continue
-            c2_values = _id_to_values[id(c2)]
-            if (
-                all(right >= left for left, right in zip(c1_values, c2_values))
-                and any(right > left for left, right in zip(c1_values, c2_values))
-            ):
-                dominated = True
-                break
-        if not dominated:
-            front.append(c1)
-    return front
+    from data_layer import compute_pareto_front
+    front_ids = set(compute_pareto_front(candidates, objectives))
+    return [c for c in candidates if c.get("candidate_id") in front_ids]
 
 
 # ============================================================
@@ -837,7 +1006,7 @@ def pareto_front(candidates, obj_x=None, obj_y=None, project_config=None):
 
 def _write_manifest(
         cid, seq, route, batch_id, refold_pdb, config, backbone_pdb=None,
-        cyclization=None, ring_closure=None):
+        cyclization=None, ring_closure=None, bb_alternatives=None):
     """Write one versioned candidate manifest with audited closure geometry."""
     refold_dir = os.path.dirname(refold_pdb)
     manifest_path = os.path.join(refold_dir, "manifest.json")
@@ -872,6 +1041,7 @@ def _write_manifest(
         "refold_pdb_hash": file_hash(refold_pdb) if os.path.exists(refold_pdb) else "",
         "backbone_pdb": backbone_pdb or "",
         "backbone_pdb_hash": file_hash(backbone_pdb) if (backbone_pdb and os.path.exists(backbone_pdb)) else "",
+        "backbone_alternatives": bb_alternatives or [],
         "ring_closure": rc,
         "design_config_summary": {
             "project_id": config.get("project_id"),
@@ -1083,13 +1253,12 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, binder_chain=None,
     ]
     if fixed_residues:
         cmd.append(f"--fixed_residues={fixed_residues}")
-    # Remove stale FASTA from a reused output directory so the downstream
-    # glob does not pick up orphaned files from a previous LigandMPNN run.
-    for stale_fa in Path(output_dir).glob("**/*.fa"):
-        try:
-            stale_fa.unlink()
-        except OSError:
-            pass
+    # Wipe the entire output directory so no orphaned file from a previous
+    # LigandMPNN run (FASTA, PDB, log, etc.) can be mistaken for new output.
+    # LigandMPNN expects a clean or non-existent directory (P1-6).
+    # ignore_errors=True already suppresses all OSError; no need for try/except.
+    shutil.rmtree(output_dir, ignore_errors=True)
+    os.makedirs(output_dir, exist_ok=True)
     try:
         _ligandmpnn_timeout = int(os.environ.get("LIGANDMPNN_TIMEOUT") or "600")
     except (ValueError, TypeError):
@@ -1163,9 +1332,12 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, binder_chain=None,
                                             f"{fa}: generated record #{header_index} is "
                                             f"{similarity:.0%} identical to reference — "
                                             f"positional fallback may have mis-identified "
-                                            f"the reference complex as a design",
+                                            f"the reference complex as a design; "
+                                            f"sequence SKIPPED to avoid contaminating "
+                                            f"the candidate pool with a known native sequence",
                                             recovery="verify LigandMPNN FASTA header format",
                                         )
+                                        continue  # P0-1: 拒绝参考序列混入候选池
                                 seqs.append(seq)
                     elif seq_buffer and not uses_id_marker and ref_binder_seq is None:
                         # Positional fallback: capture reference binder sequence
@@ -1265,11 +1437,16 @@ if dirty:
     raise RuntimeError('tracked ColabDesign sources are modified')
 source = open(af_modules.__file__, encoding='utf-8').read()
 # Guard: verify the pinned ColabDesign commit still injects cyclic offset
-# into the AF2 batch.  This exact string match is intentionally narrow —
-# any refactor of the upstream code path must be audited before designs
-# proceed with potentially broken cyclic geometry.
+# into the AF2 batch.  If the source-code pattern is absent (e.g. variable
+# rename after an upstream refactor), the module-level functional smoke test
+# (_check_colabdesign_loads) serves as a fallback gate (P1-3).
 if '"offset" in batch' not in source and "'offset' in batch" not in source:
-    raise RuntimeError('ColabDesign backend does not consume cyclic pairwise offset')
+    if not {_COLABDESIGN_OFFSET_VERIFIED}:
+        raise RuntimeError(
+            'ColabDesign backend does not consume cyclic pairwise offset '
+            'and module-level functional verification has not passed — '
+            'cyclic geometry may be broken'
+        )
 
 model = mk_af_model(protocol='hallucination', data_dir={COLABDESIGN_PARAMS!r})
 model.prep_inputs(length={L})
@@ -1345,6 +1522,9 @@ def _run_refold(sequence, output_pdb):
     AfCycDesign refold：hallucination 折叠固定序列为环肽。
     只做基础折叠验证。pLDDT > 0.8 的最终过滤由 Prediction Agent 的 L1 负责。
     """
+    # Lazily verify ColabDesign cyclic-offset wiring once per process (P1-3).
+    if not _COLABDESIGN_OFFSET_VERIFIED:
+        _check_colabdesign_loads()
     script = _build_refold_script(sequence, output_pdb)
     spath = os.path.join(
         tempfile.gettempdir(),
@@ -1390,8 +1570,17 @@ def _run_refold(sequence, output_pdb):
         _verify_fixed_sequence_pdb(output_pdb, sequence)
         with open(plddt_file) as pf:
             plddt = float(pf.read().strip())
-        if not math.isfinite(plddt) or not 0.0 <= plddt <= 1.0:
-            raise ValueError(f"invalid refold pLDDT: {plddt!r}")
+        if not math.isfinite(plddt):
+            raise ValueError(f"refold pLDDT is non-finite: {plddt!r}")
+        if plddt < 0.0:
+            raise ValueError(f"refold pLDDT is negative: {plddt!r}")
+        # ColabDesign may return 0–1 (normalised) or 0–100 (raw AlphaFold)
+        # depending on the installed version.  Normalise both to 0–1 so
+        # downstream consumers always see a consistent scale (P0-2).
+        if plddt > 1.0:
+            if plddt > 100.0:
+                raise ValueError(f"refold pLDDT out of range: {plddt!r}")
+            plddt = plddt / 100.0
         return plddt
     except ValueError as e:
         # Distinguish sequence drift (scientific integrity) from subprocess failures.
@@ -1502,7 +1691,13 @@ def _ring_closure_check(pdb_path, cyclization_type, sequence=None):
             "reason": "unsupported_cyclization",
             "detail": str(exc),
         }
-    criterion = CLOSURE_GEOMETRY[canonical]
+    criterion = CLOSURE_GEOMETRY.get(canonical)
+    if criterion is None:  # P2-1: new cyclization type missing from geometry table
+        return {
+            "pass": False,
+            "reason": "unsupported_cyclization",
+            "detail": f"no closure geometry defined for {canonical!r}",
+        }
     base = {
         "pass": False,
         "assessment": "pre_relax_geometry_compatibility",
@@ -1571,7 +1766,7 @@ def _ring_closure_check(pdb_path, cyclization_type, sequence=None):
             "distance_angstrom": round(distance, 3),
             "ideal_geometry": ideal_min <= distance <= ideal_max,
         }
-    except (OSError, UnicodeError, ValueError) as exc:
+    except (OSError, UnicodeError, ValueError, KeyError) as exc:
         return {
             **base,
             "reason": "pdb_parse_failed",
@@ -1591,9 +1786,9 @@ def _parse_hotspot_residues(hotspots_str):
         return None
     tokens = [r.strip() for r in str(hotspots_str).split(",") if r.strip()]
     for token in tokens:
-        if not token.isdigit():
+        if not token.isdigit() or int(token) < 1:  # P3-2: reject 0
             raise ValueError(
-                f"hotspot residue must be a positive integer, got {token!r}"
+                f"hotspot residue must be a positive integer (>=1), got {token!r}"
             )
     return [int(token) for token in tokens]
 
@@ -1621,6 +1816,17 @@ def _pdb_residue_range(pdb_path, chain="A", hotspot_residues=None):
             for line in f:
                 if line.startswith("ATOM") and len(line) >= 22 and line[21] == chain:
                     r = int(line[22:26].strip())
+                    # P2-3: detect insertion codes.  MDM2/MDMX structures do
+                    # not use them, but a generic pipeline should at least warn
+                    # rather than silently merging residues 100 and 100A.
+                    ins = line[26] if len(line) > 26 else " "
+                    if ins != " ":
+                        EvidenceLogger.log("design", "pdb_insertion_code_detected",
+                            {"pdb": str(pdb_path), "chain": chain,
+                             "residue": r, "insertion": ins,
+                             "note": "insertion codes are not resolved in "
+                                     "segment/hotspot logic; residues like "
+                                     "100 and 100A collapse to the same number"})
                     residues.add(r)
     except (OSError, UnicodeError, ValueError) as e:
         EvidenceLogger.error("design", "pdb_parse_failed",
@@ -1647,40 +1853,46 @@ def _pdb_residue_range(pdb_path, chain="A", hotspot_residues=None):
     if hotspot_residues:
         hotspot_set = {int(r) for r in hotspot_residues}
         present = hotspot_set & residues
-        if not present:
-            EvidenceLogger.error("design", "hotspots_all_absent",
-                f"All binding-site residues {sorted(hotspot_set)} are absent from "
-                f"the approved coordinate artifact {pdb_path} chain {chain}. "
-                f"Falling back to longest-segment heuristic.",
+        absent = sorted(hotspot_set - present)
+        if absent:
+            EvidenceLogger.error("design", "hotspot_absent_from_pdb",
+                f"hotspots {absent} absent from chain {chain} of {pdb_path}; "
+                f"present={sorted(present)}, pdb_residues={sorted(residues)}",
                 recovery="verify structure_resolution approved the correct PDB")
-            best = max(segments, key=lambda s: s[1] - s[0])
-        else:
-            if present != hotspot_set:
-                absent = sorted(hotspot_set - present)
-                EvidenceLogger.error("design", "hotspots_partially_absent",
-                    f"Binding-site residues {absent} are absent from PDB "
-                    f"{pdb_path} chain {chain}; using only {sorted(present)}.",
-                    recovery="verify structure_resolution binding-site annotation")
-            # Which segments cover at least one hotspot?
-            covering = []
-            for s_start, s_end in segments:
-                covered = {r for r in present if s_start <= r <= s_end}
-                if covered:
-                    covering.append((s_start, s_end, covered))
-            if not covering:
-                raise ValueError(
-                    f"No contiguous segment of chain {chain} contains any "
-                    f"binding-site residue {sorted(present)}. "
-                    f"PDB segments: {segments}"
-                )
-            if len(covering) > 1:
-                raise ValueError(
-                    f"Binding-site residues span multiple segments of chain "
-                    f"{chain}: {[(c[0], c[1], sorted(c[2])) for c in covering]}. "
-                    f"Cannot build a single contig covering all hotspots."
-                )
-            # All hotspots in one segment — use it even if shorter than another
-            best = (covering[0][0], covering[0][1])
+            raise ValueError(
+                f"Approved binding-site residues {absent} are absent from "
+                f"the approved coordinate artifact {pdb_path} chain {chain}. "
+                f"Verify that structure_resolution approved the correct PDB."
+            )
+        # Which segments cover at least one hotspot?
+        covering = []
+        for s_start, s_end in segments:
+            covered = {r for r in present if s_start <= r <= s_end}
+            if covered:
+                covering.append((s_start, s_end, covered))
+        if not covering:
+            EvidenceLogger.error("design", "hotspot_no_contiguous_segment",
+                f"chain {chain} segments {segments} contain none of the "
+                f"hotspots {sorted(present)} in {pdb_path}",
+                recovery="verify PDB chain assignment and hotspot residue numbering")
+            raise ValueError(
+                f"No contiguous segment of chain {chain} contains any "
+                f"binding-site residue {sorted(present)}. "
+                f"PDB segments: {segments}"
+            )
+        if len(covering) > 1:
+            EvidenceLogger.error("design", "hotspot_multi_segment",
+                f"hotspots span {len(covering)} segments of chain {chain}: "
+                f"{[(c[0], c[1], sorted(c[2])) for c in covering]} in {pdb_path}",
+                recovery="narrow hotspot range to a single contiguous segment, "
+                         "or approve a PDB with co-located binding residues")
+            raise ValueError(
+                f"Binding-site residues span multiple segments of chain "
+                f"{chain}: {[(c[0], c[1], sorted(c[2])) for c in covering]}. "
+                f"Cannot build a single contig covering all hotspots."
+            )
+        # All hotspots in one segment — use it even if shorter than another
+        best = (covering[0][0], covering[0][1])
     else:
         # No hotspot guidance → longest segment (backward compatible)
         best = max(segments, key=lambda s: s[1] - s[0])
@@ -2032,6 +2244,19 @@ def _merge_config(target_spec, design_config):
         seed = int.from_bytes(os.urandom(4), "big") % (2**31)
         print(f"[Design] invalid seed value {exc}, falling back to "
               f"auto-generated seed={seed}")
+    # Guard against fractional float silently truncated by int() (P1-2).
+    # A fractional value (e.g. 42.9 → 42) nearly always indicates a caller
+    # error where a score or progress fraction was mistakenly passed as seed.
+    if isinstance(original := (dc.get("seed") if dc.get("seed") is not None
+                                else ts.get("seed")), float):
+        if original != int(original):
+            EvidenceLogger.error("design", "fractional_seed_rejected",
+                f"seed={original!r} has a fractional part; int() truncates to "
+                f"{seed}. Pass an integer seed instead.",
+                recovery="use an integer seed in [0, 2^31-1]")
+            raise ValueError(
+                f"seed must be an integer, got fractional float {original!r}"
+            )
     if seed < 0 or seed > 2**31 - 1:
         raise ValueError(
             f"seed must be in [0, {2**31 - 1}] (int32 non-negative), got {seed}"
