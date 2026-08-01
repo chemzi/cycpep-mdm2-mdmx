@@ -152,7 +152,7 @@ plddt = np.array(aux['plddt'])
 if not np.isfinite(plddt).all():
     raise RuntimeError(
         f'ColabDesign pLDDT contains non-finite values: '
-        f'nan={np.isnan(plddt).sum()} inf={np.isinf(plddt).sum()}'
+        f'nan={{np.isnan(plddt).sum()}} inf={{np.isinf(plddt).sum()}}'
     )
 _ = float(np.mean(plddt))
 idx = np.array(model._inputs['residue_index'])
