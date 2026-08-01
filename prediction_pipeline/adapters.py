@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import statistics
 import subprocess
 import time
 from dataclasses import dataclass
@@ -129,6 +130,61 @@ def _validate_prediction_entry(entry: dict, base: Path, label: str) -> dict:
     return result
 
 
+def _validate_scored_output(
+    entry: dict,
+    base: Path,
+    label: str,
+    predictions_by_hash: dict[str, dict],
+) -> dict:
+    """Validate a per-prediction scalar-tool output and its structure link."""
+    if not isinstance(entry, dict):
+        raise ContractError("artifact_entry_type", f"{label} must be an object")
+    allowed = {
+        "predictor", "model_id", "seed", "prediction_pdb_sha256",
+        "output", "output_sha256",
+    }
+    unknown = sorted(set(entry) - allowed)
+    if unknown:
+        raise ContractError(
+            "artifact_unknown_keys", f"{label} contains unknown keys: {unknown}"
+        )
+    predictor = str(entry.get("predictor") or "").strip()
+    model_id = str(entry.get("model_id") or "").strip()
+    if not predictor or not model_id:
+        raise ContractError(
+            "scored_output_identity_missing",
+            f"{label} requires predictor and model_id",
+        )
+    if isinstance(entry.get("seed"), bool) or not isinstance(entry.get("seed"), int):
+        raise ContractError("seed_invalid", f"{label} requires an integer seed")
+    prediction_sha = str(entry.get("prediction_pdb_sha256") or "").strip().lower()
+    prediction = predictions_by_hash.get(prediction_sha)
+    if prediction is None:
+        raise ContractError(
+            "scored_output_prediction_mismatch",
+            f"{label} does not reference a declared complex prediction PDB",
+        )
+    if predictor != prediction["predictor"] or entry["seed"] != prediction["seed"]:
+        raise ContractError(
+            "scored_output_prediction_mismatch",
+            f"{label} predictor/seed does not match its linked complex prediction",
+        )
+    metadata = parse_metadata(prediction.get("metadata"))
+    if not metadata or str(metadata.get("model_id") or "").strip() != model_id:
+        raise ContractError(
+            "scored_output_model_mismatch",
+            f"{label} model_id does not match linked prediction metadata",
+        )
+    result = dict(entry)
+    result.update({
+        "predictor": predictor,
+        "model_id": model_id,
+        "prediction_pdb_sha256": prediction_sha,
+        "output": _materialize_file(entry, "output", base, f"{label}.output"),
+    })
+    return result
+
+
 @dataclass(frozen=True)
 class ArtifactBundle:
     path: Path
@@ -226,6 +282,7 @@ def load_artifact_bundle(
         unknown = sorted(set(values) - {
             "target_chain", "complex_predictions",
             "prodigy_output", "prodigy_output_sha256",
+            "prodigy_outputs",
             "rosetta_output", "rosetta_output_sha256",
         })
         if unknown:
@@ -246,6 +303,50 @@ def load_artifact_bundle(
             )
             for index, item in enumerate(predictions)
         ]
+        prodigy_outputs = values.get("prodigy_outputs") or []
+        if not isinstance(prodigy_outputs, list):
+            raise ContractError(
+                "artifact_scored_output_type",
+                f"{target_id}.prodigy_outputs must be a list",
+            )
+        if values.get("prodigy_output") and prodigy_outputs:
+            raise ContractError(
+                "prodigy_evidence_ambiguous",
+                f"{target_id} cannot declare both prodigy_output and prodigy_outputs",
+            )
+        predictions_by_hash = {
+            item["pdb"]["sha256"]: item
+            for item in result["complex_predictions"]
+        }
+        result["prodigy_outputs"] = [
+            _validate_scored_output(
+                item,
+                base,
+                f"targets.{target_id}.prodigy_outputs[{index}]",
+                predictions_by_hash,
+            )
+            for index, item in enumerate(prodigy_outputs)
+        ]
+        identities = [
+            (item["predictor"], item["model_id"], item["seed"])
+            for item in result["prodigy_outputs"]
+        ]
+        if len(set(identities)) != len(identities):
+            raise ContractError(
+                "scored_output_identity_duplicate",
+                f"{target_id}.prodigy_outputs contains duplicate model identities",
+            )
+        linked_prediction_hashes = {
+            item["prediction_pdb_sha256"] for item in result["prodigy_outputs"]
+        }
+        if result["prodigy_outputs"] and (
+            len(result["prodigy_outputs"]) != len(result["complex_predictions"])
+            or linked_prediction_hashes != set(predictions_by_hash)
+        ):
+            raise ContractError(
+                "prodigy_coverage_mismatch",
+                f"{target_id}.prodigy_outputs must cover every complex prediction once",
+            )
         for key in ("prodigy_output", "rosetta_output"):
             if values.get(key):
                 result[key] = _materialize_file(
@@ -271,6 +372,9 @@ def load_artifact_bundle(
         for key in ("prodigy_output", "rosetta_output"):
             if isinstance(values.get(key), dict):
                 file_inventory.append(values[key]["sha256"])
+        file_inventory.extend(
+            item["output"]["sha256"] for item in values.get("prodigy_outputs", [])
+        )
     bundle_sha = file_sha256(path)
     digest = object_sha256({"bundle": bundle_sha, "files": sorted(file_inventory)})
     return ArtifactBundle(
@@ -303,14 +407,49 @@ def parse_metadata(path_entry: dict | None) -> dict:
 
 def parse_target_physics(target_artifacts: dict) -> tuple[dict, list[dict]]:
     metrics, provenance = {}, []
+    prodigy_outputs = target_artifacts.get("prodigy_outputs") or []
     prodigy = target_artifacts.get("prodigy_output")
-    if prodigy:
+    if prodigy_outputs:
+        samples = []
+        for entry in prodigy_outputs:
+            parsed = parse_prodigy_output(
+                entry["output"]["path"].read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            )
+            samples.append({
+                "predictor": entry["predictor"],
+                "model_id": entry["model_id"],
+                "seed": entry["seed"],
+                "prediction_pdb_sha256": entry["prediction_pdb_sha256"],
+                "artifact": str(entry["output"]["path"]),
+                "sha256": entry["output"]["sha256"],
+                "metrics": parsed,
+            })
+        methods = {sample["metrics"].get("dg_method") for sample in samples}
+        if len(methods) != 1:
+            raise ContractError(
+                "prodigy_method_inconsistent",
+                f"PRODIGY outputs use inconsistent methods: {sorted(methods)}",
+            )
+        metrics["dg"] = float(statistics.median(
+            sample["metrics"]["dg"] for sample in samples
+        ))
+        metrics["dg_method"] = methods.pop()
+        provenance.append({
+            "tool": "PRODIGY",
+            "aggregation": "median_across_declared_predictions",
+            "samples": samples,
+            "metrics": ["dg", "dg_method"],
+        })
+    elif prodigy:
         parsed = parse_prodigy_output(
             prodigy["path"].read_text(encoding="utf-8", errors="replace")
         )
         metrics.update(parsed)
         provenance.append({
             "tool": "PRODIGY",
+            "aggregation": "legacy_single_prediction",
             "artifact": str(prodigy["path"]),
             "sha256": prodigy["sha256"],
             "metrics": sorted(parsed),

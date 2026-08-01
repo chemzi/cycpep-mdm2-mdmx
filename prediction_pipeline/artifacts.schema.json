@@ -76,8 +76,25 @@
         },
         "prodigy_output": {"type": "string"},
         "prodigy_output_sha256": {"$ref": "#/$defs/sha256"},
+        "prodigy_outputs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/scored_output"}
+        },
         "rosetta_output": {"type": "string"},
         "rosetta_output_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "scored_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["predictor", "model_id", "seed", "prediction_pdb_sha256", "output"],
+      "properties": {
+        "predictor": {"type": "string", "minLength": 1},
+        "model_id": {"type": "string", "minLength": 1},
+        "seed": {"type": "integer"},
+        "prediction_pdb_sha256": {"$ref": "#/$defs/sha256"},
+        "output": {"type": "string"},
+        "output_sha256": {"$ref": "#/$defs/sha256"}
       }
     }
   }

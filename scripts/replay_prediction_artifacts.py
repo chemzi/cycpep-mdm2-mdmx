@@ -39,6 +39,7 @@ FILE_KEYS = (
     "post_relax_metadata",
     "design_reference_pdb",
     "prodigy_output",
+    "output",
     "rosetta_output",
 )
 

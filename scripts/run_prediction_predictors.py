@@ -271,28 +271,38 @@ def run(args) -> dict:
                 "complex_predictions": predictions,
             }
             if args.prodigy:
-                primary_pdb = Path(predictions[0]["pdb"])
-                metadata = json.loads(Path(predictions[0]["metadata"]).read_text())
-                binder_chain = metadata["binder_chain"]
-                result = run_command(
-                    [
-                        args.prodigy, "-q", str(primary_pdb),
-                        "--selection", target_chain, binder_chain,
-                    ],
-                    timeout=300,
-                )
-                if result.exit_code:
-                    raise ContractError(
-                        "prodigy_failed",
-                        f"PRODIGY failed for {candidate.candidate_id}/{target_id}: "
-                        f"{result.stderr[-500:]}",
+                prodigy_outputs = []
+                for prediction in predictions:
+                    prediction_pdb = Path(prediction["pdb"])
+                    metadata = json.loads(Path(prediction["metadata"]).read_text())
+                    binder_chain = metadata["binder_chain"]
+                    result = run_command(
+                        [
+                            args.prodigy, "-q", str(prediction_pdb),
+                            "--selection", target_chain, binder_chain,
+                        ],
+                        timeout=300,
                     )
-                prodigy_path = candidate_dir / f"{target_id}_prodigy.txt"
-                prodigy_path.write_text(result.stdout, encoding="utf-8")
-                target_artifacts[target_id]["prodigy_output"] = str(prodigy_path)
-                target_artifacts[target_id]["prodigy_output_sha256"] = file_sha256(
-                    prodigy_path
-                )
+                    if result.exit_code:
+                        raise ContractError(
+                            "prodigy_failed",
+                            f"PRODIGY failed for {candidate.candidate_id}/{target_id}/"
+                            f"{metadata['model_id']}: {result.stderr[-500:]}",
+                        )
+                    prodigy_path = (
+                        candidate_dir
+                        / f"{target_id}_{metadata['model_id']}_seed_{prediction['seed']}_prodigy.txt"
+                    )
+                    prodigy_path.write_text(result.stdout, encoding="utf-8")
+                    prodigy_outputs.append({
+                        "predictor": prediction["predictor"],
+                        "model_id": metadata["model_id"],
+                        "seed": prediction["seed"],
+                        "prediction_pdb_sha256": prediction["pdb_sha256"],
+                        "output": str(prodigy_path),
+                        "output_sha256": file_sha256(prodigy_path),
+                    })
+                target_artifacts[target_id]["prodigy_outputs"] = prodigy_outputs
 
         bundle = {
             "schema_version": 1,

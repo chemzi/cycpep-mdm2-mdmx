@@ -114,9 +114,9 @@ Schema 位于 [`prediction_pipeline/artifacts.schema.json`](../prediction_pipeli
 |---|---|---|---|
 | L1 | primary monomer PDB | 候选链 CA 的 B-factor；自动识别 0–1 或 0–100 并归一到 0–1 | pending |
 | L2 | 每靶标 complex PDB + PAE | DunbrackLab IPSAE v4 的 residue-specific `d0res`，双方向取 max；多个声明预测取中位数 | pending；PAE/PDB 维度不符为 invalid |
-| L3 | PRODIGY 输出 + Rosetta InterfaceAnalyzer score | `dg` 来自 PRODIGY；`sc`、`dSASA_int` 来自 Rosetta | pending；歧义/格式损坏为 invalid |
+| L3 | 每个声明复合物模型的 PRODIGY 输出 + Rosetta InterfaceAnalyzer score | `dg` 取多模型 PRODIGY 中位数；`sc`、`dSASA_int` 来自 Rosetta | pending；歧义/格式损坏为 invalid；旧版单 PRODIGY 文件仍可读取 |
 | L4 | primary monomer + post-relax PDB/metadata | metadata 必须核对工具版本、protocol、输入/输出哈希、序列、环化类型并声明已应用共价闭环拓扑；随后计算真正的末位残基 `C` 到首位残基 `N` 距离 | 缺 post-relax 或 provenance 为 pending；哈希、序列、拓扑声明冲突为 invalid；有值但硬门失败为 invalid |
-| L5 | primary complex PDB + project binding site | 4.5 Å 重原子接触；热点覆盖率与是否命中已审阅位点 | pending |
+| L5 | 所有声明 complex PDB + project binding site | 每模型计算 4.5 Å 重原子接触；热点覆盖率取中位数，位点一致性要求严格多数模型命中已审阅位点 | pending |
 | L6 | 每靶标至少 3 个模型、至少 2 个独立模型家族 | 逐项核对 metadata 中的 tool、版本、model_family、model_id 和 seed；拒绝重复 tool/model/seed 与重复 PDB；靶蛋白共同 CA 做 Kabsch 后计算 binder backbone RMSD，跨模型家族 RMSD 取中位数，ensemble convergence 为 2 Å 簇最大占比 | provenance、独立模型家族或 ensemble 成员不足为 pending；声明与 metadata 冲突为 invalid |
 | L7 | primary monomer + Design backbone | 等残基顺序的 N/CA/C Kabsch backbone RMSD | pending |
 
@@ -135,6 +135,13 @@ AlphaFold2 时只计为一个模型家族，不能通过修改 `predictor` 字�
 ColabDesign 在 `dropout=False` 且固定 AF2 参数模型时是确定性的，只改变 seed 会
 产生完全相同的 PDB。批量 runner 因此默认把 seed 0/1/2 分别配给 AF2 model
 0/1/2；也可用 `--model-numbers` 显式指定一一对应的模型列表。
+
+Prediction v1.3.0 不再让固定的 `primary/model 0` 单独决定复合物层指标。
+L5 对 artifacts 中声明的全部复合物模型逐一计算热点覆盖并聚合；启用
+`--prodigy` 时，runner 也会为每个模型生成一份带 PDB 哈希关联的输出，L3 的
+`dg` 取集合中位数。`prodigy_outputs` 必须一一覆盖全部 complex prediction；
+缺失、重复或指向错误 PDB 会 fail-closed。旧版 `prodigy_output` 单文件仍可摄取，
+其 provenance 会明确标记为 `legacy_single_prediction`。
 
 Prediction 管线版本参与 config/cache digest。编号算法或其他指标实现升级后，旧 run
 不能以 resume 方式冒充新版本结果，需要建立新 run ID 重新摄取 artifact。

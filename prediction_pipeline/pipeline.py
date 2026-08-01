@@ -45,7 +45,7 @@ from .structures import (
 )
 
 
-PREDICTION_PIPELINE_VERSION = "1.2.1"
+PREDICTION_PIPELINE_VERSION = "1.3.0"
 RUN_SCHEMA_VERSION = 2
 RECORD_SCHEMA_VERSION = 2
 LAYER_KEYS = tuple(f"l{number}_pass" for number in range(1, 8))
@@ -98,6 +98,8 @@ def _artifact_inventory(bundle: ArtifactBundle | None) -> list[dict]:
                 add_entry(f"{target_id}.complex[{index}].{key}", entry.get(key))
         for key in ("prodigy_output", "rosetta_output"):
             add_entry(f"{target_id}.{key}", values.get(key))
+        for index, entry in enumerate(values.get("prodigy_outputs", [])):
+            add_entry(f"{target_id}.prodigy[{index}]", entry.get("output"))
     return inventory
 
 
@@ -603,35 +605,56 @@ class PredictionPipeline:
                 )
 
             if predictions:
-                primary_complex = self._primary(predictions)
                 hotspots = (target_config.get("binding_site") or {}).get("residues") or []
-                canonical_numbers, numbering_provenance = (
-                    self._canonical_target_numbering(
-                        target_id,
-                        target_config,
-                        primary_complex["structure"],
-                        configured_chain,
+                interface_samples = []
+                for prediction in predictions:
+                    canonical_numbers, numbering_provenance = (
+                        self._canonical_target_numbering(
+                            target_id,
+                            target_config,
+                            prediction["structure"],
+                            configured_chain,
+                        )
                     )
-                )
-                interface = interface_hotspot_metrics(
-                    primary_complex["structure"],
-                    configured_chain,
-                    primary_complex["binder_chain"],
-                    hotspots,
-                    self.config.interface_distance_angstrom,
-                    target_residue_numbers=canonical_numbers,
-                )
+                    interface = interface_hotspot_metrics(
+                        prediction["structure"],
+                        configured_chain,
+                        prediction["binder_chain"],
+                        hotspots,
+                        self.config.interface_distance_angstrom,
+                        target_residue_numbers=canonical_numbers,
+                    )
+                    interface_samples.append({
+                        "predictor": prediction["predictor"],
+                        "seed": prediction["seed"],
+                        "artifact": str(prediction["pdb"]["path"]),
+                        "sha256": prediction["pdb"]["sha256"],
+                        "details": interface,
+                        "target_numbering": numbering_provenance,
+                    })
+                hotspot_cov = float(np.median([
+                    sample["details"]["hotspot_cov"]
+                    for sample in interface_samples
+                ]))
+                site_fraction = float(np.mean([
+                    bool(sample["details"]["site_consistency"])
+                    for sample in interface_samples
+                ]))
                 target_metrics.update({
-                    "hotspot_cov": interface["hotspot_cov"],
-                    "site_consistency": interface["site_consistency"],
+                    "hotspot_cov": hotspot_cov,
+                    "site_consistency": site_fraction > 0.5,
+                    "site_consistency_fraction": site_fraction,
                 })
                 provenance.append({
                     "metric": f"targets.{target_id}.hotspot_cov",
                     "tool": "heavy_atom_contact",
-                    "artifact": str(primary_complex["pdb"]["path"]),
-                    "sha256": primary_complex["pdb"]["sha256"],
-                    "details": interface,
-                    "target_numbering": numbering_provenance,
+                    "aggregation": "median_hotspot_and_strict_majority_site",
+                    "details": {
+                        "hotspot_cov": hotspot_cov,
+                        "site_consistency": site_fraction > 0.5,
+                        "site_consistency_fraction": site_fraction,
+                    },
+                    "samples": interface_samples,
                 })
             else:
                 self._issue(
@@ -743,6 +766,7 @@ class PredictionPipeline:
         target_owned = {
             "ipsae", "ipae", "iptm", "dg", "dg_method", "sc", "dsasa",
             "rosetta_dg_separated", "hotspot_cov", "site_consistency",
+            "site_consistency_fraction",
             "pose_rmsd", "seed_convergence",
         }
         existing_global = existing.get("global")

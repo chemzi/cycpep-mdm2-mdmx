@@ -543,12 +543,119 @@ class PredictionPipelineTests(unittest.TestCase):
             if item.get("metric") == "targets.MDMX.hotspot_cov"
         ][0]
         self.assertEqual(
-            hotspot_provenance["details"]["covered_hotspots"], [53, 92, 95]
+            hotspot_provenance["aggregation"],
+            "median_hotspot_and_strict_majority_site",
         )
-        self.assertEqual(
-            hotspot_provenance["target_numbering"]["mapping"],
-            "reviewed_target_sequence_order",
+        self.assertEqual(len(hotspot_provenance["samples"]), 3)
+        for sample in hotspot_provenance["samples"]:
+            self.assertEqual(sample["details"]["covered_hotspots"], [53, 92, 95])
+            self.assertEqual(
+                sample["target_numbering"]["mapping"],
+                "reviewed_target_sequence_order",
+            )
+
+    def test_l5_aggregates_all_models_when_primary_is_an_outlier(self):
+        reference = self._register_candidate()
+        self._write_complete_artifacts(reference)
+        for target_id in ("MDM2", "MDMX"):
+            write_complex(
+                self.artifacts_root / "C0001" / f"{target_id}_0.pdb",
+                binder_shift=(100.0, 100.0, 100.0),
+            )
+
+        self._pipeline(thresholds=justified_thresholds()).run()
+        record = json.loads(
+            (self.run_root / "test_run" / "records" / "C0001.json").read_text()
         )
+        for target_id in ("MDM2", "MDMX"):
+            target = record["metrics"]["targets"][target_id]
+            self.assertEqual(target["hotspot_cov"], 1.0)
+            self.assertTrue(target["site_consistency"])
+            self.assertAlmostEqual(target["site_consistency_fraction"], 2 / 3)
+            provenance = next(
+                item for item in record["provenance"]
+                if item.get("metric") == f"targets.{target_id}.hotspot_cov"
+            )
+            self.assertEqual(
+                [sample["details"]["hotspot_cov"] for sample in provenance["samples"]],
+                [0.0, 1.0, 1.0],
+            )
+
+    def test_prodigy_ensemble_uses_median_and_links_each_prediction(self):
+        reference = self._register_candidate()
+        self._write_complete_artifacts(reference)
+        bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
+        bundle = json.loads(bundle_path.read_text())
+        for target_id, target in bundle["targets"].items():
+            target.pop("prodigy_output")
+            outputs = []
+            for index, value in enumerate((-2.0, -10.0, -8.0)):
+                output = self.artifacts_root / "C0001" / f"{target_id}_{index}_prodigy.txt"
+                output.write_text(f"{value}\n", encoding="utf-8")
+                prediction = target["complex_predictions"][index]
+                metadata = json.loads(
+                    (self.artifacts_root / "C0001" / prediction["metadata"]).read_text()
+                )
+                prediction_pdb = self.artifacts_root / "C0001" / prediction["pdb"]
+                outputs.append({
+                    "predictor": prediction["predictor"],
+                    "model_id": metadata["model_id"],
+                    "seed": prediction["seed"],
+                    "prediction_pdb_sha256": hashlib.sha256(
+                        prediction_pdb.read_bytes()
+                    ).hexdigest(),
+                    "output": output.name,
+                })
+            target["prodigy_outputs"] = outputs
+        bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+
+        self._pipeline(thresholds=justified_thresholds()).run()
+        record = json.loads(
+            (self.run_root / "test_run" / "records" / "C0001.json").read_text()
+        )
+        for target_id in ("MDM2", "MDMX"):
+            self.assertEqual(record["metrics"]["targets"][target_id]["dg"], -8.0)
+            provenance = next(
+                item for item in record["provenance"]
+                if item.get("tool") == "PRODIGY"
+                and item.get("metric_target") == target_id
+            )
+            self.assertEqual(
+                provenance["aggregation"], "median_across_declared_predictions"
+            )
+            self.assertEqual(len(provenance["samples"]), 3)
+
+    def test_prodigy_ensemble_rejects_incomplete_prediction_coverage(self):
+        reference = self._register_candidate()
+        self._write_complete_artifacts(reference)
+        bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
+        bundle = json.loads(bundle_path.read_text())
+        target = bundle["targets"]["MDM2"]
+        target.pop("prodigy_output")
+        prediction = target["complex_predictions"][0]
+        metadata = json.loads(
+            (self.artifacts_root / "C0001" / prediction["metadata"]).read_text()
+        )
+        prediction_pdb = self.artifacts_root / "C0001" / prediction["pdb"]
+        output = self.artifacts_root / "C0001" / "MDM2_partial_prodigy.txt"
+        output.write_text("-8.0\n", encoding="utf-8")
+        target["prodigy_outputs"] = [{
+            "predictor": prediction["predictor"],
+            "model_id": metadata["model_id"],
+            "seed": prediction["seed"],
+            "prediction_pdb_sha256": hashlib.sha256(
+                prediction_pdb.read_bytes()
+            ).hexdigest(),
+            "output": output.name,
+        }]
+        bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+
+        summary = self._pipeline(thresholds=justified_thresholds()).run()
+        self.assertEqual(summary["status_counts"], {"invalid": 1})
+        record = json.loads(
+            (self.run_root / "test_run" / "records" / "C0001.json").read_text()
+        )
+        self.assertEqual(record["issues"][0]["code"], "prodigy_coverage_mismatch")
 
     def test_withdrawn_artifacts_clear_authoritative_and_display_metrics(self):
         reference = self._register_candidate()
@@ -777,8 +884,8 @@ class PredictionPipelineTests(unittest.TestCase):
         ).run()
 
         self.assertEqual(State.load()["candidate_count"], 1270)
-        self.assertEqual(summary["pipeline_version"], "1.2.1")
-        self.assertEqual(State.load()["prediction"]["pipeline_version"], "1.2.1")
+        self.assertEqual(summary["pipeline_version"], "1.3.0")
+        self.assertEqual(State.load()["prediction"]["pipeline_version"], "1.3.0")
 
     def test_declared_artifact_hash_mismatch_is_invalid(self):
         reference = self._register_candidate()
