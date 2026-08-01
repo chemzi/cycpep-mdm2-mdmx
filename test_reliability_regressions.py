@@ -135,7 +135,16 @@ class DesignReliabilityTests(unittest.TestCase):
         cls.target_pdb = TEST_ROOT / "approved_target.pdb"
         cls.target_pdb.write_text(
             "ATOM      1  CA  ALA A  25       1.000   2.000   3.000  1.00  0.00           C  \n"
-            "ATOM      2  CA  ALA A 109       5.000   6.000   7.000  1.00  0.00           C  \n",
+            # Include binding-site residues for both MDM2 ([54,93,96]) and
+            # MDMX ([53,92,95]) so _pdb_residue_range's P0 hotspot-validation
+            # gate does not block tests that mock downstream steps.
+            "ATOM      2  CA  ALA A  53       2.000   3.000   4.000  1.00  0.00           C  \n"
+            "ATOM      3  CA  ALA A  54       2.000   3.000   4.000  1.00  0.00           C  \n"
+            "ATOM      4  CA  ALA A  92       3.000   4.000   5.000  1.00  0.00           C  \n"
+            "ATOM      5  CA  ALA A  93       3.000   4.000   5.000  1.00  0.00           C  \n"
+            "ATOM      6  CA  ALA A  95       4.000   5.000   6.000  1.00  0.00           C  \n"
+            "ATOM      7  CA  ALA A  96       4.000   5.000   6.000  1.00  0.00           C  \n"
+            "ATOM      8  CA  ALA A 109       5.000   6.000   7.000  1.00  0.00           C  \n",
             encoding="utf-8",
         )
         coordinate_sha256 = hashlib.sha256(cls.target_pdb.read_bytes()).hexdigest()

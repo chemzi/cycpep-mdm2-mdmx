@@ -61,7 +61,7 @@ target_fixture.write(
 )
 target_fixture.close()
 ACTIVE_PROJECT_CONFIG = load_project_config(raw={
-    'project_id': 'design_v5_test',
+    'project_id': 'design_v5_mdm2_mdmx_test',
     'targets': [
         {
             'id': 'MDM2',
@@ -248,6 +248,8 @@ cands = [
     {'ipsae_mdm2': 0.5, 'ipsae_mdmx': 0.6, 'hotspot_cov_mdm2': 0.8, 'hotspot_cov_mdmx': 0.8},
     {'ipsae_mdm2': 0.7, 'ipsae_mdmx': 0.4, 'hotspot_cov_mdm2': 0.8, 'hotspot_cov_mdmx': 0.8},
 ]
+# P1-1: MDM legacy thresholds rejected without explicit opt-in
+os.environ["CYCPEP_ALLOW_UNVALIDATED_MDM_THRESHOLDS"] = "1"
 passed = threshold_filter(cands, {})
 check(len(passed) == 1, f'1 passed, got {len(passed)}')
 nested = [{
@@ -257,14 +259,20 @@ nested = [{
     }}
 }]
 check(threshold_filter(nested, {}) == nested, 'nested per-target metrics pass')
+del os.environ["CYCPEP_ALLOW_UNVALIDATED_MDM_THRESHOLDS"]
+
+# P1-1: without opt-in, uncalibrated MDM thresholds ⇒ hard-reject
+print('Test 7b: uncalibrated threshold gate')
+rejected = threshold_filter(cands, {})
+check(len(rejected) == 0, f'uncalibrated thresholds rejected: got {len(rejected)}')
 
 # ── Test 8: pareto_front ──
 print('Test 8: pareto_front')
 cands = [
-    {'ipsae_mdm2': 0.7, 'ipsae_mdmx': 0.7},
-    {'ipsae_mdm2': 0.8, 'ipsae_mdmx': 0.6},
-    {'ipsae_mdm2': 0.6, 'ipsae_mdmx': 0.8},
-    {'ipsae_mdm2': 0.5, 'ipsae_mdmx': 0.5},
+    {'candidate_id': 'C1', 'ipsae_mdm2': 0.7, 'ipsae_mdmx': 0.7},
+    {'candidate_id': 'C2', 'ipsae_mdm2': 0.8, 'ipsae_mdmx': 0.6},
+    {'candidate_id': 'C3', 'ipsae_mdm2': 0.6, 'ipsae_mdmx': 0.8},
+    {'candidate_id': 'C4', 'ipsae_mdm2': 0.5, 'ipsae_mdmx': 0.5},
 ]
 front = pareto_front(cands)
 check(len(front) == 3, f'3 on front, got {len(front)}')
@@ -548,7 +556,9 @@ check("contigmap.contigs=['10-10 A25-109/0']" in captured_run['cmd'],
 check("inference.seed" not in str(captured_run['cmd']),
       'seed omitted when None')
 
-# With explicit seed it must appear in the Hydra command
+# RFdiffusion does not support per-run seeds at the GPU/DGL level;
+# _run_rfdiff intentionally ignores the seed parameter.  The seed is
+# still honoured by LigandMPNN, AfCycDesign, and Route C mutation.
 captured_run2 = {}
 subprocess.run = lambda cmd, **kwargs: (
     captured_run2.update({'cmd': cmd, 'kwargs': kwargs}) or _SuccessfulRun()
@@ -559,8 +569,8 @@ try:
                 seed=42, chain='A')
 finally:
     subprocess.run = original_subprocess_run
-check("inference.seed=42" in captured_run2['cmd'],
-      'seed propagated to RFdiffusion command')
+check("inference.seed" not in str(captured_run2['cmd']),
+      'seed intentionally omitted (RFdiffusion GPU non-deterministic)')
 
 # RFdiffusion may relabel output chains. Discover the binder by residue count
 # and map LigandMPNN FASTA segments using the emitted PDB chain order.
@@ -658,9 +668,10 @@ check_raises(ValueError,
     lambda: _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[10, 105]),
     'hotspots spanning two segments must raise ValueError')
 
-# Hotspot absent from PDB entirely → falls back to longest segment
-rng4 = _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[999])
-check(rng4 == (1, 20), f'hotspot absent from PDB → longest segment, got {rng4}')
+# Hotspot absent from PDB entirely → ValueError (P0: no silent fallback)
+check_raises(ValueError,
+    lambda: _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[999]),
+    'all hotspots absent from PDB must raise ValueError')
 
 # Empty hotspot string → back to longest segment
 rng5 = _pdb_residue_range(two_seg_fixture.name, 'A', hotspot_residues=[])
@@ -722,9 +733,14 @@ cfg_str_seed = _merge_config({'target_name': '3DAB', 'chain': 'B'}, {'seed': '42
 check(cfg_str_seed['seed'] == 42, f'string seed coerced to int, got {type(cfg_str_seed["seed"]).__name__}={cfg_str_seed["seed"]}')
 check(isinstance(cfg_str_seed['seed'], int), f'seed must be int, got {type(cfg_str_seed["seed"]).__name__}')
 
-# Float seed → int
+# Float seed → int (whole-number float tolerated)
 cfg_float_seed = _merge_config({'target_name': '3DAB', 'chain': 'B'}, {'seed': 42.0})
 check(cfg_float_seed['seed'] == 42, f'float seed coerced to int, got {cfg_float_seed["seed"]}')
+
+# Fractional float seed must be rejected (P1-2)
+check_raises(ValueError,
+    lambda: _merge_config({'target_name': '3DAB', 'chain': 'B'}, {'seed': 42.9}),
+    'fractional float seed rejected')
 
 # Negative seed → ValueError
 check_raises(ValueError,
