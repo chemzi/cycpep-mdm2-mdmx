@@ -16,6 +16,8 @@ class CandidateIndex:
     @classmethod
     def add(cls, entry): cls._entries.append(entry)
     @classmethod
+    def load(cls): return list(cls._entries)
+    @classmethod
     def stats(cls): return f'{len(cls._entries)} entries'
 
 class State:
@@ -196,10 +198,17 @@ check('linker=GGGGS' in d, f'linker -> {d}')
 # ── Test 3: _next_candidate_id ──
 print('Test 3: _next_candidate_id')
 State._data['candidate_count'] = 0
+CandidateIndex._entries = []
 c1 = _next_candidate_id()
 c2 = _next_candidate_id()
 check(c1 == 'C0001', f'c1={c1}')
 check(c2 == 'C0002', f'c2={c2}')
+
+print('Test 3b: _next_candidate_id reconciles a stale state counter')
+State._data['candidate_count'] = 2
+CandidateIndex._entries = [{'candidate_id': 'C0505'}]
+c3 = _next_candidate_id()
+check(c3 == 'C0506', f'c3={c3}')
 
 # ── Test 4: _load_target_spec ──
 print('Test 4: _load_target_spec')

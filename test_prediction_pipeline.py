@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import data_layer
-from data_layer import CandidateIndex
+from data_layer import CandidateIndex, State
 from prediction_pipeline.contracts import ContractError, PredictionConfig
 from prediction_pipeline.colabdesign_worker import (
     _assert_cyclic_offset_supported,
@@ -335,15 +335,26 @@ class PredictionPipelineTests(unittest.TestCase):
         candidate_dir.mkdir(parents=True)
         monomer = candidate_dir / "monomer.pdb"
         post = candidate_dir / "post_relax.pdb"
+        post_metadata = candidate_dir / "post_relax_metadata.json"
         write_monomer(monomer)
         write_monomer(post)
+        post_metadata.write_text(json.dumps({
+            "tool": "TestRelax",
+            "tool_version": "1.0.0",
+            "protocol": "cyclic_cartesian_relax",
+            "input_pdb_sha256": hashlib.sha256(monomer.read_bytes()).hexdigest(),
+            "output_pdb_sha256": hashlib.sha256(post.read_bytes()).hexdigest(),
+            "sequence": SEQUENCE,
+            "cyclization_type": "head_to_tail_amide",
+            "bond_topology_applied": True,
+        }), encoding="utf-8")
         targets = {}
         for target_id in ("MDM2", "MDMX"):
             predictions = []
             for index, (predictor, seed, shift) in enumerate((
                 ("ColabDesign", 0, (0, 1.5, 0)),
                 ("ColabDesign", 1, (0, 1.6, 0)),
-                ("ColabFold", 2, (0, 1.55, 0)),
+                ("Boltz", 2, (0, 1.55, 0)),
             )):
                 pdb = candidate_dir / f"{target_id}_{index}.pdb"
                 pae = candidate_dir / f"{target_id}_{index}_pae.json"
@@ -357,6 +368,13 @@ class PredictionPipelineTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 metadata.write_text(json.dumps({
+                    "tool": predictor,
+                    "tool_commit": "a" * 40 if predictor == "ColabDesign" else None,
+                    "tool_version": "1.0.0" if predictor == "Boltz" else None,
+                    "model_family": (
+                        "AlphaFold2" if predictor == "ColabDesign" else "Boltz-1"
+                    ),
+                    "seed": seed,
                     "requested_sequence": SEQUENCE,
                     "observed_sequence": SEQUENCE,
                     "binder_chain": "B",
@@ -397,6 +415,7 @@ class PredictionPipelineTests(unittest.TestCase):
                     "pdb": monomer.name,
                 }],
                 "post_relax_pdb": post.name,
+                "post_relax_metadata": post_metadata.name,
                 "design_reference_pdb": str(reference),
             },
             "targets": targets,
@@ -593,10 +612,21 @@ class PredictionPipelineTests(unittest.TestCase):
         bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
         bundle = json.loads(bundle_path.read_text())
         bundle["global"].pop("post_relax_pdb")
+        bundle["global"].pop("post_relax_metadata")
         for target in bundle["targets"].values():
             target.pop("rosetta_output")
             for prediction in target["complex_predictions"]:
                 prediction["predictor"] = "ColabDesign"
+                metadata_path = bundle_path.parent / prediction["metadata"]
+                metadata = json.loads(metadata_path.read_text())
+                metadata.update({
+                    "tool": "ColabDesign",
+                    "tool_commit": "a" * 40,
+                    "model_family": "AlphaFold2",
+                    "seed": prediction["seed"],
+                })
+                metadata.pop("tool_version", None)
+                metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
         bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
 
         summary = self._pipeline(thresholds=justified_thresholds()).run()
@@ -609,6 +639,124 @@ class PredictionPipelineTests(unittest.TestCase):
         self.assertIn("l4_post_relax_missing", codes)
         self.assertIn("l6_predictors_insufficient", codes)
         self.assertEqual(record["metrics"]["targets"]["MDM2"]["dg"], -10.5)
+
+    def test_l4_requires_relax_provenance_before_using_post_structure(self):
+        reference = self._register_candidate()
+        self._write_complete_artifacts(reference)
+        bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
+        bundle = json.loads(bundle_path.read_text())
+        bundle["global"].pop("post_relax_metadata")
+        bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+
+        summary = self._pipeline(thresholds=justified_thresholds()).run()
+        self.assertEqual(summary["status_counts"], {"prediction_pending": 1})
+        record = json.loads(
+            (self.run_root / "test_run" / "records" / "C0001.json").read_text()
+        )
+        codes = {issue["code"] for issue in record["issues"]}
+        self.assertIn("l4_post_relax_provenance_missing", codes)
+        self.assertNotIn("nc_distance_post", record["metrics"]["global"])
+
+    def test_l6_rejects_relabelled_predictor(self):
+        reference = self._register_candidate()
+        self._write_complete_artifacts(reference)
+        bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
+        bundle = json.loads(bundle_path.read_text())
+        for target in bundle["targets"].values():
+            target["complex_predictions"][2]["predictor"] = "IndependentModel"
+        bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+
+        summary = self._pipeline(thresholds=justified_thresholds()).run()
+        self.assertEqual(summary["status_counts"], {"invalid": 1})
+        record = json.loads(
+            (self.run_root / "test_run" / "records" / "C0001.json").read_text()
+        )
+        self.assertEqual(
+            record["issues"][0]["code"], "prediction_predictor_mismatch"
+        )
+
+    def test_l6_duplicate_predictor_seed_stays_pending(self):
+        reference = self._register_candidate()
+        self._write_complete_artifacts(reference)
+        bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
+        bundle = json.loads(bundle_path.read_text())
+        for target in bundle["targets"].values():
+            duplicate = target["complex_predictions"][1]
+            duplicate["seed"] = 0
+            metadata_path = bundle_path.parent / duplicate["metadata"]
+            metadata = json.loads(metadata_path.read_text())
+            metadata["seed"] = 0
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+
+        summary = self._pipeline(thresholds=justified_thresholds()).run()
+        self.assertEqual(summary["status_counts"], {"prediction_pending": 1})
+        record = json.loads(
+            (self.run_root / "test_run" / "records" / "C0001.json").read_text()
+        )
+        codes = {issue["code"] for issue in record["issues"]}
+        self.assertIn("l6_prediction_duplicate", codes)
+
+    def test_l6_requires_independent_model_families(self):
+        reference = self._register_candidate()
+        self._write_complete_artifacts(reference)
+        bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
+        bundle = json.loads(bundle_path.read_text())
+        for target in bundle["targets"].values():
+            third = target["complex_predictions"][2]
+            third["predictor"] = "ColabFold"
+            metadata_path = bundle_path.parent / third["metadata"]
+            metadata = json.loads(metadata_path.read_text())
+            metadata.update({
+                "tool": "ColabFold",
+                "tool_version": "1.5.5",
+                "model_family": "AlphaFold2",
+                "seed": third["seed"],
+            })
+            metadata.pop("tool_commit", None)
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+
+        summary = self._pipeline(thresholds=justified_thresholds()).run()
+        self.assertEqual(summary["status_counts"], {"prediction_pending": 1})
+        record = json.loads(
+            (self.run_root / "test_run" / "records" / "C0001.json").read_text()
+        )
+        codes = {issue["code"] for issue in record["issues"]}
+        self.assertIn("l6_predictors_insufficient", codes)
+
+    def test_l6_rejects_duplicate_pdb_content(self):
+        reference = self._register_candidate()
+        self._write_complete_artifacts(reference)
+        bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
+        bundle = json.loads(bundle_path.read_text())
+        for target in bundle["targets"].values():
+            target["complex_predictions"][2]["pdb"] = (
+                target["complex_predictions"][0]["pdb"]
+            )
+        bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+
+        summary = self._pipeline(thresholds=justified_thresholds()).run()
+        self.assertEqual(summary["status_counts"], {"prediction_pending": 1})
+        record = json.loads(
+            (self.run_root / "test_run" / "records" / "C0001.json").read_text()
+        )
+        codes = {issue["code"] for issue in record["issues"]}
+        self.assertIn("l6_prediction_duplicate", codes)
+
+    def test_prediction_preserves_design_candidate_counter(self):
+        self._register_candidate()
+        state = State.load()
+        state["candidate_count"] = 1270
+        State.save(state)
+
+        summary = self._pipeline(
+            thresholds={}, project=project_config(("MDM2",))
+        ).run()
+
+        self.assertEqual(State.load()["candidate_count"], 1270)
+        self.assertEqual(summary["pipeline_version"], "1.2.0")
+        self.assertEqual(State.load()["prediction"]["pipeline_version"], "1.2.0")
 
     def test_declared_artifact_hash_mismatch_is_invalid(self):
         reference = self._register_candidate()

@@ -45,7 +45,7 @@ from .structures import (
 )
 
 
-PREDICTION_PIPELINE_VERSION = "1.1.0"
+PREDICTION_PIPELINE_VERSION = "1.2.0"
 RUN_SCHEMA_VERSION = 2
 RECORD_SCHEMA_VERSION = 2
 LAYER_KEYS = tuple(f"l{number}_pass" for number in range(1, 8))
@@ -90,7 +90,7 @@ def _artifact_inventory(bundle: ArtifactBundle | None) -> list[dict]:
     for index, entry in enumerate(bundle.global_artifacts["monomer_predictions"]):
         for key in ("pdb", "pae", "metadata"):
             add_entry(f"global.monomer[{index}].{key}", entry.get(key))
-    for key in ("post_relax_pdb", "design_reference_pdb"):
+    for key in ("post_relax_pdb", "post_relax_metadata", "design_reference_pdb"):
         add_entry(f"global.{key}", bundle.global_artifacts.get(key))
     for target_id, values in bundle.target_artifacts.items():
         for index, entry in enumerate(values["complex_predictions"]):
@@ -298,6 +298,26 @@ class PredictionPipeline:
                 f"target chain {target_chain!r} invalid in {entry['pdb']['path']}",
             )
         metadata = parse_metadata(entry.get("metadata"))
+        declared_predictor = str(entry.get("predictor") or "").strip()
+        metadata_tool = str(metadata.get("tool") or "").strip()
+        if metadata_tool and metadata_tool.casefold() != declared_predictor.casefold():
+            raise ContractError(
+                "prediction_predictor_mismatch",
+                f"artifact declares predictor {declared_predictor!r}, but metadata "
+                f"declares tool {metadata_tool!r}: {entry['pdb']['path']}",
+            )
+        if "seed" in metadata:
+            metadata_seed = metadata["seed"]
+            if (
+                isinstance(metadata_seed, bool)
+                or not isinstance(metadata_seed, int)
+                or metadata_seed != entry["seed"]
+            ):
+                raise ContractError(
+                    "prediction_seed_mismatch",
+                    f"artifact declares seed {entry['seed']!r}, but metadata declares "
+                    f"seed {metadata_seed!r}: {entry['pdb']['path']}",
+                )
         for key in ("requested_sequence", "observed_sequence"):
             if metadata.get(key) and str(metadata[key]).upper() != candidate.sequence:
                 raise ContractError(
@@ -371,6 +391,7 @@ class PredictionPipeline:
             )
 
         post_relax = bundle.global_artifacts.get("post_relax_pdb")
+        post_relax_metadata_entry = bundle.global_artifacts.get("post_relax_metadata")
         if primary_monomer:
             metrics["global"]["nc_distance_pre"] = terminal_bond_distance(
                 primary_monomer["structure"], primary_monomer["binder_chain"]
@@ -382,13 +403,80 @@ class PredictionPipeline:
         if post_relax:
             structure = parse_pdb(post_relax["path"])
             chain = exact_sequence_chain(structure, candidate.sequence)
-            metrics["global"]["nc_distance_post"] = terminal_bond_distance(structure, chain)
-            provenance.append({
-                "metric": "global.nc_distance_post",
-                "tool": "relax_artifact",
-                "artifact": str(post_relax["path"]),
-                "sha256": post_relax["sha256"],
-            })
+            relax_metadata = parse_metadata(post_relax_metadata_entry)
+            required_relax_metadata = {
+                "tool": relax_metadata.get("tool"),
+                "tool_revision": (
+                    relax_metadata.get("tool_commit")
+                    or relax_metadata.get("tool_version")
+                ),
+                "protocol": relax_metadata.get("protocol"),
+                "input_pdb_sha256": relax_metadata.get("input_pdb_sha256"),
+                "output_pdb_sha256": relax_metadata.get("output_pdb_sha256"),
+                "sequence": relax_metadata.get("sequence"),
+                "cyclization_type": relax_metadata.get("cyclization_type"),
+                "bond_topology_applied": relax_metadata.get("bond_topology_applied"),
+            }
+            missing_relax_metadata = [
+                key for key, value in required_relax_metadata.items()
+                if value is None or value == ""
+            ]
+            if not post_relax_metadata_entry or missing_relax_metadata:
+                self._issue(
+                    issues,
+                    "l4_post_relax_provenance_missing",
+                    "post-relax metadata is required and lacks "
+                    f"{missing_relax_metadata or ['metadata file']}",
+                    layer=4,
+                )
+            else:
+                expected_input_sha = (
+                    primary_monomer["pdb"]["sha256"] if primary_monomer else None
+                )
+                if relax_metadata["input_pdb_sha256"] != expected_input_sha:
+                    raise ContractError(
+                        "post_relax_input_mismatch",
+                        "post-relax metadata input hash does not match the primary "
+                        "monomer prediction",
+                    )
+                if relax_metadata["output_pdb_sha256"] != post_relax["sha256"]:
+                    raise ContractError(
+                        "post_relax_output_mismatch",
+                        "post-relax metadata output hash does not match post_relax_pdb",
+                    )
+                if str(relax_metadata["sequence"]).upper() != candidate.sequence:
+                    raise ContractError(
+                        "post_relax_sequence_mismatch",
+                        "post-relax metadata sequence does not match the candidate",
+                    )
+                normalized_cyclization = str(
+                    relax_metadata["cyclization_type"]
+                ).replace("-", "_")
+                if normalized_cyclization != candidate.cyclization_type:
+                    raise ContractError(
+                        "post_relax_cyclization_mismatch",
+                        "post-relax metadata cyclization does not match Design",
+                    )
+                if relax_metadata["bond_topology_applied"] is not True:
+                    raise ContractError(
+                        "post_relax_topology_missing",
+                        "post-relax protocol did not attest that the cyclic bond "
+                        "topology was applied",
+                    )
+                metrics["global"]["nc_distance_post"] = terminal_bond_distance(
+                    structure, chain
+                )
+                provenance.append({
+                    "metric": "global.nc_distance_post",
+                    "tool": relax_metadata["tool"],
+                    "tool_revision": required_relax_metadata["tool_revision"],
+                    "protocol": relax_metadata["protocol"],
+                    "artifact": str(post_relax["path"]),
+                    "sha256": post_relax["sha256"],
+                    "metadata_artifact": str(post_relax_metadata_entry["path"]),
+                    "metadata_sha256": post_relax_metadata_entry["sha256"],
+                    "bond_topology_applied": True,
+                })
         else:
             self._issue(
                 issues, "l4_post_relax_missing", "post-relax PDB is required", layer=4
@@ -1040,6 +1128,7 @@ class PredictionPipeline:
             "prediction_run_started",
             {
                 "run_id": self.run_id,
+                "pipeline_version": PREDICTION_PIPELINE_VERSION,
                 "run_dir": str(self.run_dir),
                 "candidate_count": len(self.rows),
                 "config_digest": self.config_digest,
@@ -1100,6 +1189,7 @@ class PredictionPipeline:
         _atomic_json(self.handoff_path, handoff)
         summary = {
             "run_id": self.run_id,
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_dir": str(self.run_dir),
             "handoff_path": str(self.handoff_path),
             "evaluated": len(records),
@@ -1114,7 +1204,6 @@ class PredictionPipeline:
         }
         updated_state = State.update({
             "phase": "evaluate",
-            "candidate_count": len(CandidateIndex.load()),
             "prediction": summary,
         })
         if not any(

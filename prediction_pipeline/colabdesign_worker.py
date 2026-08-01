@@ -201,6 +201,8 @@ def run(args: argparse.Namespace) -> dict:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "tool": "ColabDesign",
             "tool_commit": observed_commit,
+            "model_family": "AlphaFold2",
+            "model_variant": "multimer" if args.use_multimer else "monomer",
             "protocol": protocol,
             "requested_sequence": sequence,
             "observed_sequence": observed_sequences[0],

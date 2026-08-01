@@ -185,6 +185,7 @@ def load_artifact_bundle(
     unknown = sorted(set(global_raw) - {
         "monomer_predictions",
         "post_relax_pdb", "post_relax_pdb_sha256",
+        "post_relax_metadata", "post_relax_metadata_sha256",
         "design_reference_pdb", "design_reference_pdb_sha256",
     })
     if unknown:
@@ -201,7 +202,7 @@ def load_artifact_bundle(
         _validate_prediction_entry(item, base, f"global.monomer_predictions[{index}]")
         for index, item in enumerate(predictions)
     ]
-    for key in ("post_relax_pdb", "design_reference_pdb"):
+    for key in ("post_relax_pdb", "post_relax_metadata", "design_reference_pdb"):
         if global_raw.get(key):
             global_artifacts[key] = _materialize_file(
                 global_raw, key, base, f"global.{key}"
@@ -258,7 +259,7 @@ def load_artifact_bundle(
             value["sha256"] for key, value in entry.items()
             if key in {"pdb", "pae", "metadata"} and isinstance(value, dict)
         )
-    for key in ("post_relax_pdb", "design_reference_pdb"):
+    for key in ("post_relax_pdb", "post_relax_metadata", "design_reference_pdb"):
         if isinstance(global_artifacts.get(key), dict):
             file_inventory.append(global_artifacts[key]["sha256"])
     for values in target_artifacts.values():

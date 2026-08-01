@@ -68,6 +68,7 @@ Schema 位于 [`prediction_pipeline/artifacts.schema.json`](../prediction_pipeli
       }
     ],
     "post_relax_pdb": "relax/post_relax.pdb",
+    "post_relax_metadata": "relax/metadata.json",
     "design_reference_pdb": "/absolute/path/to/design_backbone.pdb"
   },
   "targets": {
@@ -84,7 +85,7 @@ Schema 位于 [`prediction_pipeline/artifacts.schema.json`](../prediction_pipeli
           "binder_chain": "B"
         },
         {
-          "predictor": "ColabFold",
+          "predictor": "Boltz",
           "seed": 1,
           "pdb": "mdm2/colabfold_seed1.pdb",
           "pae": "mdm2/colabfold_seed1_pae.json",
@@ -114,18 +115,23 @@ Schema 位于 [`prediction_pipeline/artifacts.schema.json`](../prediction_pipeli
 | L1 | primary monomer PDB | 候选链 CA 的 B-factor；自动识别 0–1 或 0–100 并归一到 0–1 | pending |
 | L2 | 每靶标 complex PDB + PAE | DunbrackLab IPSAE v4 的 residue-specific `d0res`，双方向取 max；多个声明预测取中位数 | pending；PAE/PDB 维度不符为 invalid |
 | L3 | PRODIGY 输出 + Rosetta InterfaceAnalyzer score | `dg` 来自 PRODIGY；`sc`、`dSASA_int` 来自 Rosetta | pending；歧义/格式损坏为 invalid |
-| L4 | primary monomer + post-relax PDB | 真正的末位残基 `C` 到首位残基 `N` 距离，relax 前后分别计算 | 缺 post-relax 为 pending；有值但硬门失败为 invalid |
+| L4 | primary monomer + post-relax PDB/metadata | metadata 必须核对工具版本、protocol、输入/输出哈希、序列、环化类型并声明已应用共价闭环拓扑；随后计算真正的末位残基 `C` 到首位残基 `N` 距离 | 缺 post-relax 或 provenance 为 pending；哈希、序列、拓扑声明冲突为 invalid；有值但硬门失败为 invalid |
 | L5 | primary complex PDB + project binding site | 4.5 Å 重原子接触；热点覆盖率与是否命中已审阅位点 | pending |
-| L6 | 每靶标至少 3 个模型、至少 2 种 predictor | 先用靶蛋白共同 CA 做 Kabsch，再算 binder backbone RMSD；跨 predictor RMSD 取中位数，seed convergence 为 2 Å 簇最大占比 | predictor/seed 不足为 pending |
+| L6 | 每靶标至少 3 个模型、至少 2 个独立模型家族 | 逐项核对 metadata 中的 tool、版本、model_family 和 seed；拒绝重复 tool/seed 与重复 PDB；靶蛋白共同 CA 做 Kabsch 后计算 binder backbone RMSD，跨工具 RMSD 取中位数，seed convergence 为 2 Å 簇最大占比 | provenance、独立模型家族或 seed 不足为 pending；声明与 metadata 冲突为 invalid |
 | L7 | primary monomer + Design backbone | 等残基顺序的 N/CA/C Kabsch backbone RMSD | pending |
 
 `ipsae_pae_cutoff=10 Å`、接触距离和 seed 聚类距离属于方法参数，会写入 record；它们与 Research 提供的候选筛选阈值分开管理。
 
 靶标热点始终使用已审批 target PDB 的原始残基编号。ColabDesign 等 predictor
-可能把输出靶标链改成从 1 开始、负数或其他内部编号；Prediction v1.1.0 会先验证
+可能把输出靶标链改成从 1 开始、负数或其他内部编号；Prediction v1.2.0 会先验证
 输出靶标链与已审批坐标的序列和长度完全一致，再按序列顺序恢复原始 PDB 编号。
 映射使用的 target PDB 路径和完整 SHA-256 会写入 provenance。跨 predictor 的 L6
 靶标对齐也优先使用已验证的相同序列顺序，避免不同编号体系造成假性不收敛。
+
+L6 将底层模型家族视为独立性的边界。ColabDesign 和 ColabFold 都基于
+AlphaFold2 时只计为一个模型家族，不能通过修改 `predictor` 字符串充当两种独立
+证据。每个参与 L6 的 metadata 必须包含 `tool`、`tool_commit` 或
+`tool_version`、`model_family` 和 `seed`，并与 artifact 声明逐项一致。
 
 Prediction 管线版本参与 config/cache digest。编号算法或其他指标实现升级后，旧 run
 不能以 resume 方式冒充新版本结果，需要建立新 run ID 重新摄取 artifact。

@@ -14,7 +14,7 @@ Agent 职责边界：
   pLDDT > 0.8 的最终过滤由 Prediction Agent (Phase 3 L1) 负责。
 """
 
-import math, os, sys, json, time, subprocess, tempfile, threading, hashlib, copy, shutil
+import math, os, sys, json, time, subprocess, tempfile, threading, hashlib, copy, shutil, re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -2191,7 +2191,12 @@ def _next_candidate_id():
     """
     with _LOCK:
         s = State.load()
-        s["candidate_count"] = s.get("candidate_count", 0) + 1
+        existing_max = 0
+        for row in CandidateIndex.load():
+            candidate_id = str(row.get("candidate_id") or "").strip()
+            if re.fullmatch(r"C\d{4,}", candidate_id):
+                existing_max = max(existing_max, int(candidate_id[1:]))
+        s["candidate_count"] = max(int(s.get("candidate_count", 0)), existing_max) + 1
         State.save(s)
         return f"C{s['candidate_count']:04d}"
 

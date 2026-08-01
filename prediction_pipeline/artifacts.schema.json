@@ -23,6 +23,11 @@
         },
         "post_relax_pdb": {"type": "string"},
         "post_relax_pdb_sha256": {"$ref": "#/$defs/sha256"},
+        "post_relax_metadata": {
+          "type": "string",
+          "description": "JSON provenance for the relax run; required by L4 when post_relax_pdb is present."
+        },
+        "post_relax_metadata_sha256": {"$ref": "#/$defs/sha256"},
         "design_reference_pdb": {"type": "string"},
         "design_reference_pdb_sha256": {"$ref": "#/$defs/sha256"}
       }
@@ -40,14 +45,21 @@
       "additionalProperties": false,
       "required": ["predictor", "seed", "pdb"],
       "properties": {
-        "predictor": {"type": "string", "minLength": 1},
+        "predictor": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Execution tool name; it must match metadata.tool. L6 independence is counted by metadata.model_family, not this label."
+        },
         "seed": {"type": "integer"},
         "primary": {"type": "boolean"},
         "pdb": {"type": "string"},
         "pdb_sha256": {"$ref": "#/$defs/sha256"},
         "pae": {"type": "string"},
         "pae_sha256": {"$ref": "#/$defs/sha256"},
-        "metadata": {"type": "string"},
+        "metadata": {
+          "type": "string",
+          "description": "Required for L6. JSON must record tool, tool_commit or tool_version, model_family, and seed."
+        },
         "metadata_sha256": {"$ref": "#/$defs/sha256"},
         "binder_chain": {"type": "string", "minLength": 1}
       }

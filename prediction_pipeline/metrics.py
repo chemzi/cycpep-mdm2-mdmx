@@ -237,12 +237,81 @@ def pose_convergence(
             "l6_predictions_insufficient",
             f"L6 needs {minimum_predictions} predictions; received {len(predictions)}",
         )
-    predictors = {str(item.get("predictor") or "").strip() for item in predictions}
-    predictors.discard("")
-    if len(predictors) < minimum_predictors:
+    identities = []
+    for item in predictions:
+        predictor = str(item.get("predictor") or "").strip()
+        metadata = item.get("metadata_values") or {}
+        tool = str(metadata.get("tool") or "").strip()
+        model_family = str(metadata.get("model_family") or "").strip()
+        revision = str(
+            metadata.get("tool_commit")
+            or metadata.get("tool_version")
+            or ""
+        ).strip()
+        metadata_seed = metadata.get("seed")
+        missing = [
+            name for name, value in (
+                ("metadata.tool", tool),
+                ("metadata.model_family", model_family),
+                ("metadata.tool_commit/tool_version", revision),
+            )
+            if not value
+        ]
+        if metadata_seed is None:
+            missing.append("metadata.seed")
+        if missing:
+            raise ContractError(
+                "l6_predictor_provenance_missing",
+                f"L6 prediction lacks {missing}: {item['pdb']['path']}",
+            )
+        if tool.casefold() != predictor.casefold():
+            raise ContractError(
+                "l6_predictor_identity_mismatch",
+                f"L6 predictor {predictor!r} does not match metadata tool {tool!r}",
+            )
+        if (
+            isinstance(metadata_seed, bool)
+            or not isinstance(metadata_seed, int)
+            or metadata_seed != item.get("seed")
+        ):
+            raise ContractError(
+                "l6_seed_provenance_mismatch",
+                f"L6 seed {item.get('seed')!r} does not match metadata seed "
+                f"{metadata_seed!r}",
+            )
+        identities.append({
+            "tool": tool,
+            "tool_key": tool.casefold(),
+            "model_family": model_family,
+            "model_family_key": model_family.casefold(),
+            "revision": revision,
+            "seed": metadata_seed,
+            "pdb_sha256": item["pdb"]["sha256"],
+        })
+
+    run_keys = [(item["tool_key"], item["seed"]) for item in identities]
+    duplicate_runs = sorted({key for key in run_keys if run_keys.count(key) > 1})
+    if duplicate_runs:
+        raise ContractError(
+            "l6_prediction_duplicate",
+            f"duplicate predictor/seed evidence: {duplicate_runs}",
+        )
+    pdb_hashes = [item["pdb_sha256"] for item in identities]
+    duplicate_hashes = sorted({value for value in pdb_hashes if pdb_hashes.count(value) > 1})
+    if duplicate_hashes:
+        raise ContractError(
+            "l6_prediction_duplicate",
+            "identical PDB content was registered as multiple L6 predictions: "
+            f"{duplicate_hashes}",
+        )
+
+    predictors = {item["tool"] for item in identities}
+    model_families = {item["model_family"] for item in identities}
+    if len({item["model_family_key"] for item in identities}) < minimum_predictors:
         raise ContractError(
             "l6_predictors_insufficient",
-            f"L6 needs {minimum_predictors} predictors; received {sorted(predictors)}",
+            f"L6 needs {minimum_predictors} independent model families; received "
+            f"{sorted(model_families)} from tools {sorted(predictors)}",
         )
 
     for item in predictions:
@@ -263,10 +332,15 @@ def pose_convergence(
                 predictions[j]["binder_chain"],
             )
             matrix[i, j] = matrix[j, i] = value
-            if predictions[i]["predictor"] != predictions[j]["predictor"]:
+            if (
+                identities[i]["model_family_key"]
+                != identities[j]["model_family_key"]
+            ):
                 cross_predictor.append(value)
     if not cross_predictor:
-        raise ContractError("l6_cross_predictor_missing", "no cross-predictor pose pair")
+        raise ContractError(
+            "l6_cross_predictor_missing", "no cross-model-family pose pair"
+        )
 
     cluster_sizes = (matrix <= cluster_cutoff).sum(axis=1)
     medoid = int(np.argmax(cluster_sizes))
@@ -279,5 +353,16 @@ def pose_convergence(
         "cluster_medoid_index": medoid,
         "prediction_count": len(predictions),
         "predictors": sorted(predictors),
+        "model_families": sorted(model_families),
+        "predictor_identities": [
+            {
+                "tool": item["tool"],
+                "model_family": item["model_family"],
+                "revision": item["revision"],
+                "seed": item["seed"],
+                "pdb_sha256": item["pdb_sha256"],
+            }
+            for item in identities
+        ],
         "seeds": [item.get("seed") for item in predictions],
     }
