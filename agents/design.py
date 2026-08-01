@@ -74,11 +74,10 @@ def _resolve_output_dir(environ=None, damodel_data_root=None):
         if damodel_root.is_dir():
             return damodel_root / "designs"
     except OSError:
-        # GitHub runners and other non-root users cannot stat paths below /root.
-        # P2-4: log the fallback so unexpected output locations are traceable.
-        EvidenceLogger.log("design", "output_dir_fallback",
-            {"reason": "cannot access default output root",
-             "attempted": str(damodel_root)})
+        # GitHub runners and other non-root users cannot stat paths below
+        # /root.  Fall through to next candidate without logging — this
+        # function runs at import time and must not produce side effects (P2).
+        pass
 
     runner_temp = env.get("RUNNER_TEMP")
     if runner_temp:
@@ -96,25 +95,27 @@ LIGANDMPNN_MODEL_TYPE = os.environ.get("LIGANDMPNN_MODEL_TYPE") or "protein_mpnn
 LIGANDMPNN_CHECKPOINT = os.environ.get("LIGANDMPNN_CHECKPOINT") or f"{LIGANDMPNN_DIR}/model_params/proteinmpnn_v_48_020.pt"
 DESIGN_PIPELINE_VERSION = "5.1.0"
 
-# Module-level flags for _check_colabdesign_loads() (P3-3).
+# Module-level flag for _verify_colabdesign_runtime() (P3-3).
+# Only cache *success* — a transient failure (GPU OOM, env hiccup) must
+# not permanently disable the check for the lifetime of the process (P1).
 _COLABDESIGN_OFFSET_VERIFIED = False
-_COLABDESIGN_CHECK_FAILED = False
 
 
-def _check_colabdesign_loads():
-    """Functional smoke test: verify ColabDesign can load and run.
+def _verify_colabdesign_runtime():
+    """Functional smoke test: verify ColabDesign can load, forward, and produce
+    non-zero residue_index offsets (P2: renamed from _check_colabdesign_loads).
 
     Runs in a subprocess (ColabDesign needs ``CYCPEP_PYTHON``, not the main
     process interpreter).  On success the module-level flag is set so every
     subsequent refold skips the functional gate (P1-3).
     """
-    global _COLABDESIGN_OFFSET_VERIFIED, _COLABDESIGN_CHECK_FAILED
+    global _COLABDESIGN_OFFSET_VERIFIED
     # Fast-path check before acquiring the lock (P2-2/P3-3).
-    if _COLABDESIGN_OFFSET_VERIFIED or _COLABDESIGN_CHECK_FAILED:
+    if _COLABDESIGN_OFFSET_VERIFIED:
         return
     # Double-checked locking: only one thread may run the GPU subprocess.
     with _LOCK:
-        if _COLABDESIGN_OFFSET_VERIFIED or _COLABDESIGN_CHECK_FAILED:
+        if _COLABDESIGN_OFFSET_VERIFIED:
             return
         script = f"""
 import sys, numpy as np
@@ -123,6 +124,14 @@ from colabdesign import mk_af_model, clear_mem
 model = mk_af_model(protocol='hallucination', data_dir={COLABDESIGN_PARAMS!r})
 model.prep_inputs(length=8)
 model.restart(seed=0, seq='AAAAAAAA')
+# Minimal forward pass — proves AF model can actually compute, not just
+# import and initialise (P1 smoke-test enhancement).
+aux = model.predict(
+    seq='AAAAAAAA', seed=0, models=[0], num_models=1, num_recycles=1,
+    sample_models=False, dropout=False, hard=True, soft=False,
+    verbose=False, return_aux=True,
+)
+_ = float(np.mean(aux['plddt']))
 idx = np.array(model._inputs['residue_index'])
 off = np.array(idx[:, None] - idx[None, :])
 if not np.any(off):
@@ -145,18 +154,15 @@ print('COLABDESIGN_OFFSET_OK')
                      "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
                      "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.20"})
             if r.returncode != 0:
-                _COLABDESIGN_CHECK_FAILED = True  # P3-3: don't retry
                 EvidenceLogger.error("design", "colabdesign_offset_check_failed",
                     f"exit={r.returncode} stderr={r.stderr[-300:]}")
                 return
             if "COLABDESIGN_OFFSET_OK" not in (r.stdout or ""):
-                _COLABDESIGN_CHECK_FAILED = True  # P3-3: don't retry
                 EvidenceLogger.error("design", "colabdesign_offset_check_failed",
                     "functional test did not emit success marker")
                 return
             _COLABDESIGN_OFFSET_VERIFIED = True
         except (subprocess.SubprocessError, OSError) as exc:
-            _COLABDESIGN_CHECK_FAILED = True  # P3-3: don't retry
             EvidenceLogger.error("design", "colabdesign_offset_check_error", str(exc))
         finally:
             try:
@@ -200,9 +206,9 @@ SCAFFOLD_MUTABLE_AA = "ACDEFGHIKLMNPQRSTVWY"
 
 # 便宜预筛参数
 #
-# Route A 已改为全局两阶段收集→排序→取 top K%（Pass1: 收集所有 backbone
+# Route A 已改为全局两阶段收集→排序→取 top K 条（Pass1: 收集所有 backbone
 # 序列，Pass2: 全局 cheap filter）以避免 backbone 顺序偏差。Route B 同理。
-# CHEAP_FILTER_TOP_K 仅用于 Route B 的每个 backbone 内部预筛上限，不再约束
+# CHEAP_FILTER_TOP_K 控制每个 backbone 内部预筛保留的序列数上限，不再约束
 # 最终候选数。
 try:
     CHEAP_FILTER_TOP_K = max(1, int(os.environ.get("CHEAP_FILTER_TOP_K") or "4"))
@@ -223,14 +229,18 @@ def _require_mdm_reference_route(route_name):
 
 
 def _load_existing_sequences():
-    """Return sequences already registered in CandidateIndex for cross-batch dedup."""
+    """Return sequences already registered in CandidateIndex for cross-batch dedup.
+
+    Returns ``None`` when the index is unreadable so callers can choose
+    whether to proceed without dedup or abort (P2: no silent degradation).
+    """
     try:
         rows = CandidateIndex.load()
     except (OSError, UnicodeError, ValueError) as exc:
         EvidenceLogger.error("design", "candidate_index_unavailable",
             str(exc),
             recovery="cross-batch dedup disabled; candidates may duplicate")
-        return set()
+        return None
     return {
         str(row.get("sequence") or "").upper()
         for row in rows
@@ -392,7 +402,7 @@ def design_rfpeptides(target_spec=None, design_config=None):
     _hotspots = _parse_hotspot_residues(config.get("hotspots", ""))
     target_range = _pdb_residue_range(config["target_pdb"], config["chain"],
                                       hotspot_residues=_hotspots)
-    seen_seqs = _load_existing_sequences()  # cross-batch dedup via CandidateIndex
+    seen_seqs = _load_existing_sequences() or set()  # cross-batch dedup (None → set())
 
     # Pass 1: RFdiffusion + LigandMPNN → collect all raw sequences across
     # every backbone so global scoring is not biased by backbone order (P1-2).
@@ -545,7 +555,7 @@ def design_motif_guided(target_spec=None, design_config=None):
     _hotspots = _parse_hotspot_residues(config.get("hotspots", ""))
     target_range = _pdb_residue_range(config["target_pdb"], config["chain"],
                                       hotspot_residues=_hotspots)
-    seen_seqs = _load_existing_sequences()  # cross-batch dedup via CandidateIndex
+    seen_seqs = _load_existing_sequences() or set()  # cross-batch dedup (None → set())
 
     # Pass 1: RFdiffusion + LigandMPNN → collect all raw sequences across
     # every template and backbone (P2-3: same two-pass pattern as Route A).
@@ -756,7 +766,7 @@ def design_atsp_derived(target_spec=None, design_config=None):
 
     # 第2级：不够 n 则随机突变扩展；基础组合需先按已有序列去重
     # F/W/L 药效团位点保护在 L730 通过 if seq[ix] in "FWL": continue 实现
-    seen_seqs = _load_existing_sequences()
+    seen_seqs = _load_existing_sequences() or set()  # cross-batch dedup (None → set())
     expanded = []
     for s, d in base_combos:
         if s not in seen_seqs:
@@ -1439,7 +1449,7 @@ source = open(af_modules.__file__, encoding='utf-8').read()
 # Guard: verify the pinned ColabDesign commit still injects cyclic offset
 # into the AF2 batch.  If the source-code pattern is absent (e.g. variable
 # rename after an upstream refactor), the module-level functional smoke test
-# (_check_colabdesign_loads) serves as a fallback gate (P1-3).
+# (_verify_colabdesign_runtime) serves as a fallback gate (P1-3).
 if '"offset" in batch' not in source and "'offset' in batch" not in source:
     if not {_COLABDESIGN_OFFSET_VERIFIED}:
         raise RuntimeError(
@@ -1524,7 +1534,7 @@ def _run_refold(sequence, output_pdb):
     """
     # Lazily verify ColabDesign cyclic-offset wiring once per process (P1-3).
     if not _COLABDESIGN_OFFSET_VERIFIED:
-        _check_colabdesign_loads()
+        _verify_colabdesign_runtime()
     script = _build_refold_script(sequence, output_pdb)
     spath = os.path.join(
         tempfile.gettempdir(),
