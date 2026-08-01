@@ -14,7 +14,7 @@ Agent 职责边界：
   pLDDT > 0.8 的最终过滤由 Prediction Agent (Phase 3 L1) 负责。
 """
 
-import math, os, sys, json, time, subprocess, tempfile, threading, hashlib, copy, shutil, warnings
+import math, os, sys, json, time, subprocess, tempfile, threading, hashlib, copy, shutil
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -91,10 +91,9 @@ _raw_ts = os.environ.get("RFDIFF_TIMESTEPS") or "50"
 try:
     RFDIFF_TIMESTEPS = max(1, int(_raw_ts))
 except (ValueError, TypeError):
-    warnings.warn(
-        f"RFDIFF_TIMESTEPS={os.environ.get('RFDIFF_TIMESTEPS')!r} is invalid, "
-        f"falling back to default=50"
-    )
+    EvidenceLogger.log("design", "invalid_RFDIFF_TIMESTEPS",
+        {"value": os.environ.get("RFDIFF_TIMESTEPS"),
+         "fallback": 50})
     RFDIFF_TIMESTEPS = 50
 LIGANDMPNN_MODEL_TYPE = os.environ.get("LIGANDMPNN_MODEL_TYPE") or "protein_mpnn"
 LIGANDMPNN_CHECKPOINT = os.environ.get("LIGANDMPNN_CHECKPOINT") or f"{LIGANDMPNN_DIR}/model_params/proteinmpnn_v_48_020.pt"
@@ -123,6 +122,10 @@ def _verify_colabdesign_runtime():
     """
     global _VERIFIED_RUNTIME_SIGNATURE
     if os.environ.get("CYCPEP_SKIP_COLABDESIGN_VERIFY") == "1":
+        EvidenceLogger.log("design", "colabdesign_verify_skipped",
+            {"reason": "CYCPEP_SKIP_COLABDESIGN_VERIFY=1 — "
+             "GPU allocation managed by orchestrator; "
+             "no pre-flight ColabDesign check will run"})
         return
     sig = (CYCPEP_PYTHON, COLABDESIGN_DIR, COLABDESIGN_PARAMS)
     if _VERIFIED_RUNTIME_SIGNATURE == sig:
@@ -141,26 +144,28 @@ from colabdesign import mk_af_model, clear_mem
 model = mk_af_model(protocol='hallucination', data_dir={COLABDESIGN_PARAMS!r})
 model.prep_inputs(length=8)
 model.restart(seed=0, seq='AAAAAAAA')
-# Minimal forward pass — proves AF model can actually compute, not just
-# import and initialise (P1 smoke-test enhancement).
-aux = model.predict(
-    seq='AAAAAAAA', seed=0, models=[0], num_models=1, num_recycles=1,
-    sample_models=False, dropout=False, hard=True, soft=False,
-    verbose=False, return_aux=True,
-)
-plddt = np.array(aux['plddt'])
-if not np.isfinite(plddt).all():
-    raise RuntimeError(
-        f'ColabDesign pLDDT contains non-finite values: '
-        f'nan={{np.isnan(plddt).sum()}} inf={{np.isinf(plddt).sum()}}'
+try:
+    # Minimal forward pass — proves AF model can actually compute, not just
+    # import and initialise (P1 smoke-test enhancement).
+    aux = model.predict(
+        seq='AAAAAAAA', seed=0, models=[0], num_models=1, num_recycles=1,
+        sample_models=False, dropout=False, hard=True, soft=False,
+        verbose=False, return_aux=True,
     )
-_ = float(np.mean(plddt))
-idx = np.array(model._inputs['residue_index'])
-off = np.array(idx[:, None] - idx[None, :])
-if not np.any(off):
-    raise RuntimeError('ColabDesign residue_index offset matrix is all-zero')
-del model
-clear_mem()
+    plddt = np.array(aux['plddt'])
+    if not np.isfinite(plddt).all():
+        raise RuntimeError(
+            f'ColabDesign pLDDT contains non-finite values: '
+            f'nan={{np.isnan(plddt).sum()}} inf={{np.isinf(plddt).sum()}}'
+        )
+    _ = float(np.mean(plddt))
+    idx = np.array(model._inputs['residue_index'])
+    off = np.array(idx[:, None] - idx[None, :])
+    if not np.any(off):
+        raise RuntimeError('ColabDesign residue_index offset matrix is all-zero')
+finally:
+    del model
+    clear_mem()
 print('COLABDESIGN_OFFSET_OK')
 """
         spath = os.path.join(
