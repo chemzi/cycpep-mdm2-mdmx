@@ -155,9 +155,9 @@ print('COLABDESIGN_OFFSET_OK')
                      "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.20"})
             if r.returncode != 0:
                 EvidenceLogger.error("design", "colabdesign_offset_check_failed",
-                    f"exit={r.returncode} stderr={r.stderr[-300:]}")
+                    f"exit={r.returncode} stderr={getattr(r, 'stderr', '')[-300:]}")
                 return
-            if "COLABDESIGN_OFFSET_OK" not in (r.stdout or ""):
+            if "COLABDESIGN_OFFSET_OK" not in (getattr(r, 'stdout', '') or ""):
                 EvidenceLogger.error("design", "colabdesign_offset_check_failed",
                     "functional test did not emit success marker")
                 return
