@@ -91,10 +91,12 @@ _raw_ts = os.environ.get("RFDIFF_TIMESTEPS") or "50"
 try:
     RFDIFF_TIMESTEPS = max(1, int(_raw_ts))
 except (ValueError, TypeError):
-    EvidenceLogger.log("design", "invalid_RFDIFF_TIMESTEPS",
-        {"value": os.environ.get("RFDIFF_TIMESTEPS"),
-         "fallback": 50})
     RFDIFF_TIMESTEPS = 50
+    # Defer log until _run_rfdiff first consumes the value (P1: no
+    # EvidenceLogger side-effects at import time).
+    _RFDIFF_TIMESTEPS_INVALID = os.environ.get("RFDIFF_TIMESTEPS")
+else:
+    _RFDIFF_TIMESTEPS_INVALID = None
 LIGANDMPNN_MODEL_TYPE = os.environ.get("LIGANDMPNN_MODEL_TYPE") or "protein_mpnn"
 LIGANDMPNN_CHECKPOINT = os.environ.get("LIGANDMPNN_CHECKPOINT") or f"{LIGANDMPNN_DIR}/model_params/proteinmpnn_v_48_020.pt"
 DESIGN_PIPELINE_VERSION = "5.1.0"
@@ -106,6 +108,7 @@ DESIGN_PIPELINE_VERSION = "5.1.0"
 # switching CYCPEP_PYTHON / COLABDESIGN_DIR / COLABDESIGN_PARAMS
 # mid-process triggers a re-verification (P1 reviewer feedback).
 _VERIFIED_RUNTIME_SIGNATURE = None
+_SKIP_EVIDENCE_LOGGED = False
 
 
 def _verify_colabdesign_runtime():
@@ -120,12 +123,14 @@ def _verify_colabdesign_runtime():
     Set ``CYCPEP_SKIP_COLABDESIGN_VERIFY=1`` to bypass the check entirely
     (orchestrator-managed GPU allocation; P1 reviewer feedback).
     """
-    global _VERIFIED_RUNTIME_SIGNATURE
+    global _VERIFIED_RUNTIME_SIGNATURE, _SKIP_EVIDENCE_LOGGED
     if os.environ.get("CYCPEP_SKIP_COLABDESIGN_VERIFY") == "1":
-        EvidenceLogger.log("design", "colabdesign_verify_skipped",
-            {"reason": "CYCPEP_SKIP_COLABDESIGN_VERIFY=1 — "
-             "GPU allocation managed by orchestrator; "
-             "no pre-flight ColabDesign check will run"})
+        if not _SKIP_EVIDENCE_LOGGED:
+            EvidenceLogger.log("design", "colabdesign_verify_skipped",
+                {"reason": "CYCPEP_SKIP_COLABDESIGN_VERIFY=1 — "
+                 "GPU allocation managed by orchestrator; "
+                 "no pre-flight ColabDesign check will run"})
+            _SKIP_EVIDENCE_LOGGED = True
         return
     sig = (CYCPEP_PYTHON, COLABDESIGN_DIR, COLABDESIGN_PARAMS)
     if _VERIFIED_RUNTIME_SIGNATURE == sig:
@@ -141,6 +146,7 @@ def _verify_colabdesign_runtime():
 import sys, numpy as np
 sys.path.insert(0, {COLABDESIGN_DIR!r})
 from colabdesign import mk_af_model, clear_mem
+model = None
 model = mk_af_model(protocol='hallucination', data_dir={COLABDESIGN_PARAMS!r})
 model.prep_inputs(length=8)
 model.restart(seed=0, seq='AAAAAAAA')
@@ -164,7 +170,8 @@ try:
     if not np.any(off):
         raise RuntimeError('ColabDesign residue_index offset matrix is all-zero')
 finally:
-    del model
+    if model is not None:
+        del model
     clear_mem()
 print('COLABDESIGN_OFFSET_OK')
 """
@@ -1196,6 +1203,13 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
         parameter is accepted for API consistency with the rest of the pipeline and
         is only consumed by LigandMPNN and Route C expansion.
     """
+    # Deferred log for invalid RFDIFF_TIMESTEPS (P1: no EvidenceLogger at import).
+    global _RFDIFF_TIMESTEPS_INVALID
+    if _RFDIFF_TIMESTEPS_INVALID is not None:
+        EvidenceLogger.log("design", "invalid_RFDIFF_TIMESTEPS",
+            {"value": _RFDIFF_TIMESTEPS_INVALID, "fallback": 50})
+        _RFDIFF_TIMESTEPS_INVALID = None
+
     if seed is not None:
         import warnings
         warnings.warn(
