@@ -16,6 +16,12 @@ from data_layer import State, EvidenceLogger, DATA_DIR, EVIDENCE_DIR
 from project_config import load_project_config, required_target_ids, target_slug
 from target_bootstrap import assert_project_approved
 from threshold_contract import normalize_threshold_entry, normalize_thresholds
+from threshold_calibration import (
+    CALIBRATION_SCHEMA_VERSION,
+    ControlDataError,
+    calibrate_thresholds,
+    load_control_dataset,
+)
 
 PROJECT_CONFIG = load_project_config()
 PROJECT_TARGET_IDS = tuple(target["id"] for target in PROJECT_CONFIG["targets"])
@@ -119,12 +125,14 @@ THRESHOLDS_CACHE = DATA_DIR / "_thresholds_cache.json"
 
 RESEARCH_CACHE_SCHEMA_VERSION = 2
 THRESHOLD_CACHE_SCHEMA_VERSION = 2
+CONTROL_CALIBRATION_SCHEMA_VERSION = CALIBRATION_SCHEMA_VERSION
 RESEARCH_PIPELINE_VERSION = "research-v2"
 PROTOCOL_VERSIONS = {
     "rcsb_search": "v2",
     "rcsb_graphql": "v2",
     "biotite_interface": "v2",
     "threshold_research": "v2",
+    "positive_negative_calibration": f"v{CONTROL_CALIBRATION_SCHEMA_VERSION}",
 }
 
 
@@ -163,6 +171,27 @@ def _target_identity(target: dict) -> dict:
     }
 
 
+def _control_data_path(config: dict) -> Path:
+    """Resolve optional positive/negative controls without changing old defaults."""
+    selection = config.get("selection") or {}
+    configured = (
+        os.environ.get("CYCPEP_CONTROL_DATA")
+        or selection.get("calibration_controls_path")
+    )
+    return Path(configured) if configured else DATA_DIR / "_calibration_controls.json"
+
+
+def _control_data_digest(config: dict) -> str | None:
+    path = _control_data_path(config)
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+    return digest
+
+
 def _cache_meta(config: dict) -> dict:
     return {
         "project_id": config.get("project_id"),
@@ -173,6 +202,9 @@ def _cache_meta(config: dict) -> dict:
         "research_pipeline_version": RESEARCH_PIPELINE_VERSION,
         "research_cache_schema_version": RESEARCH_CACHE_SCHEMA_VERSION,
         "threshold_cache_schema_version": THRESHOLD_CACHE_SCHEMA_VERSION,
+        "control_calibration_schema_version": CONTROL_CALIBRATION_SCHEMA_VERSION,
+        "control_data_path": str(_control_data_path(config)),
+        "control_data_sha256": _control_data_digest(config),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "protocol_versions": PROTOCOL_VERSIONS,
     }
@@ -183,6 +215,7 @@ def _cache_mismatch_reasons(cached_meta: dict, current_meta: dict) -> list[str]:
         "project_id", "approved_digest", "project_schema_version",
         "required_target_ids", "target_identities", "research_pipeline_version",
         "research_cache_schema_version", "threshold_cache_schema_version",
+        "control_calibration_schema_version", "control_data_path", "control_data_sha256",
         "protocol_versions",
     )
     return [key for key in checks if cached_meta.get(key) != current_meta.get(key)]
@@ -245,730 +278,4 @@ def _stage_diagnostic(status: str, stderr: str = "", result: dict | None = None)
     if status == "skipped":
         return "stage_skipped", "stage disabled by runtime configuration"
     if status == "degraded_no_api_key":
-        return "missing_api_key", "LLM API key not configured"
-    code = _error_code(stderr, result) or "stage_incomplete"
-    return code, _sanitize_message(stderr) or "stage did not produce complete output"
-
-
-def _overall_run_status(stage_status: dict) -> str:
-    if stage_status and all(value == "complete" for value in stage_status.values()):
-        return "complete"
-    if any(stage_status.get(stage) == "failed" for stage in ("rcsb_search", "rcsb_enrich", "pubmed")):
-        return "failed"
-    return "degraded_with_fallbacks"
-
-
-def _diagnostics_for_stages(stage_status: dict, stage_context: dict) -> tuple[dict, dict]:
-    codes = {}
-    messages = {}
-    for stage, status in stage_status.items():
-        result, stderr = stage_context.get(stage, ({}, ""))
-        code, message = _stage_diagnostic(status, stderr, result)
-        if code:
-            codes[stage] = code
-        if message:
-            messages[stage] = message
-    return codes, messages
-
-
-def _generic_l5_threshold(config: dict) -> dict:
-    """Use an explicit, reviewed project rule only; never borrow MDM's 0.67."""
-    selection = config.get("selection") or {}
-    explicit = selection.get("hotspot_coverage_threshold")
-    reviewed_sites = all(
-        (target.get("binding_site") or {}).get("residues")
-        and (target.get("binding_site") or {}).get("status") in {"known", "user_reviewed"}
-        for target in config.get("targets", []) if target.get("required", True)
-    )
-    if reviewed_sites and isinstance(explicit, (int, float)):
-        return normalize_threshold_entry({
-            "value": explicit, "operator": ">=", "unit": None,
-            "source": "approved project hotspot coverage rule",
-            "evidence_grade": "design_rule", "calibration_status": "pending",
-            "applicable_targets": list(required_target_ids(config)),
-        })
-    return normalize_threshold_entry({
-        "value": None, "operator": None, "unit": None, "source": None,
-        "evidence_grade": "unavailable", "calibration_status": "unavailable",
-        "applicable_targets": list(required_target_ids(config)),
-        "reason_unavailable": "no approved project-specific hotspot coverage threshold",
-    })
-
-
-def _default_thresholds(config: dict) -> dict:
-    thresholds, _ = normalize_thresholds(
-        json.loads(json.dumps(DEFAULT_THRESHOLDS)),
-        applicable_targets=list(required_target_ids(config)),
-    )
-    if set(required_target_ids(config)) != {"MDM2", "MDMX"}:
-        thresholds["L5_hotspot_coverage"] = _generic_l5_threshold(config)
-    return thresholds
-
-
-def _write_threshold_cache(thresholds: dict, config: dict, audit: dict | None = None):
-    canonical, normalization = normalize_thresholds(thresholds)
-    payload = {
-        "_cache_meta": _cache_meta(config),
-        "thresholds": canonical,
-        "_normalization_audit": audit or normalization,
-    }
-    _atomic_write_json(THRESHOLDS_CACHE, payload)
-    return payload
-
-
-def _run_script(script_name, input_data=None, extra_args=None):
-    script_path = SCRIPTS_DIR / script_name
-    if not script_path.exists():
-        raise FileNotFoundError(f"Script not found: {script_path}")
-    python_exe = sys.executable
-    t0 = time.time()
-    cmd = [python_exe, "-m", f"scripts.{script_name.replace('.py', '')}"]
-    if extra_args:
-        cmd.extend(extra_args)
-    try:
-        proc = subprocess.run(
-            cmd,
-            input=json.dumps(input_data) if input_data else None,
-            capture_output=True, text=True, timeout=600, cwd=str(ROOT),
-            env={**os.environ},
-        )
-    except subprocess.TimeoutExpired as exc:
-        duration = time.time() - t0
-        stderr = _sanitize_message(exc.stderr or f"{script_name} timed out after 600 seconds")
-        return {"timed_out": True}, stderr, 124, duration, ""
-    duration = time.time() - t0
-    stdout = proc.stdout.strip()
-    stderr = _sanitize_message(proc.stderr.strip())
-    exit_code = proc.returncode
-    output_hash = hashlib.md5(stdout.encode()).hexdigest()[:12] if stdout else ""
-    try:
-        result = json.loads(stdout) if stdout else {}
-    except json.JSONDecodeError:
-        result = {"stdout": stdout[:1000], "parse_error": True}
-    return result, stderr, exit_code, duration, output_hash
-
-
-def _build_dynamic_pockets(aggregate_result, superpose_result):
-    """ä»Ž aggregate + superpose è¾“å‡ºæž„å»º pocket_differencesã€‚
-    
-    å¦‚æžœ biotite æˆåŠŸè®¡ç®—äº†ç•Œé¢æ®‹åŸºï¼Œç”¨åŠ¨æ€æ•°æ®ï¼›
-    å¦åˆ™è¿”å›ž Noneï¼ˆè°ƒç”¨æ–¹å›žé€€åˆ°å¸¸é‡ï¼‰ã€‚
-    """
-    n_mdm2 = aggregate_result.get("n_mdm2_structures", 0)
-    n_mdmx = aggregate_result.get("n_mdmx_structures", 0)
-    if n_mdm2 == 0 or n_mdmx == 0:
-        return None  # åŒé¶åŠ¨æ€ç»“è®ºè¦æ±‚ä¸¤ä¾§éƒ½æœ‰ç»“æž„æ”¯æŒ
-
-    # ä»Ž aggregate æå–æ¯é¶ç‚¹çš„å£è¢‹æ®‹åŸº
-    mdm2_agg = aggregate_result.get("MDM2", {})
-    mdmx_agg = aggregate_result.get("MDMX", {})
-    
-    # ç”¨ consensus æ®‹åŸºï¼ˆå¦‚æžœæœ‰çš„è¯ï¼‰ï¼Œå¦åˆ™ç”¨ pocket_residues å‚è€ƒ
-    def _extract_residues(agg, pocket_name):
-        consensus = agg.get("pocket_consensus", {}).get(pocket_name, [])
-        if consensus:
-            # æ ¼å¼ "A:58GLY" -> "Gly58"
-            cleaned = []
-            for r in consensus:
-                # å…¼å®¹æ–°ç‰ˆ "58GLY" ä¸Žæ—§ç‰ˆ "A:58GLY"ã€‚
-                import re
-                m = re.search(r':?(-?\d+)([A-Z]{3})$', r.upper())
-                if m:
-                    res_id, res_name = m.group(1), m.group(2)
-                    cleaned.append(f"{res_name.capitalize()}{res_id}")
-            return cleaned if cleaned else agg.get("pocket_residues", {}).get(pocket_name, [])
-        return agg.get("pocket_residues", {}).get(pocket_name, [])
-
-    # ä»Ž superpose æå–æ–¹æ³•ä¿¡æ¯
-    rmsd = superpose_result.get("ca_rmsd_A", "?") if superpose_result else "?"
-    n_ca = superpose_result.get("n_ca_atoms_superposed", "?") if superpose_result else "?"
-    method = f"biotite heavy-atom<4A, {n_mdm2}+{n_mdmx} structures, CA RMSD {rmsd}A/{n_ca} residues"
-
-    return {
-        "_method": method,
-        "_source": "dynamic_biotite",
-        "Phe19_pocket": {
-            "MDM2_residues": _extract_residues(mdm2_agg, "Phe19_pocket"),
-            "MDMX_residues": _extract_residues(mdmx_agg, "Phe19_pocket"),
-            "design_rule": "Phe volume or smaller. Pocket conserved across MDM2/MDMX, no major steric difference.",
-        },
-        "Trp23_pocket": {
-            "MDM2_residues": _extract_residues(mdm2_agg, "Trp23_pocket"),
-            "MDMX_residues": _extract_residues(mdmx_agg, "Trp23_pocket"),
-            "design_rule": "L-Trp invariant shared anchor. MDMX Met53 (vs MDM2 Leu54) is bulkier, pocket tighter.",
-        },
-        "Leu26_pocket": {
-            "MDM2_residues": _extract_residues(mdm2_agg, "Leu26_pocket"),
-            "MDMX_residues": _extract_residues(mdmx_agg, "Leu26_pocket"),
-            "design_rule": "Downsize to small aliphatic (Leu/Val/Abu). MDMX Met53+Pro95 dual compression vs MDM2 Leu54+His96.",
-        },
-        "_superpose": {
-            "rmsd_A": rmsd,
-            "n_ca_atoms": n_ca,
-            "sasa": superpose_result.get("sasa", {}) if superpose_result else {},
-        } if superpose_result else {},
-    }
-
-
-def _run_pipeline():
-    _ensure_runtime_dirs()
-    skip_heavy = os.environ.get("SKIP_BIOTITE", "").lower() in ("1", "true", "yes")
-    stage_status = {}
-    stage_context = {}
-    fallbacks = []
-
-    # ===== Step 1: RCSB Search =====
-    print("[research] Step 1/8: RCSB Search API...")
-    sr, se, sc, sd, sh = _run_script("search_pdb.py")
-    stage_status["rcsb_search"] = (
-        "complete" if sc == 0 and sr.get("run_status") == "complete"
-        else "empty" if sc == 0 else "failed"
-    )
-    stage_context["rcsb_search"] = (sr, se)
-    EvidenceLogger.log("research", "tool_call", {
-        "tool_name": "rcsb_search_api", "tool_version": "v2",
-        "output_hash": sh, "exit_code": sc, "duration_sec": round(sd, 1),
-        "stdout_snippet": (
-            f"status={stage_status['rcsb_search']} "
-            f"MDM2={sr.get('n_mdm2',0)} MDMX={sr.get('n_mdmx',0)}"
-        ),
-    }, targets=["both"], phase="research")
-
-    # ===== Step 2: GraphQL Enrich =====
-    print("[research] Step 2/8: RCSB GraphQL...")
-    er, ee, ec, ed, eh = _run_script("enrich_pdb.py", sr)
-    n_peptide = er.get("n_peptide_complexes", 0)
-    stage_status["rcsb_enrich"] = "complete" if ec == 0 and n_peptide > 0 else "empty" if ec == 0 else "failed"
-    stage_context["rcsb_enrich"] = (er, ee)
-    EvidenceLogger.log("research", "tool_call", {
-        "tool_name": "rcsb_graphql_api", "output_hash": eh, "exit_code": ec,
-        "duration_sec": round(ed, 1),
-        "stdout_snippet": f"status={stage_status['rcsb_enrich']} peptide_complexes={n_peptide}",
-    }, targets=["both"], phase="research")
-
-    # ===== Steps 3-5: biotite =====
-    pocket_differences = POCKET_DIFFERENCES  # é»˜è®¤å¸¸é‡
-    dynamic_pdb_list = []  # åŠ¨æ€ PDB åˆ—è¡¨ï¼ˆæ¥è‡ª enrichï¼‰
-    dynamic_pdb_by_target = {"MDM2": [], "MDMX": []}
-    n_mdm2_structures = 0
-    n_mdmx_structures = 0
-
-    # ä»Ž enrich æå–åŠ¨æ€ PDB åˆ—è¡¨
-    for entry in er.get("peptide_complexes", []):
-        target_name = entry.get("target")
-        if (
-            target_name in dynamic_pdb_by_target
-            and entry["pdb_id"] not in dynamic_pdb_by_target[target_name]
-        ):
-            dynamic_pdb_by_target[target_name].append(entry["pdb_id"])
-        if entry["pdb_id"] not in dynamic_pdb_list:
-            dynamic_pdb_list.append(entry["pdb_id"])
-        if entry.get("target") == "MDM2":
-            n_mdm2_structures += 1
-        elif entry.get("target") == "MDMX":
-            n_mdmx_structures += 1
-
-    if skip_heavy:
-        print("[research] Steps 3-5: skipped (SKIP_BIOTITE=1)")
-        stage_status["interface"] = "skipped"
-        stage_status["aggregate"] = "skipped"
-        stage_status["superposition"] = "skipped"
-        stage_context.update({name: ({}, "") for name in ("interface", "aggregate", "superposition")})
-        fallbacks.append("curated_mdm_pocket_definitions")
-    else:
-        # Step 3: biotite interface
-        print("[research] Step 3/8: biotite interface...")
-        iface_result = {"with_interface": []}
-        try:
-            ir, ie2, ic, id_, ih = _run_script("compute_interface.py", er)
-            n_iface = ir.get("n_with_interface", 0)
-            stage_status["interface"] = (
-                "complete" if ic == 0 and n_iface > 0 else "empty" if ic == 0 else "failed"
-            )
-            stage_context["interface"] = (ir, ie2)
-            EvidenceLogger.log("research", "tool_call", {
-                "tool_name": "biotite", "output_hash": ih, "exit_code": ic,
-                "duration_sec": round(id_, 1),
-                "stdout_snippet": f"status={stage_status['interface']} with_interface={n_iface}",
-            }, targets=["both"], phase="research")
-            iface_result = ir
-        except Exception as e:
-            EvidenceLogger.error("research", "tool_failure", f"biotite: {e}", recovery="fallback")
-            iface_result = {"with_interface": []}
-            stage_status["interface"] = "failed"
-            stage_context["interface"] = ({}, str(e))
-
-        # Step 4: aggregate pockets
-        print("[research] Step 4/8: aggregate pockets...")
-        pr, pe2, pc, pd_, ph = _run_script("aggregate_pockets.py", iface_result)
-        n_agg_mdm2 = pr.get("n_mdm2_structures", 0)
-        n_agg_mdmx = pr.get("n_mdmx_structures", 0)
-        stage_status["aggregate"] = (
-            "complete" if pc == 0 and n_agg_mdm2 > 0 and n_agg_mdmx > 0
-            else "empty" if pc == 0 else "failed"
-        )
-        stage_context["aggregate"] = (pr, pe2)
-        EvidenceLogger.log("research", "tool_call", {
-            "tool_name": "aggregate_pockets", "output_hash": ph, "exit_code": pc,
-            "duration_sec": round(pd_, 1),
-            "stdout_snippet": (
-                f"status={stage_status['aggregate']} "
-                f"MDM2={n_agg_mdm2}struct MDMX={n_agg_mdmx}struct"
-            ),
-        }, targets=["both"], phase="research")
-
-        # Step 5: superpose
-        print("[research] Step 5/8: superposition...")
-        spr = {}
-        try:
-            spr, spe2, spc, spd_, sph = _run_script("superpose_analyze.py", pr)
-            stage_status["superposition"] = (
-                "complete" if spc == 0 and spr.get("ca_rmsd_A") is not None
-                else "empty" if spc == 0 else "failed"
-            )
-            stage_context["superposition"] = (spr, spe2)
-            EvidenceLogger.log("research", "tool_call", {
-                "tool_name": "biotite_superimpose", "output_hash": sph, "exit_code": spc,
-                "duration_sec": round(spd_, 1),
-                "stdout_snippet": (
-                    f"status={stage_status['superposition']} "
-                    f"rmsd={spr.get('ca_rmsd_A','?')}A "
-                    f"n_ca={spr.get('n_ca_atoms_superposed','?')}"
-                ),
-            }, targets=["both"], phase="research")
-        except Exception as e:
-            EvidenceLogger.error("research", "tool_failure", f"superpose: {e}", recovery="fallback")
-            stage_status["superposition"] = "failed"
-            stage_context["superposition"] = ({}, str(e))
-
-        # ç”¨åŠ¨æ€æ•°æ®æž„å»º pocket_differences
-        dynamic = _build_dynamic_pockets(pr, spr)
-        if dynamic:
-            pocket_differences = dynamic
-            n_mdm2_structures = n_agg_mdm2
-            n_mdmx_structures = n_agg_mdmx
-            print(f"[research] Using dynamic pockets: MDM2={n_mdm2_structures}struct MDMX={n_mdmx_structures}struct")
-        else:
-            print("[research] biotite produced no interface data, using constant pockets")
-            fallbacks.append("curated_mdm_pocket_definitions")
-
-    # ===== Step 6: PubMed =====
-    print("[research] Step 6/8: PubMed...")
-    pmr, pme, pmc, pmd_, pmh = _run_script("pubmed_search.py")
-    stage_status["pubmed"] = "complete" if pmc == 0 and pmr.get("n_total", 0) > 0 else "empty" if pmc == 0 else "failed"
-    stage_context["pubmed"] = (pmr, pme)
-    EvidenceLogger.log("research", "tool_call", {
-        "tool_name": "pubmed_eutils", "output_hash": pmh, "exit_code": pmc,
-        "duration_sec": round(pmd_, 1),
-        "stdout_snippet": f"status={stage_status['pubmed']} n_papers={pmr.get('n_total',0)}",
-    }, targets=["both"], phase="research")
-
-    # ===== Step 7: LLM extract =====
-    print("[research] Step 7/8: LLM extract (concurrent)...")
-    llm_binders = KNOWN_DUAL_BINDERS
-    binder_source = "curated_fallback"
-    try:
-        lr, le2, lc, ld_, lh = _run_script("llm_extract.py", pmr, extra_args=["--concurrency", "3"])
-        if lr and "error" not in lr:
-            extracted = lr.get("known_binders", [])
-            if extracted:
-                llm_binders = extracted
-                binder_source = "llm_extracted"
-                print(f"[research] LLM found {len(extracted)} binders from {lr.get('n_papers_processed',0)} papers")
-        raw_llm_status = lr.get("run_status", "failed")
-        stage_status["llm_extract"] = (
-            "degraded_no_api_key" if raw_llm_status == "degraded_no_api_key"
-            else "complete" if lc == 0 and raw_llm_status == "complete"
-            else "failed"
-        )
-        stage_context["llm_extract"] = (lr, le2)
-        if binder_source == "curated_fallback":
-            fallbacks.append("curated_mdm_binders")
-        EvidenceLogger.log("research", "tool_call", {
-            "tool_name": "llm_extract_concurrent",
-            "tool_version": lr.get("llm_model", "unknown") if isinstance(lr, dict) else "unknown",
-            "output_hash": lh, "exit_code": lc, "duration_sec": round(ld_, 1),
-            "stdout_snippet": (
-                f"status={stage_status['llm_extract']} binders={len(llm_binders)} "
-                f"papers={lr.get('n_papers_processed',0) if isinstance(lr, dict) else '?'}"
-            ),
-        }, targets=["both"], phase="research")
-    except Exception as e:
-        EvidenceLogger.error("research", "tool_failure", f"LLM: {e}", recovery="fallback to constants")
-        stage_status["llm_extract"] = "failed"
-        stage_context["llm_extract"] = ({}, str(e))
-        fallbacks.append("curated_mdm_binders")
-
-    # ===== Step 8: é˜ˆå€¼æ–‡çŒ®æ£€ç´¢ =====
-    print("[research] Step 8/8: threshold literature research...")
-    thresholds = _default_thresholds(PROJECT_CONFIG)
-    try:
-        tr, te2, tc, td_, th = _run_script("threshold_research.py", extra_args=["--concurrency", "4"])
-        lit, threshold_normalization = normalize_thresholds(tr.get("metric_battery", {}))
-        threshold_meta = tr.get("_meta", {})
-        n_found = threshold_meta.get("n_auto_usable", 0)
-        raw_threshold_status = threshold_meta.get("run_status", "failed")
-        stage_status["threshold_research"] = (
-            "degraded_no_api_key" if raw_threshold_status == "degraded_no_llm"
-            else "empty" if raw_threshold_status == "degraded_empty_results"
-            else "complete" if tc == 0 and raw_threshold_status == "complete"
-            else "failed"
-        )
-        stage_context["threshold_research"] = (tr, te2)
-        # ä»…è‡ªåŠ¨é‡‡ç”¨å·²æ ¸éªŒ PMIDã€æ‘˜è¦åŽŸå¥å’Œ paper_explicit è¯æ®çš„é˜ˆå€¼ã€‚
-        for layer, info in lit.items():
-            if info.get("auto_usable") and info.get("value") is not None:
-                thresholds[layer] = {
-                    **{
-                        key: value
-                        for key, value in thresholds.get(layer, {}).items()
-                        if key in ("method", "min_seed_fraction")
-                    },
-                    "value": info["value"],
-                    "operator": info.get("operator", ">"),
-                    "unit": info.get("unit"),
-                    "source": f"PubMed PMID {info.get('source_pmid')}",
-                    "confidence": info.get("confidence", "medium"),
-                    "source_pmid": info.get("source_pmid"),
-                    "evidence_quote": info.get("evidence_quote"),
-                    "evidence_grade": info.get("evidence_grade"),
-                    "quote_verified": True,
-                    "calibration_status": "pending",
-                    "applicable_targets": list(required_target_ids(PROJECT_CONFIG)),
-                }
-        thresholds, final_normalization = normalize_thresholds(thresholds)
-        _write_threshold_cache(thresholds, PROJECT_CONFIG, {
-            "literature_input": threshold_normalization,
-            "final": final_normalization,
-        })
-        EvidenceLogger.log("research", "tool_call", {
-            "tool_name": "threshold_research", "output_hash": th, "exit_code": tc,
-            "duration_sec": round(td_, 1),
-            "stdout_snippet": (
-                f"status={stage_status['threshold_research']} "
-                f"verified_thresholds={n_found}/{len(lit)}"
-            ),
-        }, targets=["both"], phase="research")
-        print(f"[research] Thresholds: {n_found} verified literature overrides")
-    except Exception as e:
-        EvidenceLogger.error("research", "tool_failure", f"threshold_research: {e}",
-                             recovery="fallback to DEFAULT_THRESHOLDS")
-        print(f"[research] threshold_research failed, using defaults: {e}")
-        stage_status["threshold_research"] = "failed"
-        stage_context["threshold_research"] = ({}, str(e))
-        fallbacks.append("provisional_default_thresholds")
-
-    if stage_status.get("threshold_research") != "complete":
-        fallbacks.append("provisional_default_thresholds")
-    if not THRESHOLDS_CACHE.exists():
-        _write_threshold_cache(thresholds, PROJECT_CONFIG)
-
-    # ===== ç»„è£…ç»“æžœ =====
-    stage_error_code, error_message = _diagnostics_for_stages(stage_status, stage_context)
-    result = {
-        "targets": TARGETS.copy(),
-        "pocket_differences": pocket_differences,
-        "known_dual_binders": llm_binders,
-        "known_binder_source": binder_source,
-        "design_strategy_summary": DESIGN_STRATEGY_SUMMARY,
-        "data_quality_alert": DATA_QUALITY_ALERT,
-        "literature_refs": LITERATURE_REFS,
-        "thresholds": thresholds,
-        "_pipeline_meta": {
-            "last_run": datetime.now(timezone.utc).isoformat(),
-            "pocket_source": pocket_differences.get("_source", "constant"),
-            "n_pdb_complexes": len(dynamic_pdb_list),
-            "n_mdm2_structures": n_mdm2_structures,
-            "n_mdmx_structures": n_mdmx_structures,
-            "dynamic_pdb_list": (
-                dynamic_pdb_by_target["MDM2"][:10]
-                + dynamic_pdb_by_target["MDMX"][:10]
-            ),
-            "dynamic_pdb_by_target": dynamic_pdb_by_target,
-            "stage_status": stage_status,
-            "stage_error_code": stage_error_code,
-            "error_message": error_message,
-            "fallbacks_used": list(dict.fromkeys(fallbacks)),
-            "run_status": _overall_run_status(stage_status),
-        },
-        "_cache_meta": _cache_meta(PROJECT_CONFIG),
-    }
-    _atomic_write_json(CACHE_PATH, result)
-    print(f"[research] Pipeline done. pocket_source={result['_pipeline_meta']['pocket_source']}")
-    return result
-
-
-def _run_generic_pipeline():
-    """Target-configured research path without MDM-specific biological fallbacks."""
-    _ensure_runtime_dirs()
-    target_ids = list(PROJECT_TARGET_IDS)
-    stage_status = {}
-    stage_context = {}
-    fallbacks = []
-
-    sr, se, sc, sd, sh = _run_script("search_pdb.py")
-    stage_status["rcsb_search"] = "complete" if sc == 0 and sr.get("run_status") == "complete" else "empty" if sc == 0 else "failed"
-    stage_context["rcsb_search"] = (sr, se)
-    EvidenceLogger.log("research", "tool_call", {
-        "tool_name": "rcsb_search_api", "output_hash": sh, "exit_code": sc,
-        "duration_sec": round(sd, 1), "stdout_snippet": str(sr.get("counts_by_target", {})),
-    }, targets=target_ids, phase="research")
-
-    er, ee, ec, ed, eh = _run_script("enrich_pdb.py", sr)
-    stage_status["rcsb_enrich"] = "complete" if ec == 0 and er.get("n_peptide_complexes", 0) > 0 else "empty" if ec == 0 else "failed"
-    stage_context["rcsb_enrich"] = (er, ee)
-    EvidenceLogger.log("research", "tool_call", {
-        "tool_name": "rcsb_graphql_api", "output_hash": eh, "exit_code": ec,
-        "duration_sec": round(ed, 1), "stdout_snippet": str(er.get("counts_by_target", {})),
-    }, targets=target_ids, phase="research")
-
-    aggregate = {"results_by_target": {}, "counts_by_target": {}}
-    if os.environ.get("SKIP_BIOTITE", "").lower() in ("1", "true", "yes"):
-        stage_status["interface"] = "skipped"
-        stage_status["aggregate"] = "skipped"
-        stage_context.update({name: ({}, "") for name in ("interface", "aggregate")})
-        fallbacks.append("interface_aggregation_omitted")
-    else:
-        try:
-            ir, ie, ic, id_, ih = _run_script("compute_interface.py", er)
-            stage_status["interface"] = "complete" if ic == 0 and ir.get("n_with_interface", 0) else "empty" if ic == 0 else "failed"
-            stage_context["interface"] = (ir, ie)
-            EvidenceLogger.log("research", "tool_call", {
-                "tool_name": "biotite", "output_hash": ih, "exit_code": ic,
-                "duration_sec": round(id_, 1),
-                "stdout_snippet": f"interfaces={ir.get('n_with_interface', 0)}",
-            }, targets=target_ids, phase="research")
-            aggregate, ae, ac, ad, ah = _run_script("aggregate_pockets.py", ir)
-            has_aggregate = bool(aggregate.get("results_by_target") or aggregate.get("counts_by_target"))
-            stage_status["aggregate"] = "complete" if ac == 0 and has_aggregate else "empty" if ac == 0 else "failed"
-            stage_context["aggregate"] = (aggregate, ae)
-            EvidenceLogger.log("research", "tool_call", {
-                "tool_name": "aggregate_pockets", "output_hash": ah, "exit_code": ac,
-                "duration_sec": round(ad, 1),
-                "stdout_snippet": str(aggregate.get("counts_by_target", {})),
-            }, targets=target_ids, phase="research")
-        except Exception as exc:
-            stage_status["interface"] = "failed"
-            stage_status["aggregate"] = "failed"
-            stage_context["interface"] = ({}, str(exc))
-            stage_context["aggregate"] = ({}, str(exc))
-            fallbacks.append("interface_aggregation_omitted")
-            EvidenceLogger.error("research", "tool_failure", str(exc), recovery="continue without interface aggregation")
-
-    pmr, pme, pc, pd, ph = _run_script("pubmed_search.py")
-    stage_status["pubmed"] = "complete" if pc == 0 and pmr.get("n_total", 0) > 0 else "empty" if pc == 0 else "failed"
-    stage_context["pubmed"] = (pmr, pme)
-    EvidenceLogger.log("research", "tool_call", {
-        "tool_name": "pubmed_eutils", "output_hash": ph, "exit_code": pc,
-        "duration_sec": round(pd, 1), "stdout_snippet": f"papers={pmr.get('n_total', 0)}",
-    }, targets=target_ids, phase="research")
-
-    known_binders = []
-    try:
-        lr, le, lc, ld, lh = _run_script("llm_extract.py", pmr, extra_args=["--concurrency", "3"])
-        known_binders = lr.get("known_binders", [])
-        raw_llm_status = lr.get("run_status", "failed")
-        stage_status["llm_extract"] = (
-            "degraded_no_api_key" if raw_llm_status == "degraded_no_api_key"
-            else "complete" if lc == 0 and raw_llm_status == "complete"
-            else "failed"
-        )
-        stage_context["llm_extract"] = (lr, le)
-        if not known_binders:
-            fallbacks.append("no_binder_fallback")
-        EvidenceLogger.log("research", "tool_call", {
-            "tool_name": "llm_extract", "output_hash": lh, "exit_code": lc,
-            "duration_sec": round(ld, 1), "stdout_snippet": f"binders={len(known_binders)}",
-        }, targets=target_ids, phase="research")
-    except Exception as exc:
-        stage_status["llm_extract"] = "failed"
-        stage_context["llm_extract"] = ({}, str(exc))
-        fallbacks.append("no_binder_fallback")
-        EvidenceLogger.error("research", "tool_failure", str(exc), recovery="no fabricated binder fallback")
-
-    thresholds = _default_thresholds(PROJECT_CONFIG)
-    try:
-        tr, te, tc, td, thash = _run_script("threshold_research.py", extra_args=["--concurrency", "4"])
-        literature_thresholds, threshold_normalization = normalize_thresholds(tr.get("metric_battery", {}))
-        for key, info in literature_thresholds.items():
-            if info.get("auto_usable") and info.get("value") is not None:
-                thresholds[key] = {
-                    **{name: value for name, value in thresholds.get(key, {}).items()
-                       if name in ("method", "min_seed_fraction")},
-                    "value": info["value"], "operator": info.get("operator", ">"),
-                    "unit": info.get("unit"), "source": f"PubMed PMID {info.get('source_pmid')}",
-                    "source_pmid": info.get("source_pmid"), "evidence_quote": info.get("evidence_quote"),
-                    "evidence_grade": "paper_explicit", "quote_verified": True,
-                    "calibration_status": "pending",
-                    "applicable_targets": target_ids,
-                }
-        raw_threshold_status = tr.get("_meta", {}).get("run_status", "failed")
-        stage_status["threshold_research"] = (
-            "degraded_no_api_key" if raw_threshold_status == "degraded_no_llm"
-            else "empty" if raw_threshold_status == "degraded_empty_results"
-            else "complete" if tc == 0 and raw_threshold_status == "complete"
-            else "failed"
-        )
-        stage_context["threshold_research"] = (tr, te)
-        thresholds, final_normalization = normalize_thresholds(thresholds)
-        _write_threshold_cache(thresholds, PROJECT_CONFIG, {
-            "literature_input": threshold_normalization,
-            "final": final_normalization,
-        })
-        EvidenceLogger.log("research", "tool_call", {
-            "tool_name": "threshold_research", "output_hash": thash, "exit_code": tc,
-            "duration_sec": round(td, 1),
-            "stdout_snippet": f"usable={tr.get('_meta', {}).get('n_auto_usable', 0)}",
-        }, targets=target_ids, phase="research")
-    except Exception as exc:
-        stage_status["threshold_research"] = "failed"
-        stage_context["threshold_research"] = ({}, str(exc))
-        fallbacks.append("provisional_default_thresholds")
-
-    if stage_status.get("threshold_research") != "complete":
-        fallbacks.append("provisional_default_thresholds")
-    if not THRESHOLDS_CACHE.exists():
-        _write_threshold_cache(thresholds, PROJECT_CONFIG)
-        EvidenceLogger.error("research", "tool_failure", str(exc), recovery="provisional thresholds remain non-clearable")
-
-    dynamic_pdb_list = [row.get("pdb_id") for row in er.get("peptide_complexes", []) if row.get("pdb_id")]
-    stage_error_code, error_message = _diagnostics_for_stages(stage_status, stage_context)
-    result = {
-        "project_id": PROJECT_CONFIG["project_id"],
-        "targets": {target["id"]: target for target in PROJECT_CONFIG["targets"]},
-        "pocket_differences": {
-            "_source": "dynamic_interface_aggregation",
-            "targets": aggregate.get("results_by_target", {}),
-        },
-        "known_binders": known_binders,
-        "known_dual_binders": known_binders,
-        "known_binder_source": "llm_extracted" if known_binders else "none_found",
-        "design_strategy_summary": "Target-configured; derive design constraints from retrieved epitope evidence.",
-        "data_quality_alert": "No MDM-specific constants were used as fallback.",
-        "literature_refs": pmr.get("pmids", []),
-        "thresholds": thresholds,
-        "_pipeline_meta": {
-            "last_run": datetime.now(timezone.utc).isoformat(),
-            "dynamic_pdb_list": dynamic_pdb_list,
-            "counts_by_target": er.get("counts_by_target", {}),
-            "stage_status": stage_status,
-            "stage_error_code": stage_error_code,
-            "error_message": error_message,
-            "fallbacks_used": list(dict.fromkeys(fallbacks)),
-            "run_status": _overall_run_status(stage_status),
-        },
-        "_cache_meta": _cache_meta(PROJECT_CONFIG),
-    }
-    _atomic_write_json(CACHE_PATH, result)
-    return result
-
-
-def run(state=None, force_recompute=False, skip_pipeline=False):
-    _ensure_runtime_dirs()
-    assert_project_approved(PROJECT_CONFIG)
-    # The newly approved config is authoritative even when state.json predates it.
-    state = State.sync_project_config(PROJECT_CONFIG)
-
-    pipeline_runner = _run_pipeline if IS_MDM_REFERENCE else _run_generic_pipeline
-    if force_recompute:
-        pipeline_result = pipeline_runner()
-    else:
-        pipeline_result = _load_valid_cache(CACHE_PATH, PROJECT_CONFIG)
-        if pipeline_result is not None:
-            print(f"[research] Using cache: {CACHE_PATH}")
-        else:
-            pipeline_result = pipeline_runner()
-
-    thresholds, threshold_normalization = normalize_thresholds(
-        pipeline_result.get("thresholds") or _default_thresholds(PROJECT_CONFIG)
-    )
-    pipeline_result["thresholds"] = thresholds
-    threshold_cache = None if force_recompute else _load_valid_cache(THRESHOLDS_CACHE, PROJECT_CONFIG)
-    if force_recompute or threshold_cache is None:
-        _write_threshold_cache(thresholds, PROJECT_CONFIG, threshold_normalization)
-
-    configured_targets = {
-        target["id"]: {key: value for key, value in target.items() if key != "id"}
-        for target in PROJECT_CONFIG.get("targets", [])
-    }
-    pipeline_targets = pipeline_result.get("targets", {})
-    for name in list(configured_targets):
-        info = pipeline_targets.get(name)
-        if isinstance(info, dict):
-            configured_targets[name].update({key: value for key, value in info.items() if key != "id"})
-
-    if not IS_MDM_REFERENCE:
-        result = {
-            "targets": configured_targets,
-            "pocket_differences": pipeline_result.get("pocket_differences", {}),
-            "known_binders": pipeline_result.get("known_binders", []),
-            "known_dual_binders": pipeline_result.get("known_binders", []),
-            "known_binder_source": pipeline_result.get("known_binder_source", "none_found"),
-            "design_strategy_summary": pipeline_result.get("design_strategy_summary", ""),
-            "data_quality_alert": pipeline_result.get("data_quality_alert", ""),
-            "research_pipeline_meta": pipeline_result.get("_pipeline_meta", {}),
-        }
-        State.update(result)
-        sync = State.sync_thresholds_from_cache(THRESHOLDS_CACHE)
-        result["thresholds"] = sync["state"].get("thresholds", {})
-        meta = result["research_pipeline_meta"]
-        EvidenceLogger.research_complete(
-            hotspot_analysis={
-                "pdb_list": meta.get("dynamic_pdb_list", []),
-                "counts_by_target": meta.get("counts_by_target", {}),
-                "pockets": result["pocket_differences"],
-                "stage_status": meta.get("stage_status", {}),
-                "run_status": meta.get("run_status", "unknown"),
-            },
-            known_binders=result["known_binders"],
-            refs=pipeline_result.get("literature_refs", []),
-        )
-        return result
-
-    result = {
-        "targets": configured_targets,
-        "pocket_differences": pipeline_result.get("pocket_differences", POCKET_DIFFERENCES),
-        "known_dual_binders": pipeline_result.get("known_dual_binders", KNOWN_DUAL_BINDERS),
-        "known_binder_source": pipeline_result.get("known_binder_source", "curated_fallback"),
-        "design_strategy_summary": pipeline_result.get("design_strategy_summary", DESIGN_STRATEGY_SUMMARY),
-        "data_quality_alert": pipeline_result.get("data_quality_alert", DATA_QUALITY_ALERT),
-        "research_pipeline_meta": pipeline_result.get("_pipeline_meta", {}),
-    }
-    State.update(result)
-    sync = State.sync_thresholds_from_cache(THRESHOLDS_CACHE)
-    result["thresholds"] = sync["state"].get("thresholds", {})
-
-    # ç”¨åŠ¨æ€æ•°æ®æž„å»º hotspot_analysis
-    meta = pipeline_result.get("_pipeline_meta", {})
-    pocket_diff = result["pocket_differences"]
-    pdb_list = meta.get("dynamic_pdb_list", [])
-    if not pdb_list:
-        pdb_list = VERIFIED_PEPTIDE_COMPLEXES["MDM2"] + VERIFIED_PEPTIDE_COMPLEXES["MDMX"]
-
-    hotspot_analysis = {
-        "pdb_list": pdb_list,
-        "n_mdm2_peptide_complexes": meta.get("n_mdm2_structures", len(VERIFIED_PEPTIDE_COMPLEXES["MDM2"])),
-        "n_mdmx_peptide_complexes": meta.get("n_mdmx_structures", len(VERIFIED_PEPTIDE_COMPLEXES["MDMX"])),
-        "method": pocket_diff.get("_method", ""),
-        "pocket_source": meta.get("pocket_source", "constant"),
-        "pockets": pocket_diff,
-        "data_quality_alert": DATA_QUALITY_ALERT,
-        "stage_status": meta.get("stage_status", {}),
-        "run_status": meta.get("run_status", "unknown"),
-    }
-    EvidenceLogger.research_complete(
-        hotspot_analysis=hotspot_analysis,
-        known_binders=result["known_dual_binders"],
-        refs=LITERATURE_REFS,
-    )
-    return result
-
-
-def recompute():
-    return run(force_recompute=True)
-
-
-if __name__ == "__main__":
-    out = run()
-    n = len(out.get("known_dual_binders", []))
-    print(f"[research] State updated. {n} dual binders. Phase={State.load().get('phase')}")
+        return "missing_api_key", "LLM API key not conó=¶‰žËkºwµçxÁ½­•Ñ}Í½ÕÉ”õíÉ•ÍÕ±Ñl}Á¥Á•±¥¹•}µ•Ñ„ulÁ½­•Ñ}Í½ÕÉ”uôˆ¤4(€€€É•ÑÕÉ¸É•ÍÕ±Ð4(4(4)‘•˜}ÉÕ¹}•¹•É¥}Á¥Á•±¥¹” ¤è(€€€€ˆˆ‰Q…É•Ðµ½¹™¥ÕÉ•É•Í•…É Á…Ñ Ý¥Ñ¡½ÕÐ54µÍÁ•¥™¥Œ‰¥½±½¥…°™…±±‰…­Ì¸ˆˆˆ(€€€}•¹ÍÕÉ•}ÉÕ¹Ñ¥µ•}‘¥ÉÌ ¤(€€€Ñ…É•Ñ}¥‘Ì€ô±¥ÍÐ¡AI=)Q}QIQ}%L¤(€€€ÍÑ…•}ÍÑ…ÑÕÌ€ôíô(€€€ÍÑ…•}½¹Ñ•áÐ€ôíô(€€€™…±±‰…­Ì€ômt(4(€€€ÍÈ°Í”°ÍŒ°Í°Í €ô}ÉÕ¹}ÍÉ¥ÁÐ ‰Í•…É¡}Á‘ˆ¹Áäˆ¤(€€€ÍÑ…•}ÍÑ…ÑÕÍl‰ÉÍ‰}Í•…É ‰t€ô€‰½µÁ±•Ñ”ˆ¥˜ÍŒ€ôô€À…¹ÍÈ¹•Ð ‰ÉÕ¹}ÍÑ…ÑÕÌˆ¤€ôô€‰½µÁ±•Ñ”ˆ•±Í”€‰•µÁÑäˆ¥˜ÍŒ€ôô€À•±Í”€‰™…¥±•ˆ(€€€ÍÑ…•}½¹Ñ•áÑl‰ÉÍ‰}Í•…É ‰t€ô€¡ÍÈ°Í”¤(€€€Ù¥‘•¹•1½•È¹±½œ ‰É•Í•…É ˆ°€‰Ñ½½±}…±°ˆ°ì4(€€€€€€€€‰Ñ½½±}¹…µ”ˆè€‰ÉÍ‰}Í•…É¡}…Á¤ˆ°€‰½ÕÑÁÕÑ}¡…Í ˆèÍ °€‰•á¥Ñ}½‘”ˆèÍŒ°4(€€€€€€€€‰‘ÕÉ…Ñ¥½¹}Í•ŒˆèÉ½Õ¹¡Í°€Ä¤°€‰ÍÑ‘½ÕÑ}Í¹¥ÁÁ•ÐˆèÍÑÈ¡ÍÈ¹•Ð ‰½Õ¹ÑÍ}‰å}Ñ…É•Ðˆ°íô¤¤°4(€€€ô°Ñ…É•ÑÌõÑ…É•Ñ}¥‘Ì°Á¡…Í”ô‰É•Í•…É ˆ¤4(4(€€€•È°•”°•Œ°•°• €ô}ÉÕ¹}ÍÉ¥ÁÐ ‰•¹É¥¡}Á‘ˆ¹Áäˆ°ÍÈ¤(€€€ÍÑ…•}ÍÑ…ÑÕÍl‰ÉÍ‰}•¹É¥ ‰t€ô€‰½µÁ±•Ñ”ˆ¥˜•Œ€ôô€À…¹•È¹•Ð ‰¹}Á•ÁÑ¥‘•}½µÁ±•á•Ìˆ°€À¤€ø€À•±Í”€‰•µÁÑäˆ¥˜•Œ€ôô€À•±Í”€‰™…¥±•ˆ(€€€ÍÑ…•}½¹Ñ•áÑl‰ÉÍ‰}•¹É¥ ‰t€ô€¡•È°•”¤(€€€Ù¥‘•¹•1½•È¹±½œ ‰É•Í•…É ˆ°€‰Ñ½½±}…±°ˆ°ì4(€€€€€€€€‰Ñ½½±}¹…µ”ˆè€‰ÉÍ‰}É…Á¡Å±}…Á¤ˆ°€‰½ÕÑÁÕÑ}¡…Í ˆè• °€‰•á¥Ñ}½‘”ˆè•Œ°4(€€€€€€€€‰‘ÕÉ…Ñ¥½¹}Í•ŒˆèÉ½Õ¹¡•°€Ä¤°€‰ÍÑ‘½ÕÑ}Í¹¥ÁÁ•ÐˆèÍÑÈ¡•È¹•Ð ‰½Õ¹ÑÍ}‰å}Ñ…É•Ðˆ°íô¤¤°4(€€€ô°Ñ…É•ÑÌõÑ…É•Ñ}¥‘Ì°Á¡…Í”ô‰É•Í•…É ˆ¤4(4(€€€…É•…Ñ”€ôì‰É•ÍÕ±ÑÍ}‰å}Ñ…É•Ðˆèíô°€‰½Õ¹ÑÍ}‰å}Ñ…É•Ðˆèíõô4(€€€¥˜½Ì¹•¹Ù¥É½¸¹•Ð ‰M-%A}	%=Q%Qˆ°€ˆˆ¤¹±½Ý•È ¤¥¸€ ˆÄˆ°€‰ÑÉÕ”ˆ°€‰å•Ìˆ¤è4(€€€€€€€ÍÑ…•}ÍÑ…ÑÕÍl‰¥¹Ñ•É™…”‰t€ô€‰Í­¥ÁÁ•ˆ(€€€€€€€ÍÑ…•}ÍÑ…ÑÕÍl‰…É•…Ñ”‰t€ô€‰Í­¥ÁÁ•ˆ(€€€€€€€ÍÑ…•}½¹Ñ•áÐ¹ÕÁ‘…Ñ”¡í¹…µ”è€¡íô°€ˆˆ¤™½È¹…µ”¥¸€ ‰¥¹Ñ•É™…”ˆ°€‰…É•…Ñ”ˆ¥ô¤(€€€€€€€™…±±‰…­Ì¹…ÁÁ•¹ ‰¥¹Ñ•É™…•}…É•…Ñ¥½¹}½µ¥ÑÑ•ˆ¤(€€€•±Í”è4(€€€€€€€ÑÉäè4(€€€€€€€€€€€¥È°¥”°¥Œ°¥‘|°¥ €ô}ÉÕ¹}ÍÉ¥ÁÐ ‰½µÁÕÑ•}¥¹Ñ•É™…”¹Áäˆ°•È¤(€€€€€€€€€€€ÍÑ…•}ÍÑ…ÑÕÍl‰¥¹Ñ•É™…”‰t€ô€‰½µÁ±•Ñ”ˆ¥˜¥Œ€ôô€À…¹¥È¹•Ð ‰¹}Ý¥Ñ¡}¥¹Ñ•É™…”ˆ°€À¤•±Í”€‰•µÁÑäˆ¥˜¥Œ€ôô€À•±Í”€‰™…¥±•ˆ(€€€€€€€€€€€ÍÑ…•}½¹Ñ•áÑl‰¥¹Ñ•É™…”‰t€ô€¡¥È°¥”¤(€€€€€€€€€€€Ù¥‘•¹•1½•È¹±½œ ‰É•Í•…É ˆ°€‰Ñ½½±}…±°ˆ°ì4(€€€€€€€€€€€€€€€€‰Ñ½½±}¹…µ”ˆè€‰‰¥½Ñ¥Ñ”ˆ°€‰½ÕÑÁÕÑ}¡…Í ˆè¥ °€‰•á¥Ñ}½‘”ˆè¥Œ°4(€€€€€€€€€€€€€€€€‰‘ÕÉ…Ñ¥½¹}Í•ŒˆèÉ½Õ¹¡¥‘|°€Ä¤°4(€€€€€€€€€€€€€€€€‰ÍÑ‘½ÕÑ}Í¹¥ÁÁ•Ðˆè˜‰¥¹Ñ•É™…•Ìõí¥È¹•Ð ¹}Ý¥Ñ¡}¥¹Ñ•É™…”œ°€À¥ôˆ°4(€€€€€€€€€€€ô°Ñ…É•ÑÌõÑ…É•Ñ}¥‘Ì°Á¡…Í”ô‰É•Í•…É ˆ¤4(€€€€€€€€€€€…É•…Ñ”°…”°…Œ°…°… €ô}ÉÕ¹}ÍÉ¥ÁÐ ‰…É•…Ñ•}Á½­•ÑÌ¹Áäˆ°¥È¤(€€€€€€€€€€€¡…Í}…É•…Ñ”€ô‰½½°¡…É•…Ñ”¹•Ð ‰É•ÍÕ±ÑÍ}‰å}Ñ…É•Ðˆ¤½È…É•…Ñ”¹•Ð ‰½Õ¹ÑÍ}‰å}Ñ…É•Ðˆ¤¤(€€€€€€€€€€€ÍÑ…•}ÍÑ…ÑÕÍl‰…É•…Ñ”‰t€ô€‰½µÁ±•Ñ”ˆ¥˜…Œ€ôô€À…¹¡…Í}…É•…Ñ”•±Í”€‰•µÁÑäˆ¥˜…Œ€ôô€À•±Í”€‰™…¥±•ˆ(€€€€€€€€€€€ÍÑ…•}½¹Ñ•áÑl‰…É•…Ñ”‰t€ô€¡…É•…Ñ”°…”¤(€€€€€€€€€€€Ù¥‘•¹•1½•È¹±½œ ‰É•Í•…É ˆ°€‰Ñ½½±}…±°ˆ°ì4(€€€€€€€€€€€€€€€€‰Ñ½½±}¹…µ”ˆè€‰…É•…Ñ•}Á½­•ÑÌˆ°€‰½ÕÑÁÕÑ}¡…Í ˆè… °€‰•á¥Ñ}½‘”ˆè…Œ°4(€€€€€€€€€€€€€€€€‰‘ÕÉ…Ñ¥½¹}Í•ŒˆèÉ½Õ¹¡…°€Ä¤°4(€€€€€€€€€€€€€€€€‰ÍÑ‘½ÕÑ}Í¹¥ÁÁ•ÐˆèÍÑÈ¡…É•…Ñ”¹•Ð ‰½Õ¹ÑÍ}‰å}Ñ…É•Ðˆ°íô¤¤°4(€€€€€€€€€€€ô°Ñ…É•ÑÌõÑ…É•Ñ}¥‘Ì°Á¡…Í”ô‰É•Í•…É ˆ¤4(€€€€€€€•á•ÁÐá•ÁÑ¥½¸…Ì•áŒè4(€€€€€€€€€€€ÍÑ…•}ÍÑ…ÑÕÍl‰¥¹Ñ•É™…”‰t€ô€‰™…¥±•ˆ4(€€€€€€€€€€€ÍÑ…•}ÍÑ…ÑÕÍl‰…É•…Ñ”‰t€ô€‰™…¥±•ˆ(€€€€€€€€€€€ÍÑ…•}½¹Ñ•áÑl‰¥¹Ñ•É™…”‰t€ô€¡íô°ÍÑÈ¡•áŒ¤¤(€€€€€€€€€€€ÍÑ…•}½¹Ñ•áÑl‰…É•…Ñ”‰t€ô€¡íô°ÍÑÈ¡•áŒ¤¤(€€€€€€€€€€€™…±±‰…­Ì¹…ÁÁ•¹ ‰¥¹Ñ•É™…•}…É•…Ñ¥½¹}½µ¥ÑÑ•ˆ¤(€€€€€€€€€€€Ù¥‘•¹•1½•È¹•ÉÉ½È ‰É•Í•…É ˆ°€‰Ñ½½±}™…¥±ÕÉ”ˆ°ÍÑÈ¡•áŒ¤°É•½Ù•Éäô‰½¹Ñ¥¹Õ”Ý¥Ñ¡½ÕÐ¥¹Ñ•É™…”…É•…Ñ¥½¸ˆ¤4(4(€€€ÁµÈ°Áµ”°ÁŒ°Á°Á €ô}ÉÕ¹}ÍÉ¥ÁÐ ‰ÁÕ‰µ•‘}Í•…É ¹Áäˆ¤(€€€ÍÑ…•}ÍÑ…ÑÕÍl‰ÁÕ‰µ•‰t€ô€‰½µÁ±•Ñ”ˆ¥˜ÁŒ€ôô€À…¹ÁµÈ¹•Ð ‰¹}Ñ½Ñ…°ˆ°€À¤€ø€À•±Í”€‰•µÁÑäˆ¥˜ÁŒ€ôô€À•±Í”€‰™…¥±•ˆ(€€€ÍÑ…•}½¹Ñ•áÑl‰ÁÕ‰µ•‰t€ô€¡ÁµÈ°Áµ”¤(€€€Ù¥‘•¹•1½•È¹±½œ ‰É•Í•…É ˆ°€‰Ñ½½±}…±°ˆ°ì4(€€€€€€€€‰Ñ½½±}¹…µ”ˆè€‰ÁÕ‰µ•‘}•ÕÑ¥±Ìˆ°€‰½ÕÑÁÕÑ}¡…Í ˆèÁ °€‰•á¥Ñ}½‘”ˆèÁŒ°4(€€€€€€€€‰‘ÕÉ…Ñ¥½¹}Í•ŒˆèÉ½Õ¹¡Á°€Ä¤°€‰ÍÑ‘½ÕÑ}Í¹¥ÁÁ•Ðˆè˜‰Á…Á•ÉÌõíÁµÈ¹•Ð ¹}Ñ½Ñ…°œ°€À¥ôˆ°4(€€€ô°Ñ…É•ÑÌõÑ…É•Ñ}¥‘Ì°Á¡…Í”ô‰É•Í•…É ˆ¤4(4(€€€­¹½Ý¹}‰¥¹‘•ÉÌ€ômt4(€€€ÑÉäè4(€€€€€€€±È°±”°±Œ°±°± €ô}ÉÕ¹}ÍÉ¥ÁÐ ‰±±µ}•áÑÉ…Ð¹Áäˆ°ÁµÈ°•áÑÉ…}…ÉÌõlˆ´µ½¹ÕÉÉ•¹äˆ°€ˆÌ‰t¤(€€€€€€€­¹½Ý¹}‰¥¹‘•ÉÌ€ô±È¹•Ð ‰­¹½Ý¹}‰¥¹‘•ÉÌˆ°mt¤4(€€€€€€€É…Ý}±±µ}ÍÑ…ÑÕÌ€ô±È¹•Ð ‰ÉÕ¹}ÍÑ…ÑÕÌˆ°€‰™…¥±•ˆ¤(€€€€€€€ÍÑ…•}ÍÑ…ÑÕÍl‰±±µ}•áÑÉ…Ð‰t€ô€ (€€€€€€€€€€€€‰‘•É…‘•‘}¹½}…Á¥}­•äˆ¥˜É…Ý}±±µ}ÍÑ…ÑÕÌ€ôô€‰‘•É…‘•‘}¹½}…Á¥}­•äˆ(€€€€€€€€€€€•±Í”€‰½µÁ±•Ñ”ˆ¥˜±Œ€ôô€À…¹É…Ý}±±µ}ÍÑ…ÑÕÌ€ôô€‰½µÁ±•Ñ”ˆ(€€€€€€€€€€€•±Í”€‰™…¥±•ˆ(€€€€€€€€¤(€€€€€€€ÍÑ…•}½¹Ñ•áÑl‰±±µ}•áÑÉ…Ð‰t€ô€¡±È°±”¤(€€€€€€€¥˜¹½Ð­¹½Ý¹}‰¥¹‘•ÉÌè(€€€€€€€€€€€™…±±‰…­Ì¹…ÁÁ•¹ ‰¹½}‰¥¹‘•É}™…±±‰…¬ˆ¤(€€€€€€€Ù¥‘•¹•1½•È¹±½œ ‰É•Í•…É ˆ°€‰Ñ½½±}…±°ˆ°ì4(€€€€€€€€€€€€‰Ñ½½±}¹…µ”ˆè€‰±±µ}•áÑÉ…Ðˆ°€‰½ÕÑÁÕÑ}¡…Í ˆè± °€‰•á¥Ñ}½‘”ˆè±Œ°4(€€€€€€€€€€€€‰‘ÕÉ…Ñ¥½¹}Í•ŒˆèÉ½Õ¹¡±°€Ä¤°€‰ÍÑ‘½ÕÑ}Í¹¥ÁÁ•Ðˆè˜‰‰¥¹‘•ÉÌõí±•¸¡­¹½Ý¹}‰¥¹‘•ÉÌ¥ôˆ°4(€€€€€€€ô°Ñ…É•ÑÌõÑ…É•Ñ}¥‘Ì°Á¡…Í”ô‰É•Í•…É ˆ¤4(€€€•á•ÁÐá•ÁÑ¥½¸…Ì•áŒè4(€€€€€€€ÍÑ…•}ÍÑ…ÑÕÍl‰±±µ}•áÑÉ…Ð‰t€ô€‰™…¥±•ˆ(€€€€€€€ÍÑ…•}½¹Ñ•áÑl‰±±µ}•áÑÉ…Ð‰t€ô€¡íô°ÍÑÈ¡•áŒ¤¤(€€€€€€€™…±±‰…­Ì¹…ÁÁ•¹ ‰¹½}‰¥¹‘•É}™…±±‰…¬ˆ¤(€€€€€€€Ù¥‘•¹•1½•È¹•ÉÉ½È ‰É•Í•…É ˆ°€‰Ñ½½±}™…¥±ÕÉ”ˆ°ÍÑÈ¡•áŒ¤°É•½Ù•Éäô‰¹¼™…‰É¥…Ñ•‰¥¹‘•È™…±±‰…¬ˆ¤4(4(€€€Ñ¡É•Í¡½±‘Ì€ô}‘•™…Õ±Ñ}Ñ¡É•Í¡½±‘Ì¡AI=)Q}=9%¤(€€€ÑÉäè4(€€€€€€€ÑÈ°Ñ”°ÑŒ°Ñ°Ñ¡…Í €ô}ÉÕ¹}ÍÉ¥ÁÐ ‰Ñ¡É•Í¡½±‘}É•Í•…É ¹Áäˆ°•áÑÉ…}…ÉÌõlˆ´µ½¹ÕÉÉ•¹äˆ°€ˆÐ‰t¤(€€€€€€€±¥Ñ•É…ÑÕÉ•}Ñ¡É•Í¡½±‘Ì°Ñ¡É•Í¡½±‘}¹½Éµ…±¥é…Ñ¥½¸€ô¹½Éµ…±¥é•}Ñ¡É•Í¡½±‘Ì¡ÑÈ¹•Ð ‰µ•ÑÉ¥}‰…ÑÑ•Éäˆ°íô¤¤(€€€€€€€™½È­•ä°¥¹™¼¥¸±¥Ñ•É…ÑÕÉ•}Ñ¡É•Í¡½±‘Ì¹¥Ñ•µÌ ¤è(€€€€€€€€€€€¥˜¥¹™¼¹•Ð ‰…ÕÑ½}ÕÍ…‰±”ˆ¤…¹¥¹™¼¹•Ð ‰Ù…±Õ”ˆ¤¥Ì¹½Ð9½¹”è(€€€€€€€€€€€€€€€Ñ¡É•Í¡½±‘Ím­•åt€ôì(€€€€€€€€€€€€€€€€€€€€¨©í¹…µ”èÙ…±Õ”™½È¹…µ”°Ù…±Õ”¥¸Ñ¡É•Í¡½±‘Ì¹•Ð¡­•ä°íô¤¹¥Ñ•µÌ ¤4(€€€€€€€€€€€€€€€€€€€€€€¥˜¹…µ”¥¸€ ‰µ•Ñ¡½ˆ°€‰µ¥¹}Í••‘}™É…Ñ¥½¸ˆ¥ô°4(€€€€€€€€€€€€€€€€€€€€‰Ù…±Õ”ˆè¥¹™½l‰Ù…±Õ”‰t°€‰½Á•É…Ñ½Èˆè¥¹™¼¹•Ð ‰½Á•É…Ñ½Èˆ°€ˆøˆ¤°4(€€€€€€€€€€€€€€€€€€€€‰Õ¹¥Ðˆè¥¹™¼¹•Ð ‰Õ¹¥Ðˆ¤°€‰Í½ÕÉ”ˆè˜‰AÕ‰5•A5%í¥¹™¼¹•Ð Í½ÕÉ•}Áµ¥œ¥ôˆ°4(€€€€€€€€€€€€€€€€€€€€‰Í½ÕÉ•}Áµ¥ˆè¥¹™¼¹•Ð ‰Í½ÕÉ•}Áµ¥ˆ¤°€‰•Ù¥‘•¹•}ÅÕ½Ñ”ˆè¥¹™¼¹•Ð ‰•Ù¥‘•¹•}ÅÕ½Ñ”ˆ¤°4(€€€€€€€€€€€€€€€€€€€€‰•Ù¥‘•¹•}É…‘”ˆè€‰Á…Á•É}•áÁ±¥¥Ðˆ°€‰ÅÕ½Ñ•}Ù•É¥™¥•ˆèQÉÕ”°(€€€€€€€€€€€€€€€€€€€€‰…±¥‰É…Ñ¥½¹}ÍÑ…ÑÕÌˆè€‰Á•¹‘¥¹œˆ°(€€€€€€€€€€€€€€€€€€€€‰…ÁÁ±¥…‰±•}Ñ…É•ÑÌˆèÑ…É•Ñ}¥‘Ì°(€€€€€€€€€€€€€€€ô(€€€€€€€É…Ý}Ñ¡É•Í¡½±‘}ÍÑ…ÑÕÌ€ôÑÈ¹•Ð ‰}µ•Ñ„ˆ°íô¤¹•Ð ‰ÉÕ¹}ÍÑ…ÑÕÌˆ°€‰™…¥±•ˆ¤(€€€€€€€ÍÑ…•}ÍÑ…ÑÕÍl‰Ñ¡É•Í¡½±‘}É•Í•…É ‰t€ô€ (€€€€€€€€€€€€‰‘•É…‘•‘}¹½}…Á¥}­•äˆ¥˜É…Ý}Ñ¡É•Í¡½±‘}ÍÑ…ÑÕÌ€ôô€‰‘•É…‘•‘}¹½}±±´ˆ(€€€€€€€€€€€•±Í”€‰•µÁÑäˆ¥˜É…Ý}Ñ¡É•Í¡½±‘}ÍÑ…ÑÕÌ€ôô€‰‘•É…‘•‘}•µÁÑå}É•ÍÕ±ÑÌˆ(€€€€€€€€€€€•±Í”€‰½µÁ±•Ñ”ˆ¥˜ÑŒ€ôô€À…¹É…Ý}Ñ¡É•Í¡½±‘}ÍÑ…ÑÕÌ€ôô€‰½µÁ±•Ñ”ˆ(€€€€€€€€€€€•±Í”€‰™…¥±•ˆ(€€€€€€€€¤(€€€€€€€ÍÑ…•}½¹Ñ•áÑl‰Ñ¡É•Í¡½±‘}É•Í•…É ‰t€ô€¡ÑÈ°Ñ”¤(€€€€€€€Ñ¡É•Í¡½±‘Ì°™¥¹…±}¹½Éµ…±¥é…Ñ¥½¸€ô¹½Éµ…±¥é•}Ñ¡É•Í¡½±‘Ì¡Ñ¡É•Í¡½±‘Ì¤(€€€€€€€Ù¥‘•¹•1½•È¹±½œ ‰É•Í•…É ˆ°€‰Ñ½½±}…±°ˆ°ì4(€€€€€€€€€€€€‰Ñ½½±}¹…µ”ˆè€‰Ñ¡É•Í¡½±‘}É•Í•…É ˆ°€‰½ÕÑÁÕÑ}¡…Í ˆèÑ¡…Í °€‰•á¥Ñ}½‘”ˆèÑŒ°4(€€€€€€€€€€€€‰‘ÕÉ…Ñ¥½¹}Í•ŒˆèÉ½Õ¹¡Ñ°€Ä¤°4(€€€€€€€€€€€€‰ÍÑ‘½ÕÑ}Í¹¥ÁÁ•Ðˆè˜‰ÕÍ…‰±”õíÑÈ¹•Ð }µ•Ñ„œ°íô¤¹•Ð ¹}…ÕÑ½}ÕÍ…‰±”œ°€À¥ôˆ°4(€€€€€€€ô°Ñ…É•ÑÌõÑ…É•Ñ}¥‘Ì°Á¡…Í”ô‰É•Í•…É ˆ¤4(€€€•á•ÁÐá•ÁÑ¥½¸…Ì•áŒè4(€€€€€€€ÍÑ…•}ÍÑ…ÑÕÍl‰Ñ¡É•Í¡½±‘}É•Í•…É ‰t€ô€‰™…¥±•ˆ(€€€€€€€ÍÑ…•}½¹Ñ•áÑl‰Ñ¡É•Í¡½±‘}É•Í•…É ‰t€ô€¡íô°ÍÑÈ¡•áŒ¤¤(€€€€€€€™…±±‰…­Ì¹…ÁÁ•¹ ‰ÁÉ½Ù¥Í¥½¹…±}‘•™…Õ±Ñ}Ñ¡É•Í¡½±‘Ìˆ¤((€€€¥˜ÍÑ…•}ÍÑ…ÑÕÌ¹•Ð ‰Ñ¡É•Í¡½±‘}É•Í•…É ˆ¤€„ô€‰½µÁ±•Ñ”ˆè(€€€€€€€™…±±‰…­Ì¹…ÁÁ•¹ ‰ÁÉ½Ù¥Í¥½¹…±}‘•™…Õ±Ñ}Ñ¡É•Í¡½±‘Ìˆ¤(€€€Ñ¡É•Í¡½±‘Ì°½¹ÑÉ½±}…±¥‰É…Ñ¥½¸€ô}…ÁÁ±å}½¹ÑÉ½±}…±¥‰É…Ñ¥½¸¡Ñ¡É•Í¡½±‘Ì°AI=)Q}=9%¤(€€€}ÝÉ¥Ñ•}Ñ¡É•Í¡½±‘}…¡”¡Ñ¡É•Í¡½±‘Ì°AI=)Q}=9%°ì(€€€€€€€€‰±¥Ñ•É…ÑÕÉ•}¥¹ÁÕÐˆèÑ¡É•Í¡½±‘}¹½Éµ…±¥é…Ñ¥½¸¥˜€‰Ñ¡É•Í¡½±‘}¹½Éµ…±¥é…Ñ¥½¸ˆ¥¸±½…±Ì ¤•±Í”íô°(€€€€€€€€‰™¥¹…°ˆè™¥¹…±}¹½Éµ…±¥é…Ñ¥½¸¥˜€‰™¥¹…±}¹½Éµ…±¥é…Ñ¥½¸ˆ¥¸±½…±Ì ¤•±Í”íô°(€€€€€€€€‰½¹ÑÉ½±}…±¥‰É…Ñ¥½¸ˆè½¹ÑÉ½±}…±¥‰É…Ñ¥½¸°(€€€ô¤(€€€¥˜¹½ÐQ!IM!=1M}!¹•á¥ÍÑÌ ¤è(€€€€€€€}ÝÉ¥Ñ•}Ñ¡É•Í¡½±‘}…¡”¡Ñ¡É•Í¡½±‘Ì°AI=)Q}=9%¤(€€€€€€€Ù¥‘•¹•1½•È¹•ÉÉ½È ‰É•Í•…É ˆ°€‰Ñ½½±}™…¥±ÕÉ”ˆ°ÍÑÈ¡•áŒ¤°É•½Ù•Éäô‰ÁÉ½Ù¥Í¥½¹…°Ñ¡É•Í¡½±‘ÌÉ•µ…¥¸¹½¸µ±•…É…‰±”ˆ¤4(4(€€€‘å¹…µ¥}Á‘‰}±¥ÍÐ€ômÉ½Ü¹•Ð ‰Á‘‰}¥ˆ¤™½ÈÉ½Ü¥¸•È¹•Ð ‰Á•ÁÑ¥‘•}½µÁ±•á•Ìˆ°mt¤¥˜É½Ü¹•Ð ‰Á‘‰}¥ˆ¥t4(€€€ÍÑ…•}•ÉÉ½É}½‘”°•ÉÉ½É}µ•ÍÍ…”€ô}‘¥…¹½ÍÑ¥Í}™½É}ÍÑ…•Ì¡ÍÑ…•}ÍÑ…ÑÕÌ°ÍÑ…•}½¹Ñ•áÐ¤(€€€É•ÍÕ±Ð€ôì(€€€€€€€€‰ÁÉ½©•Ñ}¥ˆèAI=)Q}=9%l‰ÁÉ½©•Ñ}¥‰t°4(€€€€€€€€‰Ñ…É•ÑÌˆèíÑ…É•Ñl‰¥‰tèÑ…É•Ð™½ÈÑ…É•Ð¥¸AI=)Q}=9%l‰Ñ…É•ÑÌ‰uô°4(€€€€€€€€‰Á½­•Ñ}‘¥™™•É•¹•Ìˆèì4(€€€€€€€€€€€€‰}Í½ÕÉ”ˆè€‰‘å¹…µ¥}¥¹Ñ•É™…•}…É•…Ñ¥½¸ˆ°4(€€€€€€€€€€€€‰Ñ…É•ÑÌˆè…É•…Ñ”¹•Ð ‰É•ÍÕ±ÑÍ}‰å}Ñ…É•Ðˆ°íô¤°4(€€€€€€€ô°4(€€€€€€€€‰­¹½Ý¹}‰¥¹‘•ÉÌˆè­¹½Ý¹}‰¥¹‘•ÉÌ°4(€€€€€€€€‰­¹½Ý¹}‘Õ…±}‰¥¹‘•ÉÌˆè­¹½Ý¹}‰¥¹‘•ÉÌ°4(€€€€€€€€‰­¹½Ý¹}‰¥¹‘•É}Í½ÕÉ”ˆè€‰±±µ}•áÑÉ…Ñ•ˆ¥˜­¹½Ý¹}‰¥¹‘•ÉÌ•±Í”€‰¹½¹•}™½Õ¹ˆ°4(€€€€€€€€‰‘•Í¥¹}ÍÑÉ…Ñ•å}ÍÕµµ…Éäˆè€‰Q…É•Ðµ½¹™¥ÕÉ•ì‘•É¥Ù”‘•Í¥¸½¹ÍÑÉ…¥¹ÑÌ™É½´É•ÑÉ¥•Ù••Á¥Ñ½Á”•Ù¥‘•¹”¸ˆ°4(€€€€€€€€‰‘…Ñ…}ÅÕ…±¥Ñå}…±•ÉÐˆè€‰9¼54µÍÁ•¥™¥Œ½¹ÍÑ…¹ÑÌÝ•É”ÕÍ•…Ì™…±±‰…¬¸ˆ°4(€€€€€€€€‰±¥Ñ•É…ÑÕÉ•}É•™ÌˆèÁµÈ¹•Ð ‰Áµ¥‘Ìˆ°mt¤°4(€€€€€€€€‰Ñ¡É•Í¡½±‘ÌˆèÑ¡É•Í¡½±‘Ì°4(€€€€€€€€‰}Á¥Á•±¥¹•}µ•Ñ„ˆèì4(€€€€€€€€€€€€‰±…ÍÑ}ÉÕ¸ˆè‘…Ñ•Ñ¥µ”¹¹½Ü¡Ñ¥µ•é½¹”¹ÕÑŒ¤¹¥Í½™½Éµ…Ð ¤°4(€€€€€€€€€€€€‰‘å¹…µ¥}Á‘‰}±¥ÍÐˆè‘å¹…µ¥}Á‘‰}±¥ÍÐ°4(€€€€€€€€€€€€‰½Õ¹ÑÍ}‰å}Ñ…É•Ðˆè•È¹•Ð ‰½Õ¹ÑÍ}‰å}Ñ…É•Ðˆ°íô¤°4(€€€€€€€€€€€€‰ÍÑ…•}ÍÑ…ÑÕÌˆèÍÑ…•}ÍÑ…ÑÕÌ°(€€€€€€€€€€€€‰ÍÑ…•}•ÉÉ½É}½‘”ˆèÍÑ…•}•ÉÉ½É}½‘”°(€€€€€€€€€€€€‰•ÉÉ½É}µ•ÍÍ…”ˆè•ÉÉ½É}µ•ÍÍ…”°(€€€€€€€€€€€€‰™…±±‰…­Í}ÕÍ•ˆè±¥ÍÐ¡‘¥Ð¹™É½µ­•åÌ¡™…±±‰…­Ì¤¤°(€€€€€€€€€€€€‰½¹ÑÉ½±}…±¥‰É…Ñ¥½¸ˆè½¹ÑÉ½±}…±¥‰É…Ñ¥½¸°(€€€€€€€€€€€€‰ÉÕ¹}ÍÑ…ÑÕÌˆè}½Ù•É…±±}ÉÕ¹}ÍÑ…ÑÕÌ¡ÍÑ…•}ÍÑ…ÑÕÌ¤°(€€€€€€€ô°(€€€€€€€€‰}…¡•}µ•Ñ„ˆè}…¡•}µ•Ñ„¡AI=)Q}=9%¤°(€€€ô(€€€}…Ñ½µ¥}ÝÉ¥Ñ•}©Í½¸¡!}AQ °É•ÍÕ±Ð¤(€€€É•ÑÕÉ¸É•ÍÕ±Ð4(4(4)‘•˜ÉÕ¸¡ÍÑ…Ñ”õ9½¹”°™½É•}É•½µÁÕÑ”õ…±Í”°Í­¥Á}Á¥Á•±¥¹”õ…±Í”¤è(€€€}•¹ÍÕÉ•}ÉÕ¹Ñ¥µ•}‘¥ÉÌ ¤(€€€…ÍÍ•ÉÑ}ÁÉ½©•Ñ}…ÁÁÉ½Ù•¡AI=)Q}=9%¤(€€€€ŒQ¡”¹•Ý±ä…ÁÁÉ½Ù•½¹™¥œ¥Ì…ÕÑ¡½É¥Ñ…Ñ¥Ù”•Ù•¸Ý¡•¸ÍÑ…Ñ”¹©Í½¸ÁÉ•‘…Ñ•Ì¥Ð¸(€€€ÍÑ…Ñ”€ôMÑ…Ñ”¹Íå¹}ÁÉ½©•Ñ}½¹™¥œ¡AI=)Q}=9%¤((€€€Á¥Á•±¥¹•}ÉÕ¹¹•È€ô}ÉÕ¹}Á¥Á•±¥¹”¥˜%M}55}II9•±Í”}ÉÕ¹}•¹•É¥}Á¥Á•±¥¹”(€€€¥˜™½É•}É•½µÁÕÑ”è(€€€€€€€Á¥Á•±¥¹•}É•ÍÕ±Ð€ôÁ¥Á•±¥¹•}ÉÕ¹¹•È ¤(€€€•±Í”è(€€€€€€€Á¥Á•±¥¹•}É•ÍÕ±Ð€ô}±½…‘}Ù…±¥‘}…¡”¡!}AQ °AI=)Q}=9%¤(€€€€€€€¥˜Á¥Á•±¥¹•}É•ÍÕ±Ð¥Ì¹½Ð9½¹”è(€€€€€€€€€€€ÁÉ¥¹Ð¡˜‰mÉ•Í•…É¡tUÍ¥¹œ…¡”èí!}AQ!ôˆ¤(€€€€€€€•±Í”è(€€€€€€€€€€€Á¥Á•±¥¹•}É•ÍÕ±Ð€ôÁ¥Á•±¥¹•}ÉÕ¹¹•È ¤((€€€Ñ¡É•Í¡½±‘Ì°Ñ¡É•Í¡½±‘}¹½Éµ…±¥é…Ñ¥½¸€ô¹½Éµ…±¥é•}Ñ¡É•Í¡½±‘Ì (€€€€€€€Á¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰Ñ¡É•Í¡½±‘Ìˆ¤½È}‘•™…Õ±Ñ}Ñ¡É•Í¡½±‘Ì¡AI=)Q}=9%¤(€€€€¤(€€€Á¥Á•±¥¹•}É•ÍÕ±Ñl‰Ñ¡É•Í¡½±‘Ì‰t€ôÑ¡É•Í¡½±‘Ì(€€€Ñ¡É•Í¡½±‘}…¡”€ô9½¹”¥˜™½É•}É•½µÁÕÑ”•±Í”}±½…‘}Ù…±¥‘}…¡”¡Q!IM!=1M}!°AI=)Q}=9%¤(€€€¥˜™½É•}É•½µÁÕÑ”½ÈÑ¡É•Í¡½±‘}…¡”¥Ì9½¹”è(€€€€€€€}ÝÉ¥Ñ•}Ñ¡É•Í¡½±‘}…¡” (€€€€€€€€€€€Ñ¡É•Í¡½±‘Ì°(€€€€€€€€€€€AI=)Q}=9%°(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€‰¹½Éµ…±¥é…Ñ¥½¸ˆèÑ¡É•Í¡½±‘}¹½Éµ…±¥é…Ñ¥½¸°(€€€€€€€€€€€€€€€€‰½¹ÑÉ½±}…±¥‰É…Ñ¥½¸ˆè€ (€€€€€€€€€€€€€€€€€€€Á¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰}Á¥Á•±¥¹•}µ•Ñ„ˆ°íô¤¹•Ð ‰½¹ÑÉ½±}…±¥‰É…Ñ¥½¸ˆ°íô¤(€€€€€€€€€€€€€€€€¤°(€€€€€€€€€€€ô°(€€€€€€€€¤((€€€½¹™¥ÕÉ•‘}Ñ…É•ÑÌ€ôì(€€€€€€€Ñ…É•Ñl‰¥‰tèí­•äèÙ…±Õ”™½È­•ä°Ù…±Õ”¥¸Ñ…É•Ð¹¥Ñ•µÌ ¤¥˜­•ä€„ô€‰¥‰ô(€€€€€€€™½ÈÑ…É•Ð¥¸AI=)Q}=9%¹•Ð ‰Ñ…É•ÑÌˆ°mt¤(€€€ô(€€€Á¥Á•±¥¹•}Ñ…É•ÑÌ€ôÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰Ñ…É•ÑÌˆ°íô¤(€€€™½È¹…µ”¥¸±¥ÍÐ¡½¹™¥ÕÉ•‘}Ñ…É•ÑÌ¤è(€€€€€€€¥¹™¼€ôÁ¥Á•±¥¹•}Ñ…É•ÑÌ¹•Ð¡¹…µ”¤(€€€€€€€¥˜¥Í¥¹ÍÑ…¹”¡¥¹™¼°‘¥Ð¤è(€€€€€€€€€€€½¹™¥ÕÉ•‘}Ñ…É•ÑÍm¹…µ•t¹ÕÁ‘…Ñ”¡í­•äèÙ…±Õ”™½È­•ä°Ù…±Õ”¥¸¥¹™¼¹¥Ñ•µÌ ¤¥˜­•ä€„ô€‰¥‰ô¤((€€€¥˜¹½Ð%M}55}II9è(€€€€€€€É•ÍÕ±Ð€ôì(€€€€€€€€€€€€‰Ñ…É•ÑÌˆè½¹™¥ÕÉ•‘}Ñ…É•ÑÌ°(€€€€€€€€€€€€‰Á½­•Ñ}‘¥™™•É•¹•ÌˆèÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰Á½­•Ñ}‘¥™™•É•¹•Ìˆ°íô¤°4(€€€€€€€€€€€€‰­¹½Ý¹}‰¥¹‘•ÉÌˆèÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰­¹½Ý¹}‰¥¹‘•ÉÌˆ°mt¤°4(€€€€€€€€€€€€‰­¹½Ý¹}‘Õ…±}‰¥¹‘•ÉÌˆèÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰­¹½Ý¹}‰¥¹‘•ÉÌˆ°mt¤°4(€€€€€€€€€€€€‰­¹½Ý¹}‰¥¹‘•É}Í½ÕÉ”ˆèÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰­¹½Ý¹}‰¥¹‘•É}Í½ÕÉ”ˆ°€‰¹½¹•}™½Õ¹ˆ¤°4(€€€€€€€€€€€€‰‘•Í¥¹}ÍÑÉ…Ñ•å}ÍÕµµ…ÉäˆèÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰‘•Í¥¹}ÍÑÉ…Ñ•å}ÍÕµµ…Éäˆ°€ˆˆ¤°4(€€€€€€€€€€€€‰‘…Ñ…}ÅÕ…±¥Ñå}…±•ÉÐˆèÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰‘…Ñ…}ÅÕ…±¥Ñå}…±•ÉÐˆ°€ˆˆ¤°4(€€€€€€€€€€€€‰É•Í•…É¡}Á¥Á•±¥¹•}µ•Ñ„ˆèÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰}Á¥Á•±¥¹•}µ•Ñ„ˆ°íô¤°(€€€€€€€ô(€€€€€€€MÑ…Ñ”¹ÕÁ‘…Ñ”¡É•ÍÕ±Ð¤(€€€€€€€Íå¹Œ€ôMÑ…Ñ”¹Íå¹}Ñ¡É•Í¡½±‘Í}™É½µ}…¡”¡Q!IM!=1M}!¤(€€€€€€€É•ÍÕ±Ñl‰Ñ¡É•Í¡½±‘Ì‰t€ôÍå¹l‰ÍÑ…Ñ”‰t¹•Ð ‰Ñ¡É•Í¡½±‘Ìˆ°íô¤(€€€€€€€µ•Ñ„€ôÉ•ÍÕ±Ñl‰É•Í•…É¡}Á¥Á•±¥¹•}µ•Ñ„‰t4(€€€€€€€Ù¥‘•¹•1½•È¹É•Í•…É¡}½µÁ±•Ñ” 4(€€€€€€€€€€€¡½ÑÍÁ½Ñ}…¹…±åÍ¥Ìõì4(€€€€€€€€€€€€€€€€‰Á‘‰}±¥ÍÐˆèµ•Ñ„¹•Ð ‰‘å¹…µ¥}Á‘‰}±¥ÍÐˆ°mt¤°4(€€€€€€€€€€€€€€€€‰½Õ¹ÑÍ}‰å}Ñ…É•Ðˆèµ•Ñ„¹•Ð ‰½Õ¹ÑÍ}‰å}Ñ…É•Ðˆ°íô¤°4(€€€€€€€€€€€€€€€€‰Á½­•ÑÌˆèÉ•ÍÕ±Ñl‰Á½­•Ñ}‘¥™™•É•¹•Ì‰t°4(€€€€€€€€€€€€€€€€‰ÍÑ…•}ÍÑ…ÑÕÌˆèµ•Ñ„¹•Ð ‰ÍÑ…•}ÍÑ…ÑÕÌˆ°íô¤°4(€€€€€€€€€€€€€€€€‰ÉÕ¹}ÍÑ…ÑÕÌˆèµ•Ñ„¹•Ð ‰ÉÕ¹}ÍÑ…ÑÕÌˆ°€‰Õ¹­¹½Ý¸ˆ¤°4(€€€€€€€€€€€ô°4(€€€€€€€€€€€­¹½Ý¹}‰¥¹‘•ÉÌõÉ•ÍÕ±Ñl‰­¹½Ý¹}‰¥¹‘•ÉÌ‰t°4(€€€€€€€€€€€É•™ÌõÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰±¥Ñ•É…ÑÕÉ•}É•™Ìˆ°mt¤°4(€€€€€€€€¤4(€€€€€€€É•ÑÕÉ¸É•ÍÕ±Ð4(4(€€€É•ÍÕ±Ð€ôì(€€€€€€€€‰Ñ…É•ÑÌˆè½¹™¥ÕÉ•‘}Ñ…É•ÑÌ°(€€€€€€€€‰Á½­•Ñ}‘¥™™•É•¹•ÌˆèÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰Á½­•Ñ}‘¥™™•É•¹•Ìˆ°A=-Q}%I9L¤°4(€€€€€€€€‰­¹½Ý¹}‘Õ…±}‰¥¹‘•ÉÌˆèÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰­¹½Ý¹}‘Õ…±}‰¥¹‘•ÉÌˆ°-9=]9}U1}	%9IL¤°4(€€€€€€€€‰­¹½Ý¹}‰¥¹‘•É}Í½ÕÉ”ˆèÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰­¹½Ý¹}‰¥¹‘•É}Í½ÕÉ”ˆ°€‰ÕÉ…Ñ•‘}™…±±‰…¬ˆ¤°4(€€€€€€€€‰‘•Í¥¹}ÍÑÉ…Ñ•å}ÍÕµµ…ÉäˆèÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰‘•Í¥¹}ÍÑÉ…Ñ•å}ÍÕµµ…Éäˆ°M%9}MQIQe}MU55Id¤°4(€€€€€€€€‰‘…Ñ…}ÅÕ…±¥Ñå}…±•ÉÐˆèÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰‘…Ñ…}ÅÕ…±¥Ñå}…±•ÉÐˆ°Q}EU1%Qe}1IP¤°4(€€€€€€€€‰É•Í•…É¡}Á¥Á•±¥¹•}µ•Ñ„ˆèÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰}Á¥Á•±¥¹•}µ•Ñ„ˆ°íô¤°(€€€ô(€€€MÑ…Ñ”¹ÕÁ‘…Ñ”¡É•ÍÕ±Ð¤(€€€Íå¹Œ€ôMÑ…Ñ”¹Íå¹}Ñ¡É•Í¡½±‘Í}™É½µ}…¡”¡Q!IM!=1M}!¤(€€€É•ÍÕ±Ñl‰Ñ¡É•Í¡½±‘Ì‰t€ôÍå¹l‰ÍÑ…Ñ”‰t¹•Ð ‰Ñ¡É•Í¡½±‘Ìˆ°íô¤(4(€€€€ŒƒžR£–*£ššVÃš6»šz–îè¡½ÑÍÁ½Ñ}…¹…±åÍ¥Ì4(€€€µ•Ñ„€ôÁ¥Á•±¥¹•}É•ÍÕ±Ð¹•Ð ‰}Á¥Á•±¥¹•}µ•Ñ„ˆ°íô¤4(€€€Á½­•Ñ}‘¥™˜€ôÉ•ÍÕ±Ñl‰Á½­•Ñ}‘¥™™•É•¹•Ì‰t4(€€€Á‘‰}±¥ÍÐ€ôµ•Ñ„¹•Ð ‰‘å¹…µ¥}Á‘‰}±¥ÍÐˆ°mt¤4(€€€¥˜¹½ÐÁ‘‰}±¥ÍÐè4(€€€€€€€Á‘‰}±¥ÍÐ€ôYI%%}AAQ%}=5A1aMl‰54È‰t€¬YI%%}AAQ%}=5A1aMl‰55`‰t4(4(€€€¡½ÑÍÁ½Ñ}…¹…±åÍ¥Ì€ôì4(€€€€€€€€‰Á‘‰}±¥ÍÐˆèÁ‘‰}±¥ÍÐ°4(€€€€€€€€‰¹}µ‘´É}Á•ÁÑ¥‘•}½µÁ±•á•Ìˆèµ•Ñ„¹•Ð ‰¹}µ‘´É}ÍÑÉÕÑÕÉ•Ìˆ°±•¸¡YI%%}AAQ%}=5A1aMl‰54È‰t¤¤°4(€€€€€€€€‰¹}µ‘µá}Á•ÁÑ¥‘•}½µÁ±•á•Ìˆèµ•Ñ„¹•Ð ‰¹}µ‘µá}ÍÑÉÕÑÕÉ•Ìˆ°±•¸¡YI%%}AAQ%}=5A1aMl‰55`‰t¤¤°4(€€€€€€€€‰µ•Ñ¡½ˆèÁ½­•Ñ}‘¥™˜¹•Ð ‰}µ•Ñ¡½ˆ°€ˆˆ¤°4(€€€€€€€€‰Á½­•Ñ}Í½ÕÉ”ˆèµ•Ñ„¹•Ð ‰Á½­•Ñ}Í½ÕÉ”ˆ°€‰½¹ÍÑ…¹Ðˆ¤°4(€€€€€€€€‰Á½­•ÑÌˆèÁ½­•Ñ}‘¥™˜°4(€€€€€€€€‰‘…Ñ…}ÅÕ…±¥Ñå}…±•ÉÐˆèQ}EU1%Qe}1IP°4(€€€€€€€€‰ÍÑ…•}ÍÑ…ÑÕÌˆèµ•Ñ„¹•Ð ‰ÍÑ…•}ÍÑ…ÑÕÌˆ°íô¤°4(€€€€€€€€‰ÉÕ¹}ÍÑ…ÑÕÌˆèµ•Ñ„¹•Ð ‰ÉÕ¹}ÍÑ…ÑÕÌˆ°€‰Õ¹­¹½Ý¸ˆ¤°4(€€€ô4(€€€Ù¥‘•¹•1½•È¹É•Í•…É¡}½µÁ±•Ñ” 4(€€€€€€€¡½ÑÍÁ½Ñ}…¹…±åÍ¥Ìõ¡½ÑÍÁ½Ñ}…¹…±åÍ¥Ì°4(€€€€€€€­¹½Ý¹}‰¥¹‘•ÉÌõÉ•ÍÕ±Ñl‰­¹½Ý¹}‘Õ…±}‰¥¹‘•ÉÌ‰t°4(€€€€€€€É•™Ìõ1%QIQUI}IL°4(€€€€¤4(€€€É•ÑÕÉ¸É•ÍÕ±Ð4(4(4)‘•˜É•½µÁÕÑ” ¤è4(€€€É•ÑÕÉ¸ÉÕ¸¡™½É•}É•½µÁÕÑ”õQÉÕ”¤4(4(4)¥˜}}¹…µ•}|€ôô€‰}}µ…¥¹}|ˆè4(€€€½ÕÐ€ôÉÕ¸ ¤4(€€€¸€ô±•¸¡½ÕÐ¹•Ð ‰­¹½Ý¹}‘Õ…±}‰¥¹‘•ÉÌˆ°mt¤¤4(€€€ÁÉ¥¹Ð¡˜‰mÉ•Í•…É¡tMÑ…Ñ”ÕÁ‘…Ñ•¸í¹ô‘Õ…°‰¥¹‘•ÉÌ¸A¡…Í”õíMÑ…Ñ”¹±½… ¤¹•Ð Á¡…Í”œ¥ôˆ¤4
