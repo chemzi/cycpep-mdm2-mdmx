@@ -46,6 +46,14 @@ exact scoring protocol:
 }
 ```
 
+Production calibration is fail-closed.  The envelope must contain all four
+binding fields: `project_id`, `approved_digest`, `schema_version`, and either
+`protocol` or its `protocol_hash`.  The approved project must also declare the
+current scoring protocol (or hash) in `selection.calibration_protocol` (or
+`selection.calibration_protocol_hash`).  A file that omits any binding field,
+uses a different approved digest, or was produced by another scoring protocol
+is invalidated and cannot replace Research thresholds.
+
 Each record must be labelled `positive` or `negative`.  At least 10 valid
 negative controls and 3 valid positive controls are required by default for a
 metric.  The calibrator chooses the highest-recall cutoff whose observed false
@@ -55,6 +63,11 @@ project `selection` block:
 ```json
 {
   "calibration_controls_path": "data/controls.json",
+  "calibration_protocol": {
+    "tool": "prediction-stack-v1",
+    "model": "<model/version>",
+    "seeds": 5
+  },
   "calibration_max_false_positive_rate": 0.05,
   "calibration_min_positive_recall": 0.50,
   "calibration_min_negative_controls": 10,
