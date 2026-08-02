@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -159,6 +160,45 @@ class ThresholdCalibrationTests(unittest.TestCase):
                     path,
                     project_id=research.PROJECT_CONFIG["project_id"],
                     approved_digest="new",
+                    protocol={"tool": "same-protocol", "version": "test-1"},
+                )
+
+    def test_unbound_control_dataset_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "controls.json"
+            path.write_text(json.dumps({"controls": _control_set(1, 1)}), encoding="utf-8")
+            with self.assertRaisesRegex(ControlDataError, "missing required binding"):
+                load_control_dataset(
+                    path,
+                    project_id=research.PROJECT_CONFIG["project_id"],
+                    approved_digest=(research.PROJECT_CONFIG.get("review") or {}).get(
+                        "approved_digest"
+                    ),
+                    protocol={"tool": "same-protocol", "version": "test-1"},
+                )
+
+    def test_control_protocol_must_match_current_scoring_protocol(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "controls.json"
+            path.write_text(json.dumps({
+                "metadata": {
+                    "project_id": research.PROJECT_CONFIG["project_id"],
+                    "approved_digest": (research.PROJECT_CONFIG.get("review") or {}).get(
+                        "approved_digest"
+                    ),
+                    "schema_version": CALIBRATION_SCHEMA_VERSION,
+                    "protocol": {"tool": "wrong", "version": "test-1"},
+                },
+                "controls": _control_set(1, 1),
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(ControlDataError, "protocol does not match"):
+                load_control_dataset(
+                    path,
+                    project_id=research.PROJECT_CONFIG["project_id"],
+                    approved_digest=(research.PROJECT_CONFIG.get("review") or {}).get(
+                        "approved_digest"
+                    ),
+                    protocol={"tool": "same-protocol", "version": "test-1"},
                 )
 
     def test_state_merge_keeps_calibrated_target_overrides(self):
@@ -199,13 +239,21 @@ class ThresholdCalibrationTests(unittest.TestCase):
             evidence = root / "evidence"
             controls = root / "controls.json"
             controls.write_text(json.dumps({
-                "project_id": research.PROJECT_CONFIG["project_id"],
-                "approved_digest": (research.PROJECT_CONFIG.get("review") or {}).get(
-                    "approved_digest"
-                ),
-                "protocol": {"tool": "same-protocol", "version": "test-1"},
+                "metadata": {
+                    "project_id": research.PROJECT_CONFIG["project_id"],
+                    "approved_digest": (research.PROJECT_CONFIG.get("review") or {}).get(
+                        "approved_digest"
+                    ),
+                    "schema_version": CALIBRATION_SCHEMA_VERSION,
+                    "protocol": {"tool": "same-protocol", "version": "test-1"},
+                },
                 "controls": _control_set(),
             }), encoding="utf-8")
+            config = deepcopy(research.PROJECT_CONFIG)
+            config["selection"] = {
+                **(config.get("selection") or {}),
+                "calibration_protocol": {"tool": "same-protocol", "version": "test-1"},
+            }
             with patch.dict("os.environ", {"CYCPEP_CONTROL_DATA": str(controls)}, clear=False), \
                  patch.object(research, "DATA_DIR", data), \
                  patch.object(research, "EVIDENCE_DIR", evidence), \
@@ -213,8 +261,8 @@ class ThresholdCalibrationTests(unittest.TestCase):
                  patch.object(data_layer, "LOG_PATH", evidence / "evidence_log.jsonl"), \
                  patch.object(research, "THRESHOLDS_CACHE", data / "_thresholds_cache.json"):
                 result, summary = research._apply_control_calibration(
-                    research._default_thresholds(research.PROJECT_CONFIG),
-                    research.PROJECT_CONFIG,
+                    research._default_thresholds(config),
+                    config,
                 )
             self.assertEqual(summary["status"], "calibrated")
             self.assertTrue((data / "_threshold_calibration.json").is_file())
