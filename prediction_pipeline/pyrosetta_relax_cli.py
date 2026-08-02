@@ -30,6 +30,12 @@ def run(args: argparse.Namespace) -> dict:
 
     import pyrosetta
     from pyrosetta.rosetta.core.kinematics import MoveMap
+    from pyrosetta.rosetta.core.scoring import (
+        angle_constraint,
+        atom_pair_constraint,
+        coordinate_constraint,
+        dihedral_constraint,
+    )
     from pyrosetta.rosetta.protocols.relax import FastRelax, delete_virtual_residues
     from pyrosetta.rosetta.protocols.rosetta_scripts import XmlObjects
 
@@ -50,21 +56,38 @@ def run(args: argparse.Namespace) -> dict:
         )
 
     xml_objects = XmlObjects.create_from_file(str(Path(args.topology_xml).resolve()))
-    xml_objects.get_mover("declare_head_to_tail").apply(pose)
+    xml_objects.get_mover("cyclize_head_to_tail").apply(pose)
     bond_applied_before = bool(
         pose.residue(args.last_residue).is_bonded(pose.residue(args.first_residue))
     )
     if not bond_applied_before:
         raise RuntimeError("DeclareBond did not create the head-to-tail chemical bond")
 
-    scorefxn = pyrosetta.create_score_function("ref2015")
-    pre_score = _finite(scorefxn(pose), "pre-relax ref2015 score")
+    report_scorefxn = pyrosetta.create_score_function("ref2015")
+    relax_scorefxn = pyrosetta.create_score_function("ref2015")
+    constraint_score_weights = {
+        "coordinate_constraint": 1.0,
+        "atom_pair_constraint": 1.0,
+        "angle_constraint": 1.0,
+        "dihedral_constraint": 1.0,
+    }
+    for score_type, weight in (
+        (coordinate_constraint, constraint_score_weights["coordinate_constraint"]),
+        (atom_pair_constraint, constraint_score_weights["atom_pair_constraint"]),
+        (angle_constraint, constraint_score_weights["angle_constraint"]),
+        (dihedral_constraint, constraint_score_weights["dihedral_constraint"]),
+    ):
+        relax_scorefxn.set_weight(score_type, weight)
+    pre_score = _finite(report_scorefxn(pose), "pre-relax ref2015 score")
+    pre_constrained_score = _finite(
+        relax_scorefxn(pose), "pre-relax constrained score"
+    )
 
     move_map = MoveMap()
     move_map.set_bb(True)
     move_map.set_chi(True)
     move_map.set_jump(False)
-    relax = FastRelax(scorefxn, args.repeats)
+    relax = FastRelax(relax_scorefxn, args.repeats)
     relax.set_movemap(move_map)
     relax.set_enable_design(False)
     relax.constrain_coords(True)
@@ -77,6 +100,7 @@ def run(args: argparse.Namespace) -> dict:
     bond_applied_before_cleanup = bool(
         pose.residue(args.last_residue).is_bonded(pose.residue(args.first_residue))
     )
+    xml_objects.get_mover("refresh_head_to_tail_dependent_atoms").apply(pose)
     delete_virtual_residues(pose)
     virtual_residues_removed = relaxed_residue_count_before_cleanup - pose.total_residue()
     if virtual_residues_removed < 0:
@@ -91,7 +115,10 @@ def run(args: argparse.Namespace) -> dict:
     )
     if not bond_applied_after:
         raise RuntimeError("head-to-tail chemical bond was lost during FastRelax")
-    post_score = _finite(scorefxn(pose), "post-relax ref2015 score")
+    post_score = _finite(report_scorefxn(pose), "post-relax ref2015 score")
+    post_constrained_score = _finite(
+        relax_scorefxn(pose), "post-relax constrained score"
+    )
     output_pdb = Path(args.output_pdb).resolve()
     pose.dump_pdb(str(output_pdb))
     if not output_pdb.is_file() or output_pdb.stat().st_size == 0:
@@ -112,11 +139,15 @@ def run(args: argparse.Namespace) -> dict:
         "bond_applied_before_relax": bond_applied_before,
         "bond_applied_before_virtual_cleanup": bond_applied_before_cleanup,
         "bond_applied_after_relax": bond_applied_after,
+        "topology_geometry_constraints_applied": True,
+        "constraint_score_weights": constraint_score_weights,
         "temporary_virtual_residues_removed": virtual_residues_removed,
         "scorefunction": "ref2015",
         "pre_total_score_ref2015": pre_score,
         "post_total_score_ref2015": post_score,
         "score_delta_ref2015": post_score - pre_score,
+        "pre_total_score_with_constraints": pre_constrained_score,
+        "post_total_score_with_constraints": post_constrained_score,
         "seed": args.seed,
         "repeats": args.repeats,
         "coordinate_constraints": {
@@ -129,7 +160,8 @@ def run(args: argparse.Namespace) -> dict:
         "move_map": {"backbone": True, "sidechains": True, "jumps": False},
         "design_enabled": False,
         "applied_movers": [
-            "declare_head_to_tail", "FastRelax", "delete_virtual_residues"
+            "cyclize_head_to_tail", "FastRelax",
+            "refresh_head_to_tail_dependent_atoms", "delete_virtual_residues"
         ],
     }
     Path(args.runtime_metadata).resolve().write_text(

@@ -430,6 +430,9 @@ class PredictionPipeline:
                 "sequence": relax_metadata.get("sequence"),
                 "cyclization_type": relax_metadata.get("cyclization_type"),
                 "bond_topology_applied": relax_metadata.get("bond_topology_applied"),
+                "topology_geometry_constraints_applied": relax_metadata.get(
+                    "topology_geometry_constraints_applied"
+                ),
                 "input_chain": relax_metadata.get("input_chain"),
                 "output_chain": relax_metadata.get("output_chain"),
                 "seed": relax_metadata.get("seed"),
@@ -520,6 +523,11 @@ class PredictionPipeline:
                         "post_relax_topology_missing",
                         "post-relax protocol did not attest that the cyclic bond "
                         "topology was applied",
+                    )
+                if relax_metadata["topology_geometry_constraints_applied"] is not True:
+                    raise ContractError(
+                        "post_relax_topology_constraints_missing",
+                        "post-relax did not attest peptide-bond geometry constraints",
                     )
                 input_chain = primary_monomer["binder_chain"] if primary_monomer else None
                 if (

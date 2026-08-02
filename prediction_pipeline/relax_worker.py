@@ -17,7 +17,9 @@ from .structures import (
 )
 
 
-POST_RELAX_PROTOCOL = "declare_head_to_tail_coordinate_constrained_fastrelax_ref2015"
+POST_RELAX_PROTOCOL = (
+    "peptide_cyclize_geometry_and_coordinate_constrained_fastrelax_ref2015"
+)
 POST_RELAX_TOOL = "PyRosetta FastRelax"
 MAX_CYCLIC_BOND_DISTANCE_ANGSTROM = 2.0
 MAX_POST_RELAX_BACKBONE_RMSD_ANGSTROM = 2.0
@@ -29,13 +31,15 @@ def topology_xml(*, first_pose_index: int, last_pose_index: int) -> str:
         raise ContractError("relax_residue_index_invalid", "invalid cyclic pose indices")
     return f"""<ROSETTASCRIPTS>
   <MOVERS>
-    <DeclareBond name="declare_head_to_tail"
+    <PeptideCyclizeMover name="cyclize_head_to_tail" />
+    <DeclareBond name="refresh_head_to_tail_dependent_atoms"
       res1="{last_pose_index}" atom1="C"
       res2="{first_pose_index}" atom2="N"
       add_termini="true" rebuild_fold_tree="false" />
   </MOVERS>
   <PROTOCOLS>
-    <Add mover="declare_head_to_tail" />
+    <Add mover="cyclize_head_to_tail" />
+    <Add mover="refresh_head_to_tail_dependent_atoms" />
   </PROTOCOLS>
 </ROSETTASCRIPTS>
 """
@@ -176,6 +180,8 @@ def run_post_relax(
         or runtime.get("bond_applied_after_relax") is not True
     ):
         raise ContractError("post_relax_topology_missing", str(runtime_path))
+    if runtime.get("topology_geometry_constraints_applied") is not True:
+        raise ContractError("post_relax_topology_constraints_missing", str(runtime_path))
     virtual_removed = runtime.get("temporary_virtual_residues_removed")
     if isinstance(virtual_removed, bool) or not isinstance(virtual_removed, int):
         raise ContractError(
@@ -204,6 +210,12 @@ def run_post_relax(
 
     pre_score = _finite_runtime_number(runtime, "pre_total_score_ref2015")
     post_score = _finite_runtime_number(runtime, "post_total_score_ref2015")
+    pre_constrained_score = _finite_runtime_number(
+        runtime, "pre_total_score_with_constraints"
+    )
+    post_constrained_score = _finite_runtime_number(
+        runtime, "post_total_score_with_constraints"
+    )
     runtime_constraints = runtime.get("coordinate_constraints") or {}
     if runtime_constraints != {
         "enabled": True,
@@ -214,6 +226,16 @@ def run_post_relax(
     }:
         raise ContractError(
             "post_relax_constraint_invalid", "runtime coordinate constraints differ"
+        )
+    expected_constraint_weights = {
+        "coordinate_constraint": 1.0,
+        "atom_pair_constraint": 1.0,
+        "angle_constraint": 1.0,
+        "dihedral_constraint": 1.0,
+    }
+    if runtime.get("constraint_score_weights") != expected_constraint_weights:
+        raise ContractError(
+            "post_relax_constraint_invalid", "runtime score weights differ"
         )
 
     metadata = {
@@ -230,6 +252,8 @@ def run_post_relax(
         "output_chain": output_chain,
         "cyclization_type": "head_to_tail_amide",
         "bond_topology_applied": True,
+        "topology_geometry_constraints_applied": True,
+        "constraint_score_weights": expected_constraint_weights,
         "declared_bond": runtime.get("declared_bond"),
         "terminal_c_to_n_distance_pre_angstrom": pre_distance,
         "terminal_c_to_n_distance_post_angstrom": post_distance,
@@ -238,6 +262,8 @@ def run_post_relax(
         "pre_total_score_ref2015": pre_score,
         "post_total_score_ref2015": post_score,
         "score_delta_ref2015": post_score - pre_score,
+        "pre_total_score_with_constraints": pre_constrained_score,
+        "post_total_score_with_constraints": post_constrained_score,
         "seed": seed,
         "repeats": repeats,
         "coordinate_constraints": runtime_constraints,

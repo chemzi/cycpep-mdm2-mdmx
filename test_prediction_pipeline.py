@@ -240,6 +240,7 @@ class StructureAndParserTests(unittest.TestCase):
 
     def test_post_relax_topology_declares_head_to_tail_bond(self):
         value = topology_xml(first_pose_index=1, last_pose_index=8)
+        self.assertIn('<PeptideCyclizeMover name="cyclize_head_to_tail"', value)
         self.assertIn('res1="8" atom1="C"', value)
         self.assertIn('res2="1" atom2="N"', value)
         self.assertIn('rebuild_fold_tree="false"', value)
@@ -421,6 +422,7 @@ class PredictionPipelineTests(unittest.TestCase):
             "output_chain": "B",
             "cyclization_type": "head_to_tail_amide",
             "bond_topology_applied": True,
+            "topology_geometry_constraints_applied": True,
             "terminal_c_to_n_distance_pre_angstrom": pre_distance,
             "terminal_c_to_n_distance_post_angstrom": post_distance,
             "backbone_rmsd_to_input_angstrom": 0.0,
