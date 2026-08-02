@@ -1,4 +1,4 @@
-# Planner Agent v1.0
+# Planner Agent v1.0.1
 
 Planner 位于 Critic 与未来 Orchestrator 之间。它读取一份冻结的
 `critic_report.json`，生成确定性的 `execution_plan.json`，把“需要改进界面”这类建议
@@ -94,12 +94,14 @@ python agents/planner.py approve \
   --approver "PI name" \
   --justification "Approved one small C0514 iteration" \
   --max-gpu-job-slots 2 \
+  --max-gpu-minutes 240 \
   --max-design-proposals 12 \
   --max-prediction-candidates 12
 ```
 
 审批前会重新检查 Critic 文件哈希、计划安全约束、GPU approval 类型、任务依赖和
-执行闸门。计划 JSON 有任何改动都会改变 SHA-256，使旧 approval 失效。
+执行闸门。包含 GPU 任务时必须设置正数 `max_gpu_minutes`；计划 JSON 有任何改动都会
+改变 SHA-256，使旧 approval 失效。
 
 未来 Orchestrator 必须同时验证 plan 与 approval；Planner 当前不会调度任务。
 

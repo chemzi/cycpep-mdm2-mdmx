@@ -33,7 +33,7 @@ from data_layer import CandidateIndex, EvidenceLogger, State  # noqa: E402
 from prediction_pipeline.contracts import file_sha256, object_sha256  # noqa: E402
 
 
-PLANNER_VERSION = "1.0.0"
+PLANNER_VERSION = "1.0.1"
 PLAN_SCHEMA_VERSION = 1
 APPROVAL_SCHEMA_VERSION = 1
 REPORT_ID_RE = re.compile(r"^critic_[0-9a-f]{12}$")
@@ -1028,6 +1028,7 @@ def record_approval(
     approver: str,
     justification: str,
     max_gpu_job_slots: int | None = None,
+    max_gpu_minutes: float | None = None,
     max_design_proposals: int | None = None,
     max_prediction_candidates: int | None = None,
     output_path: str | Path | None = None,
@@ -1088,6 +1089,11 @@ def record_approval(
                 "approval_gpu_limit_insufficient",
                 "max_gpu_job_slots must cover every selected GPU task",
             )
+        if max_gpu_minutes is None or max_gpu_minutes <= 0:
+            raise PlannerContractError(
+                "approval_gpu_minutes_required",
+                "max_gpu_minutes must be positive for selected GPU tasks",
+            )
     requested_proposals = sum(
         task["resource_request"]["proposal_count"] for task in gpu_tasks
     )
@@ -1122,6 +1128,7 @@ def record_approval(
         "justification": justification,
         "budget_limits": {
             "max_gpu_job_slots": max_gpu_job_slots,
+            "max_gpu_minutes": max_gpu_minutes,
             "max_design_proposals": max_design_proposals,
             "max_prediction_candidates": max_prediction_candidates,
         },
@@ -1281,6 +1288,7 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--approver", required=True)
     approve.add_argument("--justification", required=True)
     approve.add_argument("--max-gpu-job-slots", type=int)
+    approve.add_argument("--max-gpu-minutes", type=float)
     approve.add_argument("--max-design-proposals", type=int)
     approve.add_argument("--max-prediction-candidates", type=int)
     approve.add_argument("--output")
@@ -1314,6 +1322,7 @@ def main() -> int:
                 approver=args.approver,
                 justification=args.justification,
                 max_gpu_job_slots=args.max_gpu_job_slots,
+                max_gpu_minutes=args.max_gpu_minutes,
                 max_design_proposals=args.max_design_proposals,
                 max_prediction_candidates=args.max_prediction_candidates,
                 output_path=args.output,

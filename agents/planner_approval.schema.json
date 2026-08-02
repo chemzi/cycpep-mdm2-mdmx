@@ -35,9 +35,10 @@
     "budget_limits": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["max_gpu_job_slots", "max_design_proposals", "max_prediction_candidates"],
+      "required": ["max_gpu_job_slots", "max_gpu_minutes", "max_design_proposals", "max_prediction_candidates"],
       "properties": {
         "max_gpu_job_slots": {"type": ["integer", "null"], "minimum": 0},
+        "max_gpu_minutes": {"type": ["number", "null"], "exclusiveMinimum": 0},
         "max_design_proposals": {"type": ["integer", "null"], "minimum": 0},
         "max_prediction_candidates": {"type": ["integer", "null"], "minimum": 0}
       }

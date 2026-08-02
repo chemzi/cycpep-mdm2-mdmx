@@ -341,6 +341,17 @@ class PlannerTests(unittest.TestCase):
                 approver="PI",
                 justification="approved test iteration",
                 max_gpu_job_slots=1,
+                max_gpu_minutes=120,
+                max_design_proposals=12,
+                max_prediction_candidates=12,
+            )
+        with self.assertRaisesRegex(PlannerContractError, "max_gpu_minutes"):
+            record_approval(
+                plan_path=plan_path,
+                task_ids=task_ids,
+                approver="PI",
+                justification="missing time ceiling",
+                max_gpu_job_slots=2,
                 max_design_proposals=12,
                 max_prediction_candidates=12,
             )
@@ -350,6 +361,7 @@ class PlannerTests(unittest.TestCase):
             approver="PI",
             justification="approved test iteration",
             max_gpu_job_slots=2,
+            max_gpu_minutes=120,
             max_design_proposals=12,
             max_prediction_candidates=12,
         )
@@ -359,6 +371,7 @@ class PlannerTests(unittest.TestCase):
             approver="PI",
             justification="approved test iteration",
             max_gpu_job_slots=2,
+            max_gpu_minutes=120,
             max_design_proposals=12,
             max_prediction_candidates=12,
         )
@@ -394,6 +407,7 @@ class PlannerTests(unittest.TestCase):
                 approver="PI",
                 justification="should fail",
                 max_gpu_job_slots=1,
+                max_gpu_minutes=120,
                 max_design_proposals=12,
                 max_prediction_candidates=12,
             )
