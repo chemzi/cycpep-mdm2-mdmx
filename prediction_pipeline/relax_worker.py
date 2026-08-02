@@ -170,10 +170,17 @@ def run_post_relax(
         "observed_sequence"
     ) != sequence.upper():
         raise ContractError("post_relax_sequence_drift", str(runtime_path))
-    if runtime.get("bond_applied_before_relax") is not True or runtime.get(
-        "bond_applied_after_relax"
-    ) is not True:
+    if (
+        runtime.get("bond_applied_before_relax") is not True
+        or runtime.get("bond_applied_before_virtual_cleanup") is not True
+        or runtime.get("bond_applied_after_relax") is not True
+    ):
         raise ContractError("post_relax_topology_missing", str(runtime_path))
+    virtual_removed = runtime.get("temporary_virtual_residues_removed")
+    if isinstance(virtual_removed, bool) or not isinstance(virtual_removed, int):
+        raise ContractError(
+            "post_relax_runtime_invalid", "invalid virtual-residue cleanup count"
+        )
 
     output_structure = parse_pdb(output_pdb)
     output_chain = exact_sequence_chain(output_structure, sequence.upper())
@@ -237,6 +244,7 @@ def run_post_relax(
         "move_map": runtime.get("move_map"),
         "design_enabled": runtime.get("design_enabled"),
         "applied_movers": runtime.get("applied_movers"),
+        "temporary_virtual_residues_removed": virtual_removed,
         "topology_xml_sha256": file_sha256(xml_path),
         "runtime_metadata": str(runtime_path),
         "runtime_metadata_sha256": file_sha256(runtime_path),

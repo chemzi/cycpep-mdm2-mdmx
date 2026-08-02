@@ -30,7 +30,7 @@ def run(args: argparse.Namespace) -> dict:
 
     import pyrosetta
     from pyrosetta.rosetta.core.kinematics import MoveMap
-    from pyrosetta.rosetta.protocols.relax import FastRelax
+    from pyrosetta.rosetta.protocols.relax import FastRelax, delete_virtual_residues
     from pyrosetta.rosetta.protocols.rosetta_scripts import XmlObjects
 
     pyrosetta.init(
@@ -73,6 +73,14 @@ def run(args: argparse.Namespace) -> dict:
     relax.ramp_down_constraints(False)
     relax.apply(pose)
 
+    relaxed_residue_count_before_cleanup = pose.total_residue()
+    bond_applied_before_cleanup = bool(
+        pose.residue(args.last_residue).is_bonded(pose.residue(args.first_residue))
+    )
+    delete_virtual_residues(pose)
+    virtual_residues_removed = relaxed_residue_count_before_cleanup - pose.total_residue()
+    if virtual_residues_removed < 0:
+        raise RuntimeError("virtual-residue cleanup increased the pose residue count")
     observed_sequence = pose.sequence().upper()
     if observed_sequence != requested_sequence:
         raise RuntimeError(
@@ -102,7 +110,9 @@ def run(args: argparse.Namespace) -> dict:
             "atom2": "N",
         },
         "bond_applied_before_relax": bond_applied_before,
+        "bond_applied_before_virtual_cleanup": bond_applied_before_cleanup,
         "bond_applied_after_relax": bond_applied_after,
+        "temporary_virtual_residues_removed": virtual_residues_removed,
         "scorefunction": "ref2015",
         "pre_total_score_ref2015": pre_score,
         "post_total_score_ref2015": post_score,
@@ -118,7 +128,9 @@ def run(args: argparse.Namespace) -> dict:
         },
         "move_map": {"backbone": True, "sidechains": True, "jumps": False},
         "design_enabled": False,
-        "applied_movers": ["declare_head_to_tail", "FastRelax"],
+        "applied_movers": [
+            "declare_head_to_tail", "FastRelax", "delete_virtual_residues"
+        ],
     }
     Path(args.runtime_metadata).resolve().write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
