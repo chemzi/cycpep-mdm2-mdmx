@@ -45,7 +45,7 @@ from .structures import (
 )
 
 
-PREDICTION_PIPELINE_VERSION = "1.3.0"
+PREDICTION_PIPELINE_VERSION = "1.4.0"
 RUN_SCHEMA_VERSION = 2
 RECORD_SCHEMA_VERSION = 2
 LAYER_KEYS = tuple(f"l{number}_pass" for number in range(1, 8))
@@ -100,6 +100,9 @@ def _artifact_inventory(bundle: ArtifactBundle | None) -> list[dict]:
             add_entry(f"{target_id}.{key}", values.get(key))
         for index, entry in enumerate(values.get("prodigy_outputs", [])):
             add_entry(f"{target_id}.prodigy[{index}]", entry.get("output"))
+        for index, entry in enumerate(values.get("rosetta_outputs", [])):
+            add_entry(f"{target_id}.rosetta[{index}].output", entry.get("output"))
+            add_entry(f"{target_id}.rosetta[{index}].metadata", entry.get("metadata"))
     return inventory
 
 

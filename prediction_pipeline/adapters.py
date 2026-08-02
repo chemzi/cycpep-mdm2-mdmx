@@ -141,7 +141,7 @@ def _validate_scored_output(
         raise ContractError("artifact_entry_type", f"{label} must be an object")
     allowed = {
         "predictor", "model_id", "seed", "prediction_pdb_sha256",
-        "output", "output_sha256",
+        "output", "output_sha256", "metadata", "metadata_sha256",
     }
     unknown = sorted(set(entry) - allowed)
     if unknown:
@@ -182,6 +182,10 @@ def _validate_scored_output(
         "prediction_pdb_sha256": prediction_sha,
         "output": _materialize_file(entry, "output", base, f"{label}.output"),
     })
+    if entry.get("metadata"):
+        result["metadata"] = _materialize_file(
+            entry, "metadata", base, f"{label}.metadata"
+        )
     return result
 
 
@@ -284,6 +288,7 @@ def load_artifact_bundle(
             "prodigy_output", "prodigy_output_sha256",
             "prodigy_outputs",
             "rosetta_output", "rosetta_output_sha256",
+            "rosetta_outputs",
         })
         if unknown:
             raise ContractError(
@@ -347,6 +352,46 @@ def load_artifact_bundle(
                 "prodigy_coverage_mismatch",
                 f"{target_id}.prodigy_outputs must cover every complex prediction once",
             )
+        rosetta_outputs = values.get("rosetta_outputs") or []
+        if not isinstance(rosetta_outputs, list):
+            raise ContractError(
+                "artifact_scored_output_type",
+                f"{target_id}.rosetta_outputs must be a list",
+            )
+        if values.get("rosetta_output") and rosetta_outputs:
+            raise ContractError(
+                "rosetta_evidence_ambiguous",
+                f"{target_id} cannot declare both rosetta_output and rosetta_outputs",
+            )
+        result["rosetta_outputs"] = [
+            _validate_scored_output(
+                item,
+                base,
+                f"targets.{target_id}.rosetta_outputs[{index}]",
+                predictions_by_hash,
+            )
+            for index, item in enumerate(rosetta_outputs)
+        ]
+        identities = [
+            (item["predictor"], item["model_id"], item["seed"])
+            for item in result["rosetta_outputs"]
+        ]
+        if len(set(identities)) != len(identities):
+            raise ContractError(
+                "scored_output_identity_duplicate",
+                f"{target_id}.rosetta_outputs contains duplicate model identities",
+            )
+        linked_prediction_hashes = {
+            item["prediction_pdb_sha256"] for item in result["rosetta_outputs"]
+        }
+        if result["rosetta_outputs"] and (
+            len(result["rosetta_outputs"]) != len(result["complex_predictions"])
+            or linked_prediction_hashes != set(predictions_by_hash)
+        ):
+            raise ContractError(
+                "rosetta_coverage_mismatch",
+                f"{target_id}.rosetta_outputs must cover every complex prediction once",
+            )
         for key in ("prodigy_output", "rosetta_output"):
             if values.get(key):
                 result[key] = _materialize_file(
@@ -375,6 +420,10 @@ def load_artifact_bundle(
         file_inventory.extend(
             item["output"]["sha256"] for item in values.get("prodigy_outputs", [])
         )
+        for item in values.get("rosetta_outputs", []):
+            file_inventory.append(item["output"]["sha256"])
+            if isinstance(item.get("metadata"), dict):
+                file_inventory.append(item["metadata"]["sha256"])
     bundle_sha = file_sha256(path)
     digest = object_sha256({"bundle": bundle_sha, "files": sorted(file_inventory)})
     return ArtifactBundle(
@@ -454,8 +503,52 @@ def parse_target_physics(target_artifacts: dict) -> tuple[dict, list[dict]]:
             "sha256": prodigy["sha256"],
             "metrics": sorted(parsed),
         })
+    rosetta_outputs = target_artifacts.get("rosetta_outputs") or []
     rosetta = target_artifacts.get("rosetta_output")
-    if rosetta:
+    if rosetta_outputs:
+        samples = []
+        for entry in rosetta_outputs:
+            parsed = parse_rosetta_interface_output(
+                entry["output"]["path"].read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            )
+            samples.append({
+                "predictor": entry["predictor"],
+                "model_id": entry["model_id"],
+                "seed": entry["seed"],
+                "prediction_pdb_sha256": entry["prediction_pdb_sha256"],
+                "artifact": str(entry["output"]["path"]),
+                "sha256": entry["output"]["sha256"],
+                "metadata_artifact": (
+                    str(entry["metadata"]["path"]) if entry.get("metadata") else None
+                ),
+                "metadata_sha256": (
+                    entry["metadata"]["sha256"] if entry.get("metadata") else None
+                ),
+                "metrics": parsed,
+            })
+        metrics["sc"] = float(statistics.median(
+            sample["metrics"]["sc"] for sample in samples
+        ))
+        metrics["dsasa"] = float(statistics.median(
+            sample["metrics"]["dsasa"] for sample in samples
+        ))
+        rosetta_dg = [
+            sample["metrics"].get("rosetta_dg_separated") for sample in samples
+        ]
+        if all(value is not None for value in rosetta_dg):
+            metrics["rosetta_dg_separated"] = float(statistics.median(rosetta_dg))
+        provenance.append({
+            "tool": "Rosetta InterfaceAnalyzer",
+            "aggregation": "median_across_declared_predictions",
+            "samples": samples,
+            "metrics": [
+                key for key in ("sc", "dsasa", "rosetta_dg_separated")
+                if key in metrics
+            ],
+        })
+    elif rosetta:
         parsed = parse_rosetta_interface_output(
             rosetta["path"].read_text(encoding="utf-8", errors="replace")
         )

@@ -81,7 +81,12 @@
           "items": {"$ref": "#/$defs/scored_output"}
         },
         "rosetta_output": {"type": "string"},
-        "rosetta_output_sha256": {"$ref": "#/$defs/sha256"}
+        "rosetta_output_sha256": {"$ref": "#/$defs/sha256"},
+        "rosetta_outputs": {
+          "type": "array",
+          "description": "Rosetta InterfaceAnalyzer output for every declared complex prediction, linked by PDB SHA-256.",
+          "items": {"$ref": "#/$defs/scored_output"}
+        }
       }
     },
     "scored_output": {
@@ -94,7 +99,9 @@
         "seed": {"type": "integer"},
         "prediction_pdb_sha256": {"$ref": "#/$defs/sha256"},
         "output": {"type": "string"},
-        "output_sha256": {"$ref": "#/$defs/sha256"}
+        "output_sha256": {"$ref": "#/$defs/sha256"},
+        "metadata": {"type": "string"},
+        "metadata_sha256": {"$ref": "#/$defs/sha256"}
       }
     }
   }

@@ -10,6 +10,7 @@ MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当�
 - [前端 API contract、请求示例与状态机](docs/frontend_api_contract.md)
 - [环肽反向折叠：ProteinMPNN 的适用范围与验证要求](docs/cyclic_inverse_folding.md)
 - [Design v5.1.0：固定序列与闭环几何完整性门禁](docs/design_integrity_v5.1.0.md)
+- [Prediction v1.4.0：Boltz-2 / Rosetta 证据与服务器验证](docs/prediction_v1.4.0_boltz_rosetta_20260802.md)
 
 ```bash
 python -m target_bootstrap draft --identifier P12345 --type uniprot --output projects/new_target.draft.json
@@ -54,6 +55,7 @@ pip install -r requirements.txt
 - `torch`：Route B 接入 ProteinMPNN adapter 时需要
 - `colabdesign`：Route A 的 ColabDesign 原型需要
 - `proteinmpnn`：Route B 当前代码期望的适配模块
+- `boltz[cuda]==2.2.1`：Prediction 的独立第二模型家族；在 GPU 服务器上使用隔离环境部署
 
 ### 计划中的外部工具
 
@@ -63,7 +65,7 @@ pip install -r requirements.txt
 - LigandMPNN
 - AfCycDesign / ColabFold
 - HADDOCK
-- Rosetta FastRelax / InterfaceAnalyzer
+- Rosetta FastRelax / InterfaceAnalyzer（须先确认并取得适用许可证）
 - PRODIGY
 - RDKit
 
@@ -72,7 +74,9 @@ pip install -r requirements.txt
 - `Research` 已有可运行实现
 - `Design` 已有 RFdiffusion 宏环骨架、ProteinMPNN 反向折叠、
   AfCycDesign 固定序列回折、真实闭环原子几何门禁和候选登记逻辑
-- `Prediction` 已有严格 artifact 摄取、七层指标计算、状态判定和断点续跑实现
+- `Prediction` 已有严格 artifact 摄取、七层指标计算、状态判定和断点续跑实现；
+  Boltz-2 独立复合物 predictor 已在 4090 上通过双靶标真实回归，Rosetta
+  InterfaceAnalyzer 的环化协议适配器已就绪，二进制部署受许可证确认约束
 - `Planner` / `Critic` 仍在待实现阶段
 
 所以如果只是跑数据层、Research 和不调用模型的回归测试，先装
