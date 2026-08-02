@@ -37,8 +37,8 @@ from .metrics import calculate_ipsae, load_pae, pose_convergence
 from .relax_worker import (
     POST_RELAX_PROTOCOL,
     POST_RELAX_TOOL,
-    PYROSETTA_VERSION,
 )
+from .rosetta_worker import PYROSETTA_VERSION
 from .structures import (
     backbone_rmsd,
     canonical_target_residue_numbers,

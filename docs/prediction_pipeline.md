@@ -228,9 +228,36 @@ PyRosetta 2026.29+releasequarterly.80a0635615
 如团队另有合法的 RosettaScripts 二进制，也可改用
 `--rosetta-scripts /path/to/rosetta_scripts.default.linuxgccrelease`；两个引擎参数互斥。
 
+Prediction v1.5.0 使用同一锁定 PyRosetta 环境补充 L4 post-relax。该步骤只读取
+artifact 中的 primary 单体预测，要求它仅含一条与候选序列完全一致的链，并执行：
+
+1. `PeptideCyclizeMover` 声明首尾酰胺键，同时添加 C—N 距离、键角和二面角约束；
+2. ref2015 FastRelax，启用起始坐标约束，约束权重不递减，序列设计关闭；
+3. 再次声明化学键以更新聚合物依赖原子，并删除坐标约束使用的临时虚拟锚点；
+4. 独立验证输入/输出序列、链、C—N 距离、主链 RMSD、PDB 哈希和锁定工具版本；
+5. 将无约束 ref2015 前后能量、约束协议参数和随机 seed 写入 metadata。
+
+只补 post-relax、复用已有预测器和界面证据时：
+
+```bash
+/root/damodel-tmp/envs/cycpep-prediction/bin/python \
+  scripts/enrich_prediction_evidence.py \
+  --source-bundle /path/to/source/C0001/artifacts.json \
+  --output-root /path/to/new_artifact_root \
+  --post-relax-python \
+    /root/damodel-tmp/envs/pyrosetta-2026.29-minsizerel/bin/python \
+  --post-relax-seed 20260802 \
+  --post-relax-repeats 3 \
+  --post-relax-coordinate-stdev 0.5
+```
+
+相同输入和 seed 生成的 PDB 会移除 Rosetta footer 中与输出目录有关的绝对路径，
+因此跨目录保持稳定哈希。任何序列/链漂移、闭环断裂、主链 RMSD 大于 2.0 Å、
+metadata 与实际 PDB 不一致，均 fail-closed。
+
 该 enrichment 命令只读 State/CandidateIndex，并把新证据写到新的 artifact root；
 不会修改正式 State/CSV。跳过正负对照阈值标定时，可以完成模型和物理证据生产，
-但最终状态仍会保持 `awaiting_threshold_calibration` 或 `prediction_pending`，不得据此
+完整证据可以让候选进入 `needs_optimization`；暂定阈值仍禁止 `finalized`，不得据此
 宣称候选已完成最终清关。
 
 摄取并判定：
@@ -263,6 +290,6 @@ python -m unittest -v test_prediction_pipeline.py
 ```
 
 单元测试覆盖：多 `MODEL`、pLDDT 两种量纲、真 C–N 距离、官方 ipSAE
-定义、Boltz 双重闭环声明、Rosetta 环化后打分与逐模型聚合、工具输出解析、缺值 pending、序列/哈希漂移 invalid、非法 ipTM
+定义、Boltz 双重闭环声明、Rosetta 环化后打分与逐模型聚合、受约束 post-relax、工具输出解析、缺值 pending、序列/哈希漂移 invalid、非法 ipTM
 fail-closed、双靶完整清关、暂定阈值禁止 finalization、resume 缓存，以及
 artifact 撤回或失效时对历史 Prediction 指标的原子清除。
