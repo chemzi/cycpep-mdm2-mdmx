@@ -15,6 +15,7 @@ MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当�
 - [Critic v1.0：Prediction 审查合同与 Planner handoff](docs/critic_agent.md)
 - [Critic v1.0：C0514 真实审查验证](docs/critic_v1.0_validation_20260802.md)
 - [Planner v1.0：任务图、预算请求与摘要绑定审批](docs/planner_agent.md)
+- [Planner v1.0：C0514 真实规划验证](docs/planner_v1.0_validation_20260802.md)
 
 ```bash
 python -m target_bootstrap draft --identifier P12345 --type uniprot --output projects/new_target.draft.json
