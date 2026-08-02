@@ -22,8 +22,10 @@ from agents.research import _default_thresholds
 from project_config import load_project_config, required_target_ids
 from threshold_calibration import (
     ControlDataError,
+    CALIBRATION_SCHEMA_VERSION,
     calibrate_thresholds,
     load_control_dataset,
+    validate_control_metadata,
 )
 
 
@@ -37,6 +39,13 @@ def main() -> int:
     args = parser.parse_args()
 
     config = load_project_config()
+    selection = config.get("selection") or {}
+    expected_protocol = selection.get("calibration_protocol") or config.get(
+        "calibration_protocol"
+    )
+    expected_protocol_hash = selection.get("calibration_protocol_hash") or config.get(
+        "calibration_protocol_hash"
+    )
     path = args.controls or os.environ.get("CYCPEP_CONTROL_DATA")
     try:
         if path:
@@ -44,20 +53,31 @@ def main() -> int:
                 path,
                 project_id=config.get("project_id"),
                 approved_digest=(config.get("review") or {}).get("approved_digest"),
+                protocol=expected_protocol,
+                protocol_hash=expected_protocol_hash,
+                schema_version=CALIBRATION_SCHEMA_VERSION,
             )
         else:
             raw = json.load(sys.stdin)
             from threshold_calibration import _coerce_dataset
 
             controls, metadata = _coerce_dataset(raw)
-        protocol = metadata.get("protocol") or (config.get("selection") or {}).get(
-            "calibration_protocol"
-        )
+            metadata = validate_control_metadata(
+                metadata,
+                project_id=config.get("project_id"),
+                approved_digest=(config.get("review") or {}).get("approved_digest"),
+                protocol=expected_protocol,
+                protocol_hash=expected_protocol_hash,
+                schema_version=CALIBRATION_SCHEMA_VERSION,
+            )
+        protocol = expected_protocol or metadata.get("protocol")
+        protocol_hash = metadata.get("protocol_hash") or expected_protocol_hash
         thresholds, audit = calibrate_thresholds(
             controls=controls,
             thresholds=_default_thresholds(config),
             target_ids=required_target_ids(config),
             protocol=protocol,
+            protocol_hash=protocol_hash,
             max_false_positive_rate=args.max_fpr,
             min_positive_recall=args.min_positive_recall,
             min_negative_controls=args.min_negative,
