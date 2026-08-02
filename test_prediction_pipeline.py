@@ -26,6 +26,7 @@ from prediction_pipeline.metrics import (
 from prediction_pipeline.pipeline import PredictionPipeline
 from prediction_pipeline.rosetta_worker import interface_xml
 from prediction_pipeline.pyrosetta_cli import _write_scorefile
+from prediction_pipeline.pyrosetta_relax_cli import _normalize_pdb_embedded_path
 from prediction_pipeline.relax_worker import (
     POST_RELAX_PROTOCOL,
     POST_RELAX_TOOL,
@@ -256,6 +257,19 @@ class StructureAndParserTests(unittest.TestCase):
             parse_rosetta_interface_output(path.read_text(encoding="utf-8")),
             {"dsasa": 432.1, "sc": 0.67, "rosetta_dg_separated": -8.4},
         )
+
+    def test_post_relax_pdb_footer_does_not_depend_on_output_directory(self):
+        path = (self.root / "nested" / "post_relax.pdb").resolve()
+        path.parent.mkdir()
+        path.write_text(
+            f"ATOM\n#BEGIN_POSE_ENERGIES_TABLE {path}\n"
+            f"#END_POSE_ENERGIES_TABLE {path}\n",
+            encoding="utf-8",
+        )
+        _normalize_pdb_embedded_path(path)
+        value = path.read_text(encoding="utf-8")
+        self.assertNotIn(str(path.parent), value)
+        self.assertEqual(value.count("post_relax.pdb"), 2)
 
     def test_terminal_distance_requires_actual_c_and_n_atoms(self):
         path = self.root / "monomer.pdb"

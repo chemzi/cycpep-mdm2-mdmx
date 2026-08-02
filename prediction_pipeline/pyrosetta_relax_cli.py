@@ -21,6 +21,14 @@ def _finite(value: float, label: str) -> float:
     return number
 
 
+def _normalize_pdb_embedded_path(path: Path) -> None:
+    """Remove destination-specific text emitted in Rosetta's score footer."""
+    value = path.read_text(encoding="utf-8")
+    normalized = value.replace(str(path), path.name)
+    if normalized != value:
+        path.write_text(normalized, encoding="utf-8")
+
+
 def run(args: argparse.Namespace) -> dict:
     version = importlib.metadata.version("pyrosetta")
     if version != args.expected_version:
@@ -123,6 +131,7 @@ def run(args: argparse.Namespace) -> dict:
     pose.dump_pdb(str(output_pdb))
     if not output_pdb.is_file() or output_pdb.stat().st_size == 0:
         raise RuntimeError(f"PyRosetta did not write {output_pdb}")
+    _normalize_pdb_embedded_path(output_pdb)
 
     result = {
         "pyrosetta_package_version": version,
