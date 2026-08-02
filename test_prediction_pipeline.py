@@ -25,6 +25,7 @@ from prediction_pipeline.metrics import (
 )
 from prediction_pipeline.pipeline import PredictionPipeline
 from prediction_pipeline.rosetta_worker import interface_xml
+from prediction_pipeline.pyrosetta_cli import _write_scorefile
 from scripts.run_prediction_predictors import parse_ensemble_members
 from prediction_pipeline.structures import (
     apply_transform,
@@ -229,6 +230,19 @@ class StructureAndParserTests(unittest.TestCase):
         self.assertIn('res2="86" atom2="N"', value)
         self.assertIn('interface="A_B"', value)
         self.assertIn('interface_sc="true"', value)
+        self.assertIn('pack_input="true"', value)
+
+    def test_pyrosetta_scorefile_is_consumed_by_strict_parser(self):
+        path = self.root / "pyrosetta_interface.sc"
+        _write_scorefile(
+            path,
+            {"dSASA_int": 432.1, "sc_value": 0.67, "dG_separated": -8.4},
+            "model",
+        )
+        self.assertEqual(
+            parse_rosetta_interface_output(path.read_text(encoding="utf-8")),
+            {"dsasa": 432.1, "sc": 0.67, "rosetta_dg_separated": -8.4},
+        )
 
     def test_terminal_distance_requires_actual_c_and_n_atoms(self):
         path = self.root / "monomer.pdb"
@@ -701,18 +715,46 @@ class PredictionPipelineTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 prediction = target["complex_predictions"][index]
-                metadata = json.loads(
+                prediction_metadata = json.loads(
                     (self.artifacts_root / "C0001" / prediction["metadata"]).read_text()
                 )
                 prediction_pdb = self.artifacts_root / "C0001" / prediction["pdb"]
+                score_metadata = (
+                    self.artifacts_root / "C0001"
+                    / f"{target_id}_{index}_rosetta_metadata.json"
+                )
+                score_metadata.write_text(json.dumps({
+                    "tool": "PyRosetta InterfaceAnalyzerMover",
+                    "tool_version_output": "test",
+                    "protocol": "declare_head_to_tail_then_interface_analyzer_ref2015",
+                    "predictor": prediction["predictor"],
+                    "model_id": prediction_metadata["model_id"],
+                    "seed": prediction["seed"],
+                    "prediction_pdb_sha256": hashlib.sha256(
+                        prediction_pdb.read_bytes()
+                    ).hexdigest(),
+                    "target_chain": "A",
+                    "binder_chain": "B",
+                    "binder_sequence": SEQUENCE,
+                    "terminal_c_to_n_distance_angstrom": 1.3,
+                    "declared_bond": {"res1": 10, "atom1": "C", "res2": 3, "atom2": "N"},
+                    "scorefunction": "ref2015",
+                    "metrics": {
+                        "dsasa": dsasa,
+                        "sc": sc,
+                        "rosetta_dg_separated": dg,
+                    },
+                    "xml_sha256": "a" * 64,
+                }), encoding="utf-8")
                 outputs.append({
                     "predictor": prediction["predictor"],
-                    "model_id": metadata["model_id"],
+                    "model_id": prediction_metadata["model_id"],
                     "seed": prediction["seed"],
                     "prediction_pdb_sha256": hashlib.sha256(
                         prediction_pdb.read_bytes()
                     ).hexdigest(),
                     "output": output.name,
+                    "metadata": score_metadata.name,
                 })
             target["rosetta_outputs"] = outputs
         bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
@@ -753,9 +795,65 @@ class PredictionPipelineTests(unittest.TestCase):
             "SCORE: dSASA_int sc_value description\nSCORE: 400 0.6 model\n",
             encoding="utf-8",
         )
+        score_metadata = self.artifacts_root / "C0001" / "MDM2_partial_rosetta.json"
+        score_metadata.write_text(json.dumps({
+            "tool": "PyRosetta InterfaceAnalyzerMover",
+            "tool_version_output": "test",
+            "protocol": "declare_head_to_tail_then_interface_analyzer_ref2015",
+            "predictor": prediction["predictor"],
+            "model_id": metadata["model_id"],
+            "seed": prediction["seed"],
+            "prediction_pdb_sha256": hashlib.sha256(
+                prediction_pdb.read_bytes()
+            ).hexdigest(),
+            "target_chain": "A",
+            "binder_chain": "B",
+            "binder_sequence": SEQUENCE,
+            "terminal_c_to_n_distance_angstrom": 1.3,
+            "declared_bond": {"res1": 10, "atom1": "C", "res2": 3, "atom2": "N"},
+            "scorefunction": "ref2015",
+            "metrics": {"dsasa": 400.0, "sc": 0.6},
+            "xml_sha256": "a" * 64,
+        }), encoding="utf-8")
         target["rosetta_outputs"] = [{
             "predictor": prediction["predictor"],
             "model_id": metadata["model_id"],
+            "seed": prediction["seed"],
+            "prediction_pdb_sha256": hashlib.sha256(
+                prediction_pdb.read_bytes()
+            ).hexdigest(),
+            "output": output.name,
+            "metadata": score_metadata.name,
+        }]
+        bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+
+        summary = self._pipeline(thresholds=justified_thresholds()).run()
+        self.assertEqual(summary["status_counts"], {"invalid": 1})
+        record = json.loads(
+            (self.run_root / "test_run" / "records" / "C0001.json").read_text()
+        )
+        self.assertEqual(record["issues"][0]["code"], "rosetta_coverage_mismatch")
+
+    def test_rosetta_ensemble_rejects_missing_topology_metadata(self):
+        reference = self._register_candidate()
+        self._write_complete_artifacts(reference)
+        bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
+        bundle = json.loads(bundle_path.read_text())
+        target = bundle["targets"]["MDM2"]
+        target.pop("rosetta_output")
+        prediction = target["complex_predictions"][0]
+        prediction_metadata = json.loads(
+            (self.artifacts_root / "C0001" / prediction["metadata"]).read_text()
+        )
+        prediction_pdb = self.artifacts_root / "C0001" / prediction["pdb"]
+        output = self.artifacts_root / "C0001" / "MDM2_rosetta_without_metadata.sc"
+        output.write_text(
+            "SCORE: dSASA_int sc_value description\nSCORE: 400 0.6 model\n",
+            encoding="utf-8",
+        )
+        target["rosetta_outputs"] = [{
+            "predictor": prediction["predictor"],
+            "model_id": prediction_metadata["model_id"],
             "seed": prediction["seed"],
             "prediction_pdb_sha256": hashlib.sha256(
                 prediction_pdb.read_bytes()
@@ -769,7 +867,7 @@ class PredictionPipelineTests(unittest.TestCase):
         record = json.loads(
             (self.run_root / "test_run" / "records" / "C0001.json").read_text()
         )
-        self.assertEqual(record["issues"][0]["code"], "rosetta_coverage_mismatch")
+        self.assertEqual(record["issues"][0]["code"], "rosetta_metadata_missing")
 
     def test_withdrawn_artifacts_clear_authoritative_and_display_metrics(self):
         reference = self._register_candidate()
@@ -998,8 +1096,8 @@ class PredictionPipelineTests(unittest.TestCase):
         ).run()
 
         self.assertEqual(State.load()["candidate_count"], 1270)
-        self.assertEqual(summary["pipeline_version"], "1.4.0")
-        self.assertEqual(State.load()["prediction"]["pipeline_version"], "1.4.0")
+        self.assertEqual(summary["pipeline_version"], "1.4.1")
+        self.assertEqual(State.load()["prediction"]["pipeline_version"], "1.4.1")
 
     def test_declared_artifact_hash_mismatch_is_invalid(self):
         reference = self._register_candidate()

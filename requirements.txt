@@ -23,7 +23,8 @@ biotite>=0.41
 # - LigandMPNN
 # - AfCycDesign / ColabFold
 # - HADDOCK
-# - Rosetta FastRelax / InterfaceAnalyzer (license-gated external distribution)
+# - PyRosetta InterfaceAnalyzer is pinned in a separate licensed server environment
+# - Rosetta FastRelax / post-relax remains a separate technical-route decision
 # - PRODIGY
 # - RDKit
 #

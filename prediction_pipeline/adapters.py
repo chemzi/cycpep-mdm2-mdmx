@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shlex
 import statistics
@@ -189,6 +190,100 @@ def _validate_scored_output(
     return result
 
 
+def _validate_rosetta_metadata(
+    entry: dict,
+    *,
+    label: str,
+    prediction: dict,
+    target_chain: str,
+    sequence: str,
+) -> None:
+    """Require topology-aware, structure-bound provenance for Rosetta scores."""
+    if not entry.get("metadata"):
+        raise ContractError(
+            "rosetta_metadata_missing", f"{label} requires metadata"
+        )
+    values = parse_metadata(entry["metadata"])
+    expected = {
+        "predictor": entry["predictor"],
+        "model_id": entry["model_id"],
+        "seed": entry["seed"],
+        "prediction_pdb_sha256": entry["prediction_pdb_sha256"],
+        "target_chain": target_chain,
+        "binder_sequence": sequence,
+        "protocol": "declare_head_to_tail_then_interface_analyzer_ref2015",
+        "scorefunction": "ref2015",
+    }
+    mismatches = {
+        key: (values.get(key), expected_value)
+        for key, expected_value in expected.items()
+        if values.get(key) != expected_value
+    }
+    prediction_metadata = parse_metadata(prediction.get("metadata"))
+    binder_chain = str(
+        prediction.get("binder_chain")
+        or prediction_metadata.get("binder_chain")
+        or ""
+    ).strip()
+    if values.get("binder_chain") != binder_chain:
+        mismatches["binder_chain"] = (values.get("binder_chain"), binder_chain)
+    if mismatches:
+        raise ContractError(
+            "rosetta_metadata_mismatch", f"{label} mismatches: {mismatches}"
+        )
+    tool = str(values.get("tool") or "")
+    if tool not in {
+        "PyRosetta InterfaceAnalyzerMover",
+        "RosettaScripts InterfaceAnalyzerMover",
+    }:
+        raise ContractError(
+            "rosetta_tool_invalid", f"{label} has unsupported tool {tool!r}"
+        )
+    if not str(values.get("tool_version_output") or "").strip():
+        raise ContractError(
+            "rosetta_version_missing", f"{label} lacks tool version"
+        )
+    if len(str(values.get("xml_sha256") or "")) != 64:
+        raise ContractError(
+            "rosetta_protocol_hash_missing", f"{label} lacks protocol XML SHA-256"
+        )
+    declared = values.get("declared_bond") or {}
+    if (
+        declared.get("atom1") != "C"
+        or declared.get("atom2") != "N"
+        or not isinstance(declared.get("res1"), int)
+        or not isinstance(declared.get("res2"), int)
+    ):
+        raise ContractError(
+            "rosetta_topology_invalid", f"{label} lacks a residue-bound C--N bond"
+        )
+    closure = values.get("terminal_c_to_n_distance_angstrom")
+    if (
+        isinstance(closure, bool)
+        or not isinstance(closure, (int, float))
+        or not math.isfinite(float(closure))
+        or float(closure) > 2.0
+    ):
+        raise ContractError(
+            "rosetta_topology_invalid", f"{label} has invalid C--N distance {closure!r}"
+        )
+    parsed = parse_rosetta_interface_output(
+        entry["output"]["path"].read_text(encoding="utf-8", errors="replace")
+    )
+    declared_metrics = values.get("metrics") or {}
+    for key, value in parsed.items():
+        observed = declared_metrics.get(key)
+        if (
+            isinstance(observed, bool)
+            or not isinstance(observed, (int, float))
+            or not math.isclose(float(observed), value, rel_tol=1e-9, abs_tol=1e-9)
+        ):
+            raise ContractError(
+                "rosetta_metadata_metric_mismatch",
+                f"{label} metadata {key}={observed!r}, scorefile={value}",
+            )
+
+
 @dataclass(frozen=True)
 class ArtifactBundle:
     path: Path
@@ -372,6 +467,20 @@ def load_artifact_bundle(
             )
             for index, item in enumerate(rosetta_outputs)
         ]
+        target_chain = str(values.get("target_chain") or "").strip()
+        if result["rosetta_outputs"] and not target_chain:
+            raise ContractError(
+                "target_chain_missing",
+                f"{target_id}.target_chain is required with Rosetta evidence",
+            )
+        for index, item in enumerate(result["rosetta_outputs"]):
+            _validate_rosetta_metadata(
+                item,
+                label=f"targets.{target_id}.rosetta_outputs[{index}]",
+                prediction=predictions_by_hash[item["prediction_pdb_sha256"]],
+                target_chain=target_chain,
+                sequence=sequence,
+            )
         identities = [
             (item["predictor"], item["model_id"], item["seed"])
             for item in result["rosetta_outputs"]

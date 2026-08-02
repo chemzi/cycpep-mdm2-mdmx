@@ -131,6 +131,28 @@ def _run_prodigy_for_prediction(
 
 
 def run(args) -> dict:
+    boltz_values = (args.boltz, args.boltz_cache, args.boltz_checkpoint)
+    if any(boltz_values) and not all(boltz_values):
+        raise ContractError(
+            "boltz_configuration_incomplete",
+            "--boltz, --boltz-cache and --boltz-checkpoint must be supplied together",
+        )
+    add_boltz = all(boltz_values)
+    add_rosetta = bool(args.rosetta_scripts or args.pyrosetta_python)
+    if args.rosetta_scripts and args.pyrosetta_python:
+        raise ContractError(
+            "rosetta_engine_invalid",
+            "--rosetta-scripts and --pyrosetta-python are mutually exclusive",
+        )
+    if args.prodigy and not add_boltz:
+        raise ContractError(
+            "prodigy_without_new_prediction",
+            "--prodigy is only used when this command adds a Boltz prediction",
+        )
+    if not add_boltz and not add_rosetta:
+        raise ContractError(
+            "enrichment_empty", "configure Boltz and/or a Rosetta engine"
+        )
     source_bundle = Path(args.source_bundle).expanduser().resolve()
     try:
         raw = json.loads(source_bundle.read_text(encoding="utf-8"))
@@ -174,56 +196,57 @@ def run(args) -> dict:
             raise ContractError(
                 "target_chain_mismatch", f"{target_id} source/config target chains differ"
             )
-        boltz_dir = candidate_dir / "boltz_complex" / target_id / f"seed_{args.seed}"
-        boltz_prediction = run_boltz_prediction(
-            boltz_executable=args.boltz,
-            cache_dir=args.boltz_cache,
-            checkpoint=args.boltz_checkpoint,
-            target_sequence=target_sequence,
-            binder_sequence=candidate.sequence,
-            output_dir=boltz_dir,
-            target_chain=target_chain,
-            binder_chain=args.binder_chain,
-            seed=args.seed,
-            timeout=args.timeout,
-            no_kernels=args.no_kernels,
-        )
-        target_values["complex_predictions"].append(boltz_prediction)
+        if add_boltz:
+            boltz_dir = candidate_dir / "boltz_complex" / target_id / f"seed_{args.seed}"
+            boltz_prediction = run_boltz_prediction(
+                boltz_executable=args.boltz,
+                cache_dir=args.boltz_cache,
+                checkpoint=args.boltz_checkpoint,
+                target_sequence=target_sequence,
+                binder_sequence=candidate.sequence,
+                output_dir=boltz_dir,
+                target_chain=target_chain,
+                binder_chain=args.binder_chain,
+                seed=args.seed,
+                timeout=args.timeout,
+                no_kernels=args.no_kernels,
+            )
+            target_values["complex_predictions"].append(boltz_prediction)
 
-        if not args.prodigy:
-            if target_values.get("prodigy_outputs"):
-                raise ContractError(
-                    "prodigy_required_for_enrichment",
-                    "adding Boltz requires PRODIGY coverage for the new prediction",
-                )
-        else:
-            existing_outputs = target_values.get("prodigy_outputs") or []
-            if target_values.pop("prodigy_output", None):
-                existing_outputs = []
-                target_values.pop("prodigy_output_sha256", None)
-            if not existing_outputs:
-                predictions_to_score = target_values["complex_predictions"]
+            if not args.prodigy:
+                if target_values.get("prodigy_outputs"):
+                    raise ContractError(
+                        "prodigy_required_for_enrichment",
+                        "adding Boltz requires PRODIGY coverage for the new prediction",
+                    )
             else:
-                predictions_to_score = [boltz_prediction]
-            generated = []
-            for prediction in predictions_to_score:
-                pdb, _, metadata = _prediction_paths(prediction, source_bundle.parent)
-                safe_model = str(metadata.get("model_id") or "model").replace("/", "_")
-                output = (
-                    candidate_dir / "prodigy" / target_id
-                    / f"{prediction['predictor']}_{safe_model}_seed_{prediction['seed']}.txt"
-                )
-                generated.append(_run_prodigy_for_prediction(
-                    executable=args.prodigy,
-                    prediction=prediction,
-                    source_base=source_bundle.parent,
-                    target_chain=target_chain,
-                    binder_sequence=candidate.sequence,
-                    output_path=output,
-                ))
-            target_values["prodigy_outputs"] = existing_outputs + generated
+                existing_outputs = target_values.get("prodigy_outputs") or []
+                if target_values.pop("prodigy_output", None):
+                    existing_outputs = []
+                    target_values.pop("prodigy_output_sha256", None)
+                if not existing_outputs:
+                    predictions_to_score = target_values["complex_predictions"]
+                else:
+                    predictions_to_score = [boltz_prediction]
+                generated = []
+                for prediction in predictions_to_score:
+                    pdb, _, metadata = _prediction_paths(prediction, source_bundle.parent)
+                    safe_model = str(metadata.get("model_id") or "model").replace("/", "_")
+                    output = (
+                        candidate_dir / "prodigy" / target_id
+                        / f"{prediction['predictor']}_{safe_model}_seed_{prediction['seed']}.txt"
+                    )
+                    generated.append(_run_prodigy_for_prediction(
+                        executable=args.prodigy,
+                        prediction=prediction,
+                        source_base=source_bundle.parent,
+                        target_chain=target_chain,
+                        binder_sequence=candidate.sequence,
+                        output_path=output,
+                    ))
+                target_values["prodigy_outputs"] = existing_outputs + generated
 
-        if args.rosetta_scripts:
+        if add_rosetta:
             target_values.pop("rosetta_output", None)
             target_values.pop("rosetta_output_sha256", None)
             rosetta_outputs = []
@@ -237,6 +260,7 @@ def run(args) -> dict:
                 safe_model = str(metadata.get("model_id") or "model").replace("/", "_")
                 rosetta_outputs.append(run_rosetta_interface(
                     executable=args.rosetta_scripts,
+                    pyrosetta_python=args.pyrosetta_python,
                     complex_pdb=pdb,
                     target_chain=target_chain,
                     binder_chain=binder_chain,
@@ -271,8 +295,9 @@ def run(args) -> dict:
         "artifact_digest": validated.digest,
         "formal_state_mutated": False,
         "formal_candidate_index_mutated": False,
-        "boltz_seed": args.seed,
-        "rosetta_configured": bool(args.rosetta_scripts),
+        "boltz_configured": add_boltz,
+        "boltz_seed": args.seed if add_boltz else None,
+        "rosetta_configured": add_rosetta,
     }
 
 
@@ -280,11 +305,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-bundle", required=True)
     parser.add_argument("--output-root", required=True)
-    parser.add_argument("--boltz", required=True)
-    parser.add_argument("--boltz-cache", required=True)
-    parser.add_argument("--boltz-checkpoint", required=True)
+    parser.add_argument("--boltz")
+    parser.add_argument("--boltz-cache")
+    parser.add_argument("--boltz-checkpoint")
     parser.add_argument("--prodigy")
     parser.add_argument("--rosetta-scripts")
+    parser.add_argument("--pyrosetta-python")
     parser.add_argument("--seed", type=int, default=101)
     parser.add_argument("--binder-chain", default="B")
     parser.add_argument("--timeout", type=int, default=3600)

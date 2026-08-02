@@ -143,7 +143,7 @@ L5 对 artifacts 中声明的全部复合物模型逐一计算热点覆盖并聚
 缺失、重复或指向错误 PDB 会 fail-closed。旧版 `prodigy_output` 单文件仍可摄取，
 其 provenance 会明确标记为 `legacy_single_prediction`。
 
-Prediction v1.4.0 增加独立的 Boltz-2 证据和逐模型 Rosetta 证据。Boltz 固定为
+Prediction v1.4.1 增加独立的 Boltz-2 证据和逐模型 Rosetta 证据。Boltz 固定为
 2.2.1，并同时写入 `cyclic: true` 与末端 C—N 显式共价键；输出 PDB 必须保持候选
 序列、链 ID 和不大于 2.0 Å 的闭环距离，PAE 维度必须与靶标加环肽的残基数完全
 一致。当前部署使用显式空 MSA，绕开大陆服务器不可用的远程 MSA 服务；这是可复现
@@ -153,8 +153,9 @@ Prediction v1.4.0 增加独立的 Boltz-2 证据和逐模型 Rosetta 证据。Bo
 `rosetta_outputs` 与 `prodigy_outputs` 一样，必须通过 PDB SHA-256 一一覆盖所有
 `complex_predictions`。RosettaScripts 在 InterfaceAnalyzerMover 前先用
 DeclareBond 删除线性末端类型并声明环肽首尾酰胺键，然后用 ref2015、
-`pack_separated=true` 和 `interface_sc=true` 计算结果。直接把环肽当线性肽打分的
-scorefile 不进入 v1.4.0 正式证据。
+`pack_input=true`、`pack_separated=true` 和 `interface_sc=true` 计算结果。
+`pack_input` 用于先处理 AlphaFold2/Boltz 这类非 Rosetta 输入的侧链构象。直接把
+环肽当线性肽打分的 scorefile 不进入 v1.4.1 正式证据。
 
 Prediction 管线版本参与 config/cache digest。编号算法或其他指标实现升级后，旧 run
 不能以 resume 方式冒充新版本结果，需要建立新 run ID 重新摄取 artifact。
@@ -210,11 +211,22 @@ post-relax 或独立 predictor 尚未登记时，后续运行会精确返回对�
   --seed 101
 ```
 
-获得并确认适用的 Rosetta 许可证、安装好 `rosetta_scripts` 后，再增加：
+服务器的非商业研究部署使用固定季度版 PyRosetta：
 
 ```text
---rosetta-scripts /path/to/rosetta_scripts.default.linuxgccrelease
+/root/damodel-tmp/envs/pyrosetta-2026.29-minsizerel
+PyRosetta 2026.29+releasequarterly.80a0635615
 ```
+
+仅补 Rosetta 证据、复用已有 Boltz/AlphaFold2 结构时，可省略全部 `--boltz*`
+参数并增加：
+
+```text
+--pyrosetta-python /root/damodel-tmp/envs/pyrosetta-2026.29-minsizerel/bin/python
+```
+
+如团队另有合法的 RosettaScripts 二进制，也可改用
+`--rosetta-scripts /path/to/rosetta_scripts.default.linuxgccrelease`；两个引擎参数互斥。
 
 该 enrichment 命令只读 State/CandidateIndex，并把新证据写到新的 artifact root；
 不会修改正式 State/CSV。跳过正负对照阈值标定时，可以完成模型和物理证据生产，

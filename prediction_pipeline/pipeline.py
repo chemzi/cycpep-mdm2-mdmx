@@ -45,7 +45,7 @@ from .structures import (
 )
 
 
-PREDICTION_PIPELINE_VERSION = "1.4.0"
+PREDICTION_PIPELINE_VERSION = "1.4.1"
 RUN_SCHEMA_VERSION = 2
 RECORD_SCHEMA_VERSION = 2
 LAYER_KEYS = tuple(f"l{number}_pass" for number in range(1, 8))

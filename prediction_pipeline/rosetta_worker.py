@@ -11,6 +11,9 @@ from .metrics import parse_rosetta_interface_output
 from .structures import exact_sequence_chain, parse_pdb, terminal_bond_distance
 
 
+PYROSETTA_VERSION = "2026.29+releasequarterly.80a0635615"
+
+
 def interface_xml(
     *,
     target_chain: str,
@@ -35,7 +38,7 @@ def interface_xml(
       add_termini="true" rebuild_fold_tree="false" />
     <InterfaceAnalyzerMover name="analyze_interface"
       scorefxn="ref2015" interface="{interface}"
-      pack_input="false" pack_separated="true" packstat="false"
+      pack_input="true" pack_separated="true" packstat="false"
       interface_sc="true" tracer="false" use_jobname="false" />
   </MOVERS>
   <PROTOCOLS>
@@ -49,7 +52,8 @@ def interface_xml(
 
 def run_rosetta_interface(
     *,
-    executable: str | Path,
+    executable: str | Path | None = None,
+    pyrosetta_python: str | Path | None = None,
     complex_pdb: str | Path,
     target_chain: str,
     binder_chain: str,
@@ -61,11 +65,22 @@ def run_rosetta_interface(
     timeout: int = 1800,
 ) -> dict:
     """Run InterfaceAnalyzer once and bind the result to one prediction PDB."""
-    executable = Path(executable).expanduser().resolve()
+    if bool(executable) == bool(pyrosetta_python):
+        raise ContractError(
+            "rosetta_engine_invalid",
+            "provide exactly one of executable or pyrosetta_python",
+        )
+    executable_path = (
+        Path(executable).expanduser().resolve() if executable else None
+    )
+    pyrosetta_path = (
+        Path(pyrosetta_python).expanduser().resolve() if pyrosetta_python else None
+    )
     complex_pdb = Path(complex_pdb).expanduser().resolve()
     destination = Path(output_dir).expanduser().resolve()
-    if not executable.is_file():
-        raise ContractError("tool_unavailable", f"Rosetta executable not found: {executable}")
+    engine_path = executable_path or pyrosetta_path
+    if engine_path is None or not engine_path.is_file():
+        raise ContractError("tool_unavailable", f"Rosetta engine not found: {engine_path}")
     if not complex_pdb.is_file():
         raise ContractError("pdb_missing", f"complex PDB not found: {complex_pdb}")
     if destination.exists() and any(destination.iterdir()):
@@ -111,16 +126,48 @@ def run_rosetta_interface(
         encoding="utf-8",
     )
     score_path = destination / "interface.sc"
-    command = [
-        str(executable),
-        "-s",
-        str(complex_pdb),
-        "-parser:protocol",
-        str(xml_path),
-        "-out:file:score_only",
-        str(score_path),
-        "-overwrite",
-    ]
+    runtime_metadata_path = destination / "pyrosetta_runtime.json"
+    if pyrosetta_path:
+        version_result = run_command(
+            [
+                str(pyrosetta_path), "-c",
+                "import importlib.metadata; "
+                "print(importlib.metadata.version('pyrosetta'))",
+            ],
+            timeout=60,
+        )
+        installed_version = version_result.stdout.strip()
+        if version_result.exit_code or installed_version != PYROSETTA_VERSION:
+            raise ContractError(
+                "pyrosetta_version_mismatch",
+                f"PyRosetta {PYROSETTA_VERSION} is required; found {installed_version!r}",
+            )
+        command = [
+            str(pyrosetta_path),
+            str(Path(__file__).with_name("pyrosetta_cli.py").resolve()),
+            "--pdb", str(complex_pdb),
+            "--xml", str(xml_path),
+            "--scorefile", str(score_path),
+            "--runtime-metadata", str(runtime_metadata_path),
+            "--expected-version", PYROSETTA_VERSION,
+            "--description", f"{predictor}_{model_id}_seed_{seed}",
+            "--seed", str(seed),
+        ]
+        engine = "PyRosetta"
+        version_text = installed_version
+    else:
+        command = [
+            str(executable_path),
+            "-s",
+            str(complex_pdb),
+            "-parser:protocol",
+            str(xml_path),
+            "-out:file:score_only",
+            str(score_path),
+            "-overwrite",
+        ]
+        engine = "RosettaScripts"
+        version_text = ""
     result = run_command(command, timeout=timeout, cwd=destination)
     (destination / "stdout.log").write_text(result.stdout, encoding="utf-8")
     (destination / "stderr.log").write_text(result.stderr, encoding="utf-8")
@@ -134,11 +181,31 @@ def run_rosetta_interface(
     parsed = parse_rosetta_interface_output(
         score_path.read_text(encoding="utf-8", errors="replace")
     )
-    version_result = run_command([str(executable), "-version"], timeout=60)
-    version_text = (version_result.stdout or version_result.stderr).strip()
+    runtime_metadata = None
+    if pyrosetta_path:
+        if not runtime_metadata_path.is_file():
+            raise ContractError(
+                "rosetta_output_missing", f"missing {runtime_metadata_path}"
+            )
+        try:
+            runtime_metadata = json.loads(
+                runtime_metadata_path.read_text(encoding="utf-8")
+            )
+        except json.JSONDecodeError as exc:
+            raise ContractError(
+                "rosetta_metadata_malformed", str(runtime_metadata_path)
+            ) from exc
+        if runtime_metadata.get("pyrosetta_package_version") != PYROSETTA_VERSION:
+            raise ContractError(
+                "pyrosetta_version_mismatch", str(runtime_metadata_path)
+            )
+    else:
+        version_result = run_command([str(executable_path), "-version"], timeout=60)
+        version_text = (version_result.stdout or version_result.stderr).strip()
     metadata = {
-        "tool": "RosettaScripts InterfaceAnalyzerMover",
+        "tool": f"{engine} InterfaceAnalyzerMover",
         "tool_version_output": version_text[-2000:],
+        "pyrosetta_runtime": runtime_metadata,
         "protocol": "declare_head_to_tail_then_interface_analyzer_ref2015",
         "predictor": predictor,
         "model_id": model_id,
