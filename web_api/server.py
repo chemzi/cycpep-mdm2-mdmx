@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -64,6 +65,19 @@ def _truthy(value) -> bool:
     return value is True or str(value).casefold() == "true"
 
 
+def _normalise_sha256(value) -> str:
+    return str(value or "").removeprefix("sha256:").lower()
+
+
+def _bind_host_is_loopback(host: str) -> bool:
+    if str(host).casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _artifact_roots() -> list[Path]:
     configured = os.environ.get("CYCPEP_ARTIFACT_ROOTS")
     roots = configured.split(os.pathsep) if configured else [str(ROOT)]
@@ -71,13 +85,15 @@ def _artifact_roots() -> list[Path]:
 
 
 def _register_coordinate_artifact(row: dict) -> str | None:
-    """Register a hash-verified, final candidate coordinate without exposing its path."""
+    """Register a hash-verified, manifest-bound coordinate without exposing its path."""
     if not _truthy(row.get("all_layers_pass")):
         return None
+    candidate_id = row.get("candidate_id")
+    sequence = row.get("sequence")
     coordinate = row.get("design_pdb_path")
-    expected = str(row.get("design_pdb_hash") or "").removeprefix("sha256:").lower()
+    expected = _normalise_sha256(row.get("design_pdb_hash"))
     manifest = row.get("manifest_path")
-    if not coordinate or not expected or not manifest:
+    if not candidate_id or not sequence or not coordinate or not expected or not manifest:
         return None
     path = Path(coordinate).expanduser()
     manifest_path = Path(manifest).expanduser()
@@ -87,31 +103,63 @@ def _register_coordinate_artifact(row: dict) -> str | None:
         manifest_path = ROOT / manifest_path
     try:
         path = path.resolve(strict=True)
-        manifest_path.resolve(strict=True)
+        manifest_path = manifest_path.resolve(strict=True)
         if not any(path.is_relative_to(root) and manifest_path.resolve().is_relative_to(root)
                    for root in _artifact_roots()):
             return None
+        manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, RuntimeError, json.JSONDecodeError, UnicodeError):
+        return None
+    if not isinstance(manifest_payload, dict):
+        return None
+    if str(manifest_payload.get("candidate_id")) != str(candidate_id):
+        return None
+    if manifest_payload.get("sequence") != sequence:
+        return None
+    if manifest_payload.get("length") not in (None, len(sequence)):
+        return None
+    manifest_coordinate = manifest_payload.get("refold_pdb")
+    if not manifest_coordinate:
+        return None
+    manifest_coordinate_path = Path(manifest_coordinate).expanduser()
+    if not manifest_coordinate_path.is_absolute():
+        manifest_coordinate_path = manifest_path.parent / manifest_coordinate_path
+    try:
+        if manifest_coordinate_path.resolve(strict=True) != path:
+            return None
     except (OSError, RuntimeError):
         return None
+    if _normalise_sha256(manifest_payload.get("refold_pdb_hash")) != expected:
+        return None
+    declared_manifest = manifest_payload.get("manifest_path")
+    if declared_manifest:
+        declared_manifest_path = Path(declared_manifest).expanduser()
+        if not declared_manifest_path.is_absolute():
+            declared_manifest_path = manifest_path.parent / declared_manifest_path
+        try:
+            if declared_manifest_path.resolve(strict=True) != manifest_path:
+                return None
+        except (OSError, RuntimeError):
+            return None
     if path.suffix.casefold() not in {".pdb", ".cif", ".mmcif"}:
         return None
     actual = hashlib.sha256(path.read_bytes()).hexdigest()
     if actual != expected:
         return None
     artifact_id = "art_" + hashlib.sha256(
-        f"{row.get('candidate_id')}:{actual}".encode()
+        f"{candidate_id}:{actual}".encode()
     ).hexdigest()[:24]
     ARTIFACTS[artifact_id] = {
         "path": path, "sha256": actual,
         "format": "pdb" if path.suffix.casefold() == ".pdb" else "cif",
-        "candidate_id": row.get("candidate_id"),
+        "candidate_id": candidate_id,
     }
     return artifact_id
 
 
-def _candidate_payload(row: dict) -> dict:
+def _candidate_payload(row: dict, *, allow_artifacts: bool = True) -> dict:
     layers = [_truthy(row.get(f"l{i}_pass")) for i in range(1, 8)]
-    artifact_id = _register_coordinate_artifact(row)
+    artifact_id = _register_coordinate_artifact(row) if allow_artifacts else None
     return {
         "candidate_id": row.get("candidate_id"),
         "sequence": row.get("sequence"),
@@ -221,7 +269,9 @@ print(json.dumps({{"state":State.load(),"rows":CandidateIndex.load(),"events":Ev
         "stats": {"total_candidates": len(rows),
                   "all_layers_pass": sum(_truthy(r.get("all_layers_pass")) for r in rows),
                   "finalized": sum(r.get("final_status") == "finalized" for r in rows)},
-        "candidates": [_candidate_payload(r) for r in rows],
+        # Remote paths must never be interpreted by this process.  SSH remains
+        # read-only until a real remote artifact transport is implemented.
+        "candidates": [_candidate_payload(r, allow_artifacts=False) for r in rows],
         "recent_evidence": payload["events"], "integrity_warnings": warnings,
     }
 
@@ -313,7 +363,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, ssh_snapshot(profile))
             match = re.fullmatch(r"/api/v1/project-drafts/(drf_[A-Za-z0-9]+)/approve", path)
             if match:
-                return self._json(200, approve_draft(_draft_path(match.group(1)), force=bool(body.get("force")), justification=body.get("justification")))
+                force = bool(body.get("force"))
+                if force and os.environ.get("CYCPEP_ALLOW_FORCE_APPROVE") != "1":
+                    return self._json(403, error={
+                        "code": "force_approval_disabled",
+                        "message": "force approval requires CYCPEP_ALLOW_FORCE_APPROVE=1",
+                    })
+                return self._json(200, approve_draft(_draft_path(match.group(1)), force=force, justification=body.get("justification")))
             return self._json(404, error={"code": "not_found", "message": "Route not found"})
         except ReviewRequiredError as exc:
             return self._json(409, error={"code": "review_required", "message": str(exc)})
@@ -339,6 +395,11 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
+    if not _bind_host_is_loopback(args.host) and os.environ.get("CYCPEP_ALLOW_INSECURE_REMOTE") != "1":
+        parser.error(
+            "binding outside loopback requires explicit CYCPEP_ALLOW_INSECURE_REMOTE=1; "
+            "the adapter has no authentication layer"
+        )
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 
