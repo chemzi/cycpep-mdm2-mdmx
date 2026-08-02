@@ -192,6 +192,17 @@ def _control_data_digest(config: dict) -> str | None:
     return digest
 
 
+def _calibration_protocol(config: dict) -> tuple[dict | None, str | None]:
+    """Return the approved scoring protocol used to validate control data."""
+    selection = config.get("selection") or {}
+    protocol = selection.get("calibration_protocol") or config.get("calibration_protocol")
+    protocol_hash = (
+        selection.get("calibration_protocol_hash")
+        or config.get("calibration_protocol_hash")
+    )
+    return protocol if isinstance(protocol, dict) else None, protocol_hash
+
+
 def _cache_meta(config: dict) -> dict:
     return {
         "project_id": config.get("project_id"),
@@ -373,18 +384,22 @@ def _apply_control_calibration(thresholds: dict, config: dict) -> tuple[dict, di
         return thresholds, base_summary
 
     try:
+        selection = config.get("selection") or {}
+        expected_protocol, expected_protocol_hash = _calibration_protocol(config)
         controls, metadata = load_control_dataset(
             path,
             project_id=config.get("project_id"),
             approved_digest=(config.get("review") or {}).get("approved_digest"),
+            protocol=expected_protocol,
+            protocol_hash=expected_protocol_hash,
+            schema_version=CONTROL_CALIBRATION_SCHEMA_VERSION,
         )
-        selection = config.get("selection") or {}
-        protocol = metadata.get("protocol") or selection.get("calibration_protocol")
         calibrated, audit = calibrate_thresholds(
             controls=controls,
             thresholds=thresholds,
             target_ids=required_target_ids(config),
-            protocol=protocol,
+            protocol=expected_protocol or metadata.get("protocol"),
+            protocol_hash=metadata.get("protocol_hash") or expected_protocol_hash,
             max_false_positive_rate=float(
                 selection.get("calibration_max_false_positive_rate", 0.05)
             ),
@@ -425,7 +440,7 @@ def _apply_control_calibration(thresholds: dict, config: dict) -> tuple[dict, di
             targets=list(required_target_ids(config)), phase="research",
         )
         return thresholds, summary
-    except Exception as exc:
+    except (OSError, TypeError, ValueError) as exc:
         summary = {
             **base_summary,
             "status": "failed",
@@ -434,6 +449,19 @@ def _apply_control_calibration(thresholds: dict, config: dict) -> tuple[dict, di
         EvidenceLogger.error(
             "research", "threshold_calibration_failed", summary["reason"],
             recovery="retain literature/provisional thresholds",
+        )
+        return thresholds, summary
+    except Exception as exc:
+        if os.environ.get("CYCPEP_STRICT_CALIBRATION") == "1" or os.environ.get("CI") == "true":
+            raise
+        summary = {
+            **base_summary,
+            "status": "failed_unexpected",
+            "reason": f"{type(exc).__name__}: {str(exc)[:240]}",
+        }
+        EvidenceLogger.error(
+            "research", "threshold_calibration_unexpected_error", summary["reason"],
+            recovery="retain literature/provisional thresholds; inspect the exception",
         )
         return thresholds, summary
 
