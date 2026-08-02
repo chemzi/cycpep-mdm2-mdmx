@@ -1,5 +1,9 @@
 # Planner v1.0：C0514 真实 Critic 报告验证
 
+> 历史说明：本页记录 Planner v1.0 的首次验证。该计划未批准、未执行。Planner
+> v1.0.1 已增加强制 GPU 分钟上限；当前计划与 Orchestrator 验证见
+> `docs/orchestrator_v1.0_validation_20260802.md`。
+
 日期：2026-08-02  
 服务器：4090 部署机  
 代码分支：`deploy/planner-v1.0.0`
