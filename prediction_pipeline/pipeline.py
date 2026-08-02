@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import uuid
@@ -33,6 +34,11 @@ from .contracts import (
     validate_project,
 )
 from .metrics import calculate_ipsae, load_pae, pose_convergence
+from .relax_worker import (
+    POST_RELAX_PROTOCOL,
+    POST_RELAX_TOOL,
+    PYROSETTA_VERSION,
+)
 from .structures import (
     backbone_rmsd,
     canonical_target_residue_numbers,
@@ -45,7 +51,7 @@ from .structures import (
 )
 
 
-PREDICTION_PIPELINE_VERSION = "1.4.1"
+PREDICTION_PIPELINE_VERSION = "1.5.0"
 RUN_SCHEMA_VERSION = 2
 RECORD_SCHEMA_VERSION = 2
 LAYER_KEYS = tuple(f"l{number}_pass" for number in range(1, 8))
@@ -409,6 +415,9 @@ class PredictionPipeline:
             structure = parse_pdb(post_relax["path"])
             chain = exact_sequence_chain(structure, candidate.sequence)
             relax_metadata = parse_metadata(post_relax_metadata_entry)
+            coordinate_constraints = relax_metadata.get("coordinate_constraints")
+            if not isinstance(coordinate_constraints, dict):
+                coordinate_constraints = {}
             required_relax_metadata = {
                 "tool": relax_metadata.get("tool"),
                 "tool_revision": (
@@ -421,6 +430,35 @@ class PredictionPipeline:
                 "sequence": relax_metadata.get("sequence"),
                 "cyclization_type": relax_metadata.get("cyclization_type"),
                 "bond_topology_applied": relax_metadata.get("bond_topology_applied"),
+                "input_chain": relax_metadata.get("input_chain"),
+                "output_chain": relax_metadata.get("output_chain"),
+                "seed": relax_metadata.get("seed"),
+                "repeats": relax_metadata.get("repeats"),
+                "pre_distance": relax_metadata.get(
+                    "terminal_c_to_n_distance_pre_angstrom"
+                ),
+                "post_distance": relax_metadata.get(
+                    "terminal_c_to_n_distance_post_angstrom"
+                ),
+                "backbone_rmsd": relax_metadata.get(
+                    "backbone_rmsd_to_input_angstrom"
+                ),
+                "pre_score": relax_metadata.get("pre_total_score_ref2015"),
+                "post_score": relax_metadata.get("post_total_score_ref2015"),
+                "coordinate_constraints_enabled": coordinate_constraints.get("enabled"),
+                "coordinate_constraints_to_start": coordinate_constraints.get(
+                    "to_start_coordinates"
+                ),
+                "coordinate_constraints_sidechains": coordinate_constraints.get(
+                    "sidechains"
+                ),
+                "coordinate_constraints_ramp_down": coordinate_constraints.get(
+                    "ramp_down"
+                ),
+                "coordinate_constraints_stdev": coordinate_constraints.get(
+                    "stdev_angstrom"
+                ),
+                "design_enabled": relax_metadata.get("design_enabled"),
             }
             missing_relax_metadata = [
                 key for key, value in required_relax_metadata.items()
@@ -435,6 +473,21 @@ class PredictionPipeline:
                     layer=4,
                 )
             else:
+                if relax_metadata["tool"] != POST_RELAX_TOOL:
+                    raise ContractError(
+                        "post_relax_tool_mismatch",
+                        f"L4 requires {POST_RELAX_TOOL}; found {relax_metadata['tool']!r}",
+                    )
+                if required_relax_metadata["tool_revision"] != PYROSETTA_VERSION:
+                    raise ContractError(
+                        "post_relax_version_mismatch",
+                        f"L4 requires PyRosetta {PYROSETTA_VERSION}",
+                    )
+                if relax_metadata["protocol"] != POST_RELAX_PROTOCOL:
+                    raise ContractError(
+                        "post_relax_protocol_mismatch",
+                        f"L4 requires protocol {POST_RELAX_PROTOCOL}",
+                    )
                 expected_input_sha = (
                     primary_monomer["pdb"]["sha256"] if primary_monomer else None
                 )
@@ -468,9 +521,117 @@ class PredictionPipeline:
                         "post-relax protocol did not attest that the cyclic bond "
                         "topology was applied",
                     )
-                metrics["global"]["nc_distance_post"] = terminal_bond_distance(
-                    structure, chain
+                input_chain = primary_monomer["binder_chain"] if primary_monomer else None
+                if (
+                    relax_metadata["input_chain"] != input_chain
+                    or relax_metadata["output_chain"] != chain
+                    or chain != input_chain
+                ):
+                    raise ContractError(
+                        "post_relax_chain_mismatch",
+                        "post-relax metadata/PDB chain differs from primary monomer",
+                    )
+                seed = relax_metadata["seed"]
+                repeats = relax_metadata["repeats"]
+                if isinstance(seed, bool) or not isinstance(seed, int):
+                    raise ContractError(
+                        "post_relax_seed_invalid", "post-relax seed must be an integer"
+                    )
+                if (
+                    isinstance(repeats, bool)
+                    or not isinstance(repeats, int)
+                    or repeats < 1
+                ):
+                    raise ContractError(
+                        "post_relax_repeats_invalid",
+                        "post-relax repeats must be a positive integer",
+                    )
+                if (
+                    coordinate_constraints.get("enabled") is not True
+                    or coordinate_constraints.get("to_start_coordinates") is not True
+                    or coordinate_constraints.get("sidechains") is not False
+                    or coordinate_constraints.get("ramp_down") is not False
+                    or relax_metadata.get("design_enabled") is not False
+                ):
+                    raise ContractError(
+                        "post_relax_constraint_invalid",
+                        "L4 requires fixed start-coordinate constraints and design disabled",
+                    )
+
+                numeric_metadata = {}
+                for key in (
+                    "terminal_c_to_n_distance_pre_angstrom",
+                    "terminal_c_to_n_distance_post_angstrom",
+                    "backbone_rmsd_to_input_angstrom",
+                    "pre_total_score_ref2015",
+                    "post_total_score_ref2015",
+                ):
+                    try:
+                        value = float(relax_metadata[key])
+                    except (TypeError, ValueError) as exc:
+                        raise ContractError(
+                            "post_relax_metadata_invalid", f"{key} must be numeric"
+                        ) from exc
+                    if not math.isfinite(value):
+                        raise ContractError(
+                            "post_relax_metadata_invalid", f"{key} must be finite"
+                        )
+                    numeric_metadata[key] = value
+                try:
+                    constraint_stdev = float(coordinate_constraints["stdev_angstrom"])
+                except (TypeError, ValueError) as exc:
+                    raise ContractError(
+                        "post_relax_constraint_invalid", "constraint stdev must be numeric"
+                    ) from exc
+                if not math.isfinite(constraint_stdev) or constraint_stdev <= 0:
+                    raise ContractError(
+                        "post_relax_constraint_invalid", "constraint stdev must be positive"
+                    )
+
+                computed_pre = metrics["global"].get("nc_distance_pre")
+                computed_post = terminal_bond_distance(structure, chain)
+                computed_drift = backbone_rmsd(
+                    structure,
+                    chain,
+                    primary_monomer["structure"],
+                    primary_monomer["binder_chain"],
                 )
+                for label, declared, observed in (
+                    (
+                        "pre distance",
+                        numeric_metadata["terminal_c_to_n_distance_pre_angstrom"],
+                        computed_pre,
+                    ),
+                    (
+                        "post distance",
+                        numeric_metadata["terminal_c_to_n_distance_post_angstrom"],
+                        computed_post,
+                    ),
+                    (
+                        "backbone RMSD",
+                        numeric_metadata["backbone_rmsd_to_input_angstrom"],
+                        computed_drift,
+                    ),
+                ):
+                    if observed is None or abs(declared - observed) > 1e-3:
+                        raise ContractError(
+                            "post_relax_geometry_mismatch",
+                            f"metadata {label} does not match the bound PDB artifacts",
+                        )
+                metrics["global"].update({
+                    "nc_distance_post": computed_post,
+                    "post_relax_backbone_rmsd": computed_drift,
+                    "post_relax_score_pre": numeric_metadata[
+                        "pre_total_score_ref2015"
+                    ],
+                    "post_relax_score_post": numeric_metadata[
+                        "post_total_score_ref2015"
+                    ],
+                    "post_relax_score_delta": (
+                        numeric_metadata["post_total_score_ref2015"]
+                        - numeric_metadata["pre_total_score_ref2015"]
+                    ),
+                })
                 provenance.append({
                     "metric": "global.nc_distance_post",
                     "tool": relax_metadata["tool"],
@@ -481,6 +642,14 @@ class PredictionPipeline:
                     "metadata_artifact": str(post_relax_metadata_entry["path"]),
                     "metadata_sha256": post_relax_metadata_entry["sha256"],
                     "bond_topology_applied": True,
+                    "backbone_rmsd_to_input_angstrom": computed_drift,
+                    "pre_total_score_ref2015": numeric_metadata[
+                        "pre_total_score_ref2015"
+                    ],
+                    "post_total_score_ref2015": numeric_metadata[
+                        "post_total_score_ref2015"
+                    ],
+                    "coordinate_constraints": coordinate_constraints,
                 })
         else:
             self._issue(
@@ -765,7 +934,11 @@ class PredictionPipeline:
             existing = {}
         if not isinstance(existing, dict):
             existing = {}
-        global_owned = {"plddt", "nc_distance_pre", "nc_distance_post", "scrmsd"}
+        global_owned = {
+            "plddt", "nc_distance_pre", "nc_distance_post", "scrmsd",
+            "post_relax_backbone_rmsd", "post_relax_score_pre",
+            "post_relax_score_post", "post_relax_score_delta",
+        }
         target_owned = {
             "ipsae", "ipae", "iptm", "dg", "dg_method", "sc", "dsasa",
             "rosetta_dg_separated", "hotspot_cov", "site_consistency",

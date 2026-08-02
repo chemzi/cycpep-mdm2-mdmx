@@ -26,6 +26,12 @@ from prediction_pipeline.metrics import (
 from prediction_pipeline.pipeline import PredictionPipeline
 from prediction_pipeline.rosetta_worker import interface_xml
 from prediction_pipeline.pyrosetta_cli import _write_scorefile
+from prediction_pipeline.relax_worker import (
+    POST_RELAX_PROTOCOL,
+    POST_RELAX_TOOL,
+    PYROSETTA_VERSION,
+    topology_xml,
+)
 from scripts.run_prediction_predictors import parse_ensemble_members
 from prediction_pipeline.structures import (
     apply_transform,
@@ -232,6 +238,12 @@ class StructureAndParserTests(unittest.TestCase):
         self.assertIn('interface_sc="true"', value)
         self.assertIn('pack_input="true"', value)
 
+    def test_post_relax_topology_declares_head_to_tail_bond(self):
+        value = topology_xml(first_pose_index=1, last_pose_index=8)
+        self.assertIn('res1="8" atom1="C"', value)
+        self.assertIn('res2="1" atom2="N"', value)
+        self.assertIn('rebuild_fold_tree="false"', value)
+
     def test_pyrosetta_scorefile_is_consumed_by_strict_parser(self):
         path = self.root / "pyrosetta_interface.sc"
         _write_scorefile(
@@ -394,15 +406,36 @@ class PredictionPipelineTests(unittest.TestCase):
         post_metadata = candidate_dir / "post_relax_metadata.json"
         write_monomer(monomer)
         write_monomer(post)
+        pre_structure = parse_pdb(monomer)
+        post_structure = parse_pdb(post)
+        pre_distance = terminal_bond_distance(pre_structure, "B")
+        post_distance = terminal_bond_distance(post_structure, "B")
         post_metadata.write_text(json.dumps({
-            "tool": "TestRelax",
-            "tool_version": "1.0.0",
-            "protocol": "cyclic_cartesian_relax",
+            "tool": POST_RELAX_TOOL,
+            "tool_version": PYROSETTA_VERSION,
+            "protocol": POST_RELAX_PROTOCOL,
             "input_pdb_sha256": hashlib.sha256(monomer.read_bytes()).hexdigest(),
             "output_pdb_sha256": hashlib.sha256(post.read_bytes()).hexdigest(),
             "sequence": SEQUENCE,
+            "input_chain": "B",
+            "output_chain": "B",
             "cyclization_type": "head_to_tail_amide",
             "bond_topology_applied": True,
+            "terminal_c_to_n_distance_pre_angstrom": pre_distance,
+            "terminal_c_to_n_distance_post_angstrom": post_distance,
+            "backbone_rmsd_to_input_angstrom": 0.0,
+            "pre_total_score_ref2015": 10.0,
+            "post_total_score_ref2015": 8.0,
+            "seed": 101,
+            "repeats": 3,
+            "coordinate_constraints": {
+                "enabled": True,
+                "to_start_coordinates": True,
+                "sidechains": False,
+                "ramp_down": False,
+                "stdev_angstrom": 0.5,
+            },
+            "design_enabled": False,
         }), encoding="utf-8")
         targets = {}
         for target_id in ("MDM2", "MDMX"):
@@ -996,6 +1029,38 @@ class PredictionPipelineTests(unittest.TestCase):
         self.assertIn("l4_post_relax_provenance_missing", codes)
         self.assertNotIn("nc_distance_post", record["metrics"]["global"])
 
+    def test_l4_rejects_unpinned_relax_protocol(self):
+        reference = self._register_candidate()
+        self._write_complete_artifacts(reference)
+        bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
+        metadata_path = bundle_path.parent / "post_relax_metadata.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["protocol"] = "unreviewed_relax"
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+        summary = self._pipeline(thresholds=justified_thresholds()).run()
+        self.assertEqual(summary["status_counts"], {"invalid": 1})
+        record = json.loads(
+            (self.run_root / "test_run" / "records" / "C0001.json").read_text()
+        )
+        self.assertEqual(record["issues"][0]["code"], "post_relax_protocol_mismatch")
+
+    def test_l4_rejects_relax_geometry_metadata_drift(self):
+        reference = self._register_candidate()
+        self._write_complete_artifacts(reference)
+        bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
+        metadata_path = bundle_path.parent / "post_relax_metadata.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["backbone_rmsd_to_input_angstrom"] = 1.0
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+        summary = self._pipeline(thresholds=justified_thresholds()).run()
+        self.assertEqual(summary["status_counts"], {"invalid": 1})
+        record = json.loads(
+            (self.run_root / "test_run" / "records" / "C0001.json").read_text()
+        )
+        self.assertEqual(record["issues"][0]["code"], "post_relax_geometry_mismatch")
+
     def test_l6_rejects_relabelled_predictor(self):
         reference = self._register_candidate()
         self._write_complete_artifacts(reference)
@@ -1096,8 +1161,8 @@ class PredictionPipelineTests(unittest.TestCase):
         ).run()
 
         self.assertEqual(State.load()["candidate_count"], 1270)
-        self.assertEqual(summary["pipeline_version"], "1.4.1")
-        self.assertEqual(State.load()["prediction"]["pipeline_version"], "1.4.1")
+        self.assertEqual(summary["pipeline_version"], "1.5.0")
+        self.assertEqual(State.load()["prediction"]["pipeline_version"], "1.5.0")
 
     def test_declared_artifact_hash_mismatch_is_invalid(self):
         reference = self._register_candidate()

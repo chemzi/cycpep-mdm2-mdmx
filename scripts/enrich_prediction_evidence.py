@@ -31,6 +31,7 @@ from prediction_pipeline.contracts import (  # noqa: E402
     validate_project,
 )
 from prediction_pipeline.rosetta_worker import run_rosetta_interface  # noqa: E402
+from prediction_pipeline.relax_worker import run_post_relax  # noqa: E402
 from prediction_pipeline.structures import (  # noqa: E402
     exact_sequence_chain,
     parse_pdb,
@@ -139,6 +140,7 @@ def run(args) -> dict:
         )
     add_boltz = all(boltz_values)
     add_rosetta = bool(args.rosetta_scripts or args.pyrosetta_python)
+    add_post_relax = bool(args.post_relax_python)
     if args.rosetta_scripts and args.pyrosetta_python:
         raise ContractError(
             "rosetta_engine_invalid",
@@ -149,9 +151,10 @@ def run(args) -> dict:
             "prodigy_without_new_prediction",
             "--prodigy is only used when this command adds a Boltz prediction",
         )
-    if not add_boltz and not add_rosetta:
+    if not add_boltz and not add_rosetta and not add_post_relax:
         raise ContractError(
-            "enrichment_empty", "configure Boltz and/or a Rosetta engine"
+            "enrichment_empty",
+            "configure Boltz, Rosetta interface scoring and/or PyRosetta post-relax",
         )
     source_bundle = Path(args.source_bundle).expanduser().resolve()
     try:
@@ -188,6 +191,40 @@ def run(args) -> dict:
         )
     candidate_dir.mkdir(parents=True, exist_ok=True)
     target_by_id = {target["id"]: target for target in project["targets"]}
+
+    if add_post_relax:
+        monomer_predictions = bundle["global"].get("monomer_predictions") or []
+        if not monomer_predictions:
+            raise ContractError(
+                "post_relax_input_missing", "source bundle has no monomer prediction"
+            )
+        primary_monomer = sorted(
+            monomer_predictions,
+            key=lambda item: (
+                not bool(item.get("primary")),
+                str(item.get("predictor") or ""),
+                int(item.get("seed") or 0),
+            ),
+        )[0]
+        monomer_pdb = Path(primary_monomer["pdb"]).expanduser().resolve()
+        relax_result = run_post_relax(
+            pyrosetta_python=args.post_relax_python,
+            monomer_pdb=monomer_pdb,
+            sequence=candidate.sequence,
+            cyclization_type=candidate.cyclization_type,
+            output_dir=candidate_dir / "post_relax",
+            seed=args.post_relax_seed,
+            repeats=args.post_relax_repeats,
+            coordinate_stdev_angstrom=args.post_relax_coordinate_stdev,
+            timeout=args.post_relax_timeout,
+        )
+        for key in (
+            "post_relax_pdb",
+            "post_relax_pdb_sha256",
+            "post_relax_metadata",
+            "post_relax_metadata_sha256",
+        ):
+            bundle["global"][key] = relax_result[key]
 
     for target_id in required_targets:
         _, target_chain, target_sequence = _target_coordinates(target_by_id[target_id])
@@ -298,6 +335,9 @@ def run(args) -> dict:
         "boltz_configured": add_boltz,
         "boltz_seed": args.seed if add_boltz else None,
         "rosetta_configured": add_rosetta,
+        "post_relax_configured": add_post_relax,
+        "post_relax_seed": args.post_relax_seed if add_post_relax else None,
+        "post_relax_repeats": args.post_relax_repeats if add_post_relax else None,
     }
 
 
@@ -311,7 +351,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prodigy")
     parser.add_argument("--rosetta-scripts")
     parser.add_argument("--pyrosetta-python")
+    parser.add_argument(
+        "--post-relax-python",
+        help="Pinned PyRosetta Python used only for cyclic monomer post-relax",
+    )
     parser.add_argument("--seed", type=int, default=101)
+    parser.add_argument("--post-relax-seed", type=int, default=20260802)
+    parser.add_argument("--post-relax-repeats", type=int, default=3)
+    parser.add_argument("--post-relax-coordinate-stdev", type=float, default=0.5)
+    parser.add_argument("--post-relax-timeout", type=int, default=3600)
     parser.add_argument("--binder-chain", default="B")
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--rosetta-timeout", type=int, default=1800)
