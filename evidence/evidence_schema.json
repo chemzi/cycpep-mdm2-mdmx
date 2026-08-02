@@ -32,6 +32,8 @@
         "candidate_eliminated",
         "evaluate_layer_complete",
         "critic_review",
+        "planner_plan",
+        "planner_approval_recorded",
         "planner_adjust",
         "candidate_finalized",
         "error"

@@ -397,12 +397,49 @@ class EvidenceLogger:
     @classmethod
     def planner_adjust(cls, trigger_event_id: str, old_strategy: dict,
                        new_strategy: dict, reason: str):
-        cls.log("planner", "planner_adjust", {
+        return cls.log("planner", "planner_adjust", {
             "trigger_event_id": trigger_event_id,
             "old_strategy": old_strategy, "new_strategy": new_strategy,
             "reason": reason
         }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
                 phase="iterate")
+
+    @classmethod
+    def planner_plan(cls, plan_id: str, plan_path: str, plan_sha256: str,
+                     critic_report_id: str, status: str, task_count: int,
+                     required_approval_task_ids: list):
+        """Record one immutable Planner plan without authorizing execution."""
+        return cls.log("planner", "planner_plan", {
+            "plan_id": plan_id,
+            "plan_path": plan_path,
+            "plan_sha256": plan_sha256,
+            "critic_report_id": critic_report_id,
+            "status": status,
+            "task_count": task_count,
+            "required_approval_task_ids": required_approval_task_ids,
+        }, targets=list(required_target_ids(
+            State.load().get("project_config") or State._project_config
+        )), phase="iterate")
+
+    @classmethod
+    def planner_approval_recorded(
+        cls, approval_id: str, approval_path: str, approval_sha256: str,
+        plan_id: str, plan_sha256: str, approved_task_ids: list,
+        approver: str, budget_limits: dict,
+    ):
+        """Record a human approval artifact bound to an immutable plan digest."""
+        return cls.log("planner", "planner_approval_recorded", {
+            "approval_id": approval_id,
+            "approval_path": approval_path,
+            "approval_sha256": approval_sha256,
+            "plan_id": plan_id,
+            "plan_sha256": plan_sha256,
+            "approved_task_ids": approved_task_ids,
+            "approver": approver,
+            "budget_limits": budget_limits,
+        }, targets=list(required_target_ids(
+            State.load().get("project_config") or State._project_config
+        )), phase="iterate")
 
     @classmethod
     def error(cls, agent: str, error_type: str, message: str,

@@ -14,6 +14,7 @@ MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当�
 - [Prediction v1.5.0：环肽 post-relax 与完整七层回归](docs/prediction_v1.5.0_post_relax_validation_20260802.md)
 - [Critic v1.0：Prediction 审查合同与 Planner handoff](docs/critic_agent.md)
 - [Critic v1.0：C0514 真实审查验证](docs/critic_v1.0_validation_20260802.md)
+- [Planner v1.0：任务图、预算请求与摘要绑定审批](docs/planner_agent.md)
 
 ```bash
 python -m target_bootstrap draft --identifier P12345 --type uniprot --output projects/new_target.draft.json
@@ -82,7 +83,9 @@ pip install -r requirements.txt
   服务器完成 C0514 双靶标真实回归
 - `Critic` v1.0 已实现冻结 Prediction handoff/record 摄取、哈希校验、问题分类、
   候选池统计和结构化 Planner handoff
-- `Planner` 与顶层 Orchestrator 仍在待实现阶段
+- `Planner` v1.0 已实现 Critic 报告摄取、确定性任务图、预算/审批闸门、启动阶段判断
+  和摘要绑定 approval artifact
+- 顶层 `Orchestrator` 仍在待实现阶段；当前 Planner 只产出计划，不自动调度任务
 
 所以如果只是跑数据层、Research 和不调用模型的回归测试，先装
 `requirements.txt` 即可；完整 Design/Prediction 需要按部署文档准备模型、
@@ -144,7 +147,7 @@ cycpep-mdm2-mdmx/
 ├── data/
 │   └── .gitkeep               ← 运行时产出目录，不进Git
 └── agents/                    ← 每人改自己的文件
-    ├── planner.py             ← 长时任务规划与迭代（待实现）
+    ├── planner.py             ← Critic 驱动任务图、预算与审批规划
     ├── critic.py              ← Prediction 失败审查、候选池诊断与 Planner handoff
     ├── design.py              ← 于嘉乐：三条设计路线
     ├── prediction.py          ← 七层生产编排入口（无 placeholder/demo）
@@ -165,6 +168,7 @@ python3 test_data_layer.py
 python3 test_design.py
 python3 -m unittest -v test_prediction_pipeline.py
 python3 -m unittest -v test_critic.py
+python3 -m unittest -v test_planner.py
 ./.venv/bin/python -m unittest -v test_reliability_regressions.py
 ```
 
