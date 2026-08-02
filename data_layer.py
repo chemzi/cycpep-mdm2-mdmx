@@ -376,12 +376,22 @@ class EvidenceLogger:
 
     @classmethod
     def critic_review(cls, issues: list, passed: bool, summary: str,
-                      recommendation: str, metrics: dict):
-        return cls.log("critic", "critic_review", {
+                      recommendation: str, metrics: dict,
+                      report_id: str = "", report_path: str = "",
+                      report_sha256: str = ""):
+        payload = {
             "issues": issues, "pass": passed,
             "summary": summary, "recommendation": recommendation,
             "metrics_snapshot": metrics
-        }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
+        }
+        if report_id:
+            payload["report_id"] = report_id
+        if report_path:
+            payload["report_path"] = report_path
+        if report_sha256:
+            payload["report_sha256"] = report_sha256
+        return cls.log("critic", "critic_review", payload,
+                targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
                 phase="critic")
 
     @classmethod

@@ -12,6 +12,7 @@ MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当�
 - [Design v5.1.0：固定序列与闭环几何完整性门禁](docs/design_integrity_v5.1.0.md)
 - [Prediction v1.4.1：Boltz-2 / PyRosetta 真实双靶标验证](docs/prediction_v1.4.1_pyrosetta_validation_20260802.md)
 - [Prediction v1.5.0：环肽 post-relax 与完整七层回归](docs/prediction_v1.5.0_post_relax_validation_20260802.md)
+- [Critic v1.0：Prediction 审查合同与 Planner handoff](docs/critic_agent.md)
 
 ```bash
 python -m target_bootstrap draft --identifier P12345 --type uniprot --output projects/new_target.draft.json
@@ -78,7 +79,9 @@ pip install -r requirements.txt
 - `Prediction` 已有严格 artifact 摄取、七层指标计算、状态判定和断点续跑实现；
   Boltz-2 独立复合物 predictor 与 PyRosetta InterfaceAnalyzer 已在 4090
   服务器完成 C0514 双靶标真实回归
-- `Planner` / `Critic` 仍在待实现阶段
+- `Critic` v1.0 已实现冻结 Prediction handoff/record 摄取、哈希校验、问题分类、
+  候选池统计和结构化 Planner handoff
+- `Planner` 与顶层 Orchestrator 仍在待实现阶段
 
 所以如果只是跑数据层、Research 和不调用模型的回归测试，先装
 `requirements.txt` 即可；完整 Design/Prediction 需要按部署文档准备模型、
@@ -141,7 +144,7 @@ cycpep-mdm2-mdmx/
 │   └── .gitkeep               ← 运行时产出目录，不进Git
 └── agents/                    ← 每人改自己的文件
     ├── planner.py             ← 长时任务规划与迭代（待实现）
-    ├── critic.py              ← 失败审查与回溯（待实现）
+    ├── critic.py              ← Prediction 失败审查、候选池诊断与 Planner handoff
     ├── design.py              ← 于嘉乐：三条设计路线
     ├── prediction.py          ← 七层生产编排入口（无 placeholder/demo）
     └── research.py            ← RCSB/PubMed/阈值证据调研
@@ -160,6 +163,7 @@ cycpep-mdm2-mdmx/
 python3 test_data_layer.py
 python3 test_design.py
 python3 -m unittest -v test_prediction_pipeline.py
+python3 -m unittest -v test_critic.py
 ./.venv/bin/python -m unittest -v test_reliability_regressions.py
 ```
 
