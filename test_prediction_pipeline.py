@@ -394,6 +394,37 @@ class StructureAndParserTests(unittest.TestCase):
             1e-10,
         )
 
+    def test_pose_rmsd_aligns_reference_with_terminal_target_overhang(self):
+        mobile_path = self.root / "mobile_overhang_complex.pdb"
+        mobile_target, serial = chain_pdb(
+            "AAA", "A", residue_numbers=[1, 2, 3]
+        )
+        mobile_binder, _ = chain_pdb(
+            SEQUENCE, "B", shift=(0.0, 1.5, 0.0), start=serial
+        )
+        mobile_path.write_text(
+            mobile_target + mobile_binder + "END\n", encoding="utf-8"
+        )
+
+        reference_path = self.root / "reference_overhang_complex.pdb"
+        reference_target, serial = chain_pdb(
+            "GAAA", "A", residue_numbers=[325, 326, 327, 328]
+        )
+        reference_binder, _ = chain_pdb(
+            SEQUENCE, "B", shift=(1.2, 1.5, 0.0), start=serial
+        )
+        reference_path.write_text(
+            reference_target + reference_binder + "END\n", encoding="utf-8"
+        )
+
+        self.assertLess(
+            target_aligned_binder_rmsd(
+                parse_pdb(mobile_path), parse_pdb(reference_path),
+                "A", "B", "B",
+            ),
+            1e-10,
+        )
+
     def test_ipsae_matches_official_residue_specific_d0_definition(self):
         pae = np.full((5, 5), 30.0)
         labels = ["A", "A", "B", "B", "B"]

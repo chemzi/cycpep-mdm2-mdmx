@@ -374,6 +374,70 @@ def canonical_target_residue_numbers(
     return [residue.number for residue in reference_residues]
 
 
+def _sequence_aligned_residue_pairs(
+    mobile_residues: list[Residue],
+    reference_residues: list[Residue],
+) -> list[tuple[Residue, Residue]]:
+    """Globally align near-identical target chains with terminal overhangs."""
+    mobile_sequence = "".join(residue.one_letter for residue in mobile_residues)
+    reference_sequence = "".join(residue.one_letter for residue in reference_residues)
+    mobile_n, reference_n = len(mobile_sequence), len(reference_sequence)
+    if not mobile_n or not reference_n:
+        raise ContractError(
+            "target_sequence_alignment_mismatch", "target chain is empty"
+        )
+
+    match_score, mismatch_score, gap_score = 2, -1, -2
+    scores = np.zeros((mobile_n + 1, reference_n + 1), dtype=np.int32)
+    trace = np.zeros((mobile_n + 1, reference_n + 1), dtype=np.uint8)
+    scores[:, 0] = np.arange(mobile_n + 1) * gap_score
+    scores[0, :] = np.arange(reference_n + 1) * gap_score
+    trace[1:, 0] = 1  # up: mobile residue aligned to a gap
+    trace[0, 1:] = 2  # left: reference residue aligned to a gap
+
+    for mobile_i in range(1, mobile_n + 1):
+        for reference_i in range(1, reference_n + 1):
+            diagonal = scores[mobile_i - 1, reference_i - 1] + (
+                match_score
+                if mobile_sequence[mobile_i - 1] == reference_sequence[reference_i - 1]
+                else mismatch_score
+            )
+            up = scores[mobile_i - 1, reference_i] + gap_score
+            left = scores[mobile_i, reference_i - 1] + gap_score
+            best = max(diagonal, up, left)
+            scores[mobile_i, reference_i] = best
+            # Prefer a residue pair on ties, then a mobile gap.  This makes the
+            # mapping deterministic without relying on PDB residue numbers.
+            trace[mobile_i, reference_i] = 0 if diagonal == best else 1 if up == best else 2
+
+    pairs: list[tuple[Residue, Residue]] = []
+    matches = 0
+    mobile_i, reference_i = mobile_n, reference_n
+    while mobile_i or reference_i:
+        direction = trace[mobile_i, reference_i]
+        if mobile_i and reference_i and direction == 0:
+            mobile_i -= 1
+            reference_i -= 1
+            pairs.append((mobile_residues[mobile_i], reference_residues[reference_i]))
+            matches += mobile_sequence[mobile_i] == reference_sequence[reference_i]
+        elif mobile_i and (not reference_i or direction == 1):
+            mobile_i -= 1
+        else:
+            reference_i -= 1
+    pairs.reverse()
+
+    coverage = len(pairs) / min(mobile_n, reference_n)
+    identity = matches / len(pairs) if pairs else 0.0
+    if len(pairs) < 3 or coverage < 0.8 or identity < 0.9:
+        raise ContractError(
+            "target_sequence_alignment_mismatch",
+            "target chains are not sufficiently similar for pose alignment: "
+            f"mobile={mobile_n}, reference={reference_n}, "
+            f"coverage={coverage:.3f}, identity={identity:.3f}",
+        )
+    return pairs
+
+
 def target_aligned_binder_rmsd(
     mobile: Structure,
     reference: Structure,
@@ -392,11 +456,8 @@ def target_aligned_binder_rmsd(
     if same_sequence_order:
         residue_pairs = zip(mobile_residues, reference_residues)
     else:
-        mobile_target = {residue.key: residue for residue in mobile_residues}
-        reference_target = {residue.key: residue for residue in reference_residues}
-        common = sorted(set(mobile_target) & set(reference_target))
-        residue_pairs = (
-            (mobile_target[key], reference_target[key]) for key in common
+        residue_pairs = _sequence_aligned_residue_pairs(
+            mobile_residues, reference_residues
         )
     target_mobile, target_reference = [], []
     for mobile_residue, reference_residue in residue_pairs:
