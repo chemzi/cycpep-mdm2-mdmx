@@ -23,6 +23,7 @@ from data_layer import CandidateIndex, State
 from project_config import load_project_config
 from target_bootstrap import config_digest
 from scripts import search_pdb
+from scripts.compute_interface import _limit_complexes_by_target
 from scripts.enrich_pdb import enrich
 from scripts.aggregate_pockets import aggregate
 from scripts.superpose_analyze import _global_align_pairs
@@ -43,6 +44,18 @@ class _Response:
 
 
 class ResearchReliabilityTests(unittest.TestCase):
+    def test_interface_selection_uses_configured_target_names(self):
+        targets, selected = _limit_complexes_by_target([
+            {"pdb_id": "7K2E", "target": "KEAP1"},
+            {"pdb_id": "7K2F", "target": "KEAP1"},
+            {"pdb_id": "1YCR", "target": "MDM2"},
+        ], 1)
+        self.assertEqual(targets, ["KEAP1", "MDM2"])
+        self.assertEqual(
+            [(row["target"], row["pdb_id"]) for row in selected],
+            [("KEAP1", "7K2E"), ("MDM2", "1YCR")],
+        )
+
     def test_search_query_uses_uniprot_accession(self):
         captured = {}
 
@@ -159,7 +172,9 @@ class DesignReliabilityTests(unittest.TestCase):
                         "coordinate_sha256": coordinate_sha256,
                     },
                     "binding_site": {"residues": [54, 93, 96]},
-                    "design": {"lengths": [10]},
+                    # Cover every Route C length produced from the 12-aa ATSP
+                    # template plus the approved linker matrix (0/2/3/4/5 aa).
+                    "design": {"lengths": [12, 14, 15, 16, 17]},
                 },
                 {
                     "id": "MDMX",
@@ -169,7 +184,7 @@ class DesignReliabilityTests(unittest.TestCase):
                         "coordinate_sha256": coordinate_sha256,
                     },
                     "binding_site": {"residues": [53, 92, 95]},
-                    "design": {"lengths": [10]},
+                    "design": {"lengths": [12, 14, 15, 16, 17]},
                 },
             ],
         })
@@ -246,8 +261,25 @@ class DesignReliabilityTests(unittest.TestCase):
             )
             return 0.9
 
+        def fake_design_references(_config, batch_dir, sequences):
+            root = Path(batch_dir) / "fake_route_c_references"
+            root.mkdir(parents=True, exist_ok=True)
+            references = {}
+            for index, (_sequence, _description) in enumerate(sequences):
+                path = root / f"bb_{index}.pdb"
+                path.write_text(
+                    f"REMARK independent Route C reference {index}\n",
+                    encoding="utf-8",
+                )
+                references[index] = str(path)
+            return references
+
         with (
             patch.object(design_module, "ACTIVE_PROJECT_CONFIG", self.project_config),
+            patch(
+                "agents.design._route_c_design_references",
+                side_effect=fake_design_references,
+            ),
             patch("agents.design._run_refold", side_effect=fake_refold),
             patch("agents.design._ring_closure_check", return_value={"pass": True}),
         ):
@@ -259,6 +291,15 @@ class DesignReliabilityTests(unittest.TestCase):
             self.assertTrue(candidate["cyclization_type"])
             self.assertTrue(candidate["design_pdb_path"].endswith("refold.pdb"))
             self.assertTrue(Path(candidate["manifest_path"]).exists())
+            manifest = json.loads(Path(candidate["manifest_path"]).read_text())
+            self.assertEqual(
+                manifest["design_reference_role"],
+                "rfdiffusion_target_bound_backbone",
+            )
+            self.assertTrue(Path(manifest["design_reference_pdb"]).is_file())
+            self.assertNotEqual(
+                manifest["design_reference_pdb"], manifest["refold_pdb"]
+            )
 
 
 if __name__ == "__main__":

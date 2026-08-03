@@ -10,7 +10,7 @@
     "candidate_id": {"type": "string", "pattern": "^C\\d{4,}$"},
     "sequence": {
       "type": "string",
-      "pattern": "^[ACDEFGHIKLMNPQRSTVWY]{8,20}$"
+      "pattern": "^[ACDEFGHIKLMNPQRSTVWY]{7,20}$"
     },
     "global": {
       "type": "object",
@@ -23,6 +23,11 @@
         },
         "post_relax_pdb": {"type": "string"},
         "post_relax_pdb_sha256": {"$ref": "#/$defs/sha256"},
+        "post_relax_metadata": {
+          "type": "string",
+          "description": "JSON provenance for the relax run; required by L4 when post_relax_pdb is present."
+        },
+        "post_relax_metadata_sha256": {"$ref": "#/$defs/sha256"},
         "design_reference_pdb": {"type": "string"},
         "design_reference_pdb_sha256": {"$ref": "#/$defs/sha256"}
       }
@@ -40,14 +45,21 @@
       "additionalProperties": false,
       "required": ["predictor", "seed", "pdb"],
       "properties": {
-        "predictor": {"type": "string", "minLength": 1},
+        "predictor": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Execution tool name; it must match metadata.tool. L6 independence is counted by metadata.model_family, not this label."
+        },
         "seed": {"type": "integer"},
         "primary": {"type": "boolean"},
         "pdb": {"type": "string"},
         "pdb_sha256": {"$ref": "#/$defs/sha256"},
         "pae": {"type": "string"},
         "pae_sha256": {"$ref": "#/$defs/sha256"},
-        "metadata": {"type": "string"},
+        "metadata": {
+          "type": "string",
+          "description": "Required for L6. JSON must record tool, tool_commit or tool_version, model_family, model_id, and seed."
+        },
         "metadata_sha256": {"$ref": "#/$defs/sha256"},
         "binder_chain": {"type": "string", "minLength": 1}
       }
@@ -64,8 +76,32 @@
         },
         "prodigy_output": {"type": "string"},
         "prodigy_output_sha256": {"$ref": "#/$defs/sha256"},
+        "prodigy_outputs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/scored_output"}
+        },
         "rosetta_output": {"type": "string"},
-        "rosetta_output_sha256": {"$ref": "#/$defs/sha256"}
+        "rosetta_output_sha256": {"$ref": "#/$defs/sha256"},
+        "rosetta_outputs": {
+          "type": "array",
+          "description": "Rosetta InterfaceAnalyzer output for every declared complex prediction, linked by PDB SHA-256.",
+          "items": {"$ref": "#/$defs/scored_output"}
+        }
+      }
+    },
+    "scored_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["predictor", "model_id", "seed", "prediction_pdb_sha256", "output"],
+      "properties": {
+        "predictor": {"type": "string", "minLength": 1},
+        "model_id": {"type": "string", "minLength": 1},
+        "seed": {"type": "integer"},
+        "prediction_pdb_sha256": {"$ref": "#/$defs/sha256"},
+        "output": {"type": "string"},
+        "output_sha256": {"$ref": "#/$defs/sha256"},
+        "metadata": {"type": "string"},
+        "metadata_sha256": {"$ref": "#/$defs/sha256"}
       }
     }
   }

@@ -20,7 +20,7 @@ L-α-氨基酸序列。RFdiffusion 官方宏环 binder 流程和 RFpeptides 论�
 RFdiffusion cyclic binder backbone
         │  binder 必须是 contig 第一段，与 cyc_chains=a 一致
         ▼
-从实际输出 PDB 识别唯一的 8–20 aa binder chain
+从实际输出 PDB 识别唯一的 7–20 aa binder chain
         ▼
 ProteinMPNN：只设计 binder chain，所有 receptor chains 固定
         ▼
@@ -52,7 +52,7 @@ Prediction 七层 evidence battery
 这些问题由固定序列环化感知回折、C–N 几何门、scRMSD、ipSAE/界面接触、
 多 seed/多 predictor 收敛以及后续物理打分分别处理。
 
-当前支持范围是由 20 种标准 L-α-氨基酸组成的 8–20 aa 头尾环肽。二硫键、
+当前支持范围是由 20 种标准 L-α-氨基酸组成的 7–20 aa 头尾环肽。二硫键、
 订书钉、D-氨基酸、N-甲基化或其他非天然残基需要独立的表示、参数和验证
 路线，不能直接复用这条 ProteinMPNN 生产路径。
 

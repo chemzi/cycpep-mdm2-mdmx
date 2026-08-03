@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "project_id": "keap1_cyclic_peptide_benchmark",
+  "name": "KEAP1 canonical cyclic-peptide benchmark",
+  "modality": "head_to_tail_cyclic_peptide",
+  "objective": "binder",
+  "targets": [
+    {
+      "id": "KEAP1",
+      "gene_name": "KEAP1",
+      "uniprot": "Q14145",
+      "required": true,
+      "structure": {
+        "pdb_id": "7K2E",
+        "chain": "A",
+        "source": "rcsb",
+        "quality_grade": "A",
+        "coordinate_path": "benchmarks/keap1/structures/reference/7K2E_receptor_A.pdb",
+        "coordinate_sha256": "218bd35207981111150d0381659d2050e78276ab390caf5a85b57f2084ad95ae",
+        "coordinate_format": "pdb"
+      },
+      "structure_plan": {
+        "status": "experimental_selected",
+        "selected": {
+          "source": "rcsb",
+          "kind": "experimental",
+          "id": "7K2E",
+          "pdb_id": "7K2E",
+          "method": "X-RAY DIFFRACTION",
+          "resolution": 2.03,
+          "quality_grade": "A",
+          "quality_reason": "high-resolution experimental cyclic-peptide complex",
+          "has_bound_partner": true,
+          "url": "https://www.rcsb.org/structure/7K2E",
+          "pdb_url": "https://files.rcsb.org/download/7K2E.pdb",
+          "epitope_confidence_missing": false
+        },
+        "quality_grade": "A",
+        "coordinates_selected": true,
+        "coordinates_ready": true,
+        "coordinate_artifact_sha256": "218bd35207981111150d0381659d2050e78276ab390caf5a85b57f2084ad95ae",
+        "binding_site_reviewed": true,
+        "chain_reviewed": true,
+        "ready_for_design": true,
+        "required_next_step": "ready_for_design",
+        "needs_ensemble": false
+      },
+      "binding_site": {
+        "description": "NRF2 ETGE-binding pocket on the KEAP1 Kelch domain",
+        "residues": [
+          415,
+          483,
+          508,
+          525,
+          572,
+          577
+        ],
+        "status": "user_reviewed",
+        "confidence": "high",
+        "source_refs": [
+          "PDB:7K2E",
+          "DOI:10.1021/jacs.0c09799",
+          "PMCID:PMC1538563"
+        ]
+      },
+      "design": {
+        "lengths": [
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13
+        ]
+      },
+      "known_binders": [
+        {
+          "name": "c[GDEETGE]",
+          "sequence": "GDEETGE",
+          "cyclization_type": "head_to_tail_amide",
+          "pdb_id": "7K2E",
+          "source": "DOI:10.1021/jacs.0c09799"
+        }
+      ],
+      "uncertainties": [
+        "The first run uses the ligand-depleted holo receptor and is a redocking/engineering benchmark.",
+        "Affinity labels are withheld from runtime state until Prediction completes."
+      ],
+      "metric_slug": "keap1"
+    }
+  ],
+  "selection": {
+    "experiment_budget": 20,
+    "diversity_required": true,
+    "final_rule": "threshold_clearance_then_pareto",
+    "calibration_controls_path": null
+  },
+  "bootstrap": {
+    "input": {
+      "identifier": "Q14145",
+      "identifier_type": "uniprot",
+      "organism_id": 9606
+    },
+    "ambiguous_identifier": false,
+    "evidence": [
+      {
+        "evidence_id": "E001",
+        "source": "UniProt",
+        "id": "Q14145",
+        "url": "https://www.uniprot.org/uniprotkb/Q14145"
+      },
+      {
+        "evidence_id": "E002",
+        "source": "RCSB PDB",
+        "id": "7K2E",
+        "url": "https://www.rcsb.org/structure/7K2E"
+      }
+    ],
+    "llm_status": "complete",
+    "llm_model": "curated_benchmark_review",
+    "assumptions": []
+  },
+  "review": {
+    "status": "approved",
+    "revision": 1,
+    "created_at": "2026-08-03T04:10:20.824631+00:00",
+    "updated_at": "2026-08-03T04:10:20.824633+00:00",
+    "approved_at": "2026-08-03T04:10:20.824635+00:00",
+    "approved_digest": "bb0758a6c3ba4fb670be9a0b3a9a1615f582dcb02fc32081e27c732498f891ba",
+    "content_digest": "bb0758a6c3ba4fb670be9a0b3a9a1615f582dcb02fc32081e27c732498f891ba",
+    "blocking_issues": [],
+    "warnings": [],
+    "checklist": {
+      "target_identity_resolved": true,
+      "binding_site_reviewed": true,
+      "structure_reviewed": true,
+      "ready_to_approve": true
+    },
+    "forced": false,
+    "justification": null,
+    "history": [
+      {
+        "action": "curated_keap1_benchmark_created",
+        "source": "PDB 7K2E and DOI 10.1021/jacs.0c09799"
+      },
+      {
+        "action": "approved",
+        "at": "2026-08-03T04:10:20.824364+00:00",
+        "forced": false,
+        "justification": null
+      }
+    ]
+  }
+}

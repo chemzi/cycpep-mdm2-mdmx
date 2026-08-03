@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "keap1_jacs_2021_canonical_cyclic_series",
+  "project_id": "keap1_cyclic_peptide_benchmark",
+  "target_id": "KEAP1",
+  "target_uniprot": "Q14145",
+  "labels_withheld": true,
+  "receptor_pdb": "structures/reference/7K2E_receptor_A.pdb",
+  "receptor_sha256": "218bd35207981111150d0381659d2050e78276ab390caf5a85b57f2084ad95ae",
+  "candidates": [
+    {
+      "benchmark_id": "7K2E",
+      "sequence": "GDEETGE",
+      "reference_ligand_pdb": "structures/reference/7K2E_cyclic_peptide_B.pdb",
+      "reference_ligand_sha256": "6e08627fe1e97d472a3e22511e147089cd17bab39723712689f57a9c30a8934b",
+      "reference_complex_pdb": "structures/reference/7K2E_complex_AB.pdb",
+      "reference_complex_sha256": "6a65a150d9b9d7196a18f2b3de2182ac95713f2a99b1ff6794dc2e4bd640aec4",
+      "reference_target_chain": "A",
+      "reference_binder_chain": "B",
+      "source": {
+        "pdb_id": "7K2E",
+        "doi": "10.1021/jacs.0c09799",
+        "role": "experimental_positive_control"
+      }
+    },
+    {
+      "benchmark_id": "7K2F",
+      "sequence": "GAEETGE",
+      "reference_ligand_pdb": "structures/reference/7K2F_cyclic_peptide_B.pdb",
+      "reference_ligand_sha256": "9af36ee3a10969b4ef63cade28fce852993c139cd102f99e574d11c9a2102372",
+      "reference_complex_pdb": "structures/reference/7K2F_complex_AB.pdb",
+      "reference_complex_sha256": "2f11fcd36dfca00896b23fb18e27591d630a7690afdf2724c5c9cc1980280a6f",
+      "reference_target_chain": "A",
+      "reference_binder_chain": "B",
+      "source": {
+        "pdb_id": "7K2F",
+        "doi": "10.1021/jacs.0c09799",
+        "role": "experimental_positive_control"
+      }
+    },
+    {
+      "benchmark_id": "7K2G",
+      "sequence": "GDEEAGE",
+      "reference_ligand_pdb": "structures/reference/7K2G_cyclic_peptide_B.pdb",
+      "reference_ligand_sha256": "d8064be5674ecd26c41fe14abf144a8c3f885eae7ae7fa0541fe503a7ae9a5a3",
+      "reference_complex_pdb": "structures/reference/7K2G_complex_AB.pdb",
+      "reference_complex_sha256": "e25ebad6a429edfc4dbd07e05cbc36b8f5082b3702590a04e4dcb97e6701f038",
+      "reference_target_chain": "A",
+      "reference_binder_chain": "B",
+      "source": {
+        "pdb_id": "7K2G",
+        "doi": "10.1021/jacs.0c09799",
+        "role": "experimental_positive_control"
+      }
+    },
+    {
+      "benchmark_id": "7K2H",
+      "sequence": "GDPETGE",
+      "reference_ligand_pdb": "structures/reference/7K2H_cyclic_peptide_B.pdb",
+      "reference_ligand_sha256": "e12079ff7d2311ee0940cf6b2985fad6cafa6f3f0d177edb1682f6cb4a219f40",
+      "reference_complex_pdb": "structures/reference/7K2H_complex_AB.pdb",
+      "reference_complex_sha256": "481074c4c67fe44b4a33f54a45edaf09831a120c5c2d0f0eda1e9c88acf70ab2",
+      "reference_target_chain": "A",
+      "reference_binder_chain": "B",
+      "source": {
+        "pdb_id": "7K2H",
+        "doi": "10.1021/jacs.0c09799",
+        "role": "experimental_positive_control"
+      }
+    },
+    {
+      "benchmark_id": "7K2I",
+      "sequence": "GAPETGE",
+      "reference_ligand_pdb": "structures/reference/7K2I_cyclic_peptide_B.pdb",
+      "reference_ligand_sha256": "7afe302b6230b31b25230ceac7dab9ba9c22de4cc6e345893904a2b723287433",
+      "reference_complex_pdb": "structures/reference/7K2I_complex_AB.pdb",
+      "reference_complex_sha256": "a275863bf55de96456a685fed9dd10db2d3fb558d6366ed87ad950b64679943b",
+      "reference_target_chain": "A",
+      "reference_binder_chain": "B",
+      "source": {
+        "pdb_id": "7K2I",
+        "doi": "10.1021/jacs.0c09799",
+        "role": "experimental_positive_control"
+      }
+    },
+    {
+      "benchmark_id": "7K2M",
+      "sequence": "GEPETGE",
+      "reference_ligand_pdb": "structures/reference/7K2M_cyclic_peptide_B.pdb",
+      "reference_ligand_sha256": "e10c538488289e578eacd7353e3e9c0efd0520675330e7178f7cdfe63581c3c1",
+      "reference_complex_pdb": "structures/reference/7K2M_complex_AB.pdb",
+      "reference_complex_sha256": "17f0c2a07f1880be27b918fe4fd02a117672b61ef58869f7638d3ecf8f2f57f9",
+      "reference_target_chain": "A",
+      "reference_binder_chain": "B",
+      "source": {
+        "pdb_id": "7K2M",
+        "doi": "10.1021/jacs.0c09799",
+        "role": "experimental_positive_control"
+      }
+    }
+  ]
+}

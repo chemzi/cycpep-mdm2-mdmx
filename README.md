@@ -9,7 +9,17 @@ MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当�
 - [English: transferable workflow, structure gate, and calibration](docs/transferable_pipeline.en.md)
 - [前端 API contract、请求示例与状态机](docs/frontend_api_contract.md)
 - [环肽反向折叠：ProteinMPNN 的适用范围与验证要求](docs/cyclic_inverse_folding.md)
-- [Design v5.1.0：固定序列与闭环几何完整性门禁](docs/design_integrity_v5.1.0.md)
+- [Design v5.2.0：Route C 独立 L7 reference 合同](docs/design_integrity_v5.2.0.md)
+- [Prediction v1.4.1：Boltz-2 / PyRosetta 真实双靶标验证](docs/prediction_v1.4.1_pyrosetta_validation_20260802.md)
+- [Prediction v1.5.0：环肽 post-relax 与完整七层回归](docs/prediction_v1.5.0_post_relax_validation_20260802.md)
+- [Execution Worker v1.0：封闭动作执行、类型化产物与 v2 docking/MD 扩展](docs/execution_agent.md)
+- [Critic v1.1：Prediction 审查合同与 Planner handoff](docs/critic_agent.md)
+- [Critic v1.0：C0514 真实审查验证](docs/critic_v1.0_validation_20260802.md)
+- [Planner v1.2：物化 Design jobs、任务图与摘要绑定审批](docs/planner_agent.md)
+- [Agent loop v1.1：C1250/L6 服务器回归记录](docs/agent_loop_v1.1_server_validation_20260803.md)
+- [Planner v1.0：C0514 真实规划验证](docs/planner_v1.0_validation_20260802.md)
+- [Orchestrator v1.1：类型化完成合同、GPU 租约与恢复](docs/orchestrator_agent.md)
+- [Orchestrator v1.0：C0514 真实计划无执行验证](docs/orchestrator_v1.0_validation_20260802.md)
 
 ```bash
 python -m target_bootstrap draft --identifier P12345 --type uniprot --output projects/new_target.draft.json
@@ -54,6 +64,7 @@ pip install -r requirements.txt
 - `torch`：Route B 接入 ProteinMPNN adapter 时需要
 - `colabdesign`：Route A 的 ColabDesign 原型需要
 - `proteinmpnn`：Route B 当前代码期望的适配模块
+- `boltz[cuda]==2.2.1`：Prediction 的独立第二模型家族；在 GPU 服务器上使用隔离环境部署
 
 ### 计划中的外部工具
 
@@ -63,7 +74,7 @@ pip install -r requirements.txt
 - LigandMPNN
 - AfCycDesign / ColabFold
 - HADDOCK
-- Rosetta FastRelax / InterfaceAnalyzer
+- Rosetta FastRelax；PyRosetta InterfaceAnalyzer 已按非商业研究许可独立部署
 - PRODIGY
 - RDKit
 
@@ -72,8 +83,18 @@ pip install -r requirements.txt
 - `Research` 已有可运行实现
 - `Design` 已有 RFdiffusion 宏环骨架、ProteinMPNN 反向折叠、
   AfCycDesign 固定序列回折、真实闭环原子几何门禁和候选登记逻辑
-- `Prediction` 已有严格 artifact 摄取、七层指标计算、状态判定和断点续跑实现
-- `Planner` / `Critic` 仍在待实现阶段
+- `Prediction` 已有严格 artifact 摄取、七层指标计算、状态判定和断点续跑实现；
+  Boltz-2 独立复合物 predictor 与 PyRosetta InterfaceAnalyzer 已在 4090
+  服务器完成 C0514 双靶标真实回归
+- `Critic` v1.1 已实现冻结 Prediction handoff/record 摄取、哈希校验、问题分类、
+  候选池统计和结构化 Planner handoff，并能把 L7 reference 缺失准确归因给 Design
+- `Planner` v1.1 已实现 Critic 报告摄取、确定性任务图、预算/审批闸门、启动阶段判断，
+  并将完整证据下的 L6 姿态不收敛映射为 Design 迭代
+  和摘要绑定 approval artifact
+- `Orchestrator` v1.0 已实现 plan/approval 验证、任务依赖、Worker dispatch packet、
+  单 GPU 租约、输出哈希、失败/中断恢复和成功后的 State round 推进
+- 当前 Orchestrator 采用受控 Worker 模式，不直接启动模型进程；Design/Prediction
+  Worker 按 dispatch packet 执行后登记结果
 
 所以如果只是跑数据层、Research 和不调用模型的回归测试，先装
 `requirements.txt` 即可；完整 Design/Prediction 需要按部署文档准备模型、
@@ -135,8 +156,9 @@ cycpep-mdm2-mdmx/
 ├── data/
 │   └── .gitkeep               ← 运行时产出目录，不进Git
 └── agents/                    ← 每人改自己的文件
-    ├── planner.py             ← 长时任务规划与迭代（待实现）
-    ├── critic.py              ← 失败审查与回溯（待实现）
+    ├── planner.py             ← Critic 驱动任务图、预算与审批规划
+    ├── orchestrator.py        ← 审批执行、任务 DAG、GPU 租约与运行恢复
+    ├── critic.py              ← Prediction 失败审查、候选池诊断与 Planner handoff
     ├── design.py              ← 于嘉乐：三条设计路线
     ├── prediction.py          ← 七层生产编排入口（无 placeholder/demo）
     └── research.py            ← RCSB/PubMed/阈值证据调研
@@ -155,6 +177,9 @@ cycpep-mdm2-mdmx/
 python3 test_data_layer.py
 python3 test_design.py
 python3 -m unittest -v test_prediction_pipeline.py
+python3 -m unittest -v test_critic.py
+python3 -m unittest -v test_planner.py
+python3 -m unittest -v test_orchestrator.py
 ./.venv/bin/python -m unittest -v test_reliability_regressions.py
 ```
 

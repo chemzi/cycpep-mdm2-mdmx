@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novapeptide.local/schemas/execution-v2-extensions-draft.json",
+  "title": "NovaPeptide Execution v2 docking and MD extension draft",
+  "description": "Interface reservation only. Execution v1 rejects both actions.",
+  "oneOf": [
+    {"$ref": "#/$defs/dockingTask"},
+    {"$ref": "#/$defs/mdTask"}
+  ],
+  "$defs": {
+    "candidateIds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^C[0-9]{4,}$"}
+    },
+    "dockingTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "enabled", "candidate_ids", "protocol_id", "restraints_source", "max_poses"],
+      "properties": {
+        "action": {"const": "dock_shortlisted_candidates"},
+        "enabled": {"const": false},
+        "candidate_ids": {"$ref": "#/$defs/candidateIds"},
+        "protocol_id": {"enum": ["haddock3_cyclic_v2", "rosetta_flexpepdock_cyclic_v2"]},
+        "restraints_source": {"enum": ["reviewed_research_hotspots", "none_blind_redocking"]},
+        "max_poses": {"type": "integer", "minimum": 1, "maximum": 10000}
+      }
+    },
+    "mdTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "enabled", "candidate_ids", "protocol_id", "replicas", "production_ns", "explicit_solvent"],
+      "properties": {
+        "action": {"const": "run_md_on_docking_consensus"},
+        "enabled": {"const": false},
+        "candidate_ids": {"$ref": "#/$defs/candidateIds"},
+        "protocol_id": {"const": "openmm_cyclic_complex_v2"},
+        "replicas": {"type": "integer", "minimum": 1, "maximum": 10},
+        "production_ns": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000},
+        "explicit_solvent": {"const": true}
+      }
+    }
+  }
+}

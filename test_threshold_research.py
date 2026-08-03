@@ -168,6 +168,23 @@ class ThresholdResearchFullTextTests(unittest.TestCase):
 
 
 class ResearchStateAndCacheTests(unittest.TestCase):
+    def test_approved_generic_binders_survive_without_llm_extraction(self):
+        config = {
+            "targets": [{
+                "id": "KEAP1",
+                "known_binders": [{
+                    "name": "c[GDEETGE]",
+                    "sequence": "GDEETGE",
+                    "pdb_id": "7K2E",
+                }],
+            }]
+        }
+        approved = research._approved_known_binders(config)
+        merged = research._merge_known_binders(approved, [])
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["target_id"], "KEAP1")
+        self.assertEqual(merged[0]["provenance"], "approved_project_config")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="research-cache-test-")
         self.root = Path(self.temp.name)
@@ -316,6 +333,10 @@ class ResearchStateAndCacheTests(unittest.TestCase):
         self.assertEqual(set(synced["targets"]), {"NEW"})
         self.assertEqual(synced["approved_digest"], config["review"]["approved_digest"])
         self.assertEqual(synced["thresholds"], {})
+        self.assertEqual(
+            synced["design_budget"],
+            {"route_A_new": 400, "route_B": 400, "route_C": 200},
+        )
 
     def test_generic_project_without_explicit_hotspot_rule_gets_unavailable_l5(self):
         config = deepcopy(research.PROJECT_CONFIG)
@@ -367,6 +388,22 @@ class ResearchStateAndCacheTests(unittest.TestCase):
         self.assertEqual(
             research._stage_diagnostic("empty", "certificate verify failed")[0],
             "tls_ca_error",
+        )
+
+    def test_research_diagnostic_preserves_redacted_prefix_and_error_tail(self):
+        message = "progress-start " + ("x" * 700) + " final HTTP 429 failure"
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "secret-token"}):
+            sanitized = research._sanitize_message(
+                message + " secret-token"
+            )
+        self.assertIn("progress-start", sanitized)
+        self.assertIn("final HTTP 429 failure", sanitized)
+        self.assertIn("[truncated]", sanitized)
+        self.assertIn("[REDACTED]", sanitized)
+        self.assertNotIn("secret-token", sanitized)
+        self.assertEqual(
+            research._stage_diagnostic("failed", sanitized)[0],
+            "http_429",
         )
 
     def test_force_recompute_bypasses_both_old_caches(self):

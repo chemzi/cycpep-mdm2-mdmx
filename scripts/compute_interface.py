@@ -48,6 +48,25 @@ def _chain_ids(entities: list[dict]) -> list[str]:
     })
 
 
+def _limit_complexes_by_target(
+    all_complexes: list[dict], max_per_target: int
+) -> tuple[list[str], list[dict]]:
+    """Select a bounded structure set for every configured target."""
+    target_names = sorted({
+        str(entry.get("target"))
+        for entry in all_complexes
+        if entry.get("target")
+    })
+    selected = []
+    for target in target_names:
+        target_entries = [
+            entry for entry in all_complexes
+            if entry.get("target") == target
+        ]
+        selected.extend(target_entries[:max_per_target])
+    return target_names, selected
+
+
 def compute_interface(
     pdb_id: str,
     cif_path: Path,
@@ -114,10 +133,9 @@ def compute_interface(
 def main() -> int:
     input_data = json.loads(sys.stdin.read())
     all_complexes = input_data.get("peptide_complexes", [])
-    complexes = []
-    for target in ("MDM2", "MDMX"):
-        target_entries = [entry for entry in all_complexes if entry.get("target") == target]
-        complexes.extend(target_entries[:MAX_PDBS_PER_TARGET])
+    target_names, complexes = _limit_complexes_by_target(
+        all_complexes, MAX_PDBS_PER_TARGET
+    )
     pdb_dir = Path("targets")
     results = []
     for entry in complexes:
@@ -146,7 +164,7 @@ def main() -> int:
         "n_with_interface": len(with_interface),
         "n_by_target": {
             target: sum(1 for r in with_interface if r.get("target") == target)
-            for target in ("MDM2", "MDMX")
+            for target in target_names
         },
         "max_pdbs_per_target": MAX_PDBS_PER_TARGET,
     }, ensure_ascii=False, indent=2))

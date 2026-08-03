@@ -14,7 +14,7 @@
     },
     "agent": {
       "type": "string",
-      "enum": ["planner", "research", "design", "prediction", "critic", "reporter", "system"]
+      "enum": ["orchestrator", "planner", "research", "design", "prediction", "critic", "reporter", "system"]
     },
     "event_type": {
       "type": "string",
@@ -32,7 +32,16 @@
         "candidate_eliminated",
         "evaluate_layer_complete",
         "critic_review",
+        "planner_plan",
+        "planner_approval_recorded",
         "planner_adjust",
+        "orchestrator_run_initialized",
+        "orchestrator_approval_loaded",
+        "orchestrator_task_claimed",
+        "orchestrator_task_completed",
+        "orchestrator_task_failed",
+        "orchestrator_task_skipped",
+        "orchestrator_claim_recovered",
         "candidate_finalized",
         "error"
       ]

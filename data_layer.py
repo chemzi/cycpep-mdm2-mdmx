@@ -56,6 +56,23 @@ STATE_PATH = DATA_DIR / "state.json"
 LOG_PATH   = EVIDENCE_DIR / "evidence_log.jsonl"
 INDEX_PATH = DATA_DIR / "candidate_index.csv"
 
+_LEGACY_DEFAULT_DESIGN_BUDGET = {
+    "route_A_mdm2": 400,
+    "route_A_mdmx": 400,
+    "route_B": 400,
+    "route_C": 200,
+}
+
+
+def _default_design_budget(config: dict) -> dict[str, int]:
+    """Build route capacity keys from the approved target identities."""
+    budget = {
+        f"route_A_{target_slug(target_id)}": 400
+        for target_id in required_target_ids(config)
+    }
+    budget.update({"route_B": 400, "route_C": 200})
+    return budget
+
 
 def _write_json_atomic(path: str | Path, payload: dict):
     """Write JSON beside its destination and atomically replace the old file."""
@@ -156,8 +173,7 @@ class State:
         "round": 1,
         "pocket_differences": {},
         "known_dual_binders": [],
-        "design_budget": {"route_A_mdm2": 400, "route_A_mdmx": 400,
-                          "route_B": 400, "route_C": 200},
+        "design_budget": _default_design_budget(_project_config),
         "candidate_count": 0,
         "iteration_history": [],
         # v5: 七层指标电池阈值（来自 data_layer.DEFAULT_THRESHOLDS，最终由正对照标定）
@@ -201,6 +217,16 @@ class State:
         if config_changed:
             # Strong evidence from a different approved target/config is not transferable.
             state["thresholds"] = {}
+        previous_budget = state.get("design_budget")
+        desired_budget = _default_design_budget(config)
+        budget_migrated = False
+        if (
+            config_changed
+            or previous_budget in (None, {})
+            or previous_budget == _LEGACY_DEFAULT_DESIGN_BUDGET
+        ) and previous_budget != desired_budget:
+            state["design_budget"] = desired_budget
+            budget_migrated = True
         state["project"] = config.get("name", config["project_id"])
         state["project_id"] = config["project_id"]
         state["project_config"] = json.loads(json.dumps(config))
@@ -220,6 +246,8 @@ class State:
             "removed_targets": sorted(previous_targets - current_targets),
             "final_targets": sorted(current_targets),
             "thresholds_cleared": config_changed,
+            "design_budget_migrated": budget_migrated,
+            "design_budget_keys": sorted((state.get("design_budget") or {}).keys()),
         }, phase="research")
         return state
 
@@ -376,23 +404,70 @@ class EvidenceLogger:
 
     @classmethod
     def critic_review(cls, issues: list, passed: bool, summary: str,
-                      recommendation: str, metrics: dict):
-        return cls.log("critic", "critic_review", {
+                      recommendation: str, metrics: dict,
+                      report_id: str = "", report_path: str = "",
+                      report_sha256: str = ""):
+        payload = {
             "issues": issues, "pass": passed,
             "summary": summary, "recommendation": recommendation,
             "metrics_snapshot": metrics
-        }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
+        }
+        if report_id:
+            payload["report_id"] = report_id
+        if report_path:
+            payload["report_path"] = report_path
+        if report_sha256:
+            payload["report_sha256"] = report_sha256
+        return cls.log("critic", "critic_review", payload,
+                targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
                 phase="critic")
 
     @classmethod
     def planner_adjust(cls, trigger_event_id: str, old_strategy: dict,
                        new_strategy: dict, reason: str):
-        cls.log("planner", "planner_adjust", {
+        return cls.log("planner", "planner_adjust", {
             "trigger_event_id": trigger_event_id,
             "old_strategy": old_strategy, "new_strategy": new_strategy,
             "reason": reason
         }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
                 phase="iterate")
+
+    @classmethod
+    def planner_plan(cls, plan_id: str, plan_path: str, plan_sha256: str,
+                     critic_report_id: str, status: str, task_count: int,
+                     required_approval_task_ids: list):
+        """Record one immutable Planner plan without authorizing execution."""
+        return cls.log("planner", "planner_plan", {
+            "plan_id": plan_id,
+            "plan_path": plan_path,
+            "plan_sha256": plan_sha256,
+            "critic_report_id": critic_report_id,
+            "status": status,
+            "task_count": task_count,
+            "required_approval_task_ids": required_approval_task_ids,
+        }, targets=list(required_target_ids(
+            State.load().get("project_config") or State._project_config
+        )), phase="iterate")
+
+    @classmethod
+    def planner_approval_recorded(
+        cls, approval_id: str, approval_path: str, approval_sha256: str,
+        plan_id: str, plan_sha256: str, approved_task_ids: list,
+        approver: str, budget_limits: dict,
+    ):
+        """Record a human approval artifact bound to an immutable plan digest."""
+        return cls.log("planner", "planner_approval_recorded", {
+            "approval_id": approval_id,
+            "approval_path": approval_path,
+            "approval_sha256": approval_sha256,
+            "plan_id": plan_id,
+            "plan_sha256": plan_sha256,
+            "approved_task_ids": approved_task_ids,
+            "approver": approver,
+            "budget_limits": budget_limits,
+        }, targets=list(required_target_ids(
+            State.load().get("project_config") or State._project_config
+        )), phase="iterate")
 
     @classmethod
     def error(cls, agent: str, error_type: str, message: str,

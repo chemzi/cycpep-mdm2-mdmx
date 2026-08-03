@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import uuid
@@ -33,8 +34,14 @@ from .contracts import (
     validate_project,
 )
 from .metrics import calculate_ipsae, load_pae, pose_convergence
+from .relax_worker import (
+    POST_RELAX_PROTOCOL,
+    POST_RELAX_TOOL,
+)
+from .rosetta_worker import PYROSETTA_VERSION
 from .structures import (
     backbone_rmsd,
+    canonical_target_residue_numbers,
     exact_sequence_chain,
     infer_chain_by_length,
     interface_hotspot_metrics,
@@ -44,8 +51,9 @@ from .structures import (
 )
 
 
-RUN_SCHEMA_VERSION = 1
-RECORD_SCHEMA_VERSION = 1
+PREDICTION_PIPELINE_VERSION = "1.5.1"
+RUN_SCHEMA_VERSION = 2
+RECORD_SCHEMA_VERSION = 2
 LAYER_KEYS = tuple(f"l{number}_pass" for number in range(1, 8))
 SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 
@@ -88,7 +96,7 @@ def _artifact_inventory(bundle: ArtifactBundle | None) -> list[dict]:
     for index, entry in enumerate(bundle.global_artifacts["monomer_predictions"]):
         for key in ("pdb", "pae", "metadata"):
             add_entry(f"global.monomer[{index}].{key}", entry.get(key))
-    for key in ("post_relax_pdb", "design_reference_pdb"):
+    for key in ("post_relax_pdb", "post_relax_metadata", "design_reference_pdb"):
         add_entry(f"global.{key}", bundle.global_artifacts.get(key))
     for target_id, values in bundle.target_artifacts.items():
         for index, entry in enumerate(values["complex_predictions"]):
@@ -96,6 +104,11 @@ def _artifact_inventory(bundle: ArtifactBundle | None) -> list[dict]:
                 add_entry(f"{target_id}.complex[{index}].{key}", entry.get(key))
         for key in ("prodigy_output", "rosetta_output"):
             add_entry(f"{target_id}.{key}", values.get(key))
+        for index, entry in enumerate(values.get("prodigy_outputs", [])):
+            add_entry(f"{target_id}.prodigy[{index}]", entry.get("output"))
+        for index, entry in enumerate(values.get("rosetta_outputs", [])):
+            add_entry(f"{target_id}.rosetta[{index}].output", entry.get("output"))
+            add_entry(f"{target_id}.rosetta[{index}].metadata", entry.get("metadata"))
     return inventory
 
 
@@ -147,7 +160,10 @@ class PredictionPipeline:
 
         self.project_digest = object_sha256(project)
         self.thresholds_digest = object_sha256(self.thresholds)
-        self.config_digest = object_sha256(self.config.to_dict())
+        self.config_digest = object_sha256({
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
+            "method_config": self.config.to_dict(),
+        })
         batch_identity = {
             "rows": [
                 {
@@ -170,10 +186,56 @@ class PredictionPipeline:
         self.run_dir = self.run_root / run_id
         self.records_dir = self.run_dir / "records"
         self.handoff_path = self.run_dir / "prediction_handoff.json"
+        self._target_reference_cache: dict[str, tuple[Any, Path, str]] = {}
+
+    def _canonical_target_numbering(
+        self,
+        target_id: str,
+        target_config: dict,
+        prediction_structure,
+        target_chain: str,
+    ) -> tuple[list[int] | None, dict | None]:
+        """Return reviewed PDB numbering for a predictor-renumbered target."""
+        structure_config = target_config.get("structure") or {}
+        raw_path = str(structure_config.get("coordinate_path") or "").strip()
+        if not raw_path:
+            return None, None
+        if target_id not in self._target_reference_cache:
+            path = Path(raw_path).expanduser().resolve()
+            if not path.is_file():
+                raise ContractError(
+                    "target_coordinates_missing",
+                    f"{target_id} reviewed coordinates missing: {path}",
+                )
+            observed_sha = file_sha256(path)
+            declared_sha = str(
+                structure_config.get("coordinate_sha256") or ""
+            ).strip().lower()
+            if declared_sha and declared_sha != observed_sha:
+                raise ContractError(
+                    "target_coordinates_hash_mismatch",
+                    f"{target_id} reviewed coordinate SHA-256 changed",
+                )
+            self._target_reference_cache[target_id] = (
+                parse_pdb(path), path, observed_sha
+            )
+        reference, path, observed_sha = self._target_reference_cache[target_id]
+        numbers = canonical_target_residue_numbers(
+            reference,
+            target_chain,
+            prediction_structure,
+            target_chain,
+        )
+        return numbers, {
+            "mapping": "reviewed_target_sequence_order",
+            "reference_artifact": str(path),
+            "reference_sha256": observed_sha,
+        }
 
     def _run_manifest(self) -> dict:
         return {
             "schema_version": RUN_SCHEMA_VERSION,
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
             "batch_digest": self.batch_digest,
             "project_id": self.project.get("project_id"),
@@ -247,6 +309,26 @@ class PredictionPipeline:
                 f"target chain {target_chain!r} invalid in {entry['pdb']['path']}",
             )
         metadata = parse_metadata(entry.get("metadata"))
+        declared_predictor = str(entry.get("predictor") or "").strip()
+        metadata_tool = str(metadata.get("tool") or "").strip()
+        if metadata_tool and metadata_tool.casefold() != declared_predictor.casefold():
+            raise ContractError(
+                "prediction_predictor_mismatch",
+                f"artifact declares predictor {declared_predictor!r}, but metadata "
+                f"declares tool {metadata_tool!r}: {entry['pdb']['path']}",
+            )
+        if "seed" in metadata:
+            metadata_seed = metadata["seed"]
+            if (
+                isinstance(metadata_seed, bool)
+                or not isinstance(metadata_seed, int)
+                or metadata_seed != entry["seed"]
+            ):
+                raise ContractError(
+                    "prediction_seed_mismatch",
+                    f"artifact declares seed {entry['seed']!r}, but metadata declares "
+                    f"seed {metadata_seed!r}: {entry['pdb']['path']}",
+                )
         for key in ("requested_sequence", "observed_sequence"):
             if metadata.get(key) and str(metadata[key]).upper() != candidate.sequence:
                 raise ContractError(
@@ -320,6 +402,7 @@ class PredictionPipeline:
             )
 
         post_relax = bundle.global_artifacts.get("post_relax_pdb")
+        post_relax_metadata_entry = bundle.global_artifacts.get("post_relax_metadata")
         if primary_monomer:
             metrics["global"]["nc_distance_pre"] = terminal_bond_distance(
                 primary_monomer["structure"], primary_monomer["binder_chain"]
@@ -331,13 +414,251 @@ class PredictionPipeline:
         if post_relax:
             structure = parse_pdb(post_relax["path"])
             chain = exact_sequence_chain(structure, candidate.sequence)
-            metrics["global"]["nc_distance_post"] = terminal_bond_distance(structure, chain)
-            provenance.append({
-                "metric": "global.nc_distance_post",
-                "tool": "relax_artifact",
-                "artifact": str(post_relax["path"]),
-                "sha256": post_relax["sha256"],
-            })
+            relax_metadata = parse_metadata(post_relax_metadata_entry)
+            coordinate_constraints = relax_metadata.get("coordinate_constraints")
+            if not isinstance(coordinate_constraints, dict):
+                coordinate_constraints = {}
+            required_relax_metadata = {
+                "tool": relax_metadata.get("tool"),
+                "tool_revision": (
+                    relax_metadata.get("tool_commit")
+                    or relax_metadata.get("tool_version")
+                ),
+                "protocol": relax_metadata.get("protocol"),
+                "input_pdb_sha256": relax_metadata.get("input_pdb_sha256"),
+                "output_pdb_sha256": relax_metadata.get("output_pdb_sha256"),
+                "sequence": relax_metadata.get("sequence"),
+                "cyclization_type": relax_metadata.get("cyclization_type"),
+                "bond_topology_applied": relax_metadata.get("bond_topology_applied"),
+                "topology_geometry_constraints_applied": relax_metadata.get(
+                    "topology_geometry_constraints_applied"
+                ),
+                "input_chain": relax_metadata.get("input_chain"),
+                "output_chain": relax_metadata.get("output_chain"),
+                "seed": relax_metadata.get("seed"),
+                "repeats": relax_metadata.get("repeats"),
+                "pre_distance": relax_metadata.get(
+                    "terminal_c_to_n_distance_pre_angstrom"
+                ),
+                "post_distance": relax_metadata.get(
+                    "terminal_c_to_n_distance_post_angstrom"
+                ),
+                "backbone_rmsd": relax_metadata.get(
+                    "backbone_rmsd_to_input_angstrom"
+                ),
+                "pre_score": relax_metadata.get("pre_total_score_ref2015"),
+                "post_score": relax_metadata.get("post_total_score_ref2015"),
+                "coordinate_constraints_enabled": coordinate_constraints.get("enabled"),
+                "coordinate_constraints_to_start": coordinate_constraints.get(
+                    "to_start_coordinates"
+                ),
+                "coordinate_constraints_sidechains": coordinate_constraints.get(
+                    "sidechains"
+                ),
+                "coordinate_constraints_ramp_down": coordinate_constraints.get(
+                    "ramp_down"
+                ),
+                "coordinate_constraints_stdev": coordinate_constraints.get(
+                    "stdev_angstrom"
+                ),
+                "design_enabled": relax_metadata.get("design_enabled"),
+            }
+            missing_relax_metadata = [
+                key for key, value in required_relax_metadata.items()
+                if value is None or value == ""
+            ]
+            if not post_relax_metadata_entry or missing_relax_metadata:
+                self._issue(
+                    issues,
+                    "l4_post_relax_provenance_missing",
+                    "post-relax metadata is required and lacks "
+                    f"{missing_relax_metadata or ['metadata file']}",
+                    layer=4,
+                )
+            else:
+                if relax_metadata["tool"] != POST_RELAX_TOOL:
+                    raise ContractError(
+                        "post_relax_tool_mismatch",
+                        f"L4 requires {POST_RELAX_TOOL}; found {relax_metadata['tool']!r}",
+                    )
+                if required_relax_metadata["tool_revision"] != PYROSETTA_VERSION:
+                    raise ContractError(
+                        "post_relax_version_mismatch",
+                        f"L4 requires PyRosetta {PYROSETTA_VERSION}",
+                    )
+                if relax_metadata["protocol"] != POST_RELAX_PROTOCOL:
+                    raise ContractError(
+                        "post_relax_protocol_mismatch",
+                        f"L4 requires protocol {POST_RELAX_PROTOCOL}",
+                    )
+                expected_input_sha = (
+                    primary_monomer["pdb"]["sha256"] if primary_monomer else None
+                )
+                if relax_metadata["input_pdb_sha256"] != expected_input_sha:
+                    raise ContractError(
+                        "post_relax_input_mismatch",
+                        "post-relax metadata input hash does not match the primary "
+                        "monomer prediction",
+                    )
+                if relax_metadata["output_pdb_sha256"] != post_relax["sha256"]:
+                    raise ContractError(
+                        "post_relax_output_mismatch",
+                        "post-relax metadata output hash does not match post_relax_pdb",
+                    )
+                if str(relax_metadata["sequence"]).upper() != candidate.sequence:
+                    raise ContractError(
+                        "post_relax_sequence_mismatch",
+                        "post-relax metadata sequence does not match the candidate",
+                    )
+                normalized_cyclization = str(
+                    relax_metadata["cyclization_type"]
+                ).replace("-", "_")
+                if normalized_cyclization != candidate.cyclization_type:
+                    raise ContractError(
+                        "post_relax_cyclization_mismatch",
+                        "post-relax metadata cyclization does not match Design",
+                    )
+                if relax_metadata["bond_topology_applied"] is not True:
+                    raise ContractError(
+                        "post_relax_topology_missing",
+                        "post-relax protocol did not attest that the cyclic bond "
+                        "topology was applied",
+                    )
+                if relax_metadata["topology_geometry_constraints_applied"] is not True:
+                    raise ContractError(
+                        "post_relax_topology_constraints_missing",
+                        "post-relax did not attest peptide-bond geometry constraints",
+                    )
+                input_chain = primary_monomer["binder_chain"] if primary_monomer else None
+                if (
+                    relax_metadata["input_chain"] != input_chain
+                    or relax_metadata["output_chain"] != chain
+                    or chain != input_chain
+                ):
+                    raise ContractError(
+                        "post_relax_chain_mismatch",
+                        "post-relax metadata/PDB chain differs from primary monomer",
+                    )
+                seed = relax_metadata["seed"]
+                repeats = relax_metadata["repeats"]
+                if isinstance(seed, bool) or not isinstance(seed, int):
+                    raise ContractError(
+                        "post_relax_seed_invalid", "post-relax seed must be an integer"
+                    )
+                if (
+                    isinstance(repeats, bool)
+                    or not isinstance(repeats, int)
+                    or repeats < 1
+                ):
+                    raise ContractError(
+                        "post_relax_repeats_invalid",
+                        "post-relax repeats must be a positive integer",
+                    )
+                if (
+                    coordinate_constraints.get("enabled") is not True
+                    or coordinate_constraints.get("to_start_coordinates") is not True
+                    or coordinate_constraints.get("sidechains") is not False
+                    or coordinate_constraints.get("ramp_down") is not False
+                    or relax_metadata.get("design_enabled") is not False
+                ):
+                    raise ContractError(
+                        "post_relax_constraint_invalid",
+                        "L4 requires fixed start-coordinate constraints and design disabled",
+                    )
+
+                numeric_metadata = {}
+                for key in (
+                    "terminal_c_to_n_distance_pre_angstrom",
+                    "terminal_c_to_n_distance_post_angstrom",
+                    "backbone_rmsd_to_input_angstrom",
+                    "pre_total_score_ref2015",
+                    "post_total_score_ref2015",
+                ):
+                    try:
+                        value = float(relax_metadata[key])
+                    except (TypeError, ValueError) as exc:
+                        raise ContractError(
+                            "post_relax_metadata_invalid", f"{key} must be numeric"
+                        ) from exc
+                    if not math.isfinite(value):
+                        raise ContractError(
+                            "post_relax_metadata_invalid", f"{key} must be finite"
+                        )
+                    numeric_metadata[key] = value
+                try:
+                    constraint_stdev = float(coordinate_constraints["stdev_angstrom"])
+                except (TypeError, ValueError) as exc:
+                    raise ContractError(
+                        "post_relax_constraint_invalid", "constraint stdev must be numeric"
+                    ) from exc
+                if not math.isfinite(constraint_stdev) or constraint_stdev <= 0:
+                    raise ContractError(
+                        "post_relax_constraint_invalid", "constraint stdev must be positive"
+                    )
+
+                computed_pre = metrics["global"].get("nc_distance_pre")
+                computed_post = terminal_bond_distance(structure, chain)
+                computed_drift = backbone_rmsd(
+                    structure,
+                    chain,
+                    primary_monomer["structure"],
+                    primary_monomer["binder_chain"],
+                )
+                for label, declared, observed in (
+                    (
+                        "pre distance",
+                        numeric_metadata["terminal_c_to_n_distance_pre_angstrom"],
+                        computed_pre,
+                    ),
+                    (
+                        "post distance",
+                        numeric_metadata["terminal_c_to_n_distance_post_angstrom"],
+                        computed_post,
+                    ),
+                    (
+                        "backbone RMSD",
+                        numeric_metadata["backbone_rmsd_to_input_angstrom"],
+                        computed_drift,
+                    ),
+                ):
+                    if observed is None or abs(declared - observed) > 1e-3:
+                        raise ContractError(
+                            "post_relax_geometry_mismatch",
+                            f"metadata {label} does not match the bound PDB artifacts",
+                        )
+                metrics["global"].update({
+                    "nc_distance_post": computed_post,
+                    "post_relax_backbone_rmsd": computed_drift,
+                    "post_relax_score_pre": numeric_metadata[
+                        "pre_total_score_ref2015"
+                    ],
+                    "post_relax_score_post": numeric_metadata[
+                        "post_total_score_ref2015"
+                    ],
+                    "post_relax_score_delta": (
+                        numeric_metadata["post_total_score_ref2015"]
+                        - numeric_metadata["pre_total_score_ref2015"]
+                    ),
+                })
+                provenance.append({
+                    "metric": "global.nc_distance_post",
+                    "tool": relax_metadata["tool"],
+                    "tool_revision": required_relax_metadata["tool_revision"],
+                    "protocol": relax_metadata["protocol"],
+                    "artifact": str(post_relax["path"]),
+                    "sha256": post_relax["sha256"],
+                    "metadata_artifact": str(post_relax_metadata_entry["path"]),
+                    "metadata_sha256": post_relax_metadata_entry["sha256"],
+                    "bond_topology_applied": True,
+                    "backbone_rmsd_to_input_angstrom": computed_drift,
+                    "pre_total_score_ref2015": numeric_metadata[
+                        "pre_total_score_ref2015"
+                    ],
+                    "post_total_score_ref2015": numeric_metadata[
+                        "post_total_score_ref2015"
+                    ],
+                    "coordinate_constraints": coordinate_constraints,
+                })
         else:
             self._issue(
                 issues, "l4_post_relax_missing", "post-relax PDB is required", layer=4
@@ -464,25 +785,56 @@ class PredictionPipeline:
                 )
 
             if predictions:
-                primary_complex = self._primary(predictions)
                 hotspots = (target_config.get("binding_site") or {}).get("residues") or []
-                interface = interface_hotspot_metrics(
-                    primary_complex["structure"],
-                    configured_chain,
-                    primary_complex["binder_chain"],
-                    hotspots,
-                    self.config.interface_distance_angstrom,
-                )
+                interface_samples = []
+                for prediction in predictions:
+                    canonical_numbers, numbering_provenance = (
+                        self._canonical_target_numbering(
+                            target_id,
+                            target_config,
+                            prediction["structure"],
+                            configured_chain,
+                        )
+                    )
+                    interface = interface_hotspot_metrics(
+                        prediction["structure"],
+                        configured_chain,
+                        prediction["binder_chain"],
+                        hotspots,
+                        self.config.interface_distance_angstrom,
+                        target_residue_numbers=canonical_numbers,
+                    )
+                    interface_samples.append({
+                        "predictor": prediction["predictor"],
+                        "seed": prediction["seed"],
+                        "artifact": str(prediction["pdb"]["path"]),
+                        "sha256": prediction["pdb"]["sha256"],
+                        "details": interface,
+                        "target_numbering": numbering_provenance,
+                    })
+                hotspot_cov = float(np.median([
+                    sample["details"]["hotspot_cov"]
+                    for sample in interface_samples
+                ]))
+                site_fraction = float(np.mean([
+                    bool(sample["details"]["site_consistency"])
+                    for sample in interface_samples
+                ]))
                 target_metrics.update({
-                    "hotspot_cov": interface["hotspot_cov"],
-                    "site_consistency": interface["site_consistency"],
+                    "hotspot_cov": hotspot_cov,
+                    "site_consistency": site_fraction > 0.5,
+                    "site_consistency_fraction": site_fraction,
                 })
                 provenance.append({
                     "metric": f"targets.{target_id}.hotspot_cov",
                     "tool": "heavy_atom_contact",
-                    "artifact": str(primary_complex["pdb"]["path"]),
-                    "sha256": primary_complex["pdb"]["sha256"],
-                    "details": interface,
+                    "aggregation": "median_hotspot_and_strict_majority_site",
+                    "details": {
+                        "hotspot_cov": hotspot_cov,
+                        "site_consistency": site_fraction > 0.5,
+                        "site_consistency_fraction": site_fraction,
+                    },
+                    "samples": interface_samples,
                 })
             else:
                 self._issue(
@@ -590,10 +942,15 @@ class PredictionPipeline:
             existing = {}
         if not isinstance(existing, dict):
             existing = {}
-        global_owned = {"plddt", "nc_distance_pre", "nc_distance_post", "scrmsd"}
+        global_owned = {
+            "plddt", "nc_distance_pre", "nc_distance_post", "scrmsd",
+            "post_relax_backbone_rmsd", "post_relax_score_pre",
+            "post_relax_score_post", "post_relax_score_delta",
+        }
         target_owned = {
             "ipsae", "ipae", "iptm", "dg", "dg_method", "sc", "dsasa",
             "rosetta_dg_separated", "hotspot_cov", "site_consistency",
+            "site_consistency_fraction",
             "pose_rmsd", "seed_convergence",
         }
         existing_global = existing.get("global")
@@ -635,6 +992,7 @@ class PredictionPipeline:
         metrics = record["metrics"]
         prediction_meta = {
             "schema_version": RECORD_SCHEMA_VERSION,
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
             "record_path": str(self._record_path(candidate.candidate_id)),
             "record_sha256": record["record_sha256"],
@@ -728,6 +1086,7 @@ class PredictionPipeline:
         candidate_id = record["candidate"]["candidate_id"]
         prediction_meta = {
             "schema_version": RECORD_SCHEMA_VERSION,
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
             "record_path": str(self._record_path(candidate_id)),
             "record_sha256": record["record_sha256"],
@@ -848,6 +1207,7 @@ class PredictionPipeline:
         status = self._status_from_battery(battery)
         record = {
             "schema_version": RECORD_SCHEMA_VERSION,
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
             "created_at": _utcnow(),
             "candidate": candidate.snapshot(),
@@ -870,7 +1230,7 @@ class PredictionPipeline:
 
         tool_trace = {
             "tool_name": "prediction_pipeline",
-            "tool_version": str(RECORD_SCHEMA_VERSION),
+            "tool_version": PREDICTION_PIPELINE_VERSION,
             "input_params": {
                 "run_id": self.run_id,
                 "artifact_digest": artifact_digest,
@@ -921,6 +1281,7 @@ class PredictionPipeline:
         record_path = self._record_path(candidate_id)
         record = {
             "schema_version": RECORD_SCHEMA_VERSION,
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
             "created_at": _utcnow(),
             "candidate": {
@@ -975,6 +1336,7 @@ class PredictionPipeline:
             "prediction_run_started",
             {
                 "run_id": self.run_id,
+                "pipeline_version": PREDICTION_PIPELINE_VERSION,
                 "run_dir": str(self.run_dir),
                 "candidate_count": len(self.rows),
                 "config_digest": self.config_digest,
@@ -1004,7 +1366,8 @@ class PredictionPipeline:
                 "issues": record.get("issues", []),
             })
         handoff = {
-            "schema_version": 1,
+            "schema_version": RUN_SCHEMA_VERSION,
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
             "created_at": _utcnow(),
             "project_id": self.project.get("project_id"),
@@ -1034,6 +1397,7 @@ class PredictionPipeline:
         _atomic_json(self.handoff_path, handoff)
         summary = {
             "run_id": self.run_id,
+            "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_dir": str(self.run_dir),
             "handoff_path": str(self.handoff_path),
             "evaluated": len(records),
@@ -1048,7 +1412,6 @@ class PredictionPipeline:
         }
         updated_state = State.update({
             "phase": "evaluate",
-            "candidate_count": len(CandidateIndex.load()),
             "prediction": summary,
         })
         if not any(

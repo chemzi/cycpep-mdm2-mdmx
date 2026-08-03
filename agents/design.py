@@ -1,5 +1,5 @@
 """
-Design Agent v5.1.0 — 于嘉乐
+Design Agent v5.2.1 — 于嘉乐
 职责：RFpeptides 生成环肽骨架 → LigandMPNN 序列设计 → AfCycDesign refold 验证
 入口：design_rfpeptides(target_spec, design_config) → list[dict]
       design_motif_guided(target_spec, design_config) → list[dict]
@@ -14,7 +14,7 @@ Agent 职责边界：
   pLDDT > 0.8 的最终过滤由 Prediction Agent (Phase 3 L1) 负责。
 """
 
-import math, os, sys, json, time, subprocess, tempfile, threading, hashlib, copy, shutil
+import math, os, sys, json, time, subprocess, tempfile, threading, hashlib, copy, shutil, re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -29,6 +29,12 @@ from project_config import (
 )
 from structure_resolution import assert_target_structure_ready
 from target_bootstrap import assert_project_approved
+from peptide_contract import (
+    MAX_CYCLIC_PEPTIDE_LENGTH,
+    MIN_CYCLIC_PEPTIDE_LENGTH,
+    STANDARD_AMINO_ACIDS,
+    supported_length_message,
+)
 
 
 # ============================================================
@@ -99,7 +105,7 @@ else:
     _RFDIFF_TIMESTEPS_INVALID = None
 LIGANDMPNN_MODEL_TYPE = os.environ.get("LIGANDMPNN_MODEL_TYPE") or "protein_mpnn"
 LIGANDMPNN_CHECKPOINT = os.environ.get("LIGANDMPNN_CHECKPOINT") or f"{LIGANDMPNN_DIR}/model_params/proteinmpnn_v_48_020.pt"
-DESIGN_PIPELINE_VERSION = "5.1.0"
+DESIGN_PIPELINE_VERSION = "5.2.1"
 
 # Module-level state for _verify_colabdesign_runtime() (P3-3).
 # Only cache *success* — a transient failure (GPU OOM, env hiccup) must
@@ -264,6 +270,50 @@ def _require_mdm_reference_route(route_name):
             f"{route_name} contains MDM-specific motif knowledge and is disabled for "
             f"project {ACTIVE_PROJECT_CONFIG['project_id']}; provide project-specific motifs instead"
         )
+
+
+def _route_c_cyclization_pairs(modality):
+    """Return only cyclization chemistries allowed by the project contract.
+
+    Route C can construct terminal-disulfide and head-to-tail templates, but a
+    concrete project may support only one of them downstream.  Filtering here
+    prevents Design from spending GPU time on a candidate that Prediction is
+    contractually unable to ingest.
+    """
+    normalized = str(modality or "cyclic_peptide").strip().lower().replace("-", "_")
+    if normalized in {"head_to_tail_cyclic_peptide", "head_to_tail_amide"}:
+        return [("", "")]
+    if normalized in {
+        "disulfide_cyclic_peptide",
+        "cys_cys_disulfide",
+        "terminal_disulfide_cyclic_peptide",
+    }:
+        return [("C", "C")]
+    if normalized in {"cyclic_peptide", "generic_cyclic_peptide"}:
+        return list(CYCLIZATION_PAIRS)
+    raise ValueError(
+        f"Route C does not support project modality {modality!r}; supported "
+        "modalities are head-to-tail, terminal-disulfide, or generic cyclic peptide"
+    )
+
+
+def _route_c_base_combos(template_seq, allowed_lengths, modality):
+    """Build Route C templates that satisfy chemistry, length, and synthesis gates."""
+    length_set = {int(length) for length in allowed_lengths}
+    combos = []
+    for linker in LINKER_MATRIX:
+        for cn, cc in _route_c_cyclization_pairs(modality):
+            seq = f"{cn}{template_seq}{linker}{cc}"
+            if len(seq) not in length_set or not _validate_sequence(seq):
+                continue
+            violations = _synthesizability_violations(seq)
+            # A head-to-tail closure does not require terminal Cys; internal
+            # Cys may be chemically valid and is therefore not a hard failure.
+            if cn == "" and cc == "":
+                violations = [v for v in violations if "stray_cys" not in v]
+            if not violations:
+                combos.append((seq, _describe_cyclize(cn, cc, linker)))
+    return combos
 
 
 def _load_existing_sequences():
@@ -609,7 +659,7 @@ def design_motif_guided(target_spec=None, design_config=None):
     backbone_entries = []  # (bb_path, binder_chain, raw_seqs)
 
     for tmpl_seq, tmpl_name in templates:
-        if len(tmpl_seq) < 8 or len(tmpl_seq) > 20:
+        if not MIN_CYCLIC_PEPTIDE_LENGTH <= len(tmpl_seq) <= MAX_CYCLIC_PEPTIDE_LENGTH:
             continue
         L = len(tmpl_seq)
         tmpl_hotspots = _hotspot_positions(tmpl_seq)
@@ -725,7 +775,8 @@ def design_motif_guided(target_spec=None, design_config=None):
     if total_gen == 0 and templates:
         EvidenceLogger.error("design", "route_b_all_templates_filtered",
             f"{len(templates)} template(s) provided but none passed the "
-            f"length gate (8–20 residues); check known_dual_binders sequences",
+            f"length gate ({MIN_CYCLIC_PEPTIDE_LENGTH}–"
+            f"{MAX_CYCLIC_PEPTIDE_LENGTH} residues); check known_dual_binders sequences",
             recovery="verify Research output contains valid-length binders")
     EvidenceLogger.design_batch(route=route_name, n_generated=total_gen,
         n_valid=total_valid, tool_name="rfpeptides_motif",
@@ -737,6 +788,86 @@ def design_motif_guided(target_spec=None, design_config=None):
 # ============================================================
 # Route C: binder 模板环化改造（适配 Research 任意产出）
 # ============================================================
+
+def _route_c_design_references(config, batch_dir, sequences):
+    """Generate one independent target-bound RFdiffusion backbone per sequence.
+
+    Route C is sequence/scaffold driven, but Prediction L7 still needs a
+    structural hypothesis that was produced independently of the fixed-sequence
+    refold.  The returned mapping is keyed by the sequence's stable position in
+    *sequences*.  Missing or ambiguous RFdiffusion outputs are omitted so the
+    caller can fail closed before registering a candidate.
+    """
+    indexed_by_length = {}
+    for index, (sequence, _description) in enumerate(sequences):
+        indexed_by_length.setdefault(len(sequence), []).append(index)
+
+    hotspots = _parse_hotspot_residues(config.get("hotspots", ""))
+    target_start, target_end = _pdb_residue_range(
+        config["target_pdb"], config["chain"], hotspot_residues=hotspots
+    )
+    references = {}
+    for length, indexes in sorted(indexed_by_length.items()):
+        backbone_dir = Path(batch_dir) / f"design_references_len{length}"
+        backbone_dir.mkdir(parents=True, exist_ok=True)
+        output_prefix = str(backbone_dir / "bb")
+        completed = _run_rfdiff(
+            target_pdb=config["target_pdb"],
+            binder_len=length,
+            n_designs=len(indexes),
+            output_prefix=output_prefix,
+            contig=_binder_first_contig(
+                config["chain"], target_start, target_end, length
+            ),
+            seed=config["seed"],
+            hotspots=config.get("hotspots"),
+            chain=config["chain"],
+        )
+        if not completed:
+            EvidenceLogger.error(
+                "design",
+                "route_c_design_reference_generation_failed",
+                f"RFdiffusion failed for Route C length {length}",
+                recovery="regenerate this Route C length before Prediction",
+            )
+            continue
+
+        def sort_key(path):
+            try:
+                return int(path.stem.rsplit("_", 1)[-1])
+            except (ValueError, IndexError):
+                return -1
+
+        valid_backbones = []
+        for backbone_path in sorted(backbone_dir.glob("bb_*.pdb"), key=sort_key):
+            try:
+                _infer_binder_chain(
+                    str(backbone_path), length, receptor_chain=config["chain"]
+                )
+            except (OSError, UnicodeError, ValueError) as exc:
+                EvidenceLogger.error(
+                    "design",
+                    "route_c_design_reference_invalid",
+                    f"{backbone_path}: {exc}",
+                    recovery="skip ambiguous Route C reference backbone",
+                )
+                continue
+            valid_backbones.append(backbone_path)
+
+        for index, backbone_path in zip(indexes, valid_backbones):
+            references[index] = str(backbone_path)
+        if len(valid_backbones) < len(indexes):
+            EvidenceLogger.error(
+                "design",
+                "route_c_design_reference_incomplete",
+                {
+                    "length": length,
+                    "required": len(indexes),
+                    "valid": len(valid_backbones),
+                },
+                recovery="register only candidates with an independent reference",
+            )
+    return references
 
 def design_atsp_derived(target_spec=None, design_config=None):
     """模板环化：linker × 环化矩阵 + 随机突变扩展 + refold 验证
@@ -787,28 +918,38 @@ def design_atsp_derived(target_spec=None, design_config=None):
     # 标准化模板序列：去除小写/修饰符，与 _validate_sequence 的内部归一化一致，
     # 否则 AfCycDesign refold 收到非标准氨基酸会静默失败（P0-3）。
     template_seq = template_seq.upper().replace("-", "").replace("*", "")
-    # Route C 序列设计: linker × 环化 全矩阵
-    base_combos = []
-    for linker in LINKER_MATRIX:
-        for cn, cc in CYCLIZATION_PAIRS:
-            seq = f"{cn}{template_seq}{linker}{cc}"
-            if not _validate_sequence(seq):
-                continue
-            violations = _synthesizability_violations(seq)
-            # head-to-tail 环化允许内部 Cys；只有二硫键环化才要求只有末端 Cys
-            if cn == "" and cc == "":
-                violations = [v for v in violations if "stray_cys" not in v]
-            if not violations:
-                base_combos.append((seq, _describe_cyclize(cn, cc, linker)))
+    # Route C 序列设计同时遵守项目环化类型和获批长度。这样 Design 不会生成
+    # 当前 Prediction 合同无法处理的化学类型，也不会静默忽略 --lengths。
+    try:
+        allowed_pairs = _route_c_cyclization_pairs(config["modality"])
+        base_combos = _route_c_base_combos(
+            template_seq,
+            config["lengths"],
+            config["modality"],
+        )
+    except ValueError as exc:
+        EvidenceLogger.error(
+            "design",
+            "route_c_unsupported_modality",
+            {
+                "modality": config.get("modality"),
+                "detail": str(exc),
+            },
+            recovery="select a Route C-supported cyclization modality or add an explicit chemistry adapter",
+        )
+        return []
 
     if not base_combos:
         EvidenceLogger.error("design", "route_c_empty",
-            f"All {len(LINKER_MATRIX) * len(CYCLIZATION_PAIRS)} cyclization "
-            "combos for template {template_name!r} failed the synthesizability "
-            "gate — no viable sequences.",
-            recovery="review template sequence and cyclization pairs for "
-                     "synthesizability conflicts (NG deamidation, DP cleavage, "
-                     "stray Cys, aggregation)")
+            {
+                "template": template_name,
+                "template_length": len(template_seq),
+                "allowed_lengths": config["lengths"],
+                "modality": config["modality"],
+                "attempted_combinations": len(LINKER_MATRIX) * len(allowed_pairs),
+                "reason": "all combinations failed length or synthesizability gates",
+            },
+            recovery="review approved lengths, template sequence, and synthesizability rules")
         return []
 
     # 第2级：不够 n 则随机突变扩展；基础组合需先按已有序列去重
@@ -857,11 +998,29 @@ def design_atsp_derived(target_spec=None, design_config=None):
                       "budget or relaxing synthesizability gates",
         })
 
+    selected_sequences = expanded[:n]
+    design_references = _route_c_design_references(
+        config, batch_dir, selected_sequences
+    )
+
     candidates = []
     total_gen, total_valid = 0, 0
     t_batch = time.time()
 
-    for seq, desc in expanded[:n]:
+    for sequence_index, (seq, desc) in enumerate(selected_sequences):
+        backbone_pdb = design_references.get(sequence_index)
+        if not backbone_pdb:
+            EvidenceLogger.error(
+                "design",
+                "route_c_design_reference_unavailable",
+                {
+                    "sequence_index": sequence_index,
+                    "sequence_length": len(seq),
+                    "sequence_sha256": hashlib.sha256(seq.encode()).hexdigest(),
+                },
+                recovery="do not register or predict this candidate; regenerate Design",
+            )
+            continue
         total_gen += 1
         cid = _next_candidate_id()
         refold_dir = os.path.join(batch_dir, "candidates", cid)
@@ -883,6 +1042,7 @@ def design_atsp_derived(target_spec=None, design_config=None):
             try:
                 manifest = _write_manifest(
                     cid, seq, route_name, batch_id, refold_pdb, config,
+                    backbone_pdb=backbone_pdb,
                     cyclization=cyclization_type, ring_closure=rc,
                 )
             except ValueError as exc:
@@ -897,7 +1057,13 @@ def design_atsp_derived(target_spec=None, design_config=None):
             candidates.append(candidate)
         else:
             EvidenceLogger.error("design", "refold_failed",
-                f"{cid}: pLDDT={plddt}", recovery="skip")
+                {
+                    "candidate_id": cid,
+                    "pLDDT": plddt,
+                    "cyclization_type": cyclization_type,
+                    "ring_closure": rc,
+                },
+                recovery="skip candidate; inspect ring_closure.reason before rerunning")
 
     EvidenceLogger.design_batch(route=route_name, n_generated=total_gen,
         n_valid=total_valid, tool_name="atsp_derived",
@@ -1063,7 +1229,8 @@ def pareto_front(candidates, obj_x=None, obj_y=None, project_config=None):
 
 def _write_manifest(
         cid, seq, route, batch_id, refold_pdb, config, backbone_pdb=None,
-        cyclization=None, ring_closure=None, bb_alternatives=None):
+        cyclization=None, ring_closure=None, bb_alternatives=None,
+        design_reference_role=None, reference_metadata=None):
     """Write one versioned candidate manifest with audited closure geometry."""
     refold_dir = os.path.dirname(refold_pdb)
     manifest_path = os.path.join(refold_dir, "manifest.json")
@@ -1088,6 +1255,38 @@ def _write_manifest(
             f"[{cid}] ring-closure result cyclization does not match manifest: "
             f"{observed_type!r} != {canonical_cyclization!r}"
         )
+    requested_reference_role = design_reference_role
+    design_reference = ""
+    design_reference_hash = ""
+    design_reference_role = ""
+    if backbone_pdb:
+        reference_path = os.path.realpath(str(backbone_pdb))
+        refold_path = os.path.realpath(str(refold_pdb))
+        if not os.path.isfile(reference_path):
+            raise ValueError(f"[{cid}] Design reference does not exist: {reference_path}")
+        if reference_path == refold_path:
+            raise ValueError(
+                f"[{cid}] fixed-sequence refold cannot be its own L7 Design reference"
+            )
+        design_reference = reference_path
+        design_reference_hash = file_hash(reference_path)
+        refold_hash = file_hash(refold_path) if os.path.exists(refold_path) else ""
+        if refold_hash and design_reference_hash == refold_hash:
+            raise ValueError(
+                f"[{cid}] L7 Design reference is byte-identical to fixed-sequence refold"
+            )
+        design_reference_role = (
+            requested_reference_role or "rfdiffusion_target_bound_backbone"
+        )
+        if design_reference_role not in {
+            "rfdiffusion_target_bound_backbone",
+            "experimental_cyclic_peptide_structure",
+        }:
+            raise ValueError(
+                f"[{cid}] unsupported Design reference role: "
+                f"{design_reference_role!r}"
+            )
+
     manifest = {
         "design_pipeline_version": DESIGN_PIPELINE_VERSION,
         "candidate_id": cid, "sequence": seq, "length": len(seq),
@@ -1096,8 +1295,13 @@ def _write_manifest(
         "cyclization_description": cyclization_description,
         "refold_pdb": refold_pdb,
         "refold_pdb_hash": file_hash(refold_pdb) if os.path.exists(refold_pdb) else "",
-        "backbone_pdb": backbone_pdb or "",
-        "backbone_pdb_hash": file_hash(backbone_pdb) if (backbone_pdb and os.path.exists(backbone_pdb)) else "",
+        # Explicit v5.2 contract.  backbone_* remains a compatibility alias for
+        # older Prediction readers and historical manifests.
+        "design_reference_pdb": design_reference,
+        "design_reference_pdb_hash": design_reference_hash,
+        "design_reference_role": design_reference_role,
+        "backbone_pdb": design_reference,
+        "backbone_pdb_hash": design_reference_hash,
         "backbone_alternatives": bb_alternatives or [],
         "ring_closure": rc,
         "design_config_summary": {
@@ -1106,7 +1310,8 @@ def _write_manifest(
             "target_pdb": config.get("target_pdb"),
             "target_pdb_sha256": config.get("target_pdb_sha256"),
             "seed": config.get("seed"),
-        }
+        },
+        "reference_metadata": copy.deepcopy(reference_metadata or {}),
     }
     manifest["manifest_path"] = manifest_path
     with open(manifest_path, "w") as f:
@@ -1187,8 +1392,10 @@ def _binder_first_contig(target_chain, target_start, target_end, binder_len):
     start, end, length = int(target_start), int(target_end), int(binder_len)
     if start > end:
         raise ValueError(f"target residue range is reversed: {start}-{end}")
-    if not 8 <= length <= 20:
-        raise ValueError(f"binder length must be 8-20, got {length}")
+    if not MIN_CYCLIC_PEPTIDE_LENGTH <= length <= MAX_CYCLIC_PEPTIDE_LENGTH:
+        raise ValueError(
+            f"{supported_length_message('binder')}, got {length}"
+        )
     return f"{length}-{length} {chain}{start}-{end}/0"
 
 
@@ -1473,7 +1680,10 @@ def _build_refold_script(sequence, output_pdb):
     emitted PDB before the manifest is allowed downstream.
     """
     if not _validate_sequence(sequence):
-        raise ValueError("refold sequence must contain 8-20 standard amino acids")
+        raise ValueError(
+            f"refold sequence must contain {MIN_CYCLIC_PEPTIDE_LENGTH}-"
+            f"{MAX_CYCLIC_PEPTIDE_LENGTH} standard amino acids"
+        )
     L = len(sequence)
     return f"""
 import sys, subprocess, numpy as np
@@ -2178,9 +2388,12 @@ def _hotspot_fixed_residues(hotspots, binder_residues):
 def _validate_sequence(seq):
     if not isinstance(seq, str):
         return False
-    valid = set("ACDEFGHIKLMNPQRSTVWY")
+    valid = STANDARD_AMINO_ACIDS
     s = seq.upper().replace("-","").replace("*","")
-    return 8 <= len(s) <= 20 and all(c in valid for c in s)
+    return (
+        MIN_CYCLIC_PEPTIDE_LENGTH <= len(s) <= MAX_CYCLIC_PEPTIDE_LENGTH
+        and all(c in valid for c in s)
+    )
 
 
 def _next_candidate_id():
@@ -2191,7 +2404,12 @@ def _next_candidate_id():
     """
     with _LOCK:
         s = State.load()
-        s["candidate_count"] = s.get("candidate_count", 0) + 1
+        existing_max = 0
+        for row in CandidateIndex.load():
+            candidate_id = str(row.get("candidate_id") or "").strip()
+            if re.fullmatch(r"C\d{4,}", candidate_id):
+                existing_max = max(existing_max, int(candidate_id[1:]))
+        s["candidate_count"] = max(int(s.get("candidate_count", 0)), existing_max) + 1
         State.save(s)
         return f"C{s['candidate_count']:04d}"
 
@@ -2288,8 +2506,12 @@ def _merge_config(target_spec, design_config):
         target.get("design") or {}
     ).get("lengths", [10, 12, 14])
     lengths = [int(length) for length in lengths]
-    if not lengths or any(length < 8 or length > 20 for length in lengths):
-        raise ValueError("cyclic peptide lengths must be between 8 and 20 residues")
+    if not lengths or any(
+        length < MIN_CYCLIC_PEPTIDE_LENGTH
+        or length > MAX_CYCLIC_PEPTIDE_LENGTH
+        for length in lengths
+    ):
+        raise ValueError(supported_length_message())
 
     n = dc.get("n") if dc.get("n") is not None else ts.get("n", 100)
     n = int(n)
@@ -2328,6 +2550,7 @@ def _merge_config(target_spec, design_config):
 
     return {
         "project_id": project["project_id"],
+        "modality": project.get("modality", "cyclic_peptide"),
         "target_id": target["id"],
         "target_name": target["id"],
         "target_pdb": str(coordinate_path),

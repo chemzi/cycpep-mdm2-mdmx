@@ -16,13 +16,15 @@ biotite>=0.41
 # torch                  # RFdiffusion / ProteinMPNN runtime
 # colabdesign            # AfCycDesign and Prediction workers
 # ProteinMPNN            # invoked through a pinned LigandMPNN repository checkout
+# boltz[cuda]==2.2.1     # Prediction independent model family; isolated GPU env
 
 # Planned external tools from the project plan (not normal pip deps here):
 # - RFpeptides / RFdiffusion
 # - LigandMPNN
 # - AfCycDesign / ColabFold
 # - HADDOCK
-# - Rosetta FastRelax / InterfaceAnalyzer
+# - PyRosetta InterfaceAnalyzer is pinned in a separate licensed server environment
+# - Rosetta FastRelax / post-relax remains a separate technical-route decision
 # - PRODIGY
 # - RDKit
 #

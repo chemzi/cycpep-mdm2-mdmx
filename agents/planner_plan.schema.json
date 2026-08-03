@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novapeptide.local/schemas/planner-plan-v1.json",
+  "title": "NovaPeptide Planner Execution Plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "planner_version",
+    "plan_id",
+    "input_digest",
+    "source",
+    "status",
+    "summary",
+    "cycle",
+    "budget_request",
+    "policy_constraints",
+    "approval_request",
+    "execution",
+    "tasks"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "planner_version": {"type": "string", "minLength": 1},
+    "plan_id": {"type": "string", "pattern": "^planner_[0-9a-f]{12}$"},
+    "input_digest": {"$ref": "#/$defs/sha256"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "critic_report",
+        "critic_report_sha256",
+        "critic_report_id",
+        "critic_verdict",
+        "prediction_run_id",
+        "project_id"
+      ],
+      "properties": {
+        "critic_report": {"type": "string", "minLength": 1},
+        "critic_report_sha256": {"$ref": "#/$defs/sha256"},
+        "critic_report_id": {"type": "string", "pattern": "^critic_[0-9a-f]{12}$"},
+        "critic_verdict": {"enum": ["blocked", "iterate", "review", "clear"]},
+        "prediction_run_id": {"type": ["string", "null"]},
+        "project_id": {"type": ["string", "null"]}
+      }
+    },
+    "status": {
+      "enum": ["recovery_only", "blocked", "awaiting_approval", "ready", "no_action"]
+    },
+    "summary": {"type": "string"},
+    "cycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_round", "target_round", "round_advancement_deferred_to_orchestrator"],
+      "properties": {
+        "source_round": {"type": "integer", "minimum": 1},
+        "target_round": {"type": "integer", "minimum": 1},
+        "round_advancement_deferred_to_orchestrator": {"const": true}
+      }
+    },
+    "budget_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "configured_design_budget_snapshot",
+        "configured_design_budget_total",
+        "requested_design_proposals",
+        "requested_gpu_job_slots",
+        "gpu_minutes",
+        "gpu_minutes_status",
+        "reservation_status"
+      ],
+      "properties": {
+        "configured_design_budget_snapshot": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "configured_design_budget_total": {"type": "integer", "minimum": 0},
+        "requested_design_proposals": {"type": "integer", "minimum": 0},
+        "requested_gpu_job_slots": {"type": "integer", "minimum": 0},
+        "gpu_minutes": {"type": ["integer", "null"], "minimum": 0},
+        "gpu_minutes_status": {"enum": ["benchmark_required", "estimated", "approved"]},
+        "reservation_status": {"enum": ["not_reserved", "reserved", "consumed"]}
+      }
+    },
+    "policy_constraints": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "approval_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_required",
+        "required_task_ids",
+        "optional_task_ids",
+        "approval_schema_version",
+        "approval_must_bind_plan_sha256"
+      ],
+      "properties": {
+        "artifact_required": {"type": "boolean"},
+        "required_task_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/task_id"}},
+        "optional_task_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/task_id"}},
+        "approval_schema_version": {"const": 1},
+        "approval_must_bind_plan_sha256": {"const": true}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["automatic_dispatch_allowed", "blocked_task_ids", "entry_task_ids", "orchestrator_required"],
+      "properties": {
+        "automatic_dispatch_allowed": {"const": false},
+        "blocked_task_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/task_id"}},
+        "entry_task_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/task_id"}},
+        "orchestrator_required": {"const": true}
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/task"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "task_id": {"type": "string", "pattern": "^T[0-9]{3}$"},
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "agent",
+        "action",
+        "phase",
+        "priority",
+        "disposition",
+        "reason_codes",
+        "candidate_scope",
+        "parameters",
+        "resource_request",
+        "approval",
+        "depends_on",
+        "outputs",
+        "constraints",
+        "execution_gate"
+      ],
+      "properties": {
+        "task_id": {"$ref": "#/$defs/task_id"},
+        "agent": {"type": "string", "minLength": 1},
+        "action": {"type": "string", "minLength": 1},
+        "phase": {"enum": ["research", "design", "evaluate", "critic", "iterate", "report"]},
+        "priority": {"enum": ["P0", "P1", "P2"]},
+        "disposition": {"enum": ["recovery", "required", "review_required", "optional"]},
+        "reason_codes": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "candidate_scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["candidate_ids", "from_task_id"],
+          "properties": {
+            "candidate_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+            "from_task_id": {"anyOf": [{"$ref": "#/$defs/task_id"}, {"type": "null"}]}
+          }
+        },
+        "parameters": {"type": "object"},
+        "resource_request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["class", "gpu_job_slots", "proposal_count", "candidate_limit", "estimated_gpu_minutes", "estimate_status"],
+          "properties": {
+            "class": {"enum": ["cpu", "network_cpu", "gpu"]},
+            "gpu_job_slots": {"type": "integer", "minimum": 0, "maximum": 1},
+            "proposal_count": {"type": "integer", "minimum": 0},
+            "candidate_limit": {"type": "integer", "minimum": 0},
+            "estimated_gpu_minutes": {"type": ["integer", "null"], "minimum": 0},
+            "estimate_status": {"enum": ["benchmark_required", "not_applicable", "estimated"]}
+          }
+        },
+        "approval": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["required", "types", "status"],
+          "properties": {
+            "required": {"type": "boolean"},
+            "types": {"type": "array", "uniqueItems": true, "items": {"enum": ["execution_budget", "scientific_policy", "data_integrity"]}},
+            "status": {"enum": ["pending", "not_required"]}
+          }
+        },
+        "depends_on": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/task_id"}},
+        "outputs": {"type": "array", "items": {"type": "string"}},
+        "constraints": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "execution_gate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "block_reasons"],
+          "properties": {
+            "status": {"enum": ["proposed", "blocked"]},
+            "block_reasons": {"type": "array", "items": {"type": "string"}}
+          }
+        }
+      }
+    }
+  }
+}

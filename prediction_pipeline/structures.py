@@ -285,6 +285,7 @@ def interface_hotspot_metrics(
     binder_chain: str,
     hotspots: list[int],
     cutoff: float,
+    target_residue_numbers: list[int] | None = None,
 ) -> dict:
     if target_chain not in structure.chains or binder_chain not in structure.chains:
         raise ContractError(
@@ -293,6 +294,14 @@ def interface_hotspot_metrics(
         )
     target_residues = structure.chains[target_chain]
     binder_residues = structure.chains[binder_chain]
+    if (
+        target_residue_numbers is not None
+        and len(target_residue_numbers) != len(target_residues)
+    ):
+        raise ContractError(
+            "target_residue_mapping_mismatch",
+            "canonical target residue numbering must match the predicted target length",
+        )
     binder_atoms = np.asarray([
         atom.coord
         for residue in binder_residues
@@ -302,14 +311,18 @@ def interface_hotspot_metrics(
     if binder_atoms.size == 0:
         raise ContractError("interface_atoms_missing", "binder has no heavy atoms")
     contacts: set[int] = set()
-    for residue in target_residues:
+    for index, residue in enumerate(target_residues):
         atoms = np.asarray([
             atom.coord for atom in residue.atoms.values() if atom.element != "H"
         ])
         if atoms.size and float(np.min(np.linalg.norm(
             atoms[:, None, :] - binder_atoms[None, :, :], axis=2
         ))) <= cutoff:
-            contacts.add(residue.number)
+            contacts.add(
+                target_residue_numbers[index]
+                if target_residue_numbers is not None
+                else residue.number
+            )
     try:
         configured = {int(value) for value in hotspots}
     except (TypeError, ValueError) as exc:
@@ -328,6 +341,103 @@ def interface_hotspot_metrics(
     }
 
 
+def canonical_target_residue_numbers(
+    reference: Structure,
+    reference_chain: str,
+    prediction: Structure,
+    prediction_chain: str,
+) -> list[int]:
+    """Map a predictor's target residues back to reviewed PDB numbering.
+
+    ColabDesign preserves target sequence order but may rewrite PDB residue
+    numbers, including negative values for discontinuous source numbering.
+    Mapping by verified sequence order keeps hotspot IDs in the approved target
+    coordinate system without trusting predictor-specific residue IDs.
+    """
+    reference_residues = reference.chains.get(reference_chain, [])
+    prediction_residues = prediction.chains.get(prediction_chain, [])
+    reference_sequence = "".join(item.one_letter for item in reference_residues)
+    prediction_sequence = "".join(item.one_letter for item in prediction_residues)
+    if (
+        not reference_residues
+        or len(reference_residues) != len(prediction_residues)
+        or reference_sequence != prediction_sequence
+    ):
+        raise ContractError(
+            "target_residue_mapping_mismatch",
+            "reviewed and predicted target chains must have identical residue order: "
+            f"reference={reference.path}:{reference_chain} "
+            f"({len(reference_residues)} residues), "
+            f"prediction={prediction.path}:{prediction_chain} "
+            f"({len(prediction_residues)} residues)",
+        )
+    return [residue.number for residue in reference_residues]
+
+
+def _sequence_aligned_residue_pairs(
+    mobile_residues: list[Residue],
+    reference_residues: list[Residue],
+) -> list[tuple[Residue, Residue]]:
+    """Globally align near-identical target chains with terminal overhangs."""
+    mobile_sequence = "".join(residue.one_letter for residue in mobile_residues)
+    reference_sequence = "".join(residue.one_letter for residue in reference_residues)
+    mobile_n, reference_n = len(mobile_sequence), len(reference_sequence)
+    if not mobile_n or not reference_n:
+        raise ContractError(
+            "target_sequence_alignment_mismatch", "target chain is empty"
+        )
+
+    match_score, mismatch_score, gap_score = 2, -1, -2
+    scores = np.zeros((mobile_n + 1, reference_n + 1), dtype=np.int32)
+    trace = np.zeros((mobile_n + 1, reference_n + 1), dtype=np.uint8)
+    scores[:, 0] = np.arange(mobile_n + 1) * gap_score
+    scores[0, :] = np.arange(reference_n + 1) * gap_score
+    trace[1:, 0] = 1  # up: mobile residue aligned to a gap
+    trace[0, 1:] = 2  # left: reference residue aligned to a gap
+
+    for mobile_i in range(1, mobile_n + 1):
+        for reference_i in range(1, reference_n + 1):
+            diagonal = scores[mobile_i - 1, reference_i - 1] + (
+                match_score
+                if mobile_sequence[mobile_i - 1] == reference_sequence[reference_i - 1]
+                else mismatch_score
+            )
+            up = scores[mobile_i - 1, reference_i] + gap_score
+            left = scores[mobile_i, reference_i - 1] + gap_score
+            best = max(diagonal, up, left)
+            scores[mobile_i, reference_i] = best
+            # Prefer a residue pair on ties, then a mobile gap.  This makes the
+            # mapping deterministic without relying on PDB residue numbers.
+            trace[mobile_i, reference_i] = 0 if diagonal == best else 1 if up == best else 2
+
+    pairs: list[tuple[Residue, Residue]] = []
+    matches = 0
+    mobile_i, reference_i = mobile_n, reference_n
+    while mobile_i or reference_i:
+        direction = trace[mobile_i, reference_i]
+        if mobile_i and reference_i and direction == 0:
+            mobile_i -= 1
+            reference_i -= 1
+            pairs.append((mobile_residues[mobile_i], reference_residues[reference_i]))
+            matches += mobile_sequence[mobile_i] == reference_sequence[reference_i]
+        elif mobile_i and (not reference_i or direction == 1):
+            mobile_i -= 1
+        else:
+            reference_i -= 1
+    pairs.reverse()
+
+    coverage = len(pairs) / min(mobile_n, reference_n)
+    identity = matches / len(pairs) if pairs else 0.0
+    if len(pairs) < 3 or coverage < 0.8 or identity < 0.9:
+        raise ContractError(
+            "target_sequence_alignment_mismatch",
+            "target chains are not sufficiently similar for pose alignment: "
+            f"mobile={mobile_n}, reference={reference_n}, "
+            f"coverage={coverage:.3f}, identity={identity:.3f}",
+        )
+    return pairs
+
+
 def target_aligned_binder_rmsd(
     mobile: Structure,
     reference: Structure,
@@ -335,15 +445,24 @@ def target_aligned_binder_rmsd(
     mobile_binder_chain: str,
     reference_binder_chain: str,
 ) -> float:
-    mobile_target = {residue.key: residue for residue in mobile.chains.get(target_chain, [])}
-    reference_target = {
-        residue.key: residue for residue in reference.chains.get(target_chain, [])
-    }
-    common = sorted(set(mobile_target) & set(reference_target))
+    mobile_residues = mobile.chains.get(target_chain, [])
+    reference_residues = reference.chains.get(target_chain, [])
+    same_sequence_order = (
+        bool(mobile_residues)
+        and len(mobile_residues) == len(reference_residues)
+        and "".join(item.one_letter for item in mobile_residues)
+        == "".join(item.one_letter for item in reference_residues)
+    )
+    if same_sequence_order:
+        residue_pairs = zip(mobile_residues, reference_residues)
+    else:
+        residue_pairs = _sequence_aligned_residue_pairs(
+            mobile_residues, reference_residues
+        )
     target_mobile, target_reference = [], []
-    for key in common:
-        left = mobile_target[key].atoms.get("CA")
-        right = reference_target[key].atoms.get("CA")
+    for mobile_residue, reference_residue in residue_pairs:
+        left = mobile_residue.atoms.get("CA")
+        right = reference_residue.atoms.get("CA")
         if left is not None and right is not None:
             target_mobile.append(left.coord)
             target_reference.append(right.coord)
