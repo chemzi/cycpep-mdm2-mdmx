@@ -218,6 +218,54 @@ class CriticTests(unittest.TestCase):
             item["action"] for item in report["recommendations"]
         })
 
+    def test_missing_l7_reference_is_owned_by_design(self):
+        battery = complete_battery()
+        battery["l7_pass"] = None
+        battery["all_layers_pass"] = False
+        battery["missing_evidence"] = ["scrmsd"]
+        record = self._record(
+            "C1250", "ACDEFGHI", "prediction_pending", battery=battery,
+            issues=[{
+                "code": "l7_reference_missing",
+                "layer": 7,
+                "message": "Design reference backbone unavailable",
+            }],
+        )
+        handoff = self._handoff([("prediction_pending", "C1250", record)])
+        report = review(
+            handoff_path=handoff,
+            state={"project_id": "critic_test", "thresholds": {}},
+            candidate_rows=self._rows(("C1250", "ACDEFGHI", "route_C")),
+            config=CriticConfig(min_cohort_for_distribution=1),
+        )
+        codes = {item["code"] for item in report["issues"]}
+        actions = {item["action"] for item in report["recommendations"]}
+        self.assertIn("design_reference_missing", codes)
+        self.assertIn("regenerate_design_reference", actions)
+        self.assertNotIn("prediction_evidence_incomplete", codes)
+        self.assertNotIn("complete_prediction_evidence", actions)
+
+    def test_complete_l6_failure_is_design_feedback(self):
+        battery = complete_battery(failed=("l6_pass",))
+        record = self._record(
+            "C0001", "ACDEFGHI", "needs_optimization", battery=battery
+        )
+        handoff = self._handoff([("needs_optimization", "C0001", record)])
+        report = review(
+            handoff_path=handoff,
+            state={"project_id": "critic_test", "thresholds": {}},
+            candidate_rows=self._rows(("C0001", "ACDEFGHI", "route_A")),
+            config=CriticConfig(min_cohort_for_distribution=1),
+        )
+        recommendation = next(
+            item for item in report["recommendations"]
+            if item["action"] == "improve_pose_robustness"
+        )
+        self.assertEqual(recommendation["owner_hint"], "design")
+        self.assertNotIn("complete_prediction_evidence", {
+            item["action"] for item in report["recommendations"]
+        })
+
     def test_invalid_record_blocks_planning(self):
         record = self._record(
             "C0001", "ACDEFGHI", "invalid", battery=None,

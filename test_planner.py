@@ -223,6 +223,39 @@ class PlannerTests(unittest.TestCase):
             ["design_budget_missing_or_exhausted"],
         )
 
+    def test_l7_reference_and_complete_l6_failures_enter_design_iteration(self):
+        report_path = self._report([
+            self._issue(
+                "design_reference_missing",
+                "regenerate_design_reference",
+                candidate_ids=["C1250"],
+                priority="P0",
+            ),
+            self._issue(
+                "l6_ensemble_convergence_low",
+                "improve_pose_robustness",
+                candidate_ids=["C1255", "C1256"],
+            ),
+        ])
+        result = build_plan(critic_report_path=report_path, state=self._state())
+        actions = [task["action"] for task in result["tasks"]]
+        self.assertEqual(actions, [
+            "iterate_design",
+            "evaluate_new_design_candidates",
+            "review_prediction_handoff",
+        ])
+        design = result["tasks"][0]
+        self.assertEqual(
+            set(design["parameters"]["strategy_directives"]),
+            {"regenerate_design_reference", "improve_pose_robustness"},
+        )
+        self.assertEqual(
+            design["candidate_scope"]["candidate_ids"],
+            ["C1250", "C1255", "C1256"],
+        )
+        self.assertNotIn("complete_prediction_evidence", actions)
+        self.assertNotIn("diagnose_and_improve_pose_robustness", actions)
+
     def test_clear_report_prepares_report_without_gpu(self):
         report_path = self._report([], verdict="clear")
         result = build_plan(critic_report_path=report_path, state=self._state())

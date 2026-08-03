@@ -33,7 +33,7 @@ from data_layer import CandidateIndex, EvidenceLogger, State  # noqa: E402
 from prediction_pipeline.contracts import file_sha256, object_sha256  # noqa: E402
 
 
-PLANNER_VERSION = "1.0.1"
+PLANNER_VERSION = "1.1.0"
 PLAN_SCHEMA_VERSION = 1
 APPROVAL_SCHEMA_VERSION = 1
 REPORT_ID_RE = re.compile(r"^critic_[0-9a-f]{12}$")
@@ -63,13 +63,6 @@ ACTION_SPECS = {
         "agent": "prediction",
         "task_action": "complete_prediction_evidence",
         "phase": "evaluate",
-        "resource_class": "gpu",
-        "kind": "prediction",
-    },
-    "improve_pose_robustness": {
-        "agent": "design/prediction",
-        "task_action": "diagnose_and_improve_pose_robustness",
-        "phase": "iterate",
         "resource_class": "gpu",
         "kind": "prediction",
     },
@@ -105,6 +98,8 @@ DESIGN_ITERATION_ACTIONS = frozenset({
     "improve_design_consistency",
     "increase_sequence_diversity",
     "generate_review_cohort",
+    "regenerate_design_reference",
+    "improve_pose_robustness",
 })
 
 for _action in DESIGN_ITERATION_ACTIONS:
@@ -664,14 +659,6 @@ def build_plan(
                 "single_gpu_serial_execution",
             ])
             outputs = ["prediction_handoff.json"]
-        elif action == "improve_pose_robustness":
-            constraints.extend([
-                "reuse_complete_prediction_evidence",
-                "add_only_missing_independent_predictions",
-                "single_gpu_serial_execution",
-            ])
-            outputs = ["prediction_handoff.json"]
-
         task = _task(
             tasks,
             agent=spec["agent"],
@@ -698,7 +685,6 @@ def build_plan(
         if action in {
             "complete_prediction_evidence",
             "regenerate_invalid_artifact",
-            "improve_pose_robustness",
         }:
             _add_critic_followup(
                 tasks,

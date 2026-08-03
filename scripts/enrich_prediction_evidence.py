@@ -170,6 +170,12 @@ def run(args) -> dict:
             "candidate_missing", f"expected one CandidateIndex row for {candidate_id}"
         )
     candidate = candidate_from_row(rows[0])
+    if candidate.design_reference_pdb is None:
+        raise ContractError(
+            "design_reference_missing_preflight",
+            f"{candidate.candidate_id} has no independent L7 Design reference; "
+            "regenerate it in Design before running Boltz/Rosetta/post-relax",
+        )
     state = State.load()
     project = state.get("project_config") or State._project_config
     assert_project_approved(project)

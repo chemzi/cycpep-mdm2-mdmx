@@ -9,12 +9,12 @@ MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当�
 - [English: transferable workflow, structure gate, and calibration](docs/transferable_pipeline.en.md)
 - [前端 API contract、请求示例与状态机](docs/frontend_api_contract.md)
 - [环肽反向折叠：ProteinMPNN 的适用范围与验证要求](docs/cyclic_inverse_folding.md)
-- [Design v5.1.0：固定序列与闭环几何完整性门禁](docs/design_integrity_v5.1.0.md)
+- [Design v5.2.0：Route C 独立 L7 reference 合同](docs/design_integrity_v5.2.0.md)
 - [Prediction v1.4.1：Boltz-2 / PyRosetta 真实双靶标验证](docs/prediction_v1.4.1_pyrosetta_validation_20260802.md)
 - [Prediction v1.5.0：环肽 post-relax 与完整七层回归](docs/prediction_v1.5.0_post_relax_validation_20260802.md)
-- [Critic v1.0：Prediction 审查合同与 Planner handoff](docs/critic_agent.md)
+- [Critic v1.1：Prediction 审查合同与 Planner handoff](docs/critic_agent.md)
 - [Critic v1.0：C0514 真实审查验证](docs/critic_v1.0_validation_20260802.md)
-- [Planner v1.0.1：任务图、预算请求与摘要绑定审批](docs/planner_agent.md)
+- [Planner v1.1：任务图、预算请求与摘要绑定审批](docs/planner_agent.md)
 - [Planner v1.0：C0514 真实规划验证](docs/planner_v1.0_validation_20260802.md)
 - [Orchestrator v1.0：审批执行、任务状态、GPU 租约与恢复](docs/orchestrator_agent.md)
 - [Orchestrator v1.0：C0514 真实计划无执行验证](docs/orchestrator_v1.0_validation_20260802.md)
@@ -84,9 +84,10 @@ pip install -r requirements.txt
 - `Prediction` 已有严格 artifact 摄取、七层指标计算、状态判定和断点续跑实现；
   Boltz-2 独立复合物 predictor 与 PyRosetta InterfaceAnalyzer 已在 4090
   服务器完成 C0514 双靶标真实回归
-- `Critic` v1.0 已实现冻结 Prediction handoff/record 摄取、哈希校验、问题分类、
-  候选池统计和结构化 Planner handoff
-- `Planner` v1.0.1 已实现 Critic 报告摄取、确定性任务图、预算/审批闸门、启动阶段判断
+- `Critic` v1.1 已实现冻结 Prediction handoff/record 摄取、哈希校验、问题分类、
+  候选池统计和结构化 Planner handoff，并能把 L7 reference 缺失准确归因给 Design
+- `Planner` v1.1 已实现 Critic 报告摄取、确定性任务图、预算/审批闸门、启动阶段判断，
+  并将完整证据下的 L6 姿态不收敛映射为 Design 迭代
   和摘要绑定 approval artifact
 - `Orchestrator` v1.0 已实现 plan/approval 验证、任务依赖、Worker dispatch packet、
   单 GPU 租约、输出哈希、失败/中断恢复和成功后的 State round 推进

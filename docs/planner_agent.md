@@ -1,4 +1,4 @@
-# Planner Agent v1.0.1
+# Planner Agent v1.1
 
 Planner 位于 Critic 与未来 Orchestrator 之间。它读取一份冻结的
 `critic_report.json`，生成确定性的 `execution_plan.json`，把“需要改进界面”这类建议
@@ -51,6 +51,12 @@ Design 小批量迭代
 完整历史 Prediction evidence 必须复用。默认 Design 请求 12 条 proposal；这个数字是
 可配置的容量请求，并受 State `design_budget` 和 Planner 硬上限共同约束。Planner
 不会把旧 `design_budget` 解释成已经批准的 GPU 时间，也不会虚构 GPU 分钟估算。
+
+v1.1 将 `regenerate_design_reference` 和 `improve_pose_robustness` 纳入同一个
+Design iteration 图。前者要求 Design 追加带独立 reference 的候选；后者表示完整
+AF2/Boltz 证据下的姿态不收敛，需要改变序列、骨架或界面设计策略。两者都会进入
+`Design → 仅评估新候选 → Critic`，不再产生针对旧候选的
+`complete_prediction_evidence` 或“只补缺失 predictor”GPU 任务。
 
 ## 3. Critic verdict 的规划语义
 

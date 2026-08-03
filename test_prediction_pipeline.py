@@ -12,7 +12,11 @@ import numpy as np
 
 import data_layer
 from data_layer import CandidateIndex, State
-from prediction_pipeline.contracts import ContractError, PredictionConfig
+from prediction_pipeline.contracts import (
+    ContractError,
+    PredictionConfig,
+    candidate_from_row,
+)
 from prediction_pipeline.colabdesign_worker import (
     _assert_cyclic_offset_supported,
     _cyclic_offset,
@@ -33,7 +37,10 @@ from prediction_pipeline.relax_worker import (
     PYROSETTA_VERSION,
     topology_xml,
 )
-from scripts.run_prediction_predictors import parse_ensemble_members
+from scripts.run_prediction_predictors import (
+    parse_ensemble_members,
+    require_design_references,
+)
 from prediction_pipeline.structures import (
     apply_transform,
     canonical_target_residue_numbers,
@@ -213,6 +220,39 @@ class StructureAndParserTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "exactly one value"):
             parse_ensemble_members("0,1,2", "0,1")
 
+    def test_fixed_sequence_refold_cannot_be_l7_reference(self):
+        refold = self.root / "refold.pdb"
+        write_monomer(refold)
+        manifest = self.root / "manifest.json"
+        manifest.write_text(json.dumps({
+            "candidate_id": "C0001",
+            "sequence": SEQUENCE,
+            "length": len(SEQUENCE),
+            "source_route": "route_C",
+            "source_batch": "fixture",
+            "cyclization_type": "head-to-tail_amide",
+            "refold_pdb": str(refold),
+            "refold_pdb_hash": hashlib.sha256(refold.read_bytes()).hexdigest(),
+            "design_reference_pdb": str(refold),
+            "design_reference_pdb_hash": hashlib.sha256(refold.read_bytes()).hexdigest(),
+            "design_reference_role": "rfdiffusion_target_bound_backbone",
+            "backbone_pdb": str(refold),
+        }), encoding="utf-8")
+        with self.assertRaisesRegex(ContractError, "cannot be used"):
+            candidate_from_row({
+                "candidate_id": "C0001",
+                "sequence": SEQUENCE,
+                "manifest_path": str(manifest),
+            })
+
+    def test_gpu_runner_preflight_rejects_missing_l7_reference(self):
+        class Candidate:
+            candidate_id = "C1250"
+            design_reference_pdb = None
+
+        with self.assertRaisesRegex(ContractError, "C1250"):
+            require_design_references([Candidate()])
+
     def test_boltz_input_declares_cyclic_conditioning_and_covalent_bond(self):
         value = boltz_input_yaml(
             target_sequence="AAAA",
@@ -385,7 +425,8 @@ class PredictionPipelineTests(unittest.TestCase):
         legacy = design_dir / "refold.pdb"
         reference = design_dir / "backbone.pdb"
         write_monomer(legacy, legacy_sequence)
-        write_monomer(reference)
+        # Keep coordinates aligned while making this a distinct immutable file.
+        write_monomer(reference, bfactor=80.0)
         manifest = {
             "candidate_id": "C0001",
             "sequence": SEQUENCE,
@@ -1177,8 +1218,8 @@ class PredictionPipelineTests(unittest.TestCase):
         ).run()
 
         self.assertEqual(State.load()["candidate_count"], 1270)
-        self.assertEqual(summary["pipeline_version"], "1.5.0")
-        self.assertEqual(State.load()["prediction"]["pipeline_version"], "1.5.0")
+        self.assertEqual(summary["pipeline_version"], "1.5.1")
+        self.assertEqual(State.load()["prediction"]["pipeline_version"], "1.5.1")
 
     def test_declared_artifact_hash_mismatch_is_invalid(self):
         reference = self._register_candidate()

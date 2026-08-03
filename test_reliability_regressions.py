@@ -246,8 +246,25 @@ class DesignReliabilityTests(unittest.TestCase):
             )
             return 0.9
 
+        def fake_design_references(_config, batch_dir, sequences):
+            root = Path(batch_dir) / "fake_route_c_references"
+            root.mkdir(parents=True, exist_ok=True)
+            references = {}
+            for index, (_sequence, _description) in enumerate(sequences):
+                path = root / f"bb_{index}.pdb"
+                path.write_text(
+                    f"REMARK independent Route C reference {index}\n",
+                    encoding="utf-8",
+                )
+                references[index] = str(path)
+            return references
+
         with (
             patch.object(design_module, "ACTIVE_PROJECT_CONFIG", self.project_config),
+            patch(
+                "agents.design._route_c_design_references",
+                side_effect=fake_design_references,
+            ),
             patch("agents.design._run_refold", side_effect=fake_refold),
             patch("agents.design._ring_closure_check", return_value={"pass": True}),
         ):
@@ -259,6 +276,15 @@ class DesignReliabilityTests(unittest.TestCase):
             self.assertTrue(candidate["cyclization_type"])
             self.assertTrue(candidate["design_pdb_path"].endswith("refold.pdb"))
             self.assertTrue(Path(candidate["manifest_path"]).exists())
+            manifest = json.loads(Path(candidate["manifest_path"]).read_text())
+            self.assertEqual(
+                manifest["design_reference_role"],
+                "rfdiffusion_target_bound_backbone",
+            )
+            self.assertTrue(Path(manifest["design_reference_pdb"]).is_file())
+            self.assertNotEqual(
+                manifest["design_reference_pdb"], manifest["refold_pdb"]
+            )
 
 
 if __name__ == "__main__":

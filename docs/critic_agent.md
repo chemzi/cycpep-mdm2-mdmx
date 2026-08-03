@@ -1,4 +1,4 @@
-# Critic Agent v1.0
+# Critic Agent v1.1
 
 Critic 是 Prediction 与 Planner 之间的审查层。它读取 Prediction 已冻结的 handoff
 和逐候选 record，将失败原因转换成结构化 issue 与建议动作。Critic 不运行模型、
@@ -25,6 +25,7 @@ source route 等候选池信息；若它与冻结 record 的序列不一致，�
 |---|---|---|
 | operational | `invalid_prediction_artifact` | 输入、哈希、序列、链或几何合同无效 |
 | operational | `prediction_evidence_incomplete` | Prediction 原始证据或阈值值缺失 |
+| design_contract | `design_reference_missing` | Design 未提供可计算 L7 的独立结构 reference |
 | scientific_metric | `l2_interface_confidence_low` | 完整证据下 ipSAE 数值失败 |
 | scientific_metric | `l3_interface_physics_low` | 完整证据下 dG、SC 或 dSASA 子门失败 |
 | scientific_metric | `l4_cyclization_geometry_failed` | relax 前后闭环几何失败 |
@@ -36,6 +37,15 @@ source route 等候选池信息；若它与冻结 record 的序列不一致，�
 L2 只把 ipSAE 当主判据；ipTM 保留在指标快照中作为参考，不触发 L2 Critic issue。
 L6 已由 Prediction 负责检查 AlphaFold2/Boltz 独立模型家族和姿态收敛，Critic 不再
 沿用旧版 “AfCycDesign vs ColabFold” 文本比较。
+
+v1.1 对两种容易混淆的情形作了明确分流：
+
+- record 含 `l7_reference_missing` 时，生成 `regenerate_design_reference`，owner 为
+  Design；不会再生成“补 Prediction 证据”的任务。历史候选保持不可变，通过 Design
+  追加一个带独立 reference 的新候选处理。
+- L6 在 AF2/Boltz 数量、模型家族和 provenance 都完整后仍失败，表示姿态没有收敛；
+  `improve_pose_robustness` 的 owner 为 Design。缺 predictor 的情形仍由
+  `prediction_evidence_incomplete` 负责。
 
 ## 3. Verdict
 

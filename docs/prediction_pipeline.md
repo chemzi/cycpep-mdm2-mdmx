@@ -33,7 +33,16 @@ evaluate_battery(metrics, Research thresholds, required_targets)
 - manifest 的 refold PDB 存在且哈希一致；
 - refold PDB 的首个 `MODEL` 中恰好有一条链与候选序列完全一致；
 - 当前 L4 支持 `head_to_tail_amide`（兼容旧拼写后转成统一值）；
-- L7 使用 manifest 的 `backbone_pdb`；缺失时会 pending，不会用 refold PDB 冒充设计骨架。
+- L7 优先使用 manifest v5.2 的 `design_reference_pdb`，并兼容旧
+  `backbone_pdb`；reference 与 fixed-sequence refold 路径相同或文件内容相同时
+  fail closed，不能用 refold 冒充独立设计骨架。
+
+Prediction v1.5.1 将“历史证据摄取”和“新生产计算”分开处理：核心摄取管线仍会把
+旧候选的缺失 reference 记录为 `l7_reference_missing` / pending，保留可审计历史；
+`run_prediction_predictors.py` 与 `enrich_prediction_evidence.py` 会在启动任何
+ColabDesign、Boltz、Rosetta 或 post-relax 计算前做整批 preflight。缺少 reference
+时返回 `design_reference_missing_preflight`，要求回到 Design 生成新候选，避免其余
+六层模型全部完成后才发现 scRMSD 无法计算。
 
 Design 的 refold 已改为 `model.predict(seq=...)`。它会检查 ColabDesign hard
 sequence 和输出 PDB 序列；`design_3stage` 不再参与固定序列 refold。运行时还会
@@ -118,7 +127,7 @@ Schema 位于 [`prediction_pipeline/artifacts.schema.json`](../prediction_pipeli
 | L4 | primary monomer + post-relax PDB/metadata | metadata 必须核对工具版本、protocol、输入/输出哈希、序列、环化类型并声明已应用共价闭环拓扑；随后计算真正的末位残基 `C` 到首位残基 `N` 距离 | 缺 post-relax 或 provenance 为 pending；哈希、序列、拓扑声明冲突为 invalid；有值但硬门失败为 invalid |
 | L5 | 所有声明 complex PDB + project binding site | 每模型计算 4.5 Å 重原子接触；热点覆盖率取中位数，位点一致性要求严格多数模型命中已审阅位点 | pending |
 | L6 | 每靶标至少 3 个模型、至少 2 个独立模型家族 | 逐项核对 metadata 中的 tool、版本、model_family、model_id 和 seed；拒绝重复 tool/model/seed 与重复 PDB；靶蛋白共同 CA 做 Kabsch 后计算 binder backbone RMSD，跨模型家族 RMSD 取中位数，ensemble convergence 为 2 Å 簇最大占比 | provenance、独立模型家族或 ensemble 成员不足为 pending；声明与 metadata 冲突为 invalid |
-| L7 | primary monomer + Design backbone | 等残基顺序的 N/CA/C Kabsch backbone RMSD | pending |
+| L7 | primary monomer + 独立 Design reference | 等残基顺序的 N/CA/C Kabsch backbone RMSD | 历史摄取为 pending；新生产计算在 GPU 前置门禁失败 |
 
 `ipsae_pae_cutoff=10 Å`、接触距离和 seed 聚类距离属于方法参数，会写入 record；它们与 Research 提供的候选筛选阈值分开管理。
 

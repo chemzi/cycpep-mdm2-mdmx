@@ -32,7 +32,7 @@ from prediction_pipeline.contracts import (  # noqa: E402
 )
 
 
-CRITIC_VERSION = "1.0.0"
+CRITIC_VERSION = "1.1.0"
 REPORT_SCHEMA_VERSION = 1
 ALLOWED_STATUSES = {
     "finalized",
@@ -79,7 +79,7 @@ LAYER_ISSUES = {
         "l6_ensemble_convergence_low",
         "Independent predictor/model poses do not satisfy the convergence gate.",
         "improve_pose_robustness",
-        "design/prediction",
+        "design",
     ),
     "l7_pass": (
         "l7_design_consistency_low",
@@ -105,12 +105,13 @@ LAYER_METRICS = {
 ACTION_DEFAULTS = {
     "regenerate_invalid_artifact": ("prediction/design", "P0", False),
     "complete_prediction_evidence": ("prediction", "P0", False),
+    "regenerate_design_reference": ("design", "P0", False),
     "improve_monomer_quality": ("design", "P1", False),
     "iterate_interface_design": ("design", "P1", False),
     "iterate_interface_physics": ("design", "P1", False),
     "repair_cyclization_geometry": ("design", "P0", False),
     "retarget_reviewed_hotspots": ("design", "P1", False),
-    "improve_pose_robustness": ("design/prediction", "P1", False),
+    "improve_pose_robustness": ("design", "P1", False),
     "improve_design_consistency": ("design", "P1", False),
     "calibrate_thresholds": ("research", "P2", True),
     "deduplicate_candidates": ("design", "P1", False),
@@ -574,21 +575,63 @@ def review(
                 layer_counts[key]["missing"] += 1
 
         if status == "prediction_pending":
-            _issue(
-                issues,
-                code="prediction_evidence_incomplete",
-                severity="high",
-                category="operational",
-                message="Required Prediction evidence or a threshold value is missing.",
-                candidate_ids=[candidate_id],
-                evidence={
-                    "missing_evidence": battery.get("missing_evidence") or [],
-                    "issues": record.get("issues") or [],
-                },
-                recommended_action="complete_prediction_evidence",
-                owner_hint="prediction",
-                blocks_finalization=True,
-            )
+            prediction_issues = list(record.get("issues") or [])
+            issue_codes = {
+                str(item.get("code") or "")
+                for item in prediction_issues if isinstance(item, dict)
+            }
+            missing_evidence = list(battery.get("missing_evidence") or [])
+            if "l7_reference_missing" in issue_codes:
+                _issue(
+                    issues,
+                    code="design_reference_missing",
+                    severity="high",
+                    category="design_contract",
+                    message=(
+                        "Design did not provide an independent L7 reference backbone; "
+                        "the candidate must be regenerated in Design before Prediction."
+                    ),
+                    candidate_ids=[candidate_id],
+                    evidence={
+                        "missing_evidence": [
+                            value for value in missing_evidence
+                            if value in {"scrmsd", "l7_reference_missing"}
+                        ],
+                        "issues": [
+                            item for item in prediction_issues
+                            if isinstance(item, dict)
+                            and item.get("code") == "l7_reference_missing"
+                        ],
+                    },
+                    recommended_action="regenerate_design_reference",
+                    owner_hint="design",
+                    blocks_finalization=True,
+                )
+            remaining_missing = [
+                value for value in missing_evidence
+                if value not in {"scrmsd", "l7_reference_missing"}
+            ]
+            remaining_issues = [
+                item for item in prediction_issues
+                if not isinstance(item, dict)
+                or item.get("code") != "l7_reference_missing"
+            ]
+            if remaining_missing or remaining_issues or not prediction_issues:
+                _issue(
+                    issues,
+                    code="prediction_evidence_incomplete",
+                    severity="high",
+                    category="operational",
+                    message="Required Prediction evidence or a threshold value is missing.",
+                    candidate_ids=[candidate_id],
+                    evidence={
+                        "missing_evidence": remaining_missing,
+                        "issues": remaining_issues,
+                    },
+                    recommended_action="complete_prediction_evidence",
+                    owner_hint="prediction",
+                    blocks_finalization=True,
+                )
 
         failed_layers = battery.get("failed_layers") or []
         if status == "needs_optimization" and not failed_layers:
@@ -699,7 +742,9 @@ def review(
         verdict = "blocked"
     elif any(
         issue["severity"] == "high"
-        and issue["category"] in {"operational", "scientific_metric", "diversity"}
+        and issue["category"] in {
+            "operational", "design_contract", "scientific_metric", "diversity"
+        }
         for issue in finalized_issues
     ):
         verdict = "iterate"

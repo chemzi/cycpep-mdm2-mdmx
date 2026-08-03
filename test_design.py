@@ -434,6 +434,7 @@ check(m1['cyclization_type'] == 'Cys-Cys_disulfide', f'Cys flanked -> {m1["cycli
 check(m1['design_pipeline_version'] == DESIGN_PIPELINE_VERSION,
       f'manifest records Design version {DESIGN_PIPELINE_VERSION}')
 check(m1['backbone_pdb'] == '', 'no backbone -> empty string')
+check(m1['design_reference_pdb'] == '', 'missing reference remains explicit')
 check(len(m1['refold_pdb_hash']) > 0, 'refold hash present')
 check(m1['ring_closure']['pass'] is True, f'disulfide manifest geometry passes: {m1["ring_closure"]}')
 # With cyclization arg
@@ -464,6 +465,34 @@ check(m3['cyclization_type'] == 'head-to-tail_amide',
 check(m3['ring_closure']['pass'] is True,
       f'head-to-tail manifest carries C-N geometry: {m3["ring_closure"]}')
 os.unlink(head_pdb.name)
+
+reference_pdb = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+reference_pdb.write(monomer_pdb('ACDEFGHI', chain='B'))
+reference_pdb.write('REMARK independent RFdiffusion target-bound backbone\n')
+reference_pdb.close()
+refold_pdb = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+refold_pdb.write(monomer_pdb('ACDEFGHI', chain='A'))
+refold_pdb.close()
+m4 = _write_manifest(
+    'C0004', 'ACDEFGHI', 'route_C_test', 'batch_4', refold_pdb.name,
+    cfg_test, backbone_pdb=reference_pdb.name,
+)
+check(m4['design_reference_pdb'] == os.path.realpath(reference_pdb.name),
+      'manifest records explicit independent L7 reference')
+check(m4['design_reference_role'] == 'rfdiffusion_target_bound_backbone',
+      'manifest records the reference-generating role')
+check(m4['backbone_pdb'] == m4['design_reference_pdb'],
+      'legacy backbone alias remains consistent')
+check_raises(
+    ValueError,
+    lambda: _write_manifest(
+        'C0005', 'ACDEFGHI', 'route_C_test', 'batch_5', refold_pdb.name,
+        cfg_test, backbone_pdb=refold_pdb.name,
+    ),
+    'fixed-sequence refold cannot be reused as its own L7 reference',
+)
+os.unlink(reference_pdb.name)
+os.unlink(refold_pdb.name)
 
 # ── Test 15: cheap filter ──
 print('Test 15: cheap pre-filter')
@@ -580,6 +609,43 @@ finally:
     subprocess.run = original_subprocess_run
 check("inference.seed" not in str(captured_run2['cmd']),
       'seed intentionally omitted (RFdiffusion GPU non-deterministic)')
+
+# Route C must acquire an independent target-bound reference for every sequence
+# before it is allowed to create a fixed-sequence refold candidate.
+with tempfile.TemporaryDirectory() as route_c_root:
+    def _fake_route_c_rfdiff(**kwargs):
+        prefix = Path(kwargs['output_prefix'])
+        prefix.parent.mkdir(parents=True, exist_ok=True)
+        for index in range(kwargs['n_designs']):
+            (prefix.parent / f'{prefix.name}_{index}.pdb').write_text(
+                monomer_pdb('A' * kwargs['binder_len'], chain='A')
+                + monomer_pdb('AAA', chain='B')
+            )
+        return True
+
+    original_run_rfdiff = _run_rfdiff
+    _run_rfdiff = _fake_route_c_rfdiff
+    try:
+        route_c_references = _route_c_design_references(
+            {
+                'target_pdb': target_fixture.name,
+                'chain': 'B',
+                'hotspots': '',
+                'seed': 42,
+            },
+            route_c_root,
+            [
+                ('ACDEFGHI', 'first'),
+                ('KLMNPQRS', 'second'),
+                ('ACDEFGHIK', 'third'),
+            ],
+        )
+    finally:
+        _run_rfdiff = original_run_rfdiff
+    check(set(route_c_references) == {0, 1, 2},
+          'Route C obtains one validated L7 reference per sequence')
+    check(len(set(route_c_references.values())) == 3,
+          'Route C does not reuse one reference across candidates')
 
 # RFdiffusion may relabel output chains. Discover the binder by residue count
 # and map LigandMPNN FASTA segments using the emitted PDB chain order.

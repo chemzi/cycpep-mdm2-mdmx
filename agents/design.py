@@ -1,5 +1,5 @@
 """
-Design Agent v5.1.0 — 于嘉乐
+Design Agent v5.2.0 — 于嘉乐
 职责：RFpeptides 生成环肽骨架 → LigandMPNN 序列设计 → AfCycDesign refold 验证
 入口：design_rfpeptides(target_spec, design_config) → list[dict]
       design_motif_guided(target_spec, design_config) → list[dict]
@@ -99,7 +99,7 @@ else:
     _RFDIFF_TIMESTEPS_INVALID = None
 LIGANDMPNN_MODEL_TYPE = os.environ.get("LIGANDMPNN_MODEL_TYPE") or "protein_mpnn"
 LIGANDMPNN_CHECKPOINT = os.environ.get("LIGANDMPNN_CHECKPOINT") or f"{LIGANDMPNN_DIR}/model_params/proteinmpnn_v_48_020.pt"
-DESIGN_PIPELINE_VERSION = "5.1.0"
+DESIGN_PIPELINE_VERSION = "5.2.0"
 
 # Module-level state for _verify_colabdesign_runtime() (P3-3).
 # Only cache *success* — a transient failure (GPU OOM, env hiccup) must
@@ -738,6 +738,86 @@ def design_motif_guided(target_spec=None, design_config=None):
 # Route C: binder 模板环化改造（适配 Research 任意产出）
 # ============================================================
 
+def _route_c_design_references(config, batch_dir, sequences):
+    """Generate one independent target-bound RFdiffusion backbone per sequence.
+
+    Route C is sequence/scaffold driven, but Prediction L7 still needs a
+    structural hypothesis that was produced independently of the fixed-sequence
+    refold.  The returned mapping is keyed by the sequence's stable position in
+    *sequences*.  Missing or ambiguous RFdiffusion outputs are omitted so the
+    caller can fail closed before registering a candidate.
+    """
+    indexed_by_length = {}
+    for index, (sequence, _description) in enumerate(sequences):
+        indexed_by_length.setdefault(len(sequence), []).append(index)
+
+    hotspots = _parse_hotspot_residues(config.get("hotspots", ""))
+    target_start, target_end = _pdb_residue_range(
+        config["target_pdb"], config["chain"], hotspot_residues=hotspots
+    )
+    references = {}
+    for length, indexes in sorted(indexed_by_length.items()):
+        backbone_dir = Path(batch_dir) / f"design_references_len{length}"
+        backbone_dir.mkdir(parents=True, exist_ok=True)
+        output_prefix = str(backbone_dir / "bb")
+        completed = _run_rfdiff(
+            target_pdb=config["target_pdb"],
+            binder_len=length,
+            n_designs=len(indexes),
+            output_prefix=output_prefix,
+            contig=_binder_first_contig(
+                config["chain"], target_start, target_end, length
+            ),
+            seed=config["seed"],
+            hotspots=config.get("hotspots"),
+            chain=config["chain"],
+        )
+        if not completed:
+            EvidenceLogger.error(
+                "design",
+                "route_c_design_reference_generation_failed",
+                f"RFdiffusion failed for Route C length {length}",
+                recovery="regenerate this Route C length before Prediction",
+            )
+            continue
+
+        def sort_key(path):
+            try:
+                return int(path.stem.rsplit("_", 1)[-1])
+            except (ValueError, IndexError):
+                return -1
+
+        valid_backbones = []
+        for backbone_path in sorted(backbone_dir.glob("bb_*.pdb"), key=sort_key):
+            try:
+                _infer_binder_chain(
+                    str(backbone_path), length, receptor_chain=config["chain"]
+                )
+            except (OSError, UnicodeError, ValueError) as exc:
+                EvidenceLogger.error(
+                    "design",
+                    "route_c_design_reference_invalid",
+                    f"{backbone_path}: {exc}",
+                    recovery="skip ambiguous Route C reference backbone",
+                )
+                continue
+            valid_backbones.append(backbone_path)
+
+        for index, backbone_path in zip(indexes, valid_backbones):
+            references[index] = str(backbone_path)
+        if len(valid_backbones) < len(indexes):
+            EvidenceLogger.error(
+                "design",
+                "route_c_design_reference_incomplete",
+                {
+                    "length": length,
+                    "required": len(indexes),
+                    "valid": len(valid_backbones),
+                },
+                recovery="register only candidates with an independent reference",
+            )
+    return references
+
 def design_atsp_derived(target_spec=None, design_config=None):
     """模板环化：linker × 环化矩阵 + 随机突变扩展 + refold 验证
     ── 适配 Research 产出的任意 binder，不再死绑 ATSP-7041。"""
@@ -857,11 +937,29 @@ def design_atsp_derived(target_spec=None, design_config=None):
                       "budget or relaxing synthesizability gates",
         })
 
+    selected_sequences = expanded[:n]
+    design_references = _route_c_design_references(
+        config, batch_dir, selected_sequences
+    )
+
     candidates = []
     total_gen, total_valid = 0, 0
     t_batch = time.time()
 
-    for seq, desc in expanded[:n]:
+    for sequence_index, (seq, desc) in enumerate(selected_sequences):
+        backbone_pdb = design_references.get(sequence_index)
+        if not backbone_pdb:
+            EvidenceLogger.error(
+                "design",
+                "route_c_design_reference_unavailable",
+                {
+                    "sequence_index": sequence_index,
+                    "sequence_length": len(seq),
+                    "sequence_sha256": hashlib.sha256(seq.encode()).hexdigest(),
+                },
+                recovery="do not register or predict this candidate; regenerate Design",
+            )
+            continue
         total_gen += 1
         cid = _next_candidate_id()
         refold_dir = os.path.join(batch_dir, "candidates", cid)
@@ -883,6 +981,7 @@ def design_atsp_derived(target_spec=None, design_config=None):
             try:
                 manifest = _write_manifest(
                     cid, seq, route_name, batch_id, refold_pdb, config,
+                    backbone_pdb=backbone_pdb,
                     cyclization=cyclization_type, ring_closure=rc,
                 )
             except ValueError as exc:
@@ -1088,6 +1187,27 @@ def _write_manifest(
             f"[{cid}] ring-closure result cyclization does not match manifest: "
             f"{observed_type!r} != {canonical_cyclization!r}"
         )
+    design_reference = ""
+    design_reference_hash = ""
+    design_reference_role = ""
+    if backbone_pdb:
+        reference_path = os.path.realpath(str(backbone_pdb))
+        refold_path = os.path.realpath(str(refold_pdb))
+        if not os.path.isfile(reference_path):
+            raise ValueError(f"[{cid}] Design reference does not exist: {reference_path}")
+        if reference_path == refold_path:
+            raise ValueError(
+                f"[{cid}] fixed-sequence refold cannot be its own L7 Design reference"
+            )
+        design_reference = reference_path
+        design_reference_hash = file_hash(reference_path)
+        refold_hash = file_hash(refold_path) if os.path.exists(refold_path) else ""
+        if refold_hash and design_reference_hash == refold_hash:
+            raise ValueError(
+                f"[{cid}] L7 Design reference is byte-identical to fixed-sequence refold"
+            )
+        design_reference_role = "rfdiffusion_target_bound_backbone"
+
     manifest = {
         "design_pipeline_version": DESIGN_PIPELINE_VERSION,
         "candidate_id": cid, "sequence": seq, "length": len(seq),
@@ -1096,8 +1216,13 @@ def _write_manifest(
         "cyclization_description": cyclization_description,
         "refold_pdb": refold_pdb,
         "refold_pdb_hash": file_hash(refold_pdb) if os.path.exists(refold_pdb) else "",
-        "backbone_pdb": backbone_pdb or "",
-        "backbone_pdb_hash": file_hash(backbone_pdb) if (backbone_pdb and os.path.exists(backbone_pdb)) else "",
+        # Explicit v5.2 contract.  backbone_* remains a compatibility alias for
+        # older Prediction readers and historical manifests.
+        "design_reference_pdb": design_reference,
+        "design_reference_pdb_hash": design_reference_hash,
+        "design_reference_role": design_reference_role,
+        "backbone_pdb": design_reference,
+        "backbone_pdb_hash": design_reference_hash,
         "backbone_alternatives": bb_alternatives or [],
         "ring_closure": rc,
         "design_config_summary": {

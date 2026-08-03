@@ -18,6 +18,10 @@ SEQUENCE_RE = re.compile(r"^[ACDEFGHIKLMNPQRSTVWY]+$")
 SUPPORTED_CYCLIZATION = frozenset(
     {"head_to_tail_amide", "head-to-tail_amide", "head-to-tail-amide"}
 )
+SUPPORTED_DESIGN_REFERENCE_ROLES = frozenset({
+    "rfdiffusion_target_bound_backbone",
+    "legacy_backbone_pdb",
+})
 
 
 class ContractError(ValueError):
@@ -143,6 +147,7 @@ class CandidateInput:
     legacy_refold_sha256: str
     design_reference_pdb: Path | None
     design_reference_sha256: str | None
+    design_reference_role: str | None
     source_route: str
     source_batch: str
     input_digest: str
@@ -160,6 +165,7 @@ class CandidateInput:
                 str(self.design_reference_pdb) if self.design_reference_pdb else None
             ),
             "design_reference_sha256": self.design_reference_sha256,
+            "design_reference_role": self.design_reference_role,
             "source_route": self.source_route,
             "source_batch": self.source_batch,
             "input_digest": self.input_digest,
@@ -244,13 +250,39 @@ def candidate_from_row(row: dict) -> CandidateInput:
         "legacy_refold",
     )
 
-    raw_reference = manifest.get("backbone_pdb")
+    explicit_reference = str(manifest.get("design_reference_pdb") or "").strip()
+    legacy_reference = str(manifest.get("backbone_pdb") or "").strip()
+    if explicit_reference and legacy_reference:
+        explicit_path = _resolve_path(explicit_reference, base)
+        legacy_path = _resolve_path(legacy_reference, base)
+        if explicit_path != legacy_path:
+            raise ContractError(
+                "design_reference_conflict",
+                f"{candidate_id} explicit and compatibility Design references differ",
+            )
+    raw_reference = explicit_reference or legacy_reference
     reference = _resolve_path(raw_reference, base) if raw_reference else None
     reference_hash = None
+    reference_role = None
     if reference:
+        declared_role = str(manifest.get("design_reference_role") or "").strip()
+        reference_role = declared_role or "legacy_backbone_pdb"
+        if reference_role not in SUPPORTED_DESIGN_REFERENCE_ROLES:
+            raise ContractError(
+                "design_reference_role_invalid",
+                f"{candidate_id} has unsupported Design reference role {reference_role!r}",
+            )
         reference_hash = _verify_declared_hash(
-            reference, manifest.get("backbone_pdb_hash"), "design_reference"
+            reference,
+            manifest.get("design_reference_pdb_hash")
+            or manifest.get("backbone_pdb_hash"),
+            "design_reference",
         )
+        if reference == refold or reference_hash == refold_hash:
+            raise ContractError(
+                "design_reference_not_independent",
+                f"{candidate_id} fixed-sequence refold cannot be used as its L7 reference",
+            )
 
     snapshot = {
         "candidate_id": candidate_id,
@@ -259,6 +291,7 @@ def candidate_from_row(row: dict) -> CandidateInput:
         "manifest_sha256": manifest_sha,
         "legacy_refold_sha256": refold_hash,
         "design_reference_sha256": reference_hash,
+        "design_reference_role": reference_role,
         "source_route": str(manifest.get("source_route") or row.get("source_route") or ""),
         "source_batch": str(manifest.get("source_batch") or row.get("source_batch") or ""),
     }
@@ -272,6 +305,7 @@ def candidate_from_row(row: dict) -> CandidateInput:
         legacy_refold_sha256=refold_hash,
         design_reference_pdb=reference,
         design_reference_sha256=reference_hash,
+        design_reference_role=reference_role,
         source_route=snapshot["source_route"],
         source_batch=snapshot["source_batch"],
         input_digest=object_sha256(snapshot),

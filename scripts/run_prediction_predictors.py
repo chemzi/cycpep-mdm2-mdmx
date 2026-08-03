@@ -185,6 +185,21 @@ def _run_one(command: list[str], output_dir: Path, args) -> dict:
     return json.loads(metadata.read_text(encoding="utf-8"))
 
 
+def require_design_references(candidates) -> None:
+    """Fail before any GPU work when L7 cannot possibly be evaluated."""
+    missing = sorted(
+        candidate.candidate_id
+        for candidate in candidates
+        if candidate.design_reference_pdb is None
+    )
+    if missing:
+        raise ContractError(
+            "design_reference_missing_preflight",
+            "independent Design reference is missing for "
+            f"{missing}; regenerate these candidates in Design before Prediction",
+        )
+
+
 def run(args) -> dict:
     state = State.load()
     project = state.get("project_config") or State._project_config
@@ -207,10 +222,12 @@ def run(args) -> dict:
         args.seeds, args.model_numbers, args.model_number
     )
 
+    candidates = [candidate_from_row(row) for row in rows]
+    require_design_references(candidates)
+
     artifacts_root = Path(args.artifacts_root).expanduser().resolve()
     summaries = []
-    for row in rows:
-        candidate = candidate_from_row(row)
+    for candidate in candidates:
         candidate_dir = artifacts_root / candidate.candidate_id
         candidate_dir.mkdir(parents=True, exist_ok=True)
 
@@ -236,7 +253,9 @@ def run(args) -> dict:
                 _prediction_entry(
                     monomer_dir, "ColabDesign", primary_seed, primary=True
                 )
-            ]
+            ],
+            "design_reference_pdb": str(candidate.design_reference_pdb),
+            "design_reference_pdb_sha256": candidate.design_reference_sha256,
         }
 
         target_artifacts = {}
