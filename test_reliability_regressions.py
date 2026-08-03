@@ -172,7 +172,9 @@ class DesignReliabilityTests(unittest.TestCase):
                         "coordinate_sha256": coordinate_sha256,
                     },
                     "binding_site": {"residues": [54, 93, 96]},
-                    "design": {"lengths": [10]},
+                    # Cover every Route C length produced from the 12-aa ATSP
+                    # template plus the approved linker matrix (0/2/3/4/5 aa).
+                    "design": {"lengths": [12, 14, 15, 16, 17]},
                 },
                 {
                     "id": "MDMX",
@@ -182,7 +184,7 @@ class DesignReliabilityTests(unittest.TestCase):
                         "coordinate_sha256": coordinate_sha256,
                     },
                     "binding_site": {"residues": [53, 92, 95]},
-                    "design": {"lengths": [10]},
+                    "design": {"lengths": [12, 14, 15, 16, 17]},
                 },
             ],
         })
