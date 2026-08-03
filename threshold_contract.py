@@ -76,8 +76,7 @@ def normalize_threshold_entry(entry: Any, *, applicable_targets=None) -> dict:
     return result
 
 
-def threshold_priority(entry: Any) -> tuple:
-    item = normalize_threshold_entry(entry)
+def _base_threshold_priority(item: dict) -> tuple:
     calibrated = item.get("calibration_status") in {"calibrated", "validated", "complete"}
     verified_explicit = (
         item.get("evidence_grade") == "paper_explicit"
@@ -96,6 +95,23 @@ def threshold_priority(entry: Any) -> tuple:
         int(verified_explicit),
         completeness,
     )
+
+
+def threshold_priority(entry: Any) -> tuple:
+    """Rank an entry, including its per-target overrides.
+
+    A calibrated MDM2/MDMX override must not be hidden by a provisional base
+    entry when the cache is merged back into state.  The strongest override is
+    therefore part of the entry's effective priority.
+    """
+    item = normalize_threshold_entry(entry)
+    best = _base_threshold_priority(item)
+    overrides = item.get("targets")
+    if isinstance(overrides, dict):
+        for override in overrides.values():
+            if isinstance(override, dict):
+                best = max(best, _base_threshold_priority(normalize_threshold_entry(override)))
+    return best
 
 
 def normalize_thresholds(thresholds: Any, *, applicable_targets=None) -> tuple[dict, dict]:
@@ -159,13 +175,43 @@ def merge_thresholds(existing: Any, incoming: Any) -> tuple[dict, dict]:
             overwritten.append(key)
             reasons[key] = "added_from_cache"
             continue
-        if threshold_priority(candidate) > threshold_priority(current[key]):
-            current[key] = candidate
+
+        # Merge target-specific overrides independently.  This matters when a
+        # later run calibrates MDMX after MDM2 was already present in state.
+        current_targets = current[key].get("targets")
+        incoming_targets = candidate.get("targets")
+        target_changed = False
+        if isinstance(current_targets, dict) and isinstance(incoming_targets, dict):
+            for target, incoming_entry in incoming_targets.items():
+                if not isinstance(incoming_entry, dict):
+                    continue
+                existing_entry = current_targets.get(target)
+                if not isinstance(existing_entry, dict) or threshold_priority(incoming_entry) > threshold_priority(existing_entry):
+                    current_targets[target] = incoming_entry
+                    target_changed = True
+        elif isinstance(incoming_targets, dict):
+            current[key]["targets"] = deepcopy(incoming_targets)
+            target_changed = True
+        if target_changed:
             overwritten.append(key)
+            reasons[key] = "merged_higher_evidence_target_overrides"
+            # Continue to compare the base entry as well; a stronger global
+            # entry should still replace the old base metadata.
+
+        if threshold_priority(candidate) > threshold_priority(current[key]):
+            replacement = deepcopy(candidate)
+            if isinstance(current_targets, dict) and isinstance(replacement.get("targets"), dict):
+                merged_targets = deepcopy(current_targets)
+                merged_targets.update(replacement["targets"])
+                replacement["targets"] = merged_targets
+            current[key] = replacement
+            if key not in overwritten:
+                overwritten.append(key)
             reasons[key] = "cache_has_higher_evidence_or_calibration_priority"
         else:
-            skipped.append(key)
-            reasons[key] = "state_has_equal_or_higher_evidence_or_calibration_priority"
+            if key not in overwritten:
+                skipped.append(key)
+                reasons[key] = "state_has_equal_or_higher_evidence_or_calibration_priority"
     return current, {
         "cache_keys": list(additions),
         "final_keys": list(current),
