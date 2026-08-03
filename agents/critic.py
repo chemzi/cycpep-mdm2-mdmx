@@ -32,7 +32,7 @@ from prediction_pipeline.contracts import (  # noqa: E402
 )
 
 
-CRITIC_VERSION = "1.1.0"
+CRITIC_VERSION = "1.1.1"
 REPORT_SCHEMA_VERSION = 1
 ALLOWED_STATUSES = {
     "finalized",
@@ -320,6 +320,12 @@ def _metric_evidence(record: dict, layer_key: str) -> dict:
     return result
 
 
+def _layer_has_missing_threshold(layer_key: str, missing_thresholds: list) -> bool:
+    """Return whether a failed layer is unresolved because its gate is null."""
+    prefix = f"{layer_key[:2].upper()}_"
+    return any(str(key).upper().startswith(prefix) for key in missing_thresholds)
+
+
 def _target_metric_summary(records: list[dict], targets: list[str]) -> dict:
     result: dict[str, dict] = {}
     for target_id in targets:
@@ -574,6 +580,7 @@ def review(
             else:
                 layer_counts[key]["missing"] += 1
 
+        operationally_incomplete = False
         if status == "prediction_pending":
             prediction_issues = list(record.get("issues") or [])
             issue_codes = {
@@ -616,6 +623,7 @@ def review(
                 if not isinstance(item, dict)
                 or item.get("code") != "l7_reference_missing"
             ]
+            operationally_incomplete = bool(remaining_missing or remaining_issues)
             if remaining_missing or remaining_issues:
                 _issue(
                     issues,
@@ -639,7 +647,20 @@ def review(
                 "record_status_inconsistent",
                 f"{candidate_id} needs optimization but has no failed layer",
             )
-        for layer_key in failed_layers if status == "needs_optimization" else []:
+        # A null threshold makes the overall Prediction status pending, but it
+        # must not hide failures in other layers whose model evidence and gate
+        # values are already present.  The layer that owns the null threshold
+        # remains a calibration question until that gate is materialized.
+        metric_failures_are_reviewable = (
+            status == "needs_optimization"
+            or (status == "prediction_pending" and not operationally_incomplete)
+        )
+        missing_thresholds = list(battery.get("missing_thresholds") or [])
+        reviewable_failed_layers = [
+            layer_key for layer_key in failed_layers
+            if not _layer_has_missing_threshold(layer_key, missing_thresholds)
+        ] if metric_failures_are_reviewable else []
+        for layer_key in reviewable_failed_layers:
             if layer_key not in LAYER_ISSUES:
                 raise CriticContractError(
                     "record_layer_unknown", f"{candidate_id} has {layer_key!r}"

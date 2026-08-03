@@ -242,6 +242,29 @@ class CriticTests(unittest.TestCase):
         self.assertNotIn("prediction_evidence_incomplete", codes)
         self.assertNotIn("complete_prediction_evidence", actions)
 
+    def test_threshold_pending_keeps_other_complete_metric_failures(self):
+        battery = complete_battery(
+            failed=("l2_pass", "l5_pass"),
+            unjustified=("L2_ipsae:MDM2",),
+        )
+        battery["missing_thresholds"] = ["L5_hotspot_coverage:MDM2"]
+        record = self._record(
+            "C0001", "ACDEFGHI", "prediction_pending", battery=battery
+        )
+        handoff = self._handoff([("prediction_pending", "C0001", record)])
+        report = review(
+            handoff_path=handoff,
+            state={"project_id": "critic_test", "thresholds": {}},
+            candidate_rows=self._rows(("C0001", "ACDEFGHI", "route_A")),
+            config=CriticConfig(min_cohort_for_distribution=1),
+        )
+        codes = {item["code"] for item in report["issues"]}
+        actions = {item["action"] for item in report["recommendations"]}
+        self.assertIn("l2_interface_confidence_low", codes)
+        self.assertIn("iterate_interface_design", actions)
+        self.assertNotIn("l5_hotspot_coverage_low", codes)
+        self.assertNotIn("complete_prediction_evidence", actions)
+
     def test_missing_l7_reference_is_owned_by_design(self):
         battery = complete_battery()
         battery["l7_pass"] = None
