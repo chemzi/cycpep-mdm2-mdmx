@@ -369,6 +369,22 @@ class ResearchStateAndCacheTests(unittest.TestCase):
             "tls_ca_error",
         )
 
+    def test_research_diagnostic_preserves_redacted_prefix_and_error_tail(self):
+        message = "progress-start " + ("x" * 700) + " final HTTP 429 failure"
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "secret-token"}):
+            sanitized = research._sanitize_message(
+                message + " secret-token"
+            )
+        self.assertIn("progress-start", sanitized)
+        self.assertIn("final HTTP 429 failure", sanitized)
+        self.assertIn("[truncated]", sanitized)
+        self.assertIn("[REDACTED]", sanitized)
+        self.assertNotIn("secret-token", sanitized)
+        self.assertEqual(
+            research._stage_diagnostic("failed", sanitized)[0],
+            "http_429",
+        )
+
     def test_force_recompute_bypasses_both_old_caches(self):
         with patch.object(research, "_run_pipeline", return_value=self._pipeline_result()) as runner, \
              patch.object(research, "_load_valid_cache") as cache_loader:

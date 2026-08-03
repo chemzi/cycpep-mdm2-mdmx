@@ -214,7 +214,17 @@ def _sanitize_message(message: str) -> str:
     api_key = os.environ.get("OPENAI_API_KEY")
     if api_key:
         cleaned = cleaned.replace(api_key, "[REDACTED]")
-    return cleaned[:240]
+    # Progress logs are emitted before the exception/HTTP error.  Keeping only
+    # the prefix made real failures indistinguishable from an ordinary partial
+    # run.  Preserve both ends while retaining a bounded, secret-redacted State
+    # diagnostic suitable for Evidence/GUI display.
+    limit = 480
+    if len(cleaned) <= limit:
+        return cleaned
+    marker = " ...[truncated]... "
+    head_length = 160
+    tail_length = limit - head_length - len(marker)
+    return f"{cleaned[:head_length]}{marker}{cleaned[-tail_length:]}"
 
 
 def _error_code(stderr: str, result: dict | None = None, *, timed_out=False) -> str | None:
