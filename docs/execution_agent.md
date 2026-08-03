@@ -16,7 +16,9 @@ Orchestrator 负责依赖、审批、claim token 与单 GPU lease，Execution �
 
 Planner v1.2 会把 T001 物化为 `design_jobs`。每个 job 明确声明 `route`、
 `target_id`、`lengths`、`proposal_count` 和 `seed`；Worker 不再临时猜路线。T002 固定使用
-`af2_boltz2_prodigy_rosetta_postrelax_v1` 协议。
+`af2_boltz2_prodigy_rosetta_postrelax_v1` 协议。Critic 提出的
+`complete_prediction_evidence` 会被 Planner 映射到同一个 Prediction handler，并用显式
+候选范围补齐或复用证据，不再产生无法执行的旧 action。
 
 ## 2. 运行
 
@@ -36,6 +38,21 @@ python -m execution.worker drain \
   --run /path/to/orchestrator_run.json \
   --worker execution-worker-01
 ```
+
+使用已有完整 artifact 做一次隔离的真实链路自检：
+
+```bash
+python scripts/run_execution_selfcheck.py \
+  --project-config projects/mdm2_mdmx.json \
+  --source-data-dir /path/to/formal/data \
+  --artifacts-root /path/to/full/prediction_artifacts \
+  --work-root /path/to/new/selfcheck_run \
+  --candidate C1270
+```
+
+脚本复制 `state.json` 和 `candidate_index.csv` 后，按正常合同运行
+Planner → Orchestrator → Execution → Prediction ingest → Critic。它只写 `work-root`，适合
+部署后健康检查；自检报告明确记录是否复用了完整证据、是否意外重跑重模型，以及两层输出哈希。
 
 每个进程保存 `stdout.log`、`stderr.log` 和 `process.json`。超时或 Worker 收到中断时，
 会先终止整个子进程组，再向 Orchestrator 报告失败。GPU 用量当前按任务持有 GPU lease
@@ -63,9 +80,9 @@ python -m execution.worker drain \
 
 Orchestrator v1.1 不再只检查文件存在和 SHA-256，还会按 action 读取 JSON：
 
-- Design 结果必须证明旧 CandidateIndex 行未变化，并逐个验证新 manifest 哈希；
-- Prediction handoff 必须验证所有 record 路径和 SHA-256；
-- Critic report 必须验证 `report_id` 与 `input_digest`；
+- Design 结果必须附带 CandidateIndex 前后快照，证明旧行未变化、新 ID 来自真实追加，并逐个验证新 manifest 哈希；
+- Prediction handoff 必须与任务或上游 Design 的候选集合完全一致，并验证所有 record 路径和 SHA-256；
+- Critic report 必须验证 `report_id`、`input_digest`，以及实际消费的上游 handoff SHA-256；
 - calibration proposal 必须声明 `applied_to_state=false`。
 
 内容为 `ok` 的占位文件不能完成任务。
@@ -80,4 +97,3 @@ Orchestrator v1.1 不再只检查文件存在和 SHA-256，还会按 action 读�
 拟定机器合同见 `execution/v2_extension_contracts.schema.json`。接口预留不会改变当前七层
 Prediction，也不会让未标定的 docking/MD 指标成为硬门槛。v2 实现 handler、工具版本、
 环化拓扑验证和正负对照后，才可提升为 executable。
-

@@ -20,7 +20,7 @@ from agents.orchestrator import (
     status,
 )
 from agents.planner import record_approval, run as planner_run
-from prediction_pipeline.contracts import object_sha256
+from prediction_pipeline.contracts import file_sha256, object_sha256
 
 
 POLICY_CONSTRAINTS = [
@@ -192,6 +192,10 @@ class OrchestratorTests(unittest.TestCase):
         return self._output(name, json.dumps(value))
 
     def _design_output(self, name="design.json"):
+        stem = Path(name).stem
+        before = self._json_output(f"{stem}_candidate_index_before.json", [])
+        after = self._json_output(f"{stem}_candidate_index_after.json", [])
+        digest = object_sha256([])
         return self._json_output(name, {
             "schema_version": 1,
             "execution_worker_version": "1.0.0",
@@ -200,8 +204,16 @@ class OrchestratorTests(unittest.TestCase):
             "project_id": "orchestrator_test",
             "project_config_digest": "a" * 64,
             "jobs": [],
-            "candidate_index_before_sha256": "b" * 64,
-            "candidate_index_after_sha256": "b" * 64,
+            "candidate_index_before_sha256": digest,
+            "candidate_index_after_sha256": digest,
+            "candidate_index_before_snapshot": {
+                "path": str(before),
+                "sha256": file_sha256(before),
+            },
+            "candidate_index_after_snapshot": {
+                "path": str(after),
+                "sha256": file_sha256(after),
+            },
             "new_candidate_ids": [],
             "candidates": [],
             "existing_rows_unchanged": True,
@@ -219,14 +231,18 @@ class OrchestratorTests(unittest.TestCase):
             "downstream": {},
         })
 
-    def _critic_output(self, name="critic.json"):
+    def _critic_output(self, name="critic.json", prediction_path=None):
         digest = "c" * 64
+        prediction_path = prediction_path or self.root / "outputs" / "prediction.json"
         return self._json_output(name, {
             "schema_version": 1,
             "critic_version": "1.1.1",
             "report_id": f"critic_{digest[:12]}",
             "input_digest": digest,
-            "source": {},
+            "source": {
+                "prediction_handoff": str(prediction_path),
+                "prediction_handoff_sha256": file_sha256(prediction_path),
+            },
             "verdict": "iterate",
             "passed": False,
             "issues": [],
@@ -364,6 +380,76 @@ class OrchestratorTests(unittest.TestCase):
                 run_path=initialized["run_path"],
                 task_id="T002",
                 worker="prediction-agent",
+            )
+
+    def test_prediction_cannot_report_candidates_absent_from_design_output(self):
+        plan_result = self._required_plan()
+        approval = self._approval(plan_result)
+        initialized = initialize(
+            plan_path=plan_result["plan_path"],
+            approval_paths=[approval["approval_path"]],
+        )
+        run_path = initialized["run_path"]
+        t1 = claim(run_path=run_path, task_id="T001", worker="design-agent")
+        complete(
+            run_path=run_path,
+            task_id="T001",
+            claim_token=t1["claim_token"],
+            output_paths=["design_result=" + str(self._design_output())],
+            gpu_minutes=1,
+        )
+        t2 = claim(run_path=run_path, task_id="T002", worker="prediction-agent")
+        output = self._prediction_output("wrong_scope.json")
+        value = json.loads(output.read_text(encoding="utf-8"))
+        value["categories"] = {
+            "needs_optimization": [{"candidate_id": "C9999"}]
+        }
+        output.write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaisesRegex(OrchestratorContractError, "differ from task scope"):
+            complete(
+                run_path=run_path,
+                task_id="T002",
+                claim_token=t2["claim_token"],
+                output_paths=["prediction_handoff=" + str(output)],
+                gpu_minutes=1,
+            )
+
+    def test_critic_must_bind_the_actual_upstream_prediction_hash(self):
+        plan_result = self._required_plan()
+        approval = self._approval(plan_result)
+        initialized = initialize(
+            plan_path=plan_result["plan_path"],
+            approval_paths=[approval["approval_path"]],
+        )
+        run_path = initialized["run_path"]
+        t1 = claim(run_path=run_path, task_id="T001", worker="design-agent")
+        complete(
+            run_path=run_path,
+            task_id="T001",
+            claim_token=t1["claim_token"],
+            output_paths=["design_result=" + str(self._design_output())],
+            gpu_minutes=1,
+        )
+        t2 = claim(run_path=run_path, task_id="T002", worker="prediction-agent")
+        prediction = self._prediction_output()
+        complete(
+            run_path=run_path,
+            task_id="T002",
+            claim_token=t2["claim_token"],
+            output_paths=["prediction_handoff=" + str(prediction)],
+            gpu_minutes=1,
+        )
+        t3 = claim(run_path=run_path, task_id="T003", worker="critic-agent")
+        critic = self._critic_output(prediction_path=prediction)
+        value = json.loads(critic.read_text(encoding="utf-8"))
+        value["source"]["prediction_handoff_sha256"] = "0" * 64
+        critic.write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaisesRegex(OrchestratorContractError, "differs from upstream"):
+            complete(
+                run_path=run_path,
+                task_id="T003",
+                claim_token=t3["claim_token"],
+                output_paths=["critic_report=" + str(critic)],
             )
 
     def test_gpu_minutes_ceiling_is_enforced_and_recovery_releases_lease(self):

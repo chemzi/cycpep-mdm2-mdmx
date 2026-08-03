@@ -36,7 +36,6 @@ V2_RESERVED_ACTIONS = frozenset({
 # must refuse to claim them until a reviewed handler is implemented.
 KNOWN_UNIMPLEMENTED_ACTIONS = frozenset({
     "regenerate_invalid_artifacts",
-    "complete_prediction_evidence",
     "audit_duplicate_candidates",
     "repair_candidate_index",
     "prepare_final_candidate_report",
@@ -390,11 +389,24 @@ def _read_json(path: Path, label: str) -> dict:
     return value
 
 
+def _read_json_array(path: Path, label: str) -> list[dict]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ExecutionContractError(f"{label}_missing", f"missing {label}: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ExecutionContractError(f"{label}_malformed", f"invalid JSON: {path}") from exc
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise ExecutionContractError(f"{label}_invalid", f"{label} must be an array of objects")
+    return value
+
+
 def _validate_design_result(value: dict, task: dict) -> None:
     required = {
         "schema_version", "execution_worker_version", "action", "task_id", "project_id",
         "project_config_digest", "jobs", "candidate_index_before_sha256",
-        "candidate_index_after_sha256", "new_candidate_ids", "candidates",
+        "candidate_index_after_sha256", "candidate_index_before_snapshot",
+        "candidate_index_after_snapshot", "new_candidate_ids", "candidates",
         "existing_rows_unchanged", "completed_at",
     }
     if not required.issubset(value):
@@ -405,6 +417,28 @@ def _validate_design_result(value: dict, task: dict) -> None:
         raise ExecutionContractError("design_result_invalid", "design result identity mismatch")
     if value.get("task_id") != task.get("task_id") or value.get("existing_rows_unchanged") is not True:
         raise ExecutionContractError("design_result_invalid", "design result task/index invariant failed")
+    snapshots = []
+    for key in ("candidate_index_before_snapshot", "candidate_index_after_snapshot"):
+        reference = value.get(key)
+        if not isinstance(reference, dict):
+            raise ExecutionContractError("design_result_invalid", f"{key} must be an object")
+        path = Path(str(reference.get("path") or "")).expanduser().resolve()
+        if not path.is_file() or file_sha256(path) != reference.get("sha256"):
+            raise ExecutionContractError(
+                "design_result_invalid", f"candidate index snapshot is missing or changed: {path}"
+            )
+        snapshots.append(_read_json_array(path, key))
+    before_rows, after_rows = snapshots
+    if object_sha256(before_rows) != value.get("candidate_index_before_sha256"):
+        raise ExecutionContractError("design_result_invalid", "before snapshot digest mismatch")
+    if object_sha256(after_rows) != value.get("candidate_index_after_sha256"):
+        raise ExecutionContractError("design_result_invalid", "after snapshot digest mismatch")
+    before_by_id = {str(item.get("candidate_id") or ""): item for item in before_rows}
+    after_by_id = {str(item.get("candidate_id") or ""): item for item in after_rows}
+    if "" in before_by_id or "" in after_by_id or len(before_by_id) != len(before_rows) or len(after_by_id) != len(after_rows):
+        raise ExecutionContractError("design_result_invalid", "candidate index snapshot IDs are invalid")
+    if any(after_by_id.get(candidate_id) != row for candidate_id, row in before_by_id.items()):
+        raise ExecutionContractError("design_result_invalid", "existing candidate rows changed")
     ids = _require_strings(
         value.get("new_candidate_ids") or [], "design_result_invalid", "new_candidate_ids",
         pattern=CANDIDATE_ID_RE, allow_empty=True,
@@ -412,6 +446,21 @@ def _validate_design_result(value: dict, task: dict) -> None:
     candidates = value.get("candidates")
     if not isinstance(candidates, list) or [item.get("candidate_id") for item in candidates] != ids:
         raise ExecutionContractError("design_result_invalid", "candidate inventory differs from IDs")
+    if ids != sorted(set(after_by_id) - set(before_by_id)):
+        raise ExecutionContractError("design_result_invalid", "new candidate IDs differ from snapshots")
+    try:
+        from data_layer import CandidateIndex
+
+        if object_sha256(CandidateIndex.load()) != value.get("candidate_index_after_sha256"):
+            raise ExecutionContractError(
+                "design_result_invalid", "authoritative CandidateIndex differs from after snapshot"
+            )
+    except ExecutionContractError:
+        raise
+    except Exception as exc:
+        raise ExecutionContractError(
+            "design_result_invalid", "cannot verify authoritative CandidateIndex"
+        ) from exc
     for item in candidates:
         manifest = Path(str(item.get("manifest_path") or "")).expanduser().resolve()
         if not manifest.is_file() or file_sha256(manifest) != item.get("manifest_sha256"):
@@ -420,7 +469,11 @@ def _validate_design_result(value: dict, task: dict) -> None:
             )
 
 
-def _validate_prediction_handoff(value: dict, task: dict) -> None:
+def _validate_prediction_handoff(
+    value: dict,
+    task: dict,
+    dependency_outputs: dict[str, list[dict]] | None = None,
+) -> None:
     required = {
         "schema_version", "pipeline_version", "run_id", "project_id",
         "required_targets", "categories", "downstream",
@@ -435,14 +488,36 @@ def _validate_prediction_handoff(value: dict, task: dict) -> None:
     if not isinstance(categories, dict):
         raise ExecutionContractError("prediction_handoff_invalid", "categories must be an object")
     scope_ids = set((task.get("candidate_scope") or {}).get("candidate_ids") or [])
+    from_task_id = (task.get("candidate_scope") or {}).get("from_task_id")
+    if from_task_id:
+        matches = [
+            item
+            for item in (dependency_outputs or {}).get(from_task_id, [])
+            if item.get("role") == "design_result"
+        ]
+        if len(matches) != 1:
+            raise ExecutionContractError(
+                "prediction_handoff_scope_mismatch", "missing unique upstream Design result"
+            )
+        design_result = _read_json(
+            Path(str(matches[0].get("path") or "")).expanduser().resolve(),
+            "design_result",
+        )
+        upstream_ids = set(design_result.get("new_candidate_ids") or [])
+        if scope_ids and scope_ids != upstream_ids:
+            raise ExecutionContractError(
+                "prediction_handoff_scope_mismatch", "task and Design candidate scopes differ"
+            )
+        scope_ids = upstream_ids
     actual_ids = {
         str(item.get("candidate_id"))
         for entries in categories.values() if isinstance(entries, list)
         for item in entries if isinstance(item, dict) and item.get("candidate_id")
     }
-    if scope_ids and not actual_ids.issubset(scope_ids):
+    if scope_ids != actual_ids:
         raise ExecutionContractError(
-            "prediction_handoff_scope_mismatch", "handoff contains candidates outside task scope"
+            "prediction_handoff_scope_mismatch",
+            f"handoff candidates {sorted(actual_ids)} differ from task scope {sorted(scope_ids)}",
         )
     for entries in categories.values():
         if not isinstance(entries, list):
@@ -457,7 +532,11 @@ def _validate_prediction_handoff(value: dict, task: dict) -> None:
                 )
 
 
-def _validate_critic_report(value: dict, task: dict) -> None:
+def _validate_critic_report(
+    value: dict,
+    task: dict,
+    dependency_outputs: dict[str, list[dict]] | None = None,
+) -> None:
     required = {
         "schema_version", "critic_version", "report_id", "input_digest", "source",
         "verdict", "passed", "issues", "recommendations", "planner_handoff",
@@ -469,9 +548,26 @@ def _validate_critic_report(value: dict, task: dict) -> None:
     digest = str(value.get("input_digest") or "")
     if value.get("report_id") != f"critic_{digest[:12]}" or not SHA256_RE.fullmatch(digest):
         raise ExecutionContractError("critic_report_invalid", "Critic report ID/digest mismatch")
+    dependencies = [
+        item for values in (dependency_outputs or {}).values() for item in values
+        if item.get("role") == "prediction_handoff"
+    ]
+    if len(dependencies) != 1:
+        raise ExecutionContractError(
+            "critic_report_invalid", "Critic requires one upstream Prediction handoff"
+        )
+    source = value.get("source") or {}
+    if source.get("prediction_handoff_sha256") != dependencies[0].get("sha256"):
+        raise ExecutionContractError(
+            "critic_report_invalid", "Critic source hash differs from upstream handoff"
+        )
 
 
-def _validate_calibration_proposal(value: dict, task: dict) -> None:
+def _validate_calibration_proposal(
+    value: dict,
+    task: dict,
+    dependency_outputs: dict[str, list[dict]] | None = None,
+) -> None:
     required = {
         "schema_version", "execution_worker_version", "action", "task_id", "project_id",
         "status", "requested_threshold_keys", "current_thresholds", "control_requirements",
@@ -498,7 +594,12 @@ OUTPUT_VALIDATORS = {
 }
 
 
-def validate_output_inventory(task: dict, inventory: Iterable[dict]) -> None:
+def validate_output_inventory(
+    task: dict,
+    inventory: Iterable[dict],
+    *,
+    dependency_outputs: dict[str, list[dict]] | None = None,
+) -> None:
     """Validate role, JSON semantics and linked immutable artifacts."""
     action = str(task.get("action") or "")
     assert_action_executable(task)
@@ -514,4 +615,8 @@ def validate_output_inventory(task: dict, inventory: Iterable[dict]) -> None:
         raise ExecutionContractError("task_output_invalid", "Execution v1 actions have one primary output")
     path = Path(str(values[0].get("path") or "")).expanduser().resolve()
     value = _read_json(path, expected_roles[0])
-    OUTPUT_VALIDATORS[action](value, task)
+    validator = OUTPUT_VALIDATORS[action]
+    if action == "iterate_design":
+        validator(value, task)
+    else:
+        validator(value, task, dependency_outputs)

@@ -256,6 +256,29 @@ class PlannerTests(unittest.TestCase):
         self.assertNotIn("complete_prediction_evidence", actions)
         self.assertNotIn("diagnose_and_improve_pose_robustness", actions)
 
+    def test_missing_prediction_evidence_maps_to_executable_prediction_handler(self):
+        report_path = self._report([
+            self._issue(
+                "prediction_evidence_missing",
+                "complete_prediction_evidence",
+                candidate_ids=["C1255", "C1256"],
+                priority="P0",
+            )
+        ])
+        result = build_plan(critic_report_path=report_path, state=self._state())
+        prediction, critic = result["tasks"]
+        self.assertEqual(prediction["action"], "evaluate_new_design_candidates")
+        self.assertEqual(
+            prediction["candidate_scope"]["candidate_ids"], ["C1255", "C1256"]
+        )
+        self.assertEqual(prediction["parameters"], {
+            "reuse_complete_evidence": True,
+            "evidence_mode": "reuse_or_generate_full",
+            "predictor_protocol": "af2_boltz2_prodigy_rosetta_postrelax_v1",
+        })
+        self.assertEqual(critic["action"], "review_prediction_handoff")
+        self.assertEqual(critic["depends_on"], [prediction["task_id"]])
+
     def test_clear_report_prepares_report_without_gpu(self):
         report_path = self._report([], verdict="clear")
         result = build_plan(critic_report_path=report_path, state=self._state())

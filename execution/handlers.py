@@ -105,6 +105,12 @@ def iterate_design(context: HandlerContext) -> HandlerOutcome:
     before_rows = CandidateIndex.load()
     before_by_id = {str(row.get("candidate_id")): row for row in before_rows}
     before_digest = object_sha256(before_rows)
+    before_snapshot = context.task_dir / "snapshots" / "candidate_index_before.json"
+    before_snapshot.parent.mkdir(parents=True, exist_ok=True)
+    before_snapshot.write_text(
+        json.dumps(before_rows, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     processes = []
     for index, job in enumerate(params["design_jobs"], start=1):
         argv = [
@@ -161,6 +167,11 @@ def iterate_design(context: HandlerContext) -> HandlerOutcome:
             "backbone_pdb": row.get("backbone_pdb"),
         })
     result_path = context.task_dir / "outputs" / "design_task_result.json"
+    after_snapshot = context.task_dir / "snapshots" / "candidate_index_after.json"
+    after_snapshot.write_text(
+        json.dumps(after_rows, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     atomic_json(result_path, {
         "schema_version": EXECUTION_SCHEMA_VERSION,
         "execution_worker_version": EXECUTION_WORKER_VERSION,
@@ -171,6 +182,14 @@ def iterate_design(context: HandlerContext) -> HandlerOutcome:
         "jobs": params["design_jobs"],
         "candidate_index_before_sha256": before_digest,
         "candidate_index_after_sha256": object_sha256(after_rows),
+        "candidate_index_before_snapshot": {
+            "path": str(before_snapshot),
+            "sha256": file_sha256(before_snapshot),
+        },
+        "candidate_index_after_snapshot": {
+            "path": str(after_snapshot),
+            "sha256": file_sha256(after_snapshot),
+        },
         "new_candidate_ids": new_ids,
         "candidates": candidates,
         "existing_rows_unchanged": True,

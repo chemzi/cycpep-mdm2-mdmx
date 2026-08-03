@@ -62,7 +62,7 @@ ACTION_SPECS = {
     },
     "complete_prediction_evidence": {
         "agent": "prediction",
-        "task_action": "complete_prediction_evidence",
+        "task_action": "evaluate_new_design_candidates",
         "phase": "evaluate",
         "resource_class": "gpu",
         "kind": "prediction",
@@ -757,6 +757,11 @@ def build_plan(
                 "reuse_complete_prediction_evidence",
                 "single_gpu_serial_execution",
             ])
+            parameters.update({
+                "reuse_complete_evidence": True,
+                "evidence_mode": "reuse_or_generate_full",
+                "predictor_protocol": "af2_boltz2_prodigy_rosetta_postrelax_v1",
+            })
             outputs = ["prediction_handoff.json"]
         elif action == "regenerate_invalid_artifact":
             constraints.extend([
