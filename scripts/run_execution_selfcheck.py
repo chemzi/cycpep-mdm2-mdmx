@@ -205,8 +205,11 @@ def main() -> int:
     if final_run["status"] != "completed":
         raise SystemExit(json.dumps(drained, ensure_ascii=False, indent=2))
 
+    planned_tasks = {
+        task["task_id"]: task for task in plan_result["plan"]["tasks"]
+    }
     task_by_action = {
-        value["action"]: (task_id, value)
+        planned_tasks[task_id]["action"]: (task_id, value)
         for task_id, value in final_run["tasks"].items()
     }
     prediction_id, prediction_task = task_by_action["evaluate_new_design_candidates"]
