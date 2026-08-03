@@ -168,6 +168,23 @@ class ThresholdResearchFullTextTests(unittest.TestCase):
 
 
 class ResearchStateAndCacheTests(unittest.TestCase):
+    def test_approved_generic_binders_survive_without_llm_extraction(self):
+        config = {
+            "targets": [{
+                "id": "KEAP1",
+                "known_binders": [{
+                    "name": "c[GDEETGE]",
+                    "sequence": "GDEETGE",
+                    "pdb_id": "7K2E",
+                }],
+            }]
+        }
+        approved = research._approved_known_binders(config)
+        merged = research._merge_known_binders(approved, [])
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["target_id"], "KEAP1")
+        self.assertEqual(merged[0]["provenance"], "approved_project_config")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="research-cache-test-")
         self.root = Path(self.temp.name)

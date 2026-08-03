@@ -349,6 +349,41 @@ def _generic_l5_threshold(config: dict) -> dict:
     })
 
 
+def _approved_known_binders(config: dict) -> list[dict]:
+    """Return binders explicitly contained in the approved project contract."""
+    binders = []
+    for target in config.get("targets", []):
+        for raw in target.get("known_binders") or []:
+            if not isinstance(raw, dict):
+                continue
+            binder = json.loads(json.dumps(raw))
+            binder.setdefault("target_id", target["id"])
+            binder["provenance"] = "approved_project_config"
+            binders.append(binder)
+    return binders
+
+
+def _merge_known_binders(*collections: list[dict]) -> list[dict]:
+    """Deduplicate trusted and extracted binders without losing provenance."""
+    merged = []
+    seen = set()
+    for collection in collections:
+        for raw in collection or []:
+            if not isinstance(raw, dict):
+                continue
+            key = (
+                str(raw.get("target_id") or raw.get("target") or "").casefold(),
+                str(raw.get("sequence") or "").upper(),
+                str(raw.get("name") or "").casefold(),
+                str(raw.get("pdb_id") or "").upper(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(json.loads(json.dumps(raw)))
+    return merged
+
+
 def _default_thresholds(config: dict) -> dict:
     thresholds, _ = normalize_thresholds(
         json.loads(json.dumps(DEFAULT_THRESHOLDS)),
@@ -926,10 +961,14 @@ def _run_generic_pipeline():
         "duration_sec": round(pd, 1), "stdout_snippet": f"papers={pmr.get('n_total', 0)}",
     }, targets=target_ids, phase="research")
 
-    known_binders = []
+    approved_binders = _approved_known_binders(PROJECT_CONFIG)
+    known_binders = list(approved_binders)
     try:
         lr, le, lc, ld, lh = _run_script("llm_extract.py", pmr, extra_args=["--concurrency", "3"])
-        known_binders = lr.get("known_binders", [])
+        extracted_binders = lr.get("known_binders", [])
+        known_binders = _merge_known_binders(
+            approved_binders, extracted_binders
+        )
         raw_llm_status = lr.get("run_status", "failed")
         stage_status["llm_extract"] = (
             "degraded_no_api_key" if raw_llm_status == "degraded_no_api_key"
@@ -1007,7 +1046,18 @@ def _run_generic_pipeline():
         },
         "known_binders": known_binders,
         "known_dual_binders": known_binders,
-        "known_binder_source": "llm_extracted" if known_binders else "none_found",
+        "known_binder_source": (
+            "approved_project_config_and_llm"
+            if approved_binders and any(
+                binder.get("provenance") != "approved_project_config"
+                for binder in known_binders
+            )
+            else "approved_project_config"
+            if approved_binders
+            else "llm_extracted"
+            if known_binders
+            else "none_found"
+        ),
         "design_strategy_summary": "Target-configured; derive design constraints from retrieved epitope evidence.",
         "data_quality_alert": "No MDM-specific constants were used as fallback.",
         "literature_refs": pmr.get("pmids", []),

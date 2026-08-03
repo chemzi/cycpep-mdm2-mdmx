@@ -23,6 +23,7 @@ from data_layer import CandidateIndex, State
 from project_config import load_project_config
 from target_bootstrap import config_digest
 from scripts import search_pdb
+from scripts.compute_interface import _limit_complexes_by_target
 from scripts.enrich_pdb import enrich
 from scripts.aggregate_pockets import aggregate
 from scripts.superpose_analyze import _global_align_pairs
@@ -43,6 +44,18 @@ class _Response:
 
 
 class ResearchReliabilityTests(unittest.TestCase):
+    def test_interface_selection_uses_configured_target_names(self):
+        targets, selected = _limit_complexes_by_target([
+            {"pdb_id": "7K2E", "target": "KEAP1"},
+            {"pdb_id": "7K2F", "target": "KEAP1"},
+            {"pdb_id": "1YCR", "target": "MDM2"},
+        ], 1)
+        self.assertEqual(targets, ["KEAP1", "MDM2"])
+        self.assertEqual(
+            [(row["target"], row["pdb_id"]) for row in selected],
+            [("KEAP1", "7K2E"), ("MDM2", "1YCR")],
+        )
+
     def test_search_query_uses_uniprot_accession(self):
         captured = {}
 
