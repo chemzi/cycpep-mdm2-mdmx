@@ -19,6 +19,10 @@ import numpy as np
 
 from .contracts import ContractError, SEQUENCE_RE, file_sha256
 from .structures import exact_sequence_chain, parse_pdb
+from peptide_contract import (
+    MAX_CYCLIC_PEPTIDE_LENGTH,
+    MIN_CYCLIC_PEPTIDE_LENGTH,
+)
 
 
 def _git_head(repository: Path) -> str:
@@ -116,8 +120,14 @@ def _apply_cyclic_offset(model, start: int, length: int) -> None:
 
 def run(args: argparse.Namespace) -> dict:
     sequence = args.sequence.strip().upper()
-    if not SEQUENCE_RE.fullmatch(sequence) or not 8 <= len(sequence) <= 20:
-        raise ContractError("sequence_invalid", "sequence must be 8-20 standard amino acids")
+    if not SEQUENCE_RE.fullmatch(sequence) or not (
+        MIN_CYCLIC_PEPTIDE_LENGTH <= len(sequence) <= MAX_CYCLIC_PEPTIDE_LENGTH
+    ):
+        raise ContractError(
+            "sequence_invalid",
+            f"sequence must be {MIN_CYCLIC_PEPTIDE_LENGTH}-"
+            f"{MAX_CYCLIC_PEPTIDE_LENGTH} standard amino acids",
+        )
     colabdesign_dir = Path(args.colabdesign_dir).expanduser().resolve()
     observed_commit = _git_head(colabdesign_dir)
     if observed_commit != args.expected_commit:

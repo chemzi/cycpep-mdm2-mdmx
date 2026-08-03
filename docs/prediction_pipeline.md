@@ -28,7 +28,7 @@ evaluate_battery(metrics, Research thresholds, required_targets)
 每条候选必须同时满足：
 
 - `candidate_id` 匹配 `C\d{4,}`，且在本批次唯一；
-- 序列只含 20 种标准氨基酸，长度 8–20；
+- 序列只含 20 种标准氨基酸，长度 7–20；
 - CandidateIndex 与 manifest 的 candidate ID、序列、长度一致；
 - manifest 的 refold PDB 存在且哈希一致；
 - refold PDB 的首个 `MODEL` 中恰好有一条链与候选序列完全一致；

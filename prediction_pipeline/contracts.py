@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from project_config import required_target_ids
+from peptide_contract import (
+    MAX_CYCLIC_PEPTIDE_LENGTH,
+    MIN_CYCLIC_PEPTIDE_LENGTH,
+)
 
 
 SCHEMA_VERSION = 1
@@ -20,6 +24,7 @@ SUPPORTED_CYCLIZATION = frozenset(
 )
 SUPPORTED_DESIGN_REFERENCE_ROLES = frozenset({
     "rfdiffusion_target_bound_backbone",
+    "experimental_cyclic_peptide_structure",
     "legacy_backbone_pdb",
 })
 
@@ -186,10 +191,11 @@ def _validate_candidate_row(row: dict) -> tuple[str, str]:
             "sequence_invalid",
             f"{candidate_id} sequence contains a non-standard amino acid",
         )
-    if not 8 <= len(sequence) <= 20:
+    if not MIN_CYCLIC_PEPTIDE_LENGTH <= len(sequence) <= MAX_CYCLIC_PEPTIDE_LENGTH:
         raise ContractError(
             "sequence_length_invalid",
-            f"{candidate_id} sequence length {len(sequence)} is outside 8-20",
+            f"{candidate_id} sequence length {len(sequence)} is outside "
+            f"{MIN_CYCLIC_PEPTIDE_LENGTH}-{MAX_CYCLIC_PEPTIDE_LENGTH}",
         )
     return candidate_id, sequence
 

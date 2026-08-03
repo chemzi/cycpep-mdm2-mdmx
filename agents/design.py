@@ -29,6 +29,12 @@ from project_config import (
 )
 from structure_resolution import assert_target_structure_ready
 from target_bootstrap import assert_project_approved
+from peptide_contract import (
+    MAX_CYCLIC_PEPTIDE_LENGTH,
+    MIN_CYCLIC_PEPTIDE_LENGTH,
+    STANDARD_AMINO_ACIDS,
+    supported_length_message,
+)
 
 
 # ============================================================
@@ -653,7 +659,7 @@ def design_motif_guided(target_spec=None, design_config=None):
     backbone_entries = []  # (bb_path, binder_chain, raw_seqs)
 
     for tmpl_seq, tmpl_name in templates:
-        if len(tmpl_seq) < 8 or len(tmpl_seq) > 20:
+        if not MIN_CYCLIC_PEPTIDE_LENGTH <= len(tmpl_seq) <= MAX_CYCLIC_PEPTIDE_LENGTH:
             continue
         L = len(tmpl_seq)
         tmpl_hotspots = _hotspot_positions(tmpl_seq)
@@ -769,7 +775,8 @@ def design_motif_guided(target_spec=None, design_config=None):
     if total_gen == 0 and templates:
         EvidenceLogger.error("design", "route_b_all_templates_filtered",
             f"{len(templates)} template(s) provided but none passed the "
-            f"length gate (8–20 residues); check known_dual_binders sequences",
+            f"length gate ({MIN_CYCLIC_PEPTIDE_LENGTH}–"
+            f"{MAX_CYCLIC_PEPTIDE_LENGTH} residues); check known_dual_binders sequences",
             recovery="verify Research output contains valid-length binders")
     EvidenceLogger.design_batch(route=route_name, n_generated=total_gen,
         n_valid=total_valid, tool_name="rfpeptides_motif",
@@ -1222,7 +1229,8 @@ def pareto_front(candidates, obj_x=None, obj_y=None, project_config=None):
 
 def _write_manifest(
         cid, seq, route, batch_id, refold_pdb, config, backbone_pdb=None,
-        cyclization=None, ring_closure=None, bb_alternatives=None):
+        cyclization=None, ring_closure=None, bb_alternatives=None,
+        design_reference_role=None, reference_metadata=None):
     """Write one versioned candidate manifest with audited closure geometry."""
     refold_dir = os.path.dirname(refold_pdb)
     manifest_path = os.path.join(refold_dir, "manifest.json")
@@ -1247,6 +1255,7 @@ def _write_manifest(
             f"[{cid}] ring-closure result cyclization does not match manifest: "
             f"{observed_type!r} != {canonical_cyclization!r}"
         )
+    requested_reference_role = design_reference_role
     design_reference = ""
     design_reference_hash = ""
     design_reference_role = ""
@@ -1266,7 +1275,17 @@ def _write_manifest(
             raise ValueError(
                 f"[{cid}] L7 Design reference is byte-identical to fixed-sequence refold"
             )
-        design_reference_role = "rfdiffusion_target_bound_backbone"
+        design_reference_role = (
+            requested_reference_role or "rfdiffusion_target_bound_backbone"
+        )
+        if design_reference_role not in {
+            "rfdiffusion_target_bound_backbone",
+            "experimental_cyclic_peptide_structure",
+        }:
+            raise ValueError(
+                f"[{cid}] unsupported Design reference role: "
+                f"{design_reference_role!r}"
+            )
 
     manifest = {
         "design_pipeline_version": DESIGN_PIPELINE_VERSION,
@@ -1291,7 +1310,8 @@ def _write_manifest(
             "target_pdb": config.get("target_pdb"),
             "target_pdb_sha256": config.get("target_pdb_sha256"),
             "seed": config.get("seed"),
-        }
+        },
+        "reference_metadata": copy.deepcopy(reference_metadata or {}),
     }
     manifest["manifest_path"] = manifest_path
     with open(manifest_path, "w") as f:
@@ -1372,8 +1392,10 @@ def _binder_first_contig(target_chain, target_start, target_end, binder_len):
     start, end, length = int(target_start), int(target_end), int(binder_len)
     if start > end:
         raise ValueError(f"target residue range is reversed: {start}-{end}")
-    if not 8 <= length <= 20:
-        raise ValueError(f"binder length must be 8-20, got {length}")
+    if not MIN_CYCLIC_PEPTIDE_LENGTH <= length <= MAX_CYCLIC_PEPTIDE_LENGTH:
+        raise ValueError(
+            f"{supported_length_message('binder')}, got {length}"
+        )
     return f"{length}-{length} {chain}{start}-{end}/0"
 
 
@@ -1658,7 +1680,10 @@ def _build_refold_script(sequence, output_pdb):
     emitted PDB before the manifest is allowed downstream.
     """
     if not _validate_sequence(sequence):
-        raise ValueError("refold sequence must contain 8-20 standard amino acids")
+        raise ValueError(
+            f"refold sequence must contain {MIN_CYCLIC_PEPTIDE_LENGTH}-"
+            f"{MAX_CYCLIC_PEPTIDE_LENGTH} standard amino acids"
+        )
     L = len(sequence)
     return f"""
 import sys, subprocess, numpy as np
@@ -2363,9 +2388,12 @@ def _hotspot_fixed_residues(hotspots, binder_residues):
 def _validate_sequence(seq):
     if not isinstance(seq, str):
         return False
-    valid = set("ACDEFGHIKLMNPQRSTVWY")
+    valid = STANDARD_AMINO_ACIDS
     s = seq.upper().replace("-","").replace("*","")
-    return 8 <= len(s) <= 20 and all(c in valid for c in s)
+    return (
+        MIN_CYCLIC_PEPTIDE_LENGTH <= len(s) <= MAX_CYCLIC_PEPTIDE_LENGTH
+        and all(c in valid for c in s)
+    )
 
 
 def _next_candidate_id():
@@ -2478,8 +2506,12 @@ def _merge_config(target_spec, design_config):
         target.get("design") or {}
     ).get("lengths", [10, 12, 14])
     lengths = [int(length) for length in lengths]
-    if not lengths or any(length < 8 or length > 20 for length in lengths):
-        raise ValueError("cyclic peptide lengths must be between 8 and 20 residues")
+    if not lengths or any(
+        length < MIN_CYCLIC_PEPTIDE_LENGTH
+        or length > MAX_CYCLIC_PEPTIDE_LENGTH
+        for length in lengths
+    ):
+        raise ValueError(supported_length_message())
 
     n = dc.get("n") if dc.get("n") is not None else ts.get("n", 100)
     n = int(n)

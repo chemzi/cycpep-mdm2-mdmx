@@ -15,6 +15,7 @@ from data_layer import CandidateIndex, State
 from prediction_pipeline.contracts import (
     ContractError,
     PredictionConfig,
+    _validate_candidate_row,
     candidate_from_row,
 )
 from prediction_pipeline.colabdesign_worker import (
@@ -192,6 +193,18 @@ class StructureAndParserTests(unittest.TestCase):
         self.assertEqual(abs(offset[0, 7]), 1)
         self.assertEqual(abs(offset[0, 1]), 1)
         np.testing.assert_array_equal(offset, -offset.T)
+
+    def test_seven_residue_cyclic_sequence_contract(self):
+        self.assertEqual(
+            _validate_candidate_row({
+                "candidate_id": "C0007", "sequence": "GDEETGE"
+            }),
+            ("C0007", "GDEETGE"),
+        )
+        with self.assertRaisesRegex(ContractError, "outside 7-20"):
+            _validate_candidate_row({
+                "candidate_id": "C0006", "sequence": "AAAAAA"
+            })
 
     def test_worker_rejects_backend_that_ignores_pairwise_offset(self):
         repository = self.root / "ColabDesign"

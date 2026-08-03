@@ -10,7 +10,7 @@
     "candidate_id": {"type": "string", "pattern": "^C\\d{4,}$"},
     "sequence": {
       "type": "string",
-      "pattern": "^[ACDEFGHIKLMNPQRSTVWY]{8,20}$"
+      "pattern": "^[ACDEFGHIKLMNPQRSTVWY]{7,20}$"
     },
     "global": {
       "type": "object",

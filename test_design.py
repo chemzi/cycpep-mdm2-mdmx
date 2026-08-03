@@ -177,14 +177,18 @@ def check_raises(error_type, fn, msg):
 # ── Test 1: _validate_sequence ──
 print('Test 1: _validate_sequence')
 check(_validate_sequence('ACDEFGHI'), 'basic valid seq')
+check(_validate_sequence('GDEETGE'), '7-aa KEAP1 benchmark sequence accepted')
 check(_validate_sequence('CACDEFGHIC'), 'Cys flanked seq')
 check(not _validate_sequence(''), 'empty rejected')
 check(not _validate_sequence('AAAAA'), 'too short (5) rejected')
+check(not _validate_sequence('AAAAAA'), '6-aa sequence rejected')
 check(not _validate_sequence('A' * 21), 'too long (21) rejected')
 check(not _validate_sequence('ACDXEFG'), 'nonstandard X rejected')
 check(not _validate_sequence(None), 'None rejected')
 check(_validate_sequence('acdefghi'), 'lowercase accepted')
 check(_validate_sequence('ACD-EFG*HI'), 'hyphen and star stripped')
+check(_binder_first_contig('A', 328, 609, 7) == '7-7 A328-609/0',
+      'RFdiffusion contig accepts 7-aa cyclic binder')
 
 # ── Test 2: _describe_cyclize ──
 print('Test 2: _describe_cyclize')
