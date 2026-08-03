@@ -218,6 +218,30 @@ class CriticTests(unittest.TestCase):
             item["action"] for item in report["recommendations"]
         })
 
+    def test_threshold_only_pending_does_not_request_more_gpu_evidence(self):
+        battery = complete_battery(
+            unjustified=("L2_ipsae:MDM2",)
+        )
+        battery["all_layers_pass"] = False
+        battery["l5_pass"] = False
+        battery["failed_layers"] = ["l5_pass"]
+        battery["missing_thresholds"] = ["L5_hotspot_coverage:MDM2"]
+        record = self._record(
+            "C0001", "ACDEFGHI", "prediction_pending", battery=battery
+        )
+        handoff = self._handoff([("prediction_pending", "C0001", record)])
+        report = review(
+            handoff_path=handoff,
+            state={"project_id": "critic_test", "thresholds": {}},
+            candidate_rows=self._rows(("C0001", "ACDEFGHI", "benchmark_reference_replay")),
+            config=CriticConfig(min_cohort_for_distribution=1),
+        )
+        codes = {item["code"] for item in report["issues"]}
+        actions = {item["action"] for item in report["recommendations"]}
+        self.assertIn("threshold_calibration_pending", codes)
+        self.assertNotIn("prediction_evidence_incomplete", codes)
+        self.assertNotIn("complete_prediction_evidence", actions)
+
     def test_missing_l7_reference_is_owned_by_design(self):
         battery = complete_battery()
         battery["l7_pass"] = None

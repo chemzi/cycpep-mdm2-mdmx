@@ -126,7 +126,7 @@ THRESHOLDS_CACHE = DATA_DIR / "_thresholds_cache.json"
 RESEARCH_CACHE_SCHEMA_VERSION = 2
 THRESHOLD_CACHE_SCHEMA_VERSION = 2
 CONTROL_CALIBRATION_SCHEMA_VERSION = CALIBRATION_SCHEMA_VERSION
-RESEARCH_PIPELINE_VERSION = "research-v2"
+RESEARCH_PIPELINE_VERSION = "research-v3"
 PROTOCOL_VERSIONS = {
     "rcsb_search": "v2",
     "rcsb_graphql": "v2",
@@ -1065,7 +1065,10 @@ def _run_generic_pipeline():
         "_pipeline_meta": {
             "last_run": datetime.now(timezone.utc).isoformat(),
             "dynamic_pdb_list": dynamic_pdb_list,
-            "counts_by_target": er.get("counts_by_target", {}),
+            "counts_by_target": (
+                aggregate.get("counts_by_target")
+                or er.get("n_by_target", {})
+            ),
             "stage_status": stage_status,
             "stage_error_code": stage_error_code,
             "error_message": error_message,

@@ -616,13 +616,13 @@ def review(
                 if not isinstance(item, dict)
                 or item.get("code") != "l7_reference_missing"
             ]
-            if remaining_missing or remaining_issues or not prediction_issues:
+            if remaining_missing or remaining_issues:
                 _issue(
                     issues,
                     code="prediction_evidence_incomplete",
                     severity="high",
                     category="operational",
-                    message="Required Prediction evidence or a threshold value is missing.",
+                    message="Required Prediction evidence is missing or invalid.",
                     candidate_ids=[candidate_id],
                     evidence={
                         "missing_evidence": remaining_missing,
