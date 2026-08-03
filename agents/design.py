@@ -1,5 +1,5 @@
 """
-Design Agent v5.2.0 — 于嘉乐
+Design Agent v5.2.1 — 于嘉乐
 职责：RFpeptides 生成环肽骨架 → LigandMPNN 序列设计 → AfCycDesign refold 验证
 入口：design_rfpeptides(target_spec, design_config) → list[dict]
       design_motif_guided(target_spec, design_config) → list[dict]
@@ -99,7 +99,7 @@ else:
     _RFDIFF_TIMESTEPS_INVALID = None
 LIGANDMPNN_MODEL_TYPE = os.environ.get("LIGANDMPNN_MODEL_TYPE") or "protein_mpnn"
 LIGANDMPNN_CHECKPOINT = os.environ.get("LIGANDMPNN_CHECKPOINT") or f"{LIGANDMPNN_DIR}/model_params/proteinmpnn_v_48_020.pt"
-DESIGN_PIPELINE_VERSION = "5.2.0"
+DESIGN_PIPELINE_VERSION = "5.2.1"
 
 # Module-level state for _verify_colabdesign_runtime() (P3-3).
 # Only cache *success* — a transient failure (GPU OOM, env hiccup) must
@@ -264,6 +264,50 @@ def _require_mdm_reference_route(route_name):
             f"{route_name} contains MDM-specific motif knowledge and is disabled for "
             f"project {ACTIVE_PROJECT_CONFIG['project_id']}; provide project-specific motifs instead"
         )
+
+
+def _route_c_cyclization_pairs(modality):
+    """Return only cyclization chemistries allowed by the project contract.
+
+    Route C can construct terminal-disulfide and head-to-tail templates, but a
+    concrete project may support only one of them downstream.  Filtering here
+    prevents Design from spending GPU time on a candidate that Prediction is
+    contractually unable to ingest.
+    """
+    normalized = str(modality or "cyclic_peptide").strip().lower().replace("-", "_")
+    if normalized in {"head_to_tail_cyclic_peptide", "head_to_tail_amide"}:
+        return [("", "")]
+    if normalized in {
+        "disulfide_cyclic_peptide",
+        "cys_cys_disulfide",
+        "terminal_disulfide_cyclic_peptide",
+    }:
+        return [("C", "C")]
+    if normalized in {"cyclic_peptide", "generic_cyclic_peptide"}:
+        return list(CYCLIZATION_PAIRS)
+    raise ValueError(
+        f"Route C does not support project modality {modality!r}; supported "
+        "modalities are head-to-tail, terminal-disulfide, or generic cyclic peptide"
+    )
+
+
+def _route_c_base_combos(template_seq, allowed_lengths, modality):
+    """Build Route C templates that satisfy chemistry, length, and synthesis gates."""
+    length_set = {int(length) for length in allowed_lengths}
+    combos = []
+    for linker in LINKER_MATRIX:
+        for cn, cc in _route_c_cyclization_pairs(modality):
+            seq = f"{cn}{template_seq}{linker}{cc}"
+            if len(seq) not in length_set or not _validate_sequence(seq):
+                continue
+            violations = _synthesizability_violations(seq)
+            # A head-to-tail closure does not require terminal Cys; internal
+            # Cys may be chemically valid and is therefore not a hard failure.
+            if cn == "" and cc == "":
+                violations = [v for v in violations if "stray_cys" not in v]
+            if not violations:
+                combos.append((seq, _describe_cyclize(cn, cc, linker)))
+    return combos
 
 
 def _load_existing_sequences():
@@ -867,28 +911,38 @@ def design_atsp_derived(target_spec=None, design_config=None):
     # 标准化模板序列：去除小写/修饰符，与 _validate_sequence 的内部归一化一致，
     # 否则 AfCycDesign refold 收到非标准氨基酸会静默失败（P0-3）。
     template_seq = template_seq.upper().replace("-", "").replace("*", "")
-    # Route C 序列设计: linker × 环化 全矩阵
-    base_combos = []
-    for linker in LINKER_MATRIX:
-        for cn, cc in CYCLIZATION_PAIRS:
-            seq = f"{cn}{template_seq}{linker}{cc}"
-            if not _validate_sequence(seq):
-                continue
-            violations = _synthesizability_violations(seq)
-            # head-to-tail 环化允许内部 Cys；只有二硫键环化才要求只有末端 Cys
-            if cn == "" and cc == "":
-                violations = [v for v in violations if "stray_cys" not in v]
-            if not violations:
-                base_combos.append((seq, _describe_cyclize(cn, cc, linker)))
+    # Route C 序列设计同时遵守项目环化类型和获批长度。这样 Design 不会生成
+    # 当前 Prediction 合同无法处理的化学类型，也不会静默忽略 --lengths。
+    try:
+        allowed_pairs = _route_c_cyclization_pairs(config["modality"])
+        base_combos = _route_c_base_combos(
+            template_seq,
+            config["lengths"],
+            config["modality"],
+        )
+    except ValueError as exc:
+        EvidenceLogger.error(
+            "design",
+            "route_c_unsupported_modality",
+            {
+                "modality": config.get("modality"),
+                "detail": str(exc),
+            },
+            recovery="select a Route C-supported cyclization modality or add an explicit chemistry adapter",
+        )
+        return []
 
     if not base_combos:
         EvidenceLogger.error("design", "route_c_empty",
-            f"All {len(LINKER_MATRIX) * len(CYCLIZATION_PAIRS)} cyclization "
-            "combos for template {template_name!r} failed the synthesizability "
-            "gate — no viable sequences.",
-            recovery="review template sequence and cyclization pairs for "
-                     "synthesizability conflicts (NG deamidation, DP cleavage, "
-                     "stray Cys, aggregation)")
+            {
+                "template": template_name,
+                "template_length": len(template_seq),
+                "allowed_lengths": config["lengths"],
+                "modality": config["modality"],
+                "attempted_combinations": len(LINKER_MATRIX) * len(allowed_pairs),
+                "reason": "all combinations failed length or synthesizability gates",
+            },
+            recovery="review approved lengths, template sequence, and synthesizability rules")
         return []
 
     # 第2级：不够 n 则随机突变扩展；基础组合需先按已有序列去重
@@ -996,7 +1050,13 @@ def design_atsp_derived(target_spec=None, design_config=None):
             candidates.append(candidate)
         else:
             EvidenceLogger.error("design", "refold_failed",
-                f"{cid}: pLDDT={plddt}", recovery="skip")
+                {
+                    "candidate_id": cid,
+                    "pLDDT": plddt,
+                    "cyclization_type": cyclization_type,
+                    "ring_closure": rc,
+                },
+                recovery="skip candidate; inspect ring_closure.reason before rerunning")
 
     EvidenceLogger.design_batch(route=route_name, n_generated=total_gen,
         n_valid=total_valid, tool_name="atsp_derived",
@@ -2458,6 +2518,7 @@ def _merge_config(target_spec, design_config):
 
     return {
         "project_id": project["project_id"],
+        "modality": project.get("modality", "cyclic_peptide"),
         "target_id": target["id"],
         "target_name": target["id"],
         "target_pdb": str(coordinate_path),

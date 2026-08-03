@@ -390,6 +390,20 @@ check('a9' not in fixed, f'L@8 should NOT be fixed, got: {fixed}')
 
 # ── Test 12: Route C expansion ──
 print('Test 12: Route C expansion logic')
+check(_route_c_cyclization_pairs('head_to_tail_cyclic_peptide') == [('', '')],
+      'head-to-tail project excludes terminal-disulfide Route C candidates')
+check(_route_c_cyclization_pairs('disulfide_cyclic_peptide') == [('C', 'C')],
+      'disulfide project excludes head-to-tail Route C candidates')
+route_c_head_to_tail = _route_c_base_combos(
+    'TSFAEYWNLLSP', [12], 'head_to_tail_cyclic_peptide'
+)
+check(route_c_head_to_tail == [('TSFAEYWNLLSP', 'head-to-tail_amide')],
+      f'Route C honours approved length and modality, got {route_c_head_to_tail}')
+check_raises(
+    ValueError,
+    lambda: _route_c_cyclization_pairs('stapled_peptide'),
+    'unsupported Route C chemistry fails closed',
+)
 import random
 random.seed(42)
 orig = [('LTFLEYWAAQSL', 'head-to-tail_amide')]
