@@ -15,6 +15,7 @@ MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当�
 - [Critic v1.1：Prediction 审查合同与 Planner handoff](docs/critic_agent.md)
 - [Critic v1.0：C0514 真实审查验证](docs/critic_v1.0_validation_20260802.md)
 - [Planner v1.1：任务图、预算请求与摘要绑定审批](docs/planner_agent.md)
+- [Agent loop v1.1：C1250/L6 服务器回归记录](docs/agent_loop_v1.1_server_validation_20260803.md)
 - [Planner v1.0：C0514 真实规划验证](docs/planner_v1.0_validation_20260802.md)
 - [Orchestrator v1.0：审批执行、任务状态、GPU 租约与恢复](docs/orchestrator_agent.md)
 - [Orchestrator v1.0：C0514 真实计划无执行验证](docs/orchestrator_v1.0_validation_20260802.md)
