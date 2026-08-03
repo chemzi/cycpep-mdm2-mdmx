@@ -42,7 +42,7 @@ from data_layer import EvidenceLogger, State  # noqa: E402
 from prediction_pipeline.contracts import file_sha256, object_sha256  # noqa: E402
 
 
-ORCHESTRATOR_VERSION = "1.1.0"
+ORCHESTRATOR_VERSION = "1.1.1"
 RUN_SCHEMA_VERSION = 1
 TERMINAL_TASK_STATUSES = frozenset({"succeeded", "failed", "skipped"})
 SUCCESS_TASK_STATUSES = frozenset({"succeeded", "skipped"})

@@ -34,7 +34,7 @@ from prediction_pipeline.contracts import file_sha256, object_sha256  # noqa: E4
 from project_config import target_slug  # noqa: E402
 
 
-PLANNER_VERSION = "1.2.0"
+PLANNER_VERSION = "1.2.1"
 PLAN_SCHEMA_VERSION = 1
 APPROVAL_SCHEMA_VERSION = 1
 REPORT_ID_RE = re.compile(r"^critic_[0-9a-f]{12}$")

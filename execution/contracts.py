@@ -18,7 +18,7 @@ from prediction_pipeline.contracts import file_sha256, object_sha256
 
 
 EXECUTION_SCHEMA_VERSION = 1
-EXECUTION_WORKER_VERSION = "1.0.0"
+EXECUTION_WORKER_VERSION = "1.0.1"
 
 CORE_ACTIONS = frozenset({
     "iterate_design",

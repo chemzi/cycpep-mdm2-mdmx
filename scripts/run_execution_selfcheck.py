@@ -10,6 +10,7 @@ for writing.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -55,7 +56,17 @@ def _require_dir(path: Path, label: str) -> Path:
     return path
 
 
-def _prepare_isolated_environment(args: argparse.Namespace) -> tuple[Path, Path]:
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _prepare_isolated_environment(
+    args: argparse.Namespace,
+) -> tuple[Path, Path, Path, dict[str, str]]:
     project_config = _require_file(Path(args.project_config), "project config")
     source_data = _require_dir(Path(args.source_data_dir), "source data directory")
     artifacts_root = _require_dir(Path(args.artifacts_root), "artifact root")
@@ -67,8 +78,11 @@ def _prepare_isolated_environment(args: argparse.Namespace) -> tuple[Path, Path]
     execution_dir = work_root / "execution"
     data_dir.mkdir(parents=True, exist_ok=True)
     evidence_dir.mkdir(parents=True, exist_ok=True)
+    source_hashes = {}
     for name in ("state.json", "candidate_index.csv"):
-        shutil.copy2(_require_file(source_data / name, f"source {name}"), data_dir / name)
+        source = _require_file(source_data / name, f"source {name}")
+        source_hashes[name] = _sha256(source)
+        shutil.copy2(source, data_dir / name)
 
     os.environ.update({
         "CYCPEP_PROJECT_CONFIG": str(project_config),
@@ -77,7 +91,7 @@ def _prepare_isolated_environment(args: argparse.Namespace) -> tuple[Path, Path]
         "CYCPEP_EXECUTION_ROOT": str(execution_dir),
         "CYCPEP_PREDICTION_ARTIFACTS": str(artifacts_root),
     })
-    return work_root, artifacts_root
+    return work_root, artifacts_root, source_data, source_hashes
 
 
 def main() -> int:
@@ -85,7 +99,9 @@ def main() -> int:
     candidates = sorted(set(args.candidate))
     if len(candidates) != len(args.candidate):
         raise SystemExit("candidate IDs must not contain duplicates")
-    work_root, artifacts_root = _prepare_isolated_environment(args)
+    work_root, artifacts_root, source_data, source_hashes_before = (
+        _prepare_isolated_environment(args)
+    )
 
     # Imports are intentionally delayed until the isolated environment is set.
     from agents.orchestrator import initialize, status
@@ -228,8 +244,12 @@ def main() -> int:
         for receipt in drained["receipts"]
         for process in receipt.get("processes", [])
     ]
+    source_hashes_after = {
+        name: _sha256(source_data / name) for name in source_hashes_before
+    }
+    source_files_unchanged = source_hashes_after == source_hashes_before
     summary = {
-        "status": "passed",
+        "status": "passed" if source_files_unchanged else "failed",
         "selfcheck_kind": "isolated_existing_evidence_execution",
         "project_id": state["project_id"],
         "candidate_ids": candidates,
@@ -260,9 +280,11 @@ def main() -> int:
             ).get("prediction_handoff_sha256"),
         },
         "isolation": {
-            "source_data_dir": str(Path(args.source_data_dir).expanduser().resolve()),
+            "source_data_dir": str(source_data),
             "work_data_dir": str(work_root / "data"),
-            "source_state_was_not_written": True,
+            "source_files_unchanged": source_files_unchanged,
+            "source_sha256_before": source_hashes_before,
+            "source_sha256_after": source_hashes_after,
         },
     }
     summary_path = work_root / "execution_selfcheck_summary.json"
@@ -271,7 +293,7 @@ def main() -> int:
         encoding="utf-8",
     )
     print(json.dumps({**summary, "summary_path": str(summary_path)}, ensure_ascii=False, indent=2))
-    return 0
+    return 0 if source_files_unchanged else 2
 
 
 if __name__ == "__main__":
