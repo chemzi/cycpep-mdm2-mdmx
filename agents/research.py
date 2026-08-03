@@ -16,6 +16,12 @@ from data_layer import State, EvidenceLogger, DATA_DIR, EVIDENCE_DIR
 from project_config import load_project_config, required_target_ids, target_slug
 from target_bootstrap import assert_project_approved
 from threshold_contract import normalize_threshold_entry, normalize_thresholds
+from threshold_calibration import (
+    CALIBRATION_SCHEMA_VERSION,
+    ControlDataError,
+    calibrate_thresholds,
+    load_control_dataset,
+)
 
 PROJECT_CONFIG = load_project_config()
 PROJECT_TARGET_IDS = tuple(target["id"] for target in PROJECT_CONFIG["targets"])
@@ -119,12 +125,14 @@ THRESHOLDS_CACHE = DATA_DIR / "_thresholds_cache.json"
 
 RESEARCH_CACHE_SCHEMA_VERSION = 2
 THRESHOLD_CACHE_SCHEMA_VERSION = 2
+CONTROL_CALIBRATION_SCHEMA_VERSION = CALIBRATION_SCHEMA_VERSION
 RESEARCH_PIPELINE_VERSION = "research-v2"
 PROTOCOL_VERSIONS = {
     "rcsb_search": "v2",
     "rcsb_graphql": "v2",
     "biotite_interface": "v2",
     "threshold_research": "v2",
+    "positive_negative_calibration": f"v{CONTROL_CALIBRATION_SCHEMA_VERSION}",
 }
 
 
@@ -163,6 +171,38 @@ def _target_identity(target: dict) -> dict:
     }
 
 
+def _control_data_path(config: dict) -> Path:
+    """Resolve optional positive/negative controls without changing old defaults."""
+    selection = config.get("selection") or {}
+    configured = (
+        os.environ.get("CYCPEP_CONTROL_DATA")
+        or selection.get("calibration_controls_path")
+    )
+    return Path(configured) if configured else DATA_DIR / "_calibration_controls.json"
+
+
+def _control_data_digest(config: dict) -> str | None:
+    path = _control_data_path(config)
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+    return digest
+
+
+def _calibration_protocol(config: dict) -> tuple[dict | None, str | None]:
+    """Return the approved scoring protocol used to validate control data."""
+    selection = config.get("selection") or {}
+    protocol = selection.get("calibration_protocol") or config.get("calibration_protocol")
+    protocol_hash = (
+        selection.get("calibration_protocol_hash")
+        or config.get("calibration_protocol_hash")
+    )
+    return protocol if isinstance(protocol, dict) else None, protocol_hash
+
+
 def _cache_meta(config: dict) -> dict:
     return {
         "project_id": config.get("project_id"),
@@ -173,6 +213,9 @@ def _cache_meta(config: dict) -> dict:
         "research_pipeline_version": RESEARCH_PIPELINE_VERSION,
         "research_cache_schema_version": RESEARCH_CACHE_SCHEMA_VERSION,
         "threshold_cache_schema_version": THRESHOLD_CACHE_SCHEMA_VERSION,
+        "control_calibration_schema_version": CONTROL_CALIBRATION_SCHEMA_VERSION,
+        "control_data_path": str(_control_data_path(config)),
+        "control_data_sha256": _control_data_digest(config),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "protocol_versions": PROTOCOL_VERSIONS,
     }
@@ -183,6 +226,7 @@ def _cache_mismatch_reasons(cached_meta: dict, current_meta: dict) -> list[str]:
         "project_id", "approved_digest", "project_schema_version",
         "required_target_ids", "target_identities", "research_pipeline_version",
         "research_cache_schema_version", "threshold_cache_schema_version",
+        "control_calibration_schema_version", "control_data_path", "control_data_sha256",
         "protocol_versions",
     )
     return [key for key in checks if cached_meta.get(key) != current_meta.get(key)]
@@ -314,6 +358,112 @@ def _write_threshold_cache(thresholds: dict, config: dict, audit: dict | None = 
     }
     _atomic_write_json(THRESHOLDS_CACHE, payload)
     return payload
+
+
+def _apply_control_calibration(thresholds: dict, config: dict) -> tuple[dict, dict]:
+    """Optionally replace provisional cutoffs with same-protocol control cutoffs.
+
+    The control layer is intentionally optional: an absent or undersized
+    dataset leaves the existing Research result untouched and is reported as a
+    pending calibration rather than turning a successful literature run into a
+    failure.
+    """
+    path = _control_data_path(config)
+    base_summary = {
+        "schema_version": CONTROL_CALIBRATION_SCHEMA_VERSION,
+        "status": "not_configured",
+        "path": str(path),
+        "calibrated_keys": [],
+        "skipped_keys": [],
+    }
+    if not path.exists():
+        EvidenceLogger.log(
+            "research", "threshold_calibration", base_summary,
+            targets=list(required_target_ids(config)), phase="research",
+        )
+        return thresholds, base_summary
+
+    try:
+        selection = config.get("selection") or {}
+        expected_protocol, expected_protocol_hash = _calibration_protocol(config)
+        controls, metadata = load_control_dataset(
+            path,
+            project_id=config.get("project_id"),
+            approved_digest=(config.get("review") or {}).get("approved_digest"),
+            protocol=expected_protocol,
+            protocol_hash=expected_protocol_hash,
+            schema_version=CONTROL_CALIBRATION_SCHEMA_VERSION,
+        )
+        calibrated, audit = calibrate_thresholds(
+            controls=controls,
+            thresholds=thresholds,
+            target_ids=required_target_ids(config),
+            protocol=expected_protocol or metadata.get("protocol"),
+            protocol_hash=metadata.get("protocol_hash") or expected_protocol_hash,
+            max_false_positive_rate=float(
+                selection.get("calibration_max_false_positive_rate", 0.05)
+            ),
+            min_positive_recall=float(
+                selection.get("calibration_min_positive_recall", 0.50)
+            ),
+            min_negative_controls=int(selection.get("calibration_min_negative_controls", 10)),
+            min_positive_controls=int(selection.get("calibration_min_positive_controls", 3)),
+        )
+        calibrated, normalization = normalize_thresholds(calibrated)
+        summary = {
+            **audit,
+            "path": str(path),
+            "project_id": config.get("project_id"),
+            "approved_digest": (config.get("review") or {}).get("approved_digest"),
+            "normalization": normalization,
+        }
+        artifact = {
+            "_cache_meta": _cache_meta(config),
+            "source_path": str(path),
+            "source_metadata": metadata,
+            "audit": summary,
+        }
+        _atomic_write_json(DATA_DIR / "_threshold_calibration.json", artifact)
+        EvidenceLogger.log(
+            "research", "threshold_calibration", summary,
+            targets=list(required_target_ids(config)), phase="research",
+        )
+        return calibrated, summary
+    except ControlDataError as exc:
+        summary = {
+            **base_summary,
+            "status": "invalidated",
+            "reason": str(exc),
+        }
+        EvidenceLogger.log(
+            "research", "threshold_calibration", summary,
+            targets=list(required_target_ids(config)), phase="research",
+        )
+        return thresholds, summary
+    except (OSError, TypeError, ValueError) as exc:
+        summary = {
+            **base_summary,
+            "status": "failed",
+            "reason": f"{type(exc).__name__}: {str(exc)[:240]}",
+        }
+        EvidenceLogger.error(
+            "research", "threshold_calibration_failed", summary["reason"],
+            recovery="retain literature/provisional thresholds",
+        )
+        return thresholds, summary
+    except Exception as exc:
+        if os.environ.get("CYCPEP_STRICT_CALIBRATION") == "1" or os.environ.get("CI") == "true":
+            raise
+        summary = {
+            **base_summary,
+            "status": "failed_unexpected",
+            "reason": f"{type(exc).__name__}: {str(exc)[:240]}",
+        }
+        EvidenceLogger.error(
+            "research", "threshold_calibration_unexpected_error", summary["reason"],
+            recovery="retain literature/provisional thresholds; inspect the exception",
+        )
+        return thresholds, summary
 
 
 def _run_script(script_name, input_data=None, extra_args=None):
@@ -637,10 +787,6 @@ def _run_pipeline():
                     "applicable_targets": list(required_target_ids(PROJECT_CONFIG)),
                 }
         thresholds, final_normalization = normalize_thresholds(thresholds)
-        _write_threshold_cache(thresholds, PROJECT_CONFIG, {
-            "literature_input": threshold_normalization,
-            "final": final_normalization,
-        })
         EvidenceLogger.log("research", "tool_call", {
             "tool_name": "threshold_research", "output_hash": th, "exit_code": tc,
             "duration_sec": round(td_, 1),
@@ -660,6 +806,12 @@ def _run_pipeline():
 
     if stage_status.get("threshold_research") != "complete":
         fallbacks.append("provisional_default_thresholds")
+    thresholds, control_calibration = _apply_control_calibration(thresholds, PROJECT_CONFIG)
+    _write_threshold_cache(thresholds, PROJECT_CONFIG, {
+        "literature_input": threshold_normalization if "threshold_normalization" in locals() else {},
+        "final": final_normalization if "final_normalization" in locals() else {},
+        "control_calibration": control_calibration,
+    })
     if not THRESHOLDS_CACHE.exists():
         _write_threshold_cache(thresholds, PROJECT_CONFIG)
 
@@ -689,6 +841,7 @@ def _run_pipeline():
             "stage_error_code": stage_error_code,
             "error_message": error_message,
             "fallbacks_used": list(dict.fromkeys(fallbacks)),
+            "control_calibration": control_calibration,
             "run_status": _overall_run_status(stage_status),
         },
         "_cache_meta": _cache_meta(PROJECT_CONFIG),
@@ -811,10 +964,6 @@ def _run_generic_pipeline():
         )
         stage_context["threshold_research"] = (tr, te)
         thresholds, final_normalization = normalize_thresholds(thresholds)
-        _write_threshold_cache(thresholds, PROJECT_CONFIG, {
-            "literature_input": threshold_normalization,
-            "final": final_normalization,
-        })
         EvidenceLogger.log("research", "tool_call", {
             "tool_name": "threshold_research", "output_hash": thash, "exit_code": tc,
             "duration_sec": round(td, 1),
@@ -827,6 +976,12 @@ def _run_generic_pipeline():
 
     if stage_status.get("threshold_research") != "complete":
         fallbacks.append("provisional_default_thresholds")
+    thresholds, control_calibration = _apply_control_calibration(thresholds, PROJECT_CONFIG)
+    _write_threshold_cache(thresholds, PROJECT_CONFIG, {
+        "literature_input": threshold_normalization if "threshold_normalization" in locals() else {},
+        "final": final_normalization if "final_normalization" in locals() else {},
+        "control_calibration": control_calibration,
+    })
     if not THRESHOLDS_CACHE.exists():
         _write_threshold_cache(thresholds, PROJECT_CONFIG)
         EvidenceLogger.error("research", "tool_failure", str(exc), recovery="provisional thresholds remain non-clearable")
@@ -855,6 +1010,7 @@ def _run_generic_pipeline():
             "stage_error_code": stage_error_code,
             "error_message": error_message,
             "fallbacks_used": list(dict.fromkeys(fallbacks)),
+            "control_calibration": control_calibration,
             "run_status": _overall_run_status(stage_status),
         },
         "_cache_meta": _cache_meta(PROJECT_CONFIG),
@@ -885,7 +1041,16 @@ def run(state=None, force_recompute=False, skip_pipeline=False):
     pipeline_result["thresholds"] = thresholds
     threshold_cache = None if force_recompute else _load_valid_cache(THRESHOLDS_CACHE, PROJECT_CONFIG)
     if force_recompute or threshold_cache is None:
-        _write_threshold_cache(thresholds, PROJECT_CONFIG, threshold_normalization)
+        _write_threshold_cache(
+            thresholds,
+            PROJECT_CONFIG,
+            {
+                "normalization": threshold_normalization,
+                "control_calibration": (
+                    pipeline_result.get("_pipeline_meta", {}).get("control_calibration", {})
+                ),
+            },
+        )
 
     configured_targets = {
         target["id"]: {key: value for key, value in target.items() if key != "id"}
