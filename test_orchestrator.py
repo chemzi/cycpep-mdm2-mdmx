@@ -176,7 +176,7 @@ class OrchestratorTests(unittest.TestCase):
             task_ids=task_ids,
             approver="PI-test",
             justification="approved isolated orchestrator test",
-            max_gpu_job_slots=2,
+            max_gpu_job_slots=1,
             max_gpu_minutes=max_minutes,
             max_design_proposals=12,
             max_prediction_candidates=12,
@@ -187,6 +187,67 @@ class OrchestratorTests(unittest.TestCase):
         path.parent.mkdir(exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return path
+
+    def _json_output(self, name, value):
+        return self._output(name, json.dumps(value))
+
+    def _design_output(self, name="design.json"):
+        return self._json_output(name, {
+            "schema_version": 1,
+            "execution_worker_version": "1.0.0",
+            "action": "iterate_design",
+            "task_id": "T001",
+            "project_id": "orchestrator_test",
+            "project_config_digest": "a" * 64,
+            "jobs": [],
+            "candidate_index_before_sha256": "b" * 64,
+            "candidate_index_after_sha256": "b" * 64,
+            "new_candidate_ids": [],
+            "candidates": [],
+            "existing_rows_unchanged": True,
+            "completed_at": "2026-08-03T00:00:00+00:00",
+        })
+
+    def _prediction_output(self, name="prediction.json"):
+        return self._json_output(name, {
+            "schema_version": 1,
+            "pipeline_version": "1.5.1",
+            "run_id": "prediction_orchestrator_test",
+            "project_id": "orchestrator_test",
+            "required_targets": ["MDM2", "MDMX"],
+            "categories": {},
+            "downstream": {},
+        })
+
+    def _critic_output(self, name="critic.json"):
+        digest = "c" * 64
+        return self._json_output(name, {
+            "schema_version": 1,
+            "critic_version": "1.1.1",
+            "report_id": f"critic_{digest[:12]}",
+            "input_digest": digest,
+            "source": {},
+            "verdict": "iterate",
+            "passed": False,
+            "issues": [],
+            "recommendations": [],
+            "planner_handoff": {},
+        })
+
+    def _calibration_output(self, name="thresholds.json"):
+        return self._json_output(name, {
+            "schema_version": 1,
+            "execution_worker_version": "1.0.0",
+            "action": "propose_threshold_calibration",
+            "task_id": "T004",
+            "project_id": "orchestrator_test",
+            "status": "pending_controls",
+            "requested_threshold_keys": [],
+            "current_thresholds": {},
+            "control_requirements": {},
+            "applied_to_state": False,
+            "created_at": "2026-08-03T00:00:00+00:00",
+        })
 
     def test_init_without_approval_waits_and_is_idempotent(self):
         plan_result = self._required_plan()
@@ -239,7 +300,7 @@ class OrchestratorTests(unittest.TestCase):
             run_path=run_path,
             task_id="T001",
             claim_token=t1["claim_token"],
-            output_paths=["design_result=" + str(self._output("design.json"))],
+            output_paths=["design_result=" + str(self._design_output())],
             gpu_minutes=10,
         )
         self.assertEqual(status(run_path=run_path)["run"]["tasks"]["T002"]["status"], "ready")
@@ -249,7 +310,7 @@ class OrchestratorTests(unittest.TestCase):
             run_path=run_path,
             task_id="T002",
             claim_token=t2["claim_token"],
-            output_paths=["prediction_handoff=" + str(self._output("prediction.json"))],
+            output_paths=["prediction_handoff=" + str(self._prediction_output())],
             gpu_minutes=8,
         )
         t3 = claim(run_path=run_path, task_id="T003", worker="critic-agent")
@@ -257,14 +318,14 @@ class OrchestratorTests(unittest.TestCase):
             run_path=run_path,
             task_id="T003",
             claim_token=t3["claim_token"],
-            output_paths=["critic_report=" + str(self._output("critic.json"))],
+            output_paths=["critic_report=" + str(self._critic_output())],
         )
         t4 = claim(run_path=run_path, task_id="T004", worker="research-agent")
         final = complete(
             run_path=run_path,
             task_id="T004",
             claim_token=t4["claim_token"],
-            output_paths=["calibration_proposal=" + str(self._output("thresholds.json"))],
+            output_paths=["calibration_proposal=" + str(self._calibration_output())],
         )
         self.assertEqual(final["run"]["status"], "completed")
         self.assertEqual(final["run"]["resources"]["gpu_minutes_consumed"], 18.0)
@@ -286,7 +347,7 @@ class OrchestratorTests(unittest.TestCase):
             plan_path=plan_result["plan_path"],
             approval_paths=[approval["approval_path"]],
         )
-        output = self._output("mutable_design.json", "original")
+        output = self._design_output("mutable_design.json")
         t1 = claim(
             run_path=initialized["run_path"], task_id="T001", worker="design-agent"
         )
@@ -294,7 +355,7 @@ class OrchestratorTests(unittest.TestCase):
             run_path=initialized["run_path"],
             task_id="T001",
             claim_token=t1["claim_token"],
-            output_paths=[output],
+            output_paths=["design_result=" + str(output)],
             gpu_minutes=1,
         )
         output.write_text("tampered", encoding="utf-8")
@@ -320,7 +381,7 @@ class OrchestratorTests(unittest.TestCase):
                 run_path=initialized["run_path"],
                 task_id="T001",
                 claim_token=claimed["claim_token"],
-                output_paths=[self._output("too_expensive.json")],
+                output_paths=["design_result=" + str(self._design_output("too_expensive.json"))],
                 gpu_minutes=6,
             )
         with self.assertRaisesRegex(OrchestratorContractError, "confirmation"):

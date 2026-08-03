@@ -12,12 +12,13 @@ MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当�
 - [Design v5.2.0：Route C 独立 L7 reference 合同](docs/design_integrity_v5.2.0.md)
 - [Prediction v1.4.1：Boltz-2 / PyRosetta 真实双靶标验证](docs/prediction_v1.4.1_pyrosetta_validation_20260802.md)
 - [Prediction v1.5.0：环肽 post-relax 与完整七层回归](docs/prediction_v1.5.0_post_relax_validation_20260802.md)
+- [Execution Worker v1.0：封闭动作执行、类型化产物与 v2 docking/MD 扩展](docs/execution_agent.md)
 - [Critic v1.1：Prediction 审查合同与 Planner handoff](docs/critic_agent.md)
 - [Critic v1.0：C0514 真实审查验证](docs/critic_v1.0_validation_20260802.md)
-- [Planner v1.1：任务图、预算请求与摘要绑定审批](docs/planner_agent.md)
+- [Planner v1.2：物化 Design jobs、任务图与摘要绑定审批](docs/planner_agent.md)
 - [Agent loop v1.1：C1250/L6 服务器回归记录](docs/agent_loop_v1.1_server_validation_20260803.md)
 - [Planner v1.0：C0514 真实规划验证](docs/planner_v1.0_validation_20260802.md)
-- [Orchestrator v1.0：审批执行、任务状态、GPU 租约与恢复](docs/orchestrator_agent.md)
+- [Orchestrator v1.1：类型化完成合同、GPU 租约与恢复](docs/orchestrator_agent.md)
 - [Orchestrator v1.0：C0514 真实计划无执行验证](docs/orchestrator_v1.0_validation_20260802.md)
 
 ```bash

@@ -1,12 +1,12 @@
-# Orchestrator Agent v1.0
+# Orchestrator Agent v1.1
 
 Orchestrator 位于 Planner 与实际执行 Worker 之间。它管理一份 Planner task DAG 的
 运行状态、审批覆盖、依赖解锁、GPU 租约、Worker 认领和输出哈希。
 
-v1 采用“受控调度包”模式：Orchestrator 不直接启动 RFdiffusion、Boltz、Rosetta 或
-Research 网络任务。人类或 AI Worker 认领一个 ready task，读取 dispatch packet，执行
-对应 Agent，再通过 Orchestrator 登记成功或失败。这样可在未来接入 Codex/队列服务时
-保持同一套状态合同，也能避免一个尚未审核的通用 shell executor 获得服务器权限。
+Orchestrator 不直接启动 RFdiffusion、Boltz、Rosetta 或 Research 网络任务。
+Execution Worker 认领一个 ready task，读取 dispatch packet，通过固定 action handler
+执行对应 Agent，再通过 Orchestrator 登记成功或失败。Planner 和前端都不能向 Worker
+传入 shell 命令。
 
 ## 1. 安全边界
 
@@ -122,8 +122,9 @@ python agents/orchestrator.py complete \
   --gpu-minutes 37.5
 ```
 
-每个 output 必须是已有普通文件。Orchestrator 会保存完整 SHA-256 和字节数。GPU task
-必须报告实际 GPU 分钟；同一 approval 下的累计用量不能超过 `max_gpu_minutes`。
+每个 output 必须是已有普通文件。Orchestrator 会保存完整 SHA-256 和字节数，并按 action
+验证 JSON 内容及其链接 artifact。GPU task 必须报告实际 GPU 分钟；成功任务不能超过
+`max_gpu_minutes`。失败任务即使超限也会记录 over-budget 并释放 lease，避免死锁。
 
 失败：
 

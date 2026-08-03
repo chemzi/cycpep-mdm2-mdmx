@@ -31,9 +31,10 @@ if str(ROOT) not in sys.path:
 
 from data_layer import CandidateIndex, EvidenceLogger, State  # noqa: E402
 from prediction_pipeline.contracts import file_sha256, object_sha256  # noqa: E402
+from project_config import target_slug  # noqa: E402
 
 
-PLANNER_VERSION = "1.1.0"
+PLANNER_VERSION = "1.2.0"
 PLAN_SCHEMA_VERSION = 1
 APPROVAL_SCHEMA_VERSION = 1
 REPORT_ID_RE = re.compile(r"^critic_[0-9a-f]{12}$")
@@ -378,6 +379,94 @@ def _candidate_ids(reason_codes: list[str], issues_by_code: dict[str, dict]) -> 
     })
 
 
+def _materialize_design_jobs(
+    *,
+    state: dict,
+    required_targets: list[str],
+    budgets: dict[str, int],
+    requested: int,
+    seed_material: str,
+) -> list[dict]:
+    """Build deterministic Route A jobs from approved target configuration.
+
+    Target-specific Route A budgets are preferred.  The legacy shared
+    ``route_A`` key remains supported for old State fixtures.  Route B/C are
+    used only when no Route A capacity exists, because their motif provenance
+    is less generally transferable across targets.
+    """
+    if requested < 1 or not required_targets:
+        return []
+    project = state.get("project_config") or {}
+    target_values = {
+        str(item.get("id")): item
+        for item in project.get("targets", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    seed_base = int(object_sha256({
+        "material": seed_material,
+        "targets": required_targets,
+        "round": int(state.get("round") or 1),
+    })[:8], 16) % (2**31)
+
+    specific = []
+    for target_id in required_targets:
+        key = f"route_A_{target_slug(target_id)}"
+        if budgets.get(key, 0) > 0:
+            specific.append((target_id, key, budgets[key]))
+    shared = budgets.get("route_A", 0)
+    allocations: dict[str, int] = {target_id: 0 for target_id in required_targets}
+    route = "A"
+    if specific:
+        remaining = min(requested, sum(capacity for _, _, capacity in specific))
+        capacities = {target_id: capacity for target_id, _, capacity in specific}
+        while remaining:
+            progressed = False
+            for target_id, _, _ in specific:
+                if allocations[target_id] < capacities[target_id] and remaining:
+                    allocations[target_id] += 1
+                    remaining -= 1
+                    progressed = True
+            if not progressed:
+                break
+    elif shared > 0:
+        remaining = min(requested, shared)
+        while remaining:
+            for target_id in required_targets:
+                if not remaining:
+                    break
+                allocations[target_id] += 1
+                remaining -= 1
+    else:
+        fallback_route = "C" if budgets.get("route_C", 0) > 0 else (
+            "B" if budgets.get("route_B", 0) > 0 else None
+        )
+        if fallback_route:
+            route = fallback_route
+            capacity = budgets[f"route_{fallback_route}"]
+            allocations[required_targets[0]] = min(requested, capacity)
+
+    jobs = []
+    for index, target_id in enumerate(required_targets):
+        count = allocations[target_id]
+        if count < 1:
+            continue
+        design = (target_values.get(target_id) or {}).get("design") or {}
+        lengths = design.get("lengths") or [8, 10, 12]
+        normalized_lengths = sorted({int(value) for value in lengths})
+        if not normalized_lengths or any(value < 5 or value > 30 for value in normalized_lengths):
+            raise PlannerContractError(
+                "design_lengths_invalid", f"target {target_id} has invalid design lengths"
+            )
+        jobs.append({
+            "route": route,
+            "target_id": target_id,
+            "lengths": normalized_lengths,
+            "proposal_count": count,
+            "seed": (seed_base + index) % (2**31),
+        })
+    return jobs
+
+
 def _approval(
     *,
     resource_class: str,
@@ -487,6 +576,7 @@ def _add_critic_followup(
         disposition=disposition,
         reason_codes=reason_codes,
         from_task_id=from_task_id,
+        parameters={"min_cohort": 3, "low_diversity_similarity": 0.80},
         resource_class="cpu",
         depends_on=depends_on,
         outputs=["critic_report.json"],
@@ -537,9 +627,18 @@ def build_plan(
             if disposition == "optional"
             else config.design_batch_size
         )
-        proposal_count = min(
+        requested_proposal_count = min(
             requested, config.max_design_proposals_per_plan, total_design_budget
         )
+        required_targets = list(report["source"].get("required_targets") or [])
+        design_jobs = _materialize_design_jobs(
+            state=state,
+            required_targets=required_targets,
+            budgets=budgets,
+            requested=requested_proposal_count,
+            seed_material=report_sha,
+        )
+        proposal_count = sum(job["proposal_count"] for job in design_jobs)
         block_reasons = []
         if proposal_count < 1:
             block_reasons.append("design_budget_missing_or_exhausted")
@@ -556,16 +655,19 @@ def build_plan(
                 "strategy_directives": [
                     recommendation["action"] for recommendation in design_recommendations
                 ],
-                "required_targets": list(report["source"].get("required_targets") or []),
+                "required_targets": required_targets,
                 "route_budget_snapshot": budgets,
-                "route_selection": "design_agent_select_from_approved_routes",
+                "design_jobs": design_jobs,
+                "project_config_digest": object_sha256(
+                    state.get("project_config") or {}
+                ),
                 "reuse_existing_prediction_evidence": True,
             },
             resource_class="gpu",
             proposal_count=proposal_count,
             candidate_limit=proposal_count,
             approval=_approval(resource_class="gpu", critic_approval_required=False),
-            outputs=["design_manifests", "candidate_index_rows"],
+            outputs=["design_task_result.json"],
             constraints=[
                 "append_candidates_only",
                 "preserve_source_candidate_evidence",
@@ -582,7 +684,11 @@ def build_plan(
             disposition=disposition,
             reason_codes=reason_codes,
             from_task_id=design_task["task_id"],
-            parameters={"reuse_complete_evidence": True},
+            parameters={
+                "reuse_complete_evidence": True,
+                "evidence_mode": "reuse_or_generate_full",
+                "predictor_protocol": "af2_boltz2_prodigy_rosetta_postrelax_v1",
+            },
             resource_class="gpu",
             candidate_limit=min(proposal_count, config.max_prediction_candidates_per_task),
             approval=_approval(resource_class="gpu", critic_approval_required=False),
@@ -774,6 +880,9 @@ def build_plan(
             "project_id": state.get("project_id"),
             "round": source_round,
             "design_budget": budgets,
+            "project_config_digest": object_sha256(
+                state.get("project_config") or {}
+            ),
             "critic_report_id": (state.get("critic") or {}).get("report_id")
             if isinstance(state.get("critic"), dict) else None,
         },
@@ -975,6 +1084,26 @@ def _validate_plan_for_approval(plan: dict, plan_path: Path) -> None:
             raise PlannerContractError(
                 "plan_task_gate_invalid", f"task {task_id} has an invalid execution gate"
             )
+        try:
+            from execution.contracts import (
+                ALL_KNOWN_ACTIONS,
+                CORE_ACTIONS,
+                validate_task_parameters,
+            )
+
+            action = str(task.get("action") or "")
+            if action not in ALL_KNOWN_ACTIONS:
+                raise PlannerContractError(
+                    "plan_action_unknown", f"task {task_id} has unknown action {action!r}"
+                )
+            if action in CORE_ACTIONS and gate.get("status") == "proposed":
+                validate_task_parameters(task)
+        except PlannerContractError:
+            raise
+        except Exception as exc:
+            raise PlannerContractError(
+                getattr(exc, "code", "plan_execution_contract_invalid"), str(exc)
+            ) from exc
         tasks_by_id[task_id] = task
     for task_id, task in tasks_by_id.items():
         dependencies = task.get("depends_on")
@@ -1070,10 +1199,13 @@ def record_approval(
         if tasks_by_id[task_id]["resource_request"]["class"] == "gpu"
     ]
     if gpu_tasks:
-        if max_gpu_job_slots is None or max_gpu_job_slots < len(gpu_tasks):
+        required_concurrent_slots = max(
+            task["resource_request"]["gpu_job_slots"] for task in gpu_tasks
+        )
+        if max_gpu_job_slots is None or max_gpu_job_slots < required_concurrent_slots:
             raise PlannerContractError(
                 "approval_gpu_limit_insufficient",
-                "max_gpu_job_slots must cover every selected GPU task",
+                "max_gpu_job_slots must cover the maximum concurrent task request",
             )
         if max_gpu_minutes is None or max_gpu_minutes <= 0:
             raise PlannerContractError(

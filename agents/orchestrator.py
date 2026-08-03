@@ -42,7 +42,7 @@ from data_layer import EvidenceLogger, State  # noqa: E402
 from prediction_pipeline.contracts import file_sha256, object_sha256  # noqa: E402
 
 
-ORCHESTRATOR_VERSION = "1.0.0"
+ORCHESTRATOR_VERSION = "1.1.0"
 RUN_SCHEMA_VERSION = 1
 TERMINAL_TASK_STATUSES = frozenset({"succeeded", "failed", "skipped"})
 SUCCESS_TASK_STATUSES = frozenset({"succeeded", "skipped"})
@@ -285,7 +285,14 @@ def _validate_approval(
     if gpu_tasks:
         slots = limits["max_gpu_job_slots"]
         minutes = limits["max_gpu_minutes"]
-        if not isinstance(slots, int) or isinstance(slots, bool) or slots < len(gpu_tasks):
+        required_concurrent_slots = max(
+            task["resource_request"]["gpu_job_slots"] for task in gpu_tasks
+        )
+        if (
+            not isinstance(slots, int)
+            or isinstance(slots, bool)
+            or slots < required_concurrent_slots
+        ):
             raise OrchestratorContractError(
                 "approval_gpu_slots_insufficient", "approval GPU slots are insufficient"
             )
@@ -708,6 +715,14 @@ def claim(*, run_path: str | Path, task_id: str, worker: str) -> dict:
                 "task_not_ready", f"task {task_id} status is {state['status']}"
             )
         task = tasks[task_id]
+        try:
+            from execution.contracts import assert_action_executable
+
+            assert_action_executable(task)
+        except Exception as exc:
+            raise OrchestratorContractError(
+                getattr(exc, "code", "execution_action_invalid"), str(exc)
+            ) from exc
         approval = _authorization_for_task(run, task_id)
         if task["approval"]["required"] and approval is None:
             raise OrchestratorContractError(
@@ -878,7 +893,13 @@ def _inventory_outputs(values: Iterable[str | Path]) -> list[dict]:
     return inventory
 
 
-def _consume_gpu_usage(run: dict, task_id: str, gpu_minutes: float | None) -> dict:
+def _consume_gpu_usage(
+    run: dict,
+    task_id: str,
+    gpu_minutes: float | None,
+    *,
+    enforce_limit: bool,
+) -> dict:
     if gpu_minutes is None:
         raise OrchestratorContractError(
             "gpu_minutes_required", "GPU task outcome requires actual GPU minutes"
@@ -894,7 +915,8 @@ def _consume_gpu_usage(run: dict, task_id: str, gpu_minutes: float | None) -> di
         run["resources"]["gpu_minutes_by_approval"].get(approval_id, 0.0)
     )
     limit = float(approval["budget_limits"]["max_gpu_minutes"])
-    if consumed + minutes > limit + 1e-9:
+    over_budget = consumed + minutes > limit + 1e-9
+    if over_budget and enforce_limit:
         raise OrchestratorContractError(
             "gpu_minutes_exceeded",
             f"task outcome would exceed approval GPU ceiling {limit}",
@@ -903,7 +925,12 @@ def _consume_gpu_usage(run: dict, task_id: str, gpu_minutes: float | None) -> di
     run["resources"]["gpu_minutes_consumed"] = float(
         run["resources"].get("gpu_minutes_consumed", 0.0)
     ) + minutes
-    return {"gpu_minutes": minutes, "approval_id": approval_id}
+    return {
+        "gpu_minutes": minutes,
+        "approval_id": approval_id,
+        "over_budget": over_budget,
+        "approved_gpu_minutes": limit,
+    }
 
 
 def complete(
@@ -927,9 +954,21 @@ def complete(
         _, plan, _ = _validate_run_binding(run, run_path)
         state = _validate_claim(run, task_id, claim_token)
         task = _task_map(plan)[task_id]
+        try:
+            from execution.contracts import validate_output_inventory
+
+            validate_output_inventory(task, inventory)
+        except Exception as exc:
+            if isinstance(exc, OrchestratorContractError):
+                raise
+            raise OrchestratorContractError(
+                getattr(exc, "code", "task_output_contract_invalid"), str(exc)
+            ) from exc
         usage: dict[str, Any] = {}
         if task["resource_request"]["class"] == "gpu":
-            usage = _consume_gpu_usage(run, task_id, gpu_minutes)
+            usage = _consume_gpu_usage(
+                run, task_id, gpu_minutes, enforce_limit=True
+            )
             lease = run["resources"].get("gpu_lease")
             if not lease or lease.get("claim_token") != claim_token:
                 raise OrchestratorContractError(
@@ -985,7 +1024,11 @@ def fail(
         task = _task_map(plan)[task_id]
         usage: dict[str, Any] = {}
         if task["resource_request"]["class"] == "gpu":
-            usage = _consume_gpu_usage(run, task_id, gpu_minutes)
+            # A failed process must always be closable and release its lease,
+            # even when its measured runtime exceeded the approved ceiling.
+            usage = _consume_gpu_usage(
+                run, task_id, gpu_minutes, enforce_limit=False
+            )
             lease = run["resources"].get("gpu_lease")
             if not lease or lease.get("claim_token") != claim_token:
                 raise OrchestratorContractError(
