@@ -333,6 +333,10 @@ class ResearchStateAndCacheTests(unittest.TestCase):
         self.assertEqual(set(synced["targets"]), {"NEW"})
         self.assertEqual(synced["approved_digest"], config["review"]["approved_digest"])
         self.assertEqual(synced["thresholds"], {})
+        self.assertEqual(
+            synced["design_budget"],
+            {"route_A_new": 400, "route_B": 400, "route_C": 200},
+        )
 
     def test_generic_project_without_explicit_hotspot_rule_gets_unavailable_l5(self):
         config = deepcopy(research.PROJECT_CONFIG)

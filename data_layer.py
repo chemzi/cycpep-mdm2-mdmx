@@ -56,6 +56,23 @@ STATE_PATH = DATA_DIR / "state.json"
 LOG_PATH   = EVIDENCE_DIR / "evidence_log.jsonl"
 INDEX_PATH = DATA_DIR / "candidate_index.csv"
 
+_LEGACY_DEFAULT_DESIGN_BUDGET = {
+    "route_A_mdm2": 400,
+    "route_A_mdmx": 400,
+    "route_B": 400,
+    "route_C": 200,
+}
+
+
+def _default_design_budget(config: dict) -> dict[str, int]:
+    """Build route capacity keys from the approved target identities."""
+    budget = {
+        f"route_A_{target_slug(target_id)}": 400
+        for target_id in required_target_ids(config)
+    }
+    budget.update({"route_B": 400, "route_C": 200})
+    return budget
+
 
 def _write_json_atomic(path: str | Path, payload: dict):
     """Write JSON beside its destination and atomically replace the old file."""
@@ -156,8 +173,7 @@ class State:
         "round": 1,
         "pocket_differences": {},
         "known_dual_binders": [],
-        "design_budget": {"route_A_mdm2": 400, "route_A_mdmx": 400,
-                          "route_B": 400, "route_C": 200},
+        "design_budget": _default_design_budget(_project_config),
         "candidate_count": 0,
         "iteration_history": [],
         # v5: 七层指标电池阈值（来自 data_layer.DEFAULT_THRESHOLDS，最终由正对照标定）
@@ -201,6 +217,16 @@ class State:
         if config_changed:
             # Strong evidence from a different approved target/config is not transferable.
             state["thresholds"] = {}
+        previous_budget = state.get("design_budget")
+        desired_budget = _default_design_budget(config)
+        budget_migrated = False
+        if (
+            config_changed
+            or previous_budget in (None, {})
+            or previous_budget == _LEGACY_DEFAULT_DESIGN_BUDGET
+        ) and previous_budget != desired_budget:
+            state["design_budget"] = desired_budget
+            budget_migrated = True
         state["project"] = config.get("name", config["project_id"])
         state["project_id"] = config["project_id"]
         state["project_config"] = json.loads(json.dumps(config))
@@ -220,6 +246,8 @@ class State:
             "removed_targets": sorted(previous_targets - current_targets),
             "final_targets": sorted(current_targets),
             "thresholds_cleared": config_changed,
+            "design_budget_migrated": budget_migrated,
+            "design_budget_keys": sorted((state.get("design_budget") or {}).keys()),
         }, phase="research")
         return state
 
