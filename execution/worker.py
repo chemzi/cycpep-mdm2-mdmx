@@ -27,6 +27,9 @@ from agents.orchestrator import (  # noqa: E402
 )
 from data_layer import EvidenceLogger  # noqa: E402
 from prediction_pipeline.contracts import file_sha256  # noqa: E402
+from contracts.errors import ErrorInfo  # noqa: E402
+from contracts.task import TaskStatus  # noqa: E402
+from contracts.trace import TraceContext  # noqa: E402
 
 from execution.config import ExecutionConfig  # noqa: E402
 from execution.contracts import (  # noqa: E402
@@ -35,7 +38,8 @@ from execution.contracts import (  # noqa: E402
     assert_action_executable,
     validate_dispatch_packet,
 )
-from execution.handlers import HANDLERS, HandlerContext  # noqa: E402
+from execution.action_registry import handler_for  # noqa: E402
+from execution.handlers import HandlerContext  # noqa: E402
 from execution.supervisor import atomic_json  # noqa: E402
 
 
@@ -71,15 +75,29 @@ def execute_task(
     packet = None
     task = None
     action = "unknown"
+    trace_context = TraceContext(
+        project_id=str((claimed["run"].get("plan") or {}).get("project_id") or "unknown_project"),
+        workflow_id=str(
+            claimed["run"].get("workflow_id")
+            or (claimed["run"].get("plan") or {}).get("workflow_id")
+            or "legacy_" + run_id,
+        ),
+        run_id=run_id,
+        plan_id=(claimed["run"].get("plan") or {}).get("plan_id"),
+        task_id=task_id,
+        attempt_id=TraceContext.attempt_id_for(task_id, attempt),
+    )
     try:
         packet = _read_packet(
             Path(claimed["dispatch_packet_path"]),
             claimed["dispatch_packet_sha256"],
         )
+        if packet.get("trace_context") is not None:
+            trace_context = TraceContext.from_dict(packet["trace_context"])
         task = packet["task"]
         parameters = assert_action_executable(task)
         action = task["action"]
-        handler = HANDLERS.get(action)
+        handler = handler_for(action)
         if handler is None:
             raise ExecutionContractError(
                 "execution_handler_missing", f"no handler registered for {action}"
@@ -92,6 +110,9 @@ def execute_task(
             "run_id": packet["run_id"],
             "task_id": task_id,
             "action": action,
+            "workflow_id": trace_context.workflow_id,
+            "plan_id": trace_context.plan_id,
+            "attempt_id": trace_context.attempt_id,
             "normalized_parameters": parameters,
             "started_monotonic_recorded": True,
         })
@@ -101,7 +122,8 @@ def execute_task(
             "action": action,
             "worker": worker_id,
             "task_dir": str(task_dir),
-        }, phase=task["phase"])
+            "attempt": attempt,
+        }, phase=task["phase"], trace_context=trace_context)
         outcome = handler(HandlerContext(packet=packet, config=config, task_dir=task_dir))
         elapsed_seconds = max(0.0, time.monotonic() - started)
         output_values = [f"{role}={path}" for role, path in outcome.outputs]
@@ -118,13 +140,17 @@ def execute_task(
         )
         receipt = {
             "execution_worker_version": EXECUTION_WORKER_VERSION,
-            "status": "succeeded",
+            "status": TaskStatus.SUCCEEDED.value,
             "run_id": packet["run_id"],
             "task_id": task_id,
             "action": action,
+            "workflow_id": trace_context.workflow_id,
+            "plan_id": trace_context.plan_id,
+            "attempt": attempt,
+            "attempt_id": trace_context.attempt_id,
             "elapsed_seconds": elapsed_seconds,
             "gpu_minutes": gpu_minutes,
-            "outputs": [
+            "outputs": result["run"]["tasks"][task_id].get("outputs") or [
                 {"role": role, "path": str(path), "sha256": file_sha256(path)}
                 for role, path in outcome.outputs
             ],
@@ -132,7 +158,10 @@ def execute_task(
             "orchestrator_status": result["run"]["status"],
         }
         atomic_json(task_dir / "execution_receipt.json", receipt)
-        EvidenceLogger.log("execution", "execution_task_completed", receipt, phase=task["phase"])
+        EvidenceLogger.log(
+            "execution", "execution_task_completed", receipt,
+            phase=task["phase"], trace_context=trace_context,
+        )
         return receipt
     except BaseException as exc:
         elapsed_seconds = max(0.0, time.monotonic() - started)
@@ -147,15 +176,27 @@ def execute_task(
         task_dir.mkdir(parents=True, exist_ok=True)
         failure = {
             "execution_worker_version": EXECUTION_WORKER_VERSION,
-            "status": "failed",
+            "status": TaskStatus.FAILED.value,
             "run_id": run_id,
             "task_id": task_id,
             "action": action,
+            "workflow_id": trace_context.workflow_id,
+            "plan_id": trace_context.plan_id,
+            "attempt": attempt,
+            "attempt_id": trace_context.attempt_id,
             "error_code": getattr(exc, "code", exc.__class__.__name__),
             "message": str(exc),
+            "component": "execution.worker",
+            "retryable": False,
             "elapsed_seconds": elapsed_seconds,
             "gpu_minutes": gpu_minutes,
         }
+        failure.update(ErrorInfo(
+            code=failure["error_code"],
+            message=failure["message"],
+            component="execution.worker",
+            retryable=False,
+        ).to_dict())
         atomic_json(task_dir / "execution_failure.json", failure)
         try:
             fail(
@@ -175,6 +216,7 @@ def execute_task(
         EvidenceLogger.log(
             "execution", "execution_task_failed", failure,
             phase=task["phase"] if task else "iterate",
+            trace_context=trace_context,
         )
         raise
 
@@ -192,7 +234,7 @@ def drain_run(
         snapshot = status(run_path=run_path)["run"]
         ready = [
             task_id for task_id, value in sorted(snapshot["tasks"].items())
-            if value["status"] == "ready"
+            if value["status"] == TaskStatus.READY.value
         ]
         if not ready:
             return {

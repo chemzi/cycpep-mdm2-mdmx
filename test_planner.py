@@ -279,12 +279,14 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(critic["action"], "review_prediction_handoff")
         self.assertEqual(critic["depends_on"], [prediction["task_id"]])
 
-    def test_clear_report_prepares_report_without_gpu(self):
+    def test_clear_report_blocks_unimplemented_report_action(self):
         report_path = self._report([], verdict="clear")
         result = build_plan(critic_report_path=report_path, state=self._state())
-        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["status"], "blocked")
         self.assertEqual(len(result["tasks"]), 1)
         self.assertEqual(result["tasks"][0]["action"], "prepare_final_candidate_report")
+        self.assertEqual(result["tasks"][0]["execution_gate"]["status"], "blocked")
+        self.assertIn("blocked_unimplemented", result["tasks"][0]["execution_gate"]["block_reasons"])
         self.assertEqual(result["budget_request"]["requested_gpu_job_slots"], 0)
         self.assertFalse(result["execution"]["automatic_dispatch_allowed"])
 
@@ -355,9 +357,10 @@ class PlannerTests(unittest.TestCase):
             "critic_blocker_requires_recovery",
             design["execution_gate"]["block_reasons"],
         )
-        self.assertEqual(repair["execution_gate"]["status"], "proposed")
+        self.assertEqual(repair["execution_gate"]["status"], "blocked")
+        self.assertIn("blocked_unimplemented", repair["execution_gate"]["block_reasons"])
         self.assertNotIn(design["task_id"], result["approval_request"]["required_task_ids"])
-        self.assertEqual(result["execution"]["entry_task_ids"], [repair["task_id"]])
+        self.assertEqual(result["execution"]["entry_task_ids"], [])
 
     def test_run_is_idempotent_for_state_history_and_evidence(self):
         report_path = self._report([

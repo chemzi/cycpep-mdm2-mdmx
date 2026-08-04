@@ -32,6 +32,8 @@ if str(ROOT) not in sys.path:
 from data_layer import CandidateIndex, EvidenceLogger, State  # noqa: E402
 from prediction_pipeline.contracts import file_sha256, object_sha256  # noqa: E402
 from project_config import target_slug  # noqa: E402
+from contracts.action import RecommendationMapping, get_action_spec  # noqa: E402
+from contracts.trace import TraceContext, derive_workflow_id  # noqa: E402
 
 
 PLANNER_VERSION = "1.2.1"
@@ -50,44 +52,30 @@ MANDATORY_POLICY_CONSTRAINTS = frozenset({
 SEVERITY_RANK = {"blocker": 0, "high": 1, "medium": 2, "info": 3}
 PRIORITY_RANK = {"P0": 0, "P1": 1, "P2": 2}
 
-# Critic recommendations are deliberately closed-world.  A new Critic action
-# must receive an explicit Planner mapping before it can reach Orchestrator.
-ACTION_SPECS = {
-    "regenerate_invalid_artifact": {
-        "agent": "prediction/design",
-        "task_action": "regenerate_invalid_artifacts",
-        "phase": "iterate",
-        "resource_class": "gpu",
-        "kind": "recovery",
-    },
-    "complete_prediction_evidence": {
-        "agent": "prediction",
-        "task_action": "evaluate_new_design_candidates",
-        "phase": "evaluate",
-        "resource_class": "gpu",
-        "kind": "prediction",
-    },
-    "calibrate_thresholds": {
-        "agent": "research",
-        "task_action": "propose_threshold_calibration",
-        "phase": "research",
-        "resource_class": "network_cpu",
-        "kind": "policy_review",
-    },
-    "deduplicate_candidates": {
-        "agent": "design/data",
-        "task_action": "audit_duplicate_candidates",
-        "phase": "iterate",
-        "resource_class": "cpu",
-        "kind": "data_review",
-    },
-    "repair_candidate_index": {
-        "agent": "design/data",
-        "task_action": "repair_candidate_index",
-        "phase": "iterate",
-        "resource_class": "cpu",
-        "kind": "recovery",
-    },
+# Critic recommendations are deliberately closed-world.  These mappings are
+# Planner policy only; executable capability is answered by the Action Registry
+# and its typed ActionSpec catalog.
+RECOMMENDATION_MAPPINGS: dict[str, RecommendationMapping] = {
+    "regenerate_invalid_artifact": RecommendationMapping(
+        "regenerate_invalid_artifact", "regenerate_invalid_artifacts",
+        "prediction/design", "iterate", "gpu", "recovery",
+    ),
+    "complete_prediction_evidence": RecommendationMapping(
+        "complete_prediction_evidence", "evaluate_new_design_candidates",
+        "prediction", "evaluate", "gpu", "prediction",
+    ),
+    "calibrate_thresholds": RecommendationMapping(
+        "calibrate_thresholds", "propose_threshold_calibration",
+        "research", "research", "network_cpu", "policy_review",
+    ),
+    "deduplicate_candidates": RecommendationMapping(
+        "deduplicate_candidates", "audit_duplicate_candidates",
+        "design/data", "iterate", "cpu", "data_review",
+    ),
+    "repair_candidate_index": RecommendationMapping(
+        "repair_candidate_index", "repair_candidate_index",
+        "design/data", "iterate", "cpu", "recovery",
+    ),
 }
 
 DESIGN_ITERATION_ACTIONS = frozenset({
@@ -103,14 +91,10 @@ DESIGN_ITERATION_ACTIONS = frozenset({
     "improve_pose_robustness",
 })
 
-for _action in DESIGN_ITERATION_ACTIONS:
-    ACTION_SPECS[_action] = {
-        "agent": "design",
-        "task_action": "iterate_design",
-        "phase": "design",
-        "resource_class": "gpu",
-        "kind": "design",
-    }
+for _recommendation in DESIGN_ITERATION_ACTIONS:
+    RECOMMENDATION_MAPPINGS[_recommendation] = RecommendationMapping(
+        _recommendation, "iterate_design", "design", "design", "gpu", "design"
+    )
 
 
 class PlannerContractError(ValueError):
@@ -264,7 +248,7 @@ def _validate_critic_report(report: dict, state: dict, report_sha256: str) -> No
             raise PlannerContractError(
                 "critic_issue_severity_invalid", f"invalid severity for {code}"
             )
-        if action not in ACTION_SPECS:
+        if action not in RECOMMENDATION_MAPPINGS:
             raise PlannerContractError(
                 "planner_action_unknown", f"Planner has no safe mapping for {action!r}"
             )
@@ -283,7 +267,7 @@ def _validate_critic_report(report: dict, state: dict, report_sha256: str) -> No
                 "critic_recommendation_invalid", "Critic recommendation must be an object"
             )
         action = str(recommendation.get("action") or "").strip()
-        if action not in ACTION_SPECS:
+        if action not in RECOMMENDATION_MAPPINGS:
             raise PlannerContractError(
                 "planner_action_unknown", f"Planner has no safe mapping for {action!r}"
             )
@@ -509,6 +493,23 @@ def _task(
     block_reasons: list[str] | None = None,
 ) -> dict:
     task_id = f"T{len(tasks) + 1:03d}"
+    try:
+        action_spec = get_action_spec(action)
+    except ValueError as exc:
+        raise PlannerContractError(
+            "planner_action_unknown", f"Planner task has unknown action {action!r}"
+        ) from exc
+    if action_spec.executable:
+        from execution.action_registry import handler_for
+
+        if handler_for(action_spec.action) is None:
+            raise PlannerContractError(
+                "planner_action_handler_missing",
+                f"Planner task action {action!r} has no executable registry handler",
+            )
+    effective_block_reasons = list(block_reasons or [])
+    if not action_spec.executable and "blocked_unimplemented" not in effective_block_reasons:
+        effective_block_reasons.append("blocked_unimplemented")
     value = {
         "task_id": task_id,
         "agent": agent,
@@ -539,10 +540,19 @@ def _task(
         "outputs": list(outputs or []),
         "constraints": sorted(set(constraints or [])),
         "execution_gate": {
-            "status": "blocked" if block_reasons else "proposed",
-            "block_reasons": list(block_reasons or []),
+            "status": "blocked" if effective_block_reasons else "proposed",
+            "block_reasons": effective_block_reasons,
         },
     }
+    # Validate the adapter shape immediately while retaining the immutable
+    # dict representation consumed by existing plan artifacts.
+    from contracts.task import ExecutionTask
+    try:
+        ExecutionTask.from_dict(value)
+    except (TypeError, ValueError) as exc:
+        raise PlannerContractError(
+            "planner_task_contract_invalid", f"task {task_id} is not a valid ExecutionTask"
+        ) from exc
     tasks.append(value)
     return value
 
@@ -598,6 +608,29 @@ def build_plan(
     report_sha = file_sha256(report_path)
     _validate_critic_report(report, state, report_sha)
     budgets, total_design_budget = _budget_snapshot(state)
+    source_round = int(state.get("round") or 1)
+    project_id = str(
+        report.get("source", {}).get("project_id")
+        or state.get("project_id")
+        or "unknown_project"
+    ).strip()
+    supplied_workflow_id = (
+        state.get("workflow_id")
+        or report.get("workflow_id")
+        or report.get("source", {}).get("workflow_id")
+    )
+    if supplied_workflow_id:
+        try:
+            TraceContext(project_id=project_id, workflow_id=str(supplied_workflow_id))
+        except ValueError as exc:
+            raise PlannerContractError(
+                "planner_workflow_id_invalid", "Planner received an invalid workflow_id"
+            ) from exc
+        workflow_id = str(supplied_workflow_id)
+    else:
+        workflow_id = derive_workflow_id(
+            project_id, report["report_id"], report_sha, source_round
+        )
 
     issues_by_code = {issue["code"]: issue for issue in report["issues"]}
     recommendations_by_action = {
@@ -716,11 +749,11 @@ def build_plan(
         action = recommendation["action"]
         if action in DESIGN_ITERATION_ACTIONS:
             continue
-        spec = ACTION_SPECS[action]
+        mapping = RECOMMENDATION_MAPPINGS[action]
         reason_codes = list(recommendation["reason_codes"])
         candidate_ids = _candidate_ids(reason_codes, issues_by_code)
         disposition = _reason_disposition(reason_codes, issues_by_code)
-        resource_class = spec["resource_class"]
+        resource_class = mapping.resource_class
         constraints = []
         data_integrity = False
         parameters: dict[str, Any] = {}
@@ -772,9 +805,9 @@ def build_plan(
             outputs = ["prediction_handoff.json"]
         task = _task(
             tasks,
-            agent=spec["agent"],
-            action=spec["task_action"],
-            phase=spec["phase"],
+            agent=mapping.agent,
+            action=mapping.task_action.value,
+            phase=mapping.phase,
             priority=recommendation["priority"],
             disposition=disposition,
             reason_codes=reason_codes,
@@ -871,7 +904,6 @@ def build_plan(
     else:
         status = "no_action"
 
-    source_round = int(state.get("round") or 1)
     has_required_iteration = any(
         task["phase"] in {"design", "evaluate", "iterate"}
         and task["disposition"] != "optional"
@@ -881,6 +913,7 @@ def build_plan(
     input_digest = object_sha256({
         "critic_report_path": str(report_path),
         "critic_report_sha256": report_sha,
+        "workflow_id": workflow_id,
         "state": {
             "project_id": state.get("project_id"),
             "round": source_round,
@@ -904,6 +937,7 @@ def build_plan(
         "schema_version": PLAN_SCHEMA_VERSION,
         "planner_version": PLANNER_VERSION,
         "plan_id": plan_id,
+        "workflow_id": workflow_id,
         "input_digest": input_digest,
         "source": {
             "critic_report": str(report_path),
@@ -912,6 +946,7 @@ def build_plan(
             "critic_verdict": report["verdict"],
             "prediction_run_id": report["source"].get("prediction_run_id"),
             "project_id": report["source"].get("project_id"),
+            "workflow_id": workflow_id,
         },
         "status": status,
         "summary": summary,
@@ -979,6 +1014,7 @@ def run(
     summary = {
         "planner_version": PLANNER_VERSION,
         "plan_id": plan["plan_id"],
+        "workflow_id": plan["workflow_id"],
         "plan_path": str(output_path),
         "plan_sha256": plan_sha,
         "critic_report_id": plan["source"]["critic_report_id"],
@@ -1005,9 +1041,16 @@ def run(
             plan_path=str(output_path),
             plan_sha256=plan_sha,
             critic_report_id=plan["source"]["critic_report_id"],
+            critic_report_path=plan["source"].get("critic_report"),
+            critic_report_sha256=plan["source"].get("critic_report_sha256"),
             status=plan["status"],
             task_count=len(plan["tasks"]),
             required_approval_task_ids=plan["approval_request"]["required_task_ids"],
+            trace_context=TraceContext(
+                project_id=str(plan["source"].get("project_id") or "unknown_project"),
+                workflow_id=plan["workflow_id"],
+                plan_id=plan["plan_id"],
+            ),
         )
     return {"plan": plan, "plan_path": str(output_path), "plan_sha256": plan_sha}
 
@@ -1090,18 +1133,21 @@ def _validate_plan_for_approval(plan: dict, plan_path: Path) -> None:
                 "plan_task_gate_invalid", f"task {task_id} has an invalid execution gate"
             )
         try:
-            from execution.contracts import (
-                ALL_KNOWN_ACTIONS,
-                CORE_ACTIONS,
-                validate_task_parameters,
-            )
+            from execution.contracts import ALL_KNOWN_ACTIONS, validate_task_parameters
+            from contracts.action import get_action_spec
 
             action = str(task.get("action") or "")
             if action not in ALL_KNOWN_ACTIONS:
                 raise PlannerContractError(
                     "plan_action_unknown", f"task {task_id} has unknown action {action!r}"
                 )
-            if action in CORE_ACTIONS and gate.get("status") == "proposed":
+            spec = get_action_spec(action)
+            if not spec.executable and gate.get("status") == "proposed":
+                raise PlannerContractError(
+                    "plan_unimplemented_action_proposed",
+                    f"task {task_id} uses non-executable action {action}",
+                )
+            if spec.executable and gate.get("status") == "proposed":
                 validate_task_parameters(task)
         except PlannerContractError:
             raise
@@ -1296,6 +1342,16 @@ def record_approval(
             approved_task_ids=selected,
             approver=approver,
             budget_limits=semantic["budget_limits"],
+            trace_context=TraceContext(
+                project_id=str(semantic.get("project_id") or "unknown_project"),
+                workflow_id=str(plan.get("workflow_id") or derive_workflow_id(
+                    str(semantic.get("project_id") or "unknown_project"),
+                    str(plan.get("source", {}).get("critic_report_id") or plan_id),
+                    str(plan.get("source", {}).get("critic_report_sha256") or plan_sha),
+                    plan.get("cycle", {}).get("source_round", 1),
+                )),
+                plan_id=plan_id,
+            ),
         )
     return {
         "approval": approval,

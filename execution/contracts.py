@@ -15,33 +15,29 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from prediction_pipeline.contracts import file_sha256, object_sha256
+from contracts.action import (
+    ACTION_CATALOG,
+    ALL_ACTION_TYPES,
+    EXECUTABLE_ACTION_TYPES,
+    KNOWN_UNIMPLEMENTED_ACTION_TYPES,
+    V2_RESERVED_ACTION_TYPES,
+    ActionSpec,
+    ActionType,
+    get_action_spec,
+)
+from contracts.task import ExecutionTask, TaskStatus
+from contracts.trace import TraceContext
 
 
 EXECUTION_SCHEMA_VERSION = 1
 EXECUTION_WORKER_VERSION = "1.0.1"
 
-CORE_ACTIONS = frozenset({
-    "iterate_design",
-    "evaluate_new_design_candidates",
-    "review_prediction_handoff",
-    "propose_threshold_calibration",
-})
-
-V2_RESERVED_ACTIONS = frozenset({
-    "dock_shortlisted_candidates",
-    "run_md_on_docking_consensus",
-})
-
-# Planner can describe these existing recovery/report actions, but Execution v1
-# must refuse to claim them until a reviewed handler is implemented.
-KNOWN_UNIMPLEMENTED_ACTIONS = frozenset({
-    "regenerate_invalid_artifacts",
-    "audit_duplicate_candidates",
-    "repair_candidate_index",
-    "prepare_final_candidate_report",
-})
-
-ALL_KNOWN_ACTIONS = CORE_ACTIONS | V2_RESERVED_ACTIONS | KNOWN_UNIMPLEMENTED_ACTIONS
+CORE_ACTIONS = frozenset(action.value for action in EXECUTABLE_ACTION_TYPES)
+V2_RESERVED_ACTIONS = frozenset(action.value for action in V2_RESERVED_ACTION_TYPES)
+KNOWN_UNIMPLEMENTED_ACTIONS = frozenset(
+    action.value for action in KNOWN_UNIMPLEMENTED_ACTION_TYPES
+)
+ALL_KNOWN_ACTIONS = frozenset(action.value for action in ALL_ACTION_TYPES)
 
 CANDIDATE_ID_RE = re.compile(r"^C[0-9]{4,}$")
 TARGET_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -49,10 +45,9 @@ TASK_ID_RE = re.compile(r"^T[0-9]{3}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 ACTION_OUTPUT_ROLES = {
-    "iterate_design": ("design_result",),
-    "evaluate_new_design_candidates": ("prediction_handoff",),
-    "review_prediction_handoff": ("critic_report",),
-    "propose_threshold_calibration": ("calibration_proposal",),
+    action.value: spec.output_roles
+    for action, spec in ACTION_CATALOG.items()
+    if spec.output_roles
 }
 
 ACTION_DECLARED_OUTPUTS = {
@@ -346,14 +341,29 @@ def validate_task_parameters(task: dict) -> dict:
 def assert_action_executable(task: dict) -> dict:
     action = str((task or {}).get("action") or "").strip()
     normalized = validate_task_parameters(task)
+    try:
+        spec = get_action_spec(action)
+    except ValueError as exc:
+        raise ExecutionContractError(
+            "execution_action_unknown", f"{action} is not a known execution action"
+        ) from exc
     if action in V2_RESERVED_ACTIONS:
         raise ExecutionContractError(
             "execution_action_reserved_v2",
             f"{action} is reserved for v2 and has no executable handler",
         )
-    if action not in CORE_ACTIONS:
+    if not spec.executable:
         raise ExecutionContractError(
             "execution_action_unimplemented", f"{action} has no reviewed Execution v1 handler"
+        )
+    # Import lazily: action_registry binds the legacy HANDLERS map and imports
+    # this module for the output contracts.
+    from execution.action_registry import handler_for
+
+    if handler_for(spec.action) is None:
+        raise ExecutionContractError(
+            "execution_action_handler_missing",
+            f"{action} is marked executable but has no registered handler",
         )
     return normalized
 
@@ -373,6 +383,26 @@ def validate_dispatch_packet(packet: dict, *, expected_sha256: str | None = None
     token = str(packet.get("claim_token") or "")
     if not re.fullmatch(r"[0-9a-f]{32}", token):
         raise ExecutionContractError("dispatch_claim_invalid", "dispatch packet has invalid claim token")
+    trace = packet.get("trace_context")
+    if trace is not None:
+        try:
+            context = TraceContext.from_dict(trace)
+        except ValueError as exc:
+            raise ExecutionContractError(
+                "dispatch_trace_invalid", "dispatch packet has invalid trace context"
+            ) from exc
+        if context.task_id is not None and context.task_id != packet["task"]["task_id"]:
+            raise ExecutionContractError(
+                "dispatch_trace_invalid", "trace task_id differs from dispatch task"
+            )
+        if context.attempt_id is not None:
+            expected_attempt_id = TraceContext.attempt_id_for(
+                packet["task"]["task_id"], int(packet.get("task_attempt") or 0)
+            )
+            if context.attempt_id != expected_attempt_id:
+                raise ExecutionContractError(
+                    "dispatch_trace_invalid", "trace attempt_id differs from dispatch attempt"
+                )
     assert_action_executable(packet["task"])
     return packet
 

@@ -23,6 +23,7 @@
     "schema_version": {"const": 1},
     "planner_version": {"type": "string", "minLength": 1},
     "plan_id": {"type": "string", "pattern": "^planner_[0-9a-f]{12}$"},
+    "workflow_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"},
     "input_digest": {"$ref": "#/$defs/sha256"},
     "source": {
       "type": "object",
@@ -41,7 +42,8 @@
         "critic_report_id": {"type": "string", "pattern": "^critic_[0-9a-f]{12}$"},
         "critic_verdict": {"enum": ["blocked", "iterate", "review", "clear"]},
         "prediction_run_id": {"type": ["string", "null"]},
-        "project_id": {"type": ["string", "null"]}
+        "project_id": {"type": ["string", "null"]},
+        "workflow_id": {"type": ["string", "null"], "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"}
       }
     },
     "status": {
