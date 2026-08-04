@@ -159,7 +159,7 @@ cycpep-mdm2-mdmx/
     ├── planner.py             ← Critic 驱动任务图、预算与审批规划
     ├── orchestrator.py        ← 审批执行、任务 DAG、GPU 租约与运行恢复
     ├── critic.py              ← Prediction 失败审查、候选池诊断与 Planner handoff
-    ├── design.py              ← 于嘉乐：三条设计路线
+    ├── design/               ← 于嘉乐：三条设计路线（design.py 保留为 CLI shim）
     ├── prediction.py          ← 七层生产编排入口（无 placeholder/demo）
     └── research.py            ← RCSB/PubMed/阈值证据调研
 ```

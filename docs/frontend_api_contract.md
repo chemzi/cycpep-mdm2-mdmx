@@ -2,7 +2,7 @@
 
 本文定义 UI 与未来 HTTP adapter 的稳定边界。现有业务逻辑位于
 `target_bootstrap.py`、`structure_resolution.py`、`agents/research.py` 和
-`agents/design.py`；HTTP 路由尚未实现。前端应只依赖本 contract，而不依赖
+`agents/design/`（CLI 入口仍为 `agents/design.py` shim）；HTTP 路由尚未实现。前端应只依赖本 contract，而不依赖
 JSON 文件路径、CLI 文本输出或 Python 异常字符串。
 
 ## 1. 约定
