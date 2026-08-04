@@ -96,6 +96,17 @@ def _output_with_role(run_path: str | Path, role: str) -> Path | None:
     return None
 
 
+def _research_state_is_current(state: dict, config: dict) -> bool:
+    """Research is usable only after structure-driven approval has stabilized."""
+    approved_digest = str((config.get("review") or {}).get("approved_digest") or "")
+    return bool(
+        approved_digest
+        and state.get("approved_digest") == approved_digest
+        and isinstance(state.get("thresholds"), dict)
+        and state["thresholds"]
+    )
+
+
 def run(args: argparse.Namespace) -> dict:
     _configure_runtime(args)
     # Import only after project-scoped environment variables are fixed.
@@ -130,23 +141,45 @@ def run(args: argparse.Namespace) -> dict:
     }
     _atomic_json(status_path, status)
     try:
-        research_plan = planner.run_bootstrap(
-            stage="research",
-            output_root=session_root / "plans" / "research",
-            force_recompute=args.force_research,
-        )
-        research_run = _execute_plan(research_plan, args, "autopilot-research")
-        status["runs"].append({
-            "stage": "research", "plan_id": research_plan["plan"]["plan_id"],
-            "run_id": research_run["run"]["run_id"], "run_path": research_run["run_path"],
-            "status": research_run["run"]["status"],
-        })
+        # Research selects structures; materialization can therefore change the
+        # approved project digest and correctly clear thresholds bound to the
+        # previous digest. Repeat the audited bootstrap until both structure
+        # approval and Research thresholds refer to the same stable digest.
+        for bootstrap_pass in range(1, 4):
+            stage_name = (
+                "research" if bootstrap_pass == 1
+                else f"research_stabilization_{bootstrap_pass}"
+            )
+            status.update({"stage": stage_name, "updated_at": _utcnow()})
+            _atomic_json(status_path, status)
+            research_plan = planner.run_bootstrap(
+                stage="research",
+                output_root=session_root / "plans" / stage_name,
+                force_recompute=args.force_research and bootstrap_pass == 1,
+            )
+            research_run = _execute_plan(
+                research_plan, args, f"autopilot-{stage_name}"
+            )
+            status["runs"].append({
+                "stage": stage_name,
+                "plan_id": research_plan["plan"]["plan_id"],
+                "run_id": research_run["run"]["run_id"],
+                "run_path": research_run["run_path"],
+                "status": research_run["run"]["status"],
+            })
+            current_config = load_project_config(args.project_config)
+            State.sync_project_config(current_config)
+            if _research_state_is_current(State.load(), current_config):
+                break
+        else:
+            raise RuntimeError(
+                "Research thresholds did not stabilize against the approved "
+                "structure configuration after 3 audited passes"
+            )
         status.update({"stage": "design", "updated_at": _utcnow()})
         _atomic_json(status_path, status)
 
-        # Structure preparation re-approves a hash-bound config, so reload it
-        # before freezing the Design plan.
-        State.sync_project_config(load_project_config(args.project_config))
+        # Freeze Design only after the hash-bound config and thresholds agree.
         design_plan = planner.run_bootstrap(
             stage="design",
             output_root=session_root / "plans" / "design_round_1",

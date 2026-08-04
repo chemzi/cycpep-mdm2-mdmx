@@ -20,6 +20,7 @@ from execution.contracts import (
     _validate_research_result,
 )
 from execution.supervisor import run_process
+from execution.autopilot import _research_state_is_current
 from execution.handlers import _binding_residue_numbers
 from execution.worker import execute_task
 from prediction_pipeline.contracts import object_sha256
@@ -34,6 +35,20 @@ POLICY_CONSTRAINTS = [
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_autopilot_requires_thresholds_bound_to_current_approval(self):
+        config = {"review": {"approved_digest": "a" * 64}}
+        self.assertTrue(_research_state_is_current(
+            {"approved_digest": "a" * 64, "thresholds": {"L1_plddt": {}}},
+            config,
+        ))
+        self.assertFalse(_research_state_is_current(
+            {"approved_digest": "b" * 64, "thresholds": {"L1_plddt": {}}},
+            config,
+        ))
+        self.assertFalse(_research_state_is_current(
+            {"approved_digest": "a" * 64, "thresholds": {}}, config,
+        ))
+
     def test_reviewed_residue_labels_are_normalized_for_design(self):
         self.assertEqual(
             _binding_residue_numbers(["Trp23", "A:54LEU", 61, "Met62"]),
