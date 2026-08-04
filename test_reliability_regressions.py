@@ -202,8 +202,8 @@ class DesignReliabilityTests(unittest.TestCase):
         state["known_dual_binders"] = [{"name": "PMI", "sequence": "TSFAEYWNLLSP"}]
         State.save(state)
         with (
-            patch.object(design_module, "ACTIVE_PROJECT_CONFIG", self.project_config),
-            patch("agents.design._run_rfdiff", return_value=False),
+            patch("agents.design.config.ACTIVE_PROJECT_CONFIG", self.project_config),
+            patch("agents.design.route_b._run_rfdiff", return_value=False),
         ):
             candidates = design_motif_graft(10)
         self.assertEqual(candidates, [])
@@ -218,7 +218,7 @@ class DesignReliabilityTests(unittest.TestCase):
         score_path.write_text("0.99", encoding="utf-8")
 
         with patch(
-            "agents.design.subprocess.run",
+            "agents.design.runtime.subprocess.run",
             return_value=SimpleNamespace(returncode=1, stderr="expected failure"),
         ):
             result = design_module._run_refold("ACDEFGHI", str(output_pdb))
@@ -242,7 +242,7 @@ class DesignReliabilityTests(unittest.TestCase):
             score_path.write_text("0.90", encoding="utf-8")
             return SimpleNamespace(returncode=0, stderr="")
 
-        with patch("agents.design.subprocess.run", side_effect=fake_success):
+        with patch("agents.design.runtime.subprocess.run", side_effect=fake_success):
             result = design_module._run_refold("ACDEFGHI", str(output_pdb))
 
         self.assertIsNone(result)
@@ -275,13 +275,13 @@ class DesignReliabilityTests(unittest.TestCase):
             return references
 
         with (
-            patch.object(design_module, "ACTIVE_PROJECT_CONFIG", self.project_config),
+            patch("agents.design.config.ACTIVE_PROJECT_CONFIG", self.project_config),
             patch(
-                "agents.design._route_c_design_references",
+                "agents.design.route_c._route_c_design_references",
                 side_effect=fake_design_references,
             ),
-            patch("agents.design._run_refold", side_effect=fake_refold),
-            patch("agents.design._ring_closure_check", return_value={"pass": True}),
+            patch("agents.design.route_c._run_refold", side_effect=fake_refold),
+            patch("agents.design.route_c._ring_closure_check", return_value={"pass": True}),
         ):
             candidates = design_atsp_cyclize(200, seed=42)
         self.assertEqual(len(candidates), 200)

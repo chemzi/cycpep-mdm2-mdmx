@@ -1,0 +1,72 @@
+"""Design Agent command-line entry point."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+from data_layer import CandidateIndex  # noqa: E402
+
+from . import config  # noqa: E402
+from .config import DESIGN_PIPELINE_VERSION  # noqa: E402
+from .route_a import design_rfpeptides  # noqa: E402
+from .route_b import design_motif_guided  # noqa: E402
+from .route_c import design_atsp_derived  # noqa: E402
+
+
+def main(argv=None) -> int:
+    """Run the Design Agent CLI; returns the process exit code."""
+    parser = argparse.ArgumentParser(
+        description=f"Design Agent v{DESIGN_PIPELINE_VERSION}"
+    )
+    parser.add_argument("--route", choices=["A", "B", "C", "all"], default="all")
+    parser.add_argument(
+        "--target",
+        default=None,
+        help="configured target ID or PDB ID; defaults to the first approved target",
+    )
+    parser.add_argument("--n", type=int, default=10)
+    parser.add_argument("--lengths", default="10,12,14")
+    parser.add_argument("--hotspots", default=None)
+    parser.add_argument(
+        "--chain",
+        default=None,
+        help="must match the approved target chain when provided",
+    )
+    parser.add_argument("--seed", type=int, default=None)
+    args = parser.parse_args(argv)
+
+    lengths = [int(value) for value in args.lengths.split(",")]
+    target_spec = {}
+    if args.chain:
+        target_spec["chain"] = args.chain
+    if args.target:
+        target_spec["target_name"] = args.target
+    if args.hotspots:
+        target_spec["hotspots"] = args.hotspots
+    design_config = {"n": args.n, "lengths": lengths, "seed": args.seed}
+
+    all_candidates = []
+    if args.route in ("A", "all"):
+        print(f"[Route A v5] target={args.target}, n={args.n}, len={lengths}")
+        result = design_rfpeptides(target_spec=target_spec, design_config=design_config)
+        all_candidates.extend(result)
+        print(f"[Route A] 完成: {len(result)} candidates")
+    if args.route in ("B", "all"):
+        print(f"[Route B v5] n={args.n}")
+        result = design_motif_guided(target_spec=target_spec, design_config=design_config)
+        all_candidates.extend(result)
+        print(f"[Route B] 完成: {len(result)} candidates")
+    if args.route in ("C", "all"):
+        print(f"[Route C v5] n={args.n}")
+        result = design_atsp_derived(target_spec=target_spec, design_config=design_config)
+        all_candidates.extend(result)
+        print(f"[Route C] 完成: {len(result)} candidates")
+
+    print(f"\nDone: {len(all_candidates)} candidates")
+    print(CandidateIndex.stats())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

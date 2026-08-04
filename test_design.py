@@ -1,8 +1,8 @@
-"""Unit tests for design.py pure functions (no GPU/external tools needed)"""
-import sys, os, json, tempfile, hashlib
+"""Unit tests for the agents.design package pure functions (no GPU/external tools)."""
+import sys, os, json, tempfile, hashlib, subprocess, types
 from pathlib import Path
 
-# ── Stubs for data_layer ──
+# ── Stubs for data_layer injected before importing the package ──
 class EvidenceLogger:
     @staticmethod
     def log(*a, **kw): pass
@@ -43,16 +43,50 @@ def file_hash(path):
             return hashlib.sha256(f.read()).hexdigest()[:16]
     return ''
 
-# ── Load design.py with stubs ──
-import __main__
-src = open('agents/design.py', encoding='utf-8').read()
-src = src.replace(
-    'from data_layer import EvidenceLogger, CandidateIndex, State, file_hash',
-    '# data_layer stubs injected by test_design.py'
+# ── Import the package with the data_layer stub in place ──
+import data_layer as _real_data_layer  # noqa: E402  (restored after package import)
+
+_stub = types.ModuleType("data_layer")
+_stub.EvidenceLogger = EvidenceLogger
+_stub.CandidateIndex = CandidateIndex
+_stub.State = State
+_stub.file_hash = file_hash
+sys.modules["data_layer"] = _stub
+
+from agents.design import config as design_config  # noqa: E402
+from agents.design import (  # noqa: E402
+    manifests, route_a, route_b, route_c, runtime, service, validation,
 )
-# Prevent CLI execution
-src = src.replace('if __name__ == "__main__":', 'if False and __name__ == "__main__":')
-exec(src)
+
+# Restore the real module for functions that import data_layer lazily
+# (e.g. service.pareto_front -> data_layer.compute_pareto_front).
+sys.modules["data_layer"] = _real_data_layer
+
+# Flat namespace matching the names the old single-file exec() exposed.
+from project_config import load_project_config  # noqa: E402
+from agents.design.config import (  # noqa: E402
+    DESIGN_PIPELINE_VERSION, RFDIFF_CONDA, RFDIFF_DIR, SE3_ROOT, _resolve_output_dir,
+)
+from agents.design.manifests import _candidate_from_manifest, _write_manifest  # noqa: E402
+from agents.design.route_b import design_motif_guided  # noqa: E402
+from agents.design.route_c import (  # noqa: E402
+    _route_c_base_combos, _route_c_cyclization_pairs, _route_c_design_references,
+    design_atsp_derived,
+)
+from agents.design.runtime import (  # noqa: E402
+    _build_refold_script, _rfdiff_subprocess_env, _run_rfdiff,
+)
+from agents.design.service import (  # noqa: E402
+    _load_target_spec, _merge_config, _next_candidate_id, pareto_front, threshold_filter,
+)
+from agents.design.validation import (  # noqa: E402
+    _binder_first_contig, _cheap_filter_sequences, _describe_cyclize,
+    _extract_ligandmpnn_binder_sequence, _hotspot_fixed_residues,
+    _hotspot_positions, _infer_binder_chain, _parse_binder_residues,
+    _pdb_chain_residue_layout, _pdb_chain_sequences, _pdb_residue_range,
+    _ring_closure_check, _sequence_quality_score, _synthesizability_violations,
+    _validate_sequence, _verify_fixed_sequence_pdb,
+)
 
 # ── Approved target fixture used by Design v5 config integration ──
 from target_bootstrap import ReviewRequiredError, config_digest
@@ -97,6 +131,9 @@ ACTIVE_PROJECT_CONFIG['review'] = {
     'status': 'approved',
     'approved_digest': config_digest(ACTIVE_PROJECT_CONFIG),
 }
+
+# Point the design package at this fixture instead of the repo default config.
+design_config.ACTIVE_PROJECT_CONFIG = ACTIVE_PROJECT_CONFIG
 
 failures = []
 
@@ -641,8 +678,8 @@ with tempfile.TemporaryDirectory() as route_c_root:
             )
         return True
 
-    original_run_rfdiff = _run_rfdiff
-    _run_rfdiff = _fake_route_c_rfdiff
+    original_run_rfdiff = route_c._run_rfdiff
+    route_c._run_rfdiff = _fake_route_c_rfdiff
     try:
         route_c_references = _route_c_design_references(
             {
@@ -659,7 +696,7 @@ with tempfile.TemporaryDirectory() as route_c_root:
             ],
         )
     finally:
-        _run_rfdiff = original_run_rfdiff
+        route_c._run_rfdiff = original_run_rfdiff
     check(set(route_c_references) == {0, 1, 2},
           'Route C obtains one validated L7 reference per sequence')
     check(len(set(route_c_references.values())) == 3,
@@ -809,7 +846,7 @@ print('Test 20: Route C empty base_combos guard')
 # The guard added after base_combos construction should return [] before random.choice
 # We verify the guard exists by checking the source directly
 guard_pattern = 'if not base_combos:'
-with open('agents/design.py', encoding='utf-8') as f:
+with open('agents/design/route_c.py', encoding='utf-8') as f:
     design_source = f.read()
 check(guard_pattern in design_source,
       'empty base_combos guard is present in design_atsp_derived')
