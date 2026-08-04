@@ -22,6 +22,8 @@ from execution.contracts import (
 from execution.supervisor import run_process
 from execution.autopilot import _research_state_is_current
 from execution.handlers import _binding_residue_numbers
+from execution.handlers import HANDLERS
+from execution.contracts import CORE_ACTIONS
 from execution.worker import execute_task
 from prediction_pipeline.contracts import object_sha256
 
@@ -35,6 +37,9 @@ POLICY_CONSTRAINTS = [
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_every_core_action_has_exactly_one_registered_handler(self):
+        self.assertEqual(set(HANDLERS), set(CORE_ACTIONS))
+
     def test_autopilot_requires_thresholds_bound_to_current_approval(self):
         config = {"review": {"approved_digest": "a" * 64}}
         self.assertTrue(_research_state_is_current(

@@ -509,6 +509,16 @@ def _task(
     constraints: list[str] | None = None,
     block_reasons: list[str] | None = None,
 ) -> dict:
+    from execution.contracts import ALL_KNOWN_ACTIONS, CORE_ACTIONS
+
+    if action not in ALL_KNOWN_ACTIONS:
+        raise PlannerContractError(
+            "planner_action_unknown", f"Planner cannot emit unknown action {action!r}"
+        )
+    effective_block_reasons = list(block_reasons or [])
+    if action not in CORE_ACTIONS:
+        effective_block_reasons.append("blocked_unimplemented")
+    effective_block_reasons = sorted(set(effective_block_reasons))
     task_id = f"T{len(tasks) + 1:03d}"
     value = {
         "task_id": task_id,
@@ -540,8 +550,8 @@ def _task(
         "outputs": list(outputs or []),
         "constraints": sorted(set(constraints or [])),
         "execution_gate": {
-            "status": "blocked" if block_reasons else "proposed",
-            "block_reasons": list(block_reasons or []),
+            "status": "blocked" if effective_block_reasons else "proposed",
+            "block_reasons": effective_block_reasons,
         },
     }
     tasks.append(value)
@@ -1390,6 +1400,11 @@ def _validate_plan_for_approval(plan: dict, plan_path: Path) -> None:
             if action not in ALL_KNOWN_ACTIONS:
                 raise PlannerContractError(
                     "plan_action_unknown", f"task {task_id} has unknown action {action!r}"
+                )
+            if gate.get("status") == "proposed" and action not in CORE_ACTIONS:
+                raise PlannerContractError(
+                    "plan_action_unimplemented",
+                    f"task {task_id} proposes unimplemented action {action!r}",
                 )
             if action in CORE_ACTIONS and gate.get("status") == "proposed":
                 validate_task_parameters(task)
