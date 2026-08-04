@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -151,3 +152,36 @@ HYDROPHOBIC = set("AILMFWV")
 POS_CHARGED = set("KR")
 NEG_CHARGED = set("DE")
 
+
+# ============================================================
+# ??????Engineering Standard P1-1?
+# ============================================================
+#
+# ??????? Design(context) ????????????? import-time
+# ??? ACTIVE_PROJECT_CONFIG????????????????????
+
+@dataclass(frozen=True)
+class DesignContext:
+    """Per-project context injected into :class:`~agents.design.agent.Design`.
+
+    ``project_config`` ????? target ?????``output_dir`` ?????
+    ?????????????CYCPEP_PYTHON / RFDIFF_DIR / ...??????
+    ??????????????????????
+
+    Examples
+    --------
+    >>> DesignContext(project_config=approved_config, output_dir="/tmp/x")
+    >>> DesignContext.default()  # ?????????? ACTIVE_PROJECT_CONFIG
+    """
+
+    project_config: dict
+    output_dir: str = ""
+
+    def __post_init__(self):
+        # frozen dataclass ??? __post_init__ ??? setattr?
+        object.__setattr__(self, "output_dir", self.output_dir or str(DEFAULT_OUTPUT_DIR))
+
+    @classmethod
+    def default(cls) -> "DesignContext":
+        """Build the legacy default context from module-level state."""
+        return cls(project_config=ACTIVE_PROJECT_CONFIG, output_dir=str(DEFAULT_OUTPUT_DIR))

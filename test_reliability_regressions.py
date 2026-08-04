@@ -280,8 +280,8 @@ class DesignReliabilityTests(unittest.TestCase):
                 "agents.design.route_c._route_c_design_references",
                 side_effect=fake_design_references,
             ),
-            patch("agents.design.route_c._run_refold", side_effect=fake_refold),
-            patch("agents.design.route_c._ring_closure_check", return_value={"pass": True}),
+            patch("agents.design.candidates._run_refold", side_effect=fake_refold),
+            patch("agents.design.candidates._ring_closure_check", return_value={"pass": True}),
         ):
             candidates = design_atsp_cyclize(200, seed=42)
         self.assertEqual(len(candidates), 200)

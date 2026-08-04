@@ -10,9 +10,9 @@ from pathlib import Path
 from data_layer import CandidateIndex, EvidenceLogger  # noqa: E402
 
 from . import config  # noqa: E402
-from .config import DESIGN_PIPELINE_VERSION, OUTPUT_DIR  # noqa: E402
-from .manifests import _candidate_from_manifest, _write_manifest  # noqa: E402
-from .runtime import _run_ligandmpnn, _run_refold, _run_rfdiff  # noqa: E402
+from .candidates import _collect_raw_sequences, _register_refolded_candidate  # noqa: E402
+from .config import DESIGN_PIPELINE_VERSION, DesignContext  # noqa: E402
+from .runtime import _run_ligandmpnn, _run_rfdiff  # noqa: E402
 from .service import (  # noqa: E402
     _load_existing_sequences,
     _merge_config,
@@ -22,37 +22,24 @@ from .validation import (  # noqa: E402
     _binder_first_contig,
     _cheap_filter_sequences,
     _infer_binder_chain,
-    _infer_cyclization_type,
     _parse_hotspot_residues,
     _pdb_residue_range,
-    _ring_closure_check,
 )
 from project_config import target_slug  # noqa: E402
 
 
-def design_rfpeptides(target_spec=None, design_config=None):
-    """RFpeptides → LigandMPNN → AfCycDesign refold"""
-    config = _merge_config(target_spec, design_config)
-    route_name = f"route_A_{target_slug(config['target_id'])}"
-    batch_id = f"batch_rfpep_{config['target_name']}_s{config['seed']}"
-    batch_dir = os.path.join(OUTPUT_DIR, "route_A", batch_id)
-    os.makedirs(batch_dir, exist_ok=True)
+def _route_a_generate_backbones(config, batch_dir):
+    """Pass 1: RFdiffusion + LigandMPNN per length; returns (backbone_entries, total_gen).
 
-    with open(os.path.join(batch_dir, "design_config.json"), "w") as f:
-        json.dump(config, f, indent=2, default=str)
-
-    candidates = []
-    total_gen, total_valid = 0, 0
-    t_batch = time.time()
-    _hotspots = _parse_hotspot_residues(config.get("hotspots", ""))
-    target_range = _pdb_residue_range(config["target_pdb"], config["chain"],
-                                      hotspot_residues=_hotspots)
-    seen_seqs = _load_existing_sequences() or set()  # cross-batch dedup (None → set())
-
-    # Pass 1: RFdiffusion + LigandMPNN → collect all raw sequences across
-    # every backbone so global scoring is not biased by backbone order (P1-2).
+    Collects every raw sequence so the global cheap filter can score them
+    together (P1-2) instead of biasing results by backbone order.
+    """
+    hotspots = _parse_hotspot_residues(config.get("hotspots", ""))
+    target_range = _pdb_residue_range(
+        config["target_pdb"], config["chain"], hotspot_residues=hotspots
+    )
     backbone_entries = []  # (bb_path, binder_chain, raw_seqs)
-
+    total_gen = 0
     for L in config["lengths"]:
         n_designs = max(1, config["n"] // len(config["lengths"]))
         backbone_dir = os.path.join(batch_dir, f"backbones_len{L}")
@@ -67,7 +54,7 @@ def design_rfpeptides(target_spec=None, design_config=None):
             hotspots=config.get("hotspots"),
             chain=config["chain"])
         if not rfdiff_ok:
-            print(f"[Route A] RFdiff 失败 len={L}，跳过")
+            print(f"[Route A] RFdiff \u5931\u8d25 len={L}\uff0c\u8df3\u8fc7")
             continue
 
         def _bb_sort_key(p):
@@ -76,7 +63,7 @@ def design_rfpeptides(target_spec=None, design_config=None):
             except (ValueError, IndexError):
                 return 0  # P1-1: non-standard filename, sort to front
         bb_files = sorted(Path(backbone_dir).glob("bb_*.pdb"), key=_bb_sort_key)
-        print(f"[Route A] RFdiff 完成, 找到 {len(bb_files)} 个骨架PDB")
+        print(f"[Route A] RFdiff \u5b8c\u6210, \u627e\u5230 {len(bb_files)} \u4e2a\u9aa8\u67b6PDB")
         for bb_path in bb_files[:n_designs]:
             total_gen += 1
             try:
@@ -95,23 +82,38 @@ def design_rfpeptides(target_spec=None, design_config=None):
                 seed=mpnn_seed,
             )
             if not seqs:
-                print(f"[Route A] LigandMPNN 返回 0 条序列: {bb_path.name}")
+                print(f"[Route A] LigandMPNN \u8fd4\u56de 0 \u6761\u5e8f\u5217 {bb_path.name}")
                 continue
             backbone_entries.append((bb_path, binder_chain, seqs))
+    return backbone_entries, total_gen
 
-    # Pass 2: global cheap filter — score ALL sequences together so early
+def design_rfpeptides(target_spec=None, design_config=None, context=None):
+    """RFpeptides \u2192 LigandMPNN \u2192 AfCycDesign refold"""
+    ctx = context if context is not None else DesignContext.default()
+    config = _merge_config(target_spec, design_config, project_config=ctx.project_config)
+    route_name = f"route_A_{target_slug(config['target_id'])}"
+    batch_id = f"batch_rfpep_{config['target_name']}_s{config['seed']}"
+    batch_dir = os.path.join(str(ctx.output_dir), "route_A", batch_id)
+    os.makedirs(batch_dir, exist_ok=True)
+
+    with open(os.path.join(batch_dir, "design_config.json"), "w") as f:
+        json.dump(config, f, indent=2, default=str)
+
+    candidates = []
+    total_gen, total_valid = 0, 0
+    t_batch = time.time()
+    seen_seqs = _load_existing_sequences() or set()  # cross-batch dedup (None \u2192 set())
+
+    # Pass 1: RFdiffusion + LigandMPNN \u2192 collect all raw sequences across
+    # every backbone so global scoring is not biased by backbone order (P1-2).
+    backbone_entries, total_gen = _route_a_generate_backbones(config, batch_dir)
+
+    # Pass 2: global cheap filter \u2014 score ALL sequences together so early
     # backbones cannot starve later ones (P1-2).
-    all_raw_seqs = []
-    bb_lookup = {}  # seq.upper() → [(bb_path, binder_chain), ...]  (P2-1)
-    for bb_path, binder_chain, seqs in backbone_entries:
-        for s in seqs:
-            key = s.upper() if isinstance(s, str) else ""
-            if key:
-                bb_lookup.setdefault(key, []).append((bb_path, binder_chain))
-        all_raw_seqs.extend(seqs)
+    all_raw_seqs, bb_lookup = _collect_raw_sequences(backbone_entries)
 
     filtered = _cheap_filter_sequences(all_raw_seqs, seen_seqs=seen_seqs, top_k=config["n"])
-    print(f"[Route A] global cheap filter: {len(all_raw_seqs)}→{len(filtered)} sequences")
+    print(f"[Route A] global cheap filter: {len(all_raw_seqs)}\u2192{len(filtered)} sequences")
 
     for seq, quality_score in filtered:
         bb_list = bb_lookup.get(seq)
@@ -122,43 +124,18 @@ def design_rfpeptides(target_spec=None, design_config=None):
         bb_path, binder_chain = bb_list[0]
         bb_alternatives = [str(bp) for bp, _ in bb_list[1:]] if len(bb_list) > 1 else []
         cid = _next_candidate_id()
-        refold_dir = os.path.join(batch_dir, "candidates", cid)
-        os.makedirs(refold_dir, exist_ok=True)
-        refold_pdb = os.path.join(refold_dir, "refold.pdb")
-        plddt = _run_refold(seq, refold_pdb)
-        cyclization = _infer_cyclization_type(seq)
-        try:
-            rc = (
-                _ring_closure_check(refold_pdb, cyclization, sequence=seq)
-                if os.path.exists(refold_pdb)
-                else {"pass": False, "reason": "refold_pdb_missing"}
-            )
-        except (ValueError, OSError) as exc:
-            rc = {"pass": False, "reason": f"closure_check_error: {exc}"}
-
-        if plddt is not None and rc.get("pass"):
+        registration = _register_refolded_candidate(
+            candidate_id=cid, sequence=seq, config=config,
+            batch_dir=batch_dir, route_name=route_name, batch_id=batch_id,
+            backbone_pdb=str(bb_path), bb_alternatives=bb_alternatives,
+            notes={"quality_score": round(quality_score, 3)},
+        )
+        if registration.candidate is not None:
             total_valid += 1
-            try:
-                manifest = _write_manifest(
-                    cid, seq, route_name, batch_id, refold_pdb, config,
-                    backbone_pdb=str(bb_path), cyclization=cyclization,
-                    ring_closure=rc, bb_alternatives=bb_alternatives,
-                )
-            except ValueError as exc:
-                EvidenceLogger.error("design", "manifest_cyclization_mismatch",
-                    str(exc), recovery="skip mismatched candidate (P1-7)")
-                continue
-            candidate = _candidate_from_manifest(
-                manifest, plddt,
-                notes={"quality_score": round(quality_score, 3)},
-            )
-            CandidateIndex.add(candidate)
-            EvidenceLogger.log("design", "candidate_registered",
-                {"candidate": candidate},
-                targets=[config["target_id"]], phase="design")
-            candidates.append(candidate)
+            candidates.append(registration.candidate)
         else:
-            print(f"[Route A] refold失败: {cid} pLDDT={plddt} ring_closed={rc.get('pass')}")
+            print(f"[Route A] refold\u5931\u8d25: {cid} pLDDT={registration.plddt} "
+                  f"ring_closed={registration.ring_closure.get('pass')}")
 
     EvidenceLogger.design_batch(route=route_name, n_generated=total_gen,
         n_valid=total_valid, tool_name="rfpeptides_pipeline",

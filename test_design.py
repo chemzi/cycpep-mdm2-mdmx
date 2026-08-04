@@ -886,6 +886,51 @@ check_raises(ValueError,
 cfg_zero = _merge_config({'target_name': '3DAB', 'chain': 'B'}, {'seed': 0})
 check(cfg_zero['seed'] == 0, f'seed=0 preserved, got {cfg_zero["seed"]}')
 
+# ── Test 22: DesignContext / Design(context) dependency injection (P1-1) ──
+print('Test 22: DesignContext and Design(context) dependency injection')
+from agents.design import Design, DesignContext
+
+default_ctx = DesignContext.default()
+check(default_ctx.project_config is design_config.ACTIVE_PROJECT_CONFIG,
+      'DesignContext.default() uses the module-level approved project config')
+check(str(default_ctx.output_dir), 'DesignContext.default() resolves a writable output dir')
+
+custom_cfg = dict(ACTIVE_PROJECT_CONFIG)
+custom_cfg['project_id'] = 'custom_injected_project'
+custom_cfg['review'] = {
+    'status': 'approved',
+    'approved_digest': config_digest(custom_cfg),
+}
+custom_ctx = DesignContext(
+    project_config=custom_cfg,
+    output_dir=str(Path(tempfile.mkdtemp(prefix='design-ctx-test-')) / 'designs'),
+)
+design = Design(context=custom_ctx)
+check(design.context is custom_ctx, 'Design(context) stores the injected context')
+check(str(custom_ctx.output_dir).endswith('designs'),
+      'DesignContext stores the injected output_dir')
+
+design_default = Design()
+check(design_default.context.project_config is design_config.ACTIVE_PROJECT_CONFIG,
+      'Design() without context uses the module-level approved project config')
+
+# Route methods must forward the injected context to the route implementation.
+captured = {}
+def _fake_route_c(target_spec=None, design_config=None, context=None):
+    captured['context'] = context
+    return ['candidate-from-context']
+route_c.design_atsp_derived = _fake_route_c
+result = design.design_atsp_derived(design_config={'n': 5})
+check(result == ['candidate-from-context'], 'Design.design_atsp_derived returns the route result')
+check(captured['context'] is custom_ctx,
+      'Design.design_atsp_derived forwards the injected context')
+
+# _merge_config honours an explicit project_config (context-based path).
+merged = _merge_config({'target_name': 'MDM2'}, {'seed': 7}, project_config=custom_cfg)
+check(merged['project_id'] == 'custom_injected_project',
+      '_merge_config honours project_config injected via context')
+check(merged['seed'] == 7, 'seed merged from design_config via context path')
+
 os.unlink(target_fixture.name)
 
 # ── Summary ──
@@ -896,4 +941,4 @@ if failures:
         print(f'  - {f}')
     sys.exit(1)
 else:
-    print('ALL 21 TEST GROUPS PASSED')
+    print('ALL 22 TEST GROUPS PASSED')

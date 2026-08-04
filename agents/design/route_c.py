@@ -12,15 +12,15 @@ from pathlib import Path
 from data_layer import CandidateIndex, EvidenceLogger  # noqa: E402
 
 from . import config  # noqa: E402
+from .candidates import _register_refolded_candidate  # noqa: E402
 from .config import (  # noqa: E402
     CYCLIZATION_PAIRS,
     DESIGN_PIPELINE_VERSION,
+    DesignContext,
     LINKER_MATRIX,
-    OUTPUT_DIR,
     SCAFFOLD_MUTABLE_AA,
 )
-from .manifests import _candidate_from_manifest, _write_manifest  # noqa: E402
-from .runtime import _run_refold, _run_rfdiff  # noqa: E402
+from .runtime import _run_rfdiff  # noqa: E402
 from .service import (  # noqa: E402
     _load_existing_sequences,
     _load_target_spec,
@@ -32,10 +32,8 @@ from .validation import (  # noqa: E402
     _binder_first_contig,
     _describe_cyclize,
     _infer_binder_chain,
-    _infer_cyclization_type,
     _parse_hotspot_residues,
     _pdb_residue_range,
-    _ring_closure_check,
     _synthesizability_violations,
     _validate_sequence,
 )
@@ -164,27 +162,12 @@ def _route_c_design_references(config, batch_dir, sequences):
             )
     return references
 
-def design_atsp_derived(target_spec=None, design_config=None):
-    """模板环化：linker × 环化矩阵 + 随机突变扩展 + refold 验证
-    ── 适配 Research 产出的任意 binder，不再死绑 ATSP-7041。"""
-    config = _merge_config(target_spec, design_config)
-    _require_mdm_reference_route("route_C_atsp")
-    n = config.get("n", 200)
-    seed = config["seed"]  # _merge_config already resolves None → timestamp
-    import random
-    rng = random.Random(seed)
+def _route_c_select_template(binders):
+    """Pick the cyclization template from Research known_dual_binders.
 
-    route_name = f"route_C_atsp_{target_slug(config['target_id'])}"
-    batch_id = f"batch_atsp_{int(time.time())}_s{seed}_{os.urandom(4).hex()}"
-    batch_dir = os.path.join(OUTPUT_DIR, "route_C", batch_id)
-    os.makedirs(batch_dir, exist_ok=True)
-
-    with open(os.path.join(batch_dir, "design_config.json"), "w") as f:
-        json.dump(config, f, indent=2)
-
-    # 从 Research 已知 binder 中选模板：优先 ATSP-7041，否则取第一个有序列的
-    spec = _load_target_spec()
-    binders = spec.get("known_dual_binders", [])
+    Prefers the ATSP-7041 reference binder; falls back to the first binder
+    with a valid sequence and logs the substitution.
+    """
     template_seq = None
     template_name = None
     fallback = None
@@ -205,16 +188,10 @@ def design_atsp_derived(target_spec=None, design_config=None):
             "note": "ATSP-7041 not found in Research output; using first available "
                     "binder as cyclization template",
         })
-    if not template_seq:
-        EvidenceLogger.error("design", "no_binder_for_route_c",
-            "known_dual_binders 中无可用的 binder 序列 — 先跑 Research Agent",
-            recovery="确保 Research 产出的 known_dual_binders 包含带 sequence 的条目")
-        return []
-    # 标准化模板序列：去除小写/修饰符，与 _validate_sequence 的内部归一化一致，
-    # 否则 AfCycDesign refold 收到非标准氨基酸会静默失败（P0-3）。
-    template_seq = template_seq.upper().replace("-", "").replace("*", "")
-    # Route C 序列设计同时遵守项目环化类型和获批长度。这样 Design 不会生成
-    # 当前 Prediction 合同无法处理的化学类型，也不会静默忽略 --lengths。
+    return template_seq, template_name
+
+def _route_c_build_combos(template_seq, template_name, config):
+    """Build Route C cyclization combos; returns [] (with evidence) when unusable."""
     try:
         allowed_pairs = _route_c_cyclization_pairs(config["modality"])
         base_combos = _route_c_base_combos(
@@ -233,7 +210,6 @@ def design_atsp_derived(target_spec=None, design_config=None):
             recovery="select a Route C-supported cyclization modality or add an explicit chemistry adapter",
         )
         return []
-
     if not base_combos:
         EvidenceLogger.error("design", "route_c_empty",
             {
@@ -245,11 +221,24 @@ def design_atsp_derived(target_spec=None, design_config=None):
                 "reason": "all combinations failed length or synthesizability gates",
             },
             recovery="review approved lengths, template sequence, and synthesizability rules")
-        return []
+    return base_combos
 
-    # 第2级：不够 n 则随机突变扩展；基础组合需先按已有序列去重
-    # F/W/L 药效团位点保护在 L730 通过 if seq[ix] in "FWL": continue 实现
-    seen_seqs = _load_existing_sequences() or set()  # cross-batch dedup (None → set())
+def _route_c_expand_sequences(template_seq, template_name, n, seed, config, seen_seqs=None):
+    """Expand base cyclization combos to up to n unique sequences.
+
+    The base combos must satisfy chemistry, length, and synthesizability
+    gates; random mutation fills the remainder with a deterministic RNG
+    seeded by the merged run control (P1-4).
+    """
+    base_combos = _route_c_build_combos(template_seq, template_name, config)
+    if not base_combos:
+        return []
+    if seen_seqs is None:
+        seen_seqs = _load_existing_sequences() or set()  # cross-batch dedup (None → set())
+
+    rng = random.Random(seed)
+    # 第一层：不够 n 则随机突变扩展；基础组合需先按已有序列去重
+    # F/W/L 药效团位点保护在下方 if seq[ix] in "FWL": continue 实现
     expanded = []
     for s, d in base_combos:
         if s not in seen_seqs:
@@ -289,15 +278,60 @@ def design_atsp_derived(target_spec=None, design_config=None):
             "achieved": len(expanded),
             "base_combos": len(base_combos),
             "attempts": attempts,
-            "reason": "mutation space exhausted — consider increasing n*10 "
+            "reason": "mutation space exhausted \u2014 consider increasing n*10 "
                       "budget or relaxing synthesizability gates",
         })
 
-    selected_sequences = expanded[:n]
+    return expanded[:n]
+
+def design_atsp_derived(target_spec=None, design_config=None, context=None):
+    """模板环化：linker × 环化矩阵 + 随机突变扩展 + refold 验证
+    ── 适配 Research 产出的任意 binder，不再死绑 ATSP-7041。"""
+    ctx = context if context is not None else DesignContext.default()
+    config = _merge_config(target_spec, design_config, project_config=ctx.project_config)
+    _require_mdm_reference_route("route_C_atsp", ctx.project_config)
+    n = config.get("n", 200)
+    seed = config["seed"]  # _merge_config already resolves None → timestamp
+
+    route_name = f"route_C_atsp_{target_slug(config['target_id'])}"
+    batch_id = f"batch_atsp_{int(time.time())}_s{seed}_{os.urandom(4).hex()}"
+    batch_dir = os.path.join(str(ctx.output_dir), "route_C", batch_id)
+    os.makedirs(batch_dir, exist_ok=True)
+
+    with open(os.path.join(batch_dir, "design_config.json"), "w") as f:
+        json.dump(config, f, indent=2)
+
+    # 从 Research 已知 binder 中选模板：优先 ATSP-7041，否则取第一个有序列的
+    spec = _load_target_spec()
+    template_seq, template_name = _route_c_select_template(
+        spec.get("known_dual_binders", [])
+    )
+    if not template_seq:
+        EvidenceLogger.error("design", "no_binder_for_route_c",
+            "known_dual_binders 中无可用的 binder 序列 — 先跑 Research Agent",
+            recovery="确保 Research 产出的 known_dual_binders 包含带 sequence 的条目")
+        return []
+    # 标准化模板序列：去除小写/修饰符，与 _validate_sequence 的内部归一化一致，
+    # 否则 AfCycDesign refold 收到非标准氨基酸会静默失败（P0-3）。
+    template_seq = template_seq.upper().replace("-", "").replace("*", "")
+
+    selected_sequences = _route_c_expand_sequences(
+        template_seq, template_name, n, seed, config,
+    )
+    if not selected_sequences:
+        return []
+
     design_references = _route_c_design_references(
         config, batch_dir, selected_sequences
     )
+    return _route_c_register_candidates(
+        config, batch_dir, route_name, batch_id, selected_sequences,
+        design_references,
+    )
 
+def _route_c_register_candidates(config, batch_dir, route_name, batch_id,
+                                 selected_sequences, design_references):
+    """Refold/validate/register each selected Route C sequence; returns candidates."""
     candidates = []
     total_gen, total_valid = 0, 0
     t_batch = time.time()
@@ -318,45 +352,21 @@ def design_atsp_derived(target_spec=None, design_config=None):
             continue
         total_gen += 1
         cid = _next_candidate_id()
-        refold_dir = os.path.join(batch_dir, "candidates", cid)
-        os.makedirs(refold_dir, exist_ok=True)
-        refold_pdb = os.path.join(refold_dir, "refold.pdb")
-        plddt = _run_refold(seq, refold_pdb)
-        cyclization_type = _infer_cyclization_type(seq)
-        try:
-            rc = (
-                _ring_closure_check(refold_pdb, cyclization_type, sequence=seq)
-                if os.path.exists(refold_pdb)
-                else {"pass": False, "reason": "refold_pdb_missing"}
-            )
-        except (ValueError, OSError) as exc:
-            rc = {"pass": False, "reason": f"closure_check_error: {exc}"}
-
-        if plddt is not None and rc.get("pass"):
+        registration = _register_refolded_candidate(
+            candidate_id=cid, sequence=seq, config=config,
+            batch_dir=batch_dir, route_name=route_name, batch_id=batch_id,
+            backbone_pdb=backbone_pdb, notes={"design": desc},
+        )
+        if registration.candidate is not None:
             total_valid += 1
-            try:
-                manifest = _write_manifest(
-                    cid, seq, route_name, batch_id, refold_pdb, config,
-                    backbone_pdb=backbone_pdb,
-                    cyclization=cyclization_type, ring_closure=rc,
-                )
-            except ValueError as exc:
-                EvidenceLogger.error("design", "manifest_cyclization_mismatch",
-                    str(exc), recovery="skip mismatched candidate (P1-7)")
-                continue
-            candidate = _candidate_from_manifest(manifest, plddt, notes={"design": desc})
-            CandidateIndex.add(candidate)
-            EvidenceLogger.log("design", "candidate_registered",
-                {"candidate": candidate},
-                targets=[config["target_id"]], phase="design")
-            candidates.append(candidate)
+            candidates.append(registration.candidate)
         else:
             EvidenceLogger.error("design", "refold_failed",
                 {
                     "candidate_id": cid,
-                    "pLDDT": plddt,
-                    "cyclization_type": cyclization_type,
-                    "ring_closure": rc,
+                    "pLDDT": registration.plddt,
+                    "cyclization_type": registration.cyclization_type,
+                    "ring_closure": registration.ring_closure,
                 },
                 recovery="skip candidate; inspect ring_closure.reason before rerunning")
 

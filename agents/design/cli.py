@@ -7,11 +7,8 @@ import sys
 
 from data_layer import CandidateIndex  # noqa: E402
 
-from . import config  # noqa: E402
+from .agent import Design  # noqa: E402
 from .config import DESIGN_PIPELINE_VERSION  # noqa: E402
-from .route_a import design_rfpeptides  # noqa: E402
-from .route_b import design_motif_guided  # noqa: E402
-from .route_c import design_atsp_derived  # noqa: E402
 
 
 def main(argv=None) -> int:
@@ -46,20 +43,30 @@ def main(argv=None) -> int:
         target_spec["hotspots"] = args.hotspots
     design_config = {"n": args.n, "lengths": lengths, "seed": args.seed}
 
+    # Context-aware entry point (Engineering Standard P1-1).  The default
+    # context derives from the approved project config at call time.
+    design = Design()
+
     all_candidates = []
     if args.route in ("A", "all"):
         print(f"[Route A v5] target={args.target}, n={args.n}, len={lengths}")
-        result = design_rfpeptides(target_spec=target_spec, design_config=design_config)
+        result = design.design_rfpeptides(
+            target_spec=target_spec, design_config=design_config
+        )
         all_candidates.extend(result)
         print(f"[Route A] 完成: {len(result)} candidates")
     if args.route in ("B", "all"):
         print(f"[Route B v5] n={args.n}")
-        result = design_motif_guided(target_spec=target_spec, design_config=design_config)
+        result = design.design_motif_guided(
+            target_spec=target_spec, design_config=design_config
+        )
         all_candidates.extend(result)
         print(f"[Route B] 完成: {len(result)} candidates")
     if args.route in ("C", "all"):
         print(f"[Route C v5] n={args.n}")
-        result = design_atsp_derived(target_spec=target_spec, design_config=design_config)
+        result = design.design_atsp_derived(
+            target_spec=target_spec, design_config=design_config
+        )
         all_candidates.extend(result)
         print(f"[Route C] 完成: {len(result)} candidates")
 

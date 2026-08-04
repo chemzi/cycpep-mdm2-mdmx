@@ -5,13 +5,14 @@ from their owning submodule for the compatibility layer.
 """
 
 from . import config  # noqa: F401
+from .agent import Design  # noqa: F401
+from .config import DESIGN_PIPELINE_VERSION, DesignContext  # noqa: F401
 from .compat import (  # noqa: F401
     design_afcyc,
     design_atsp_cyclize,
     design_motif_graft,
     dual_target_score,
 )
-from .config import DESIGN_PIPELINE_VERSION  # noqa: F401
 from .manifests import (  # noqa: F401
     _candidate_from_manifest,
     _manifest_summary,
