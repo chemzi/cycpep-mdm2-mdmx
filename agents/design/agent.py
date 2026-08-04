@@ -23,6 +23,59 @@ class Design:
     def __init__(self, context=None):
         self.context = context if context is not None else DesignContext.default()
 
+    # ---- context access (public contract, Engineering Standard 4) ----
+    @property
+    def project_config(self):
+        """Approved project configuration carried by this Design instance."""
+        return self.context.project_config
+
+    @property
+    def output_dir(self):
+        """Writable design root carried by this Design instance."""
+        return self.context.output_dir
+
+    def merge_config(self, target_spec=None, design_config=None):
+        """Merge run controls with the approved target and coordinate artifact."""
+        from .service import _merge_config
+        return _merge_config(
+            target_spec, design_config, project_config=self.context.project_config
+        )
+
+    def next_candidate_id(self):
+        """Allocate the next C**** candidate ID (single-process thread-safe)."""
+        from .service import _next_candidate_id
+        return _next_candidate_id()
+
+    def run_refold(self, sequence, output_pdb):
+        """Fixed-sequence AfCycDesign refold; returns pLDDT or None on failure."""
+        from .runtime import _run_refold
+        return _run_refold(sequence, output_pdb)
+
+    def ring_closure_check(self, pdb_path, cyclization_type, sequence=None):
+        """Pre-relax geometric compatibility gate for the cyclization bond."""
+        from .validation import _ring_closure_check
+        return _ring_closure_check(pdb_path, cyclization_type, sequence=sequence)
+
+    def write_manifest(self, cid, seq, route, batch_id, refold_pdb, config, *,
+                       backbone_pdb=None, cyclization=None, ring_closure=None,
+                       bb_alternatives=None, design_reference_role=None,
+                       reference_metadata=None):
+        """Write one versioned candidate manifest with audited closure geometry."""
+        from .manifests import _write_manifest
+        return _write_manifest(
+            cid, seq, route, batch_id, refold_pdb, config,
+            backbone_pdb=backbone_pdb, cyclization=cyclization,
+            ring_closure=ring_closure, bb_alternatives=bb_alternatives,
+            design_reference_role=design_reference_role,
+            reference_metadata=reference_metadata,
+        )
+
+    def candidate_from_manifest(self, manifest, plddt, notes=None):
+        """Convert a v5 manifest into the stable candidate handoff contract."""
+        from .manifests import _candidate_from_manifest
+        return _candidate_from_manifest(manifest, plddt, notes=notes)
+
+    # ---- routes ----
     def design_rfpeptides(self, target_spec=None, design_config=None):
         from .route_a import design_rfpeptides
         return design_rfpeptides(
