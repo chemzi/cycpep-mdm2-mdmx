@@ -17,13 +17,9 @@ from .validation import (  # noqa: E402
 )
 
 
-def _write_manifest(
-        cid, seq, route, batch_id, refold_pdb, config, backbone_pdb=None,
-        cyclization=None, ring_closure=None, bb_alternatives=None,
-        design_reference_role=None, reference_metadata=None):
-    """Write one versioned candidate manifest with audited closure geometry."""
-    refold_dir = os.path.dirname(refold_pdb)
-    manifest_path = os.path.join(refold_dir, "manifest.json")
+def _resolve_manifest_ring_closure(cid, seq, refold_pdb,
+                                          cyclization, ring_closure):
+    """Infer/normalise cyclization and audit the closure geometry result."""
     if cyclization is None:
         cyclization = _infer_cyclization_type(seq)
     cyclization_description = str(cyclization)
@@ -45,37 +41,59 @@ def _write_manifest(
             f"[{cid}] ring-closure result cyclization does not match manifest: "
             f"{observed_type!r} != {canonical_cyclization!r}"
         )
-    requested_reference_role = design_reference_role
-    design_reference = ""
-    design_reference_hash = ""
-    design_reference_role = ""
-    if backbone_pdb:
-        reference_path = os.path.realpath(str(backbone_pdb))
-        refold_path = os.path.realpath(str(refold_pdb))
-        if not os.path.isfile(reference_path):
-            raise ValueError(f"[{cid}] Design reference does not exist: {reference_path}")
-        if reference_path == refold_path:
-            raise ValueError(
-                f"[{cid}] fixed-sequence refold cannot be its own L7 Design reference"
-            )
-        design_reference = reference_path
-        design_reference_hash = file_hash(reference_path)
-        refold_hash = file_hash(refold_path) if os.path.exists(refold_path) else ""
-        if refold_hash and design_reference_hash == refold_hash:
-            raise ValueError(
-                f"[{cid}] L7 Design reference is byte-identical to fixed-sequence refold"
-            )
-        design_reference_role = (
-            requested_reference_role or "rfdiffusion_target_bound_backbone"
+    return canonical_cyclization, cyclization_description, rc
+
+
+def _design_reference_contract(cid, backbone_pdb, refold_pdb,
+                               design_reference_role):
+    """Validate the L7 design reference and derive its contract fields."""
+    if not backbone_pdb:
+        return "", "", ""
+    reference_path = os.path.realpath(str(backbone_pdb))
+    refold_path = os.path.realpath(str(refold_pdb))
+    if not os.path.isfile(reference_path):
+        raise ValueError(f"[{cid}] Design reference does not exist: {reference_path}")
+    if reference_path == refold_path:
+        raise ValueError(
+            f"[{cid}] fixed-sequence refold cannot be its own L7 Design reference"
         )
-        if design_reference_role not in {
-            "rfdiffusion_target_bound_backbone",
-            "experimental_cyclic_peptide_structure",
-        }:
-            raise ValueError(
-                f"[{cid}] unsupported Design reference role: "
-                f"{design_reference_role!r}"
-            )
+    design_reference_hash = file_hash(reference_path)
+    refold_hash = file_hash(refold_path) if os.path.exists(refold_path) else ""
+    if refold_hash and design_reference_hash == refold_hash:
+        raise ValueError(
+            f"[{cid}] L7 Design reference is byte-identical to fixed-sequence refold"
+        )
+    design_reference_role = (
+        design_reference_role or "rfdiffusion_target_bound_backbone"
+    )
+    if design_reference_role not in {
+        "rfdiffusion_target_bound_backbone",
+        "experimental_cyclic_peptide_structure",
+    }:
+        raise ValueError(
+            f"[{cid}] unsupported Design reference role: "
+            f"{design_reference_role!r}"
+        )
+    return reference_path, design_reference_hash, design_reference_role
+
+
+def _write_manifest(
+        cid, seq, route, batch_id, refold_pdb, config, backbone_pdb=None,
+        cyclization=None, ring_closure=None, bb_alternatives=None,
+        design_reference_role=None, reference_metadata=None):
+    """Write one versioned candidate manifest with audited closure geometry."""
+    refold_dir = os.path.dirname(refold_pdb)
+    manifest_path = os.path.join(refold_dir, "manifest.json")
+    canonical_cyclization, cyclization_description, rc = (
+        _resolve_manifest_ring_closure(
+            cid, seq, refold_pdb, cyclization, ring_closure
+        )
+    )
+    design_reference, design_reference_hash, design_reference_role = (
+        _design_reference_contract(
+            cid, backbone_pdb, refold_pdb, design_reference_role
+        )
+    )
 
     manifest = {
         "design_pipeline_version": DESIGN_PIPELINE_VERSION,

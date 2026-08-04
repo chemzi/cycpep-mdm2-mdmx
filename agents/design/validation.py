@@ -250,31 +250,9 @@ def _first_model_residues(pdb_path):
         raise ValueError("no_protein_atoms")
     return chains
 
-def _ring_closure_check(pdb_path, cyclization_type, sequence=None):
-    """Check the actual prospective covalent atoms; never use terminal CA atoms.
-
-    This is a pre-relax geometric compatibility gate.  It records the observed
-    bond distance and both the screening and ideal ranges; it does not claim
-    that a coordinate file contains a chemically instantiated covalent bond.
-    """
-    try:
-        canonical = _canonical_cyclization_type(
-            cyclization_type, sequence=sequence
-        )
-    except (OSError, UnicodeError, ValueError) as exc:
-        return {
-            "pass": False,
-            "reason": "unsupported_cyclization",
-            "detail": str(exc),
-        }
-    criterion = CLOSURE_GEOMETRY.get(canonical)
-    if criterion is None:  # P2-1: new cyclization type missing from geometry table
-        return {
-            "pass": False,
-            "reason": "unsupported_cyclization",
-            "detail": f"no closure geometry defined for {canonical!r}",
-        }
-    base = {
+def _closure_geometry_base(canonical, criterion):
+    """Shared result envelope for a ring-closure assessment."""
+    return {
         "pass": False,
         "assessment": "pre_relax_geometry_compatibility",
         "cyclization_type": canonical,
@@ -283,6 +261,10 @@ def _ring_closure_check(pdb_path, cyclization_type, sequence=None):
         "screen_range_angstrom": list(criterion["screen_range_angstrom"]),
         "ideal_range_angstrom": list(criterion["ideal_range_angstrom"]),
     }
+
+
+def _measure_closure_geometry(pdb_path, canonical, criterion, sequence, base):
+    """Measure the prospective covalent atoms and classify the result."""
     try:
         chains = _first_model_residues(pdb_path)
         if len(chains) != 1:
@@ -349,6 +331,34 @@ def _ring_closure_check(pdb_path, cyclization_type, sequence=None):
             "detail": str(exc),
         }
 
+
+def _ring_closure_check(pdb_path, cyclization_type, sequence=None):
+    """Check the actual prospective covalent atoms; never use terminal CA atoms.
+
+    This is a pre-relax geometric compatibility gate.  It records the observed
+    bond distance and both the screening and ideal ranges; it does not claim
+    that a coordinate file contains a chemically instantiated covalent bond.
+    """
+    try:
+        canonical = _canonical_cyclization_type(
+            cyclization_type, sequence=sequence
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        return {
+            "pass": False,
+            "reason": "unsupported_cyclization",
+            "detail": str(exc),
+        }
+    criterion = CLOSURE_GEOMETRY.get(canonical)
+    if criterion is None:  # P2-1: new cyclization type missing from geometry table
+        return {
+            "pass": False,
+            "reason": "unsupported_cyclization",
+            "detail": f"no closure geometry defined for {canonical!r}",
+        }
+    base = _closure_geometry_base(canonical, criterion)
+    return _measure_closure_geometry(pdb_path, canonical, criterion, sequence, base)
+
 def _parse_hotspot_residues(hotspots_str):
     """Parse a comma-separated hotspot string (e.g. ``"54,93,96"``) into a
     list of int residue numbers.  Returns ``None`` when the string is empty.
@@ -363,21 +373,8 @@ def _parse_hotspot_residues(hotspots_str):
             )
     return [int(token) for token in tokens]
 
-def _pdb_residue_range(pdb_path, chain="A", hotspot_residues=None):
-    """Return (first, last) residue numbers for the chain segment that should
-    be used as the receptor contig window.
-
-    A gap > 50 residue numbers splits the chain into segments; by default the
-    **longest** segment wins (this ignores crystallographic outliers such as
-    ILE 500 in 3DAB).
-
-    When *hotspot_residues* (iterable of int residue numbers) is provided, the
-    function **validates that every hotspot falls inside a single contiguous
-    segment** and returns that segment — even if it is shorter than another.
-    If hotspots span multiple segments or lie outside all segments it raises
-    ``ValueError``, preventing a contig that silently excludes approved
-    binding-site residues.
-    """
+def _pdb_chain_residue_numbers(pdb_path, chain):
+    """Parse chain residue numbers from fixed-column PDB records."""
     # Fixed-column PDB parsing (columns 22-26 = residue number, col 22 = chain ID).
     # Assumes standard RCSB PDB format; mmCIF or non-standard files need preprocessing.
     residues = set()
@@ -407,9 +404,11 @@ def _pdb_residue_range(pdb_path, chain="A", hotspot_residues=None):
         EvidenceLogger.error("design", "pdb_empty_chain",
             f"No atoms found in approved coordinate artifact {pdb_path} chain {chain}.")
         raise ValueError(f"target PDB contains no atoms for chain {chain}: {pdb_path}")
+    return residues
 
-    sorted_res = sorted(residues)
-    # Split into contiguous segments (gap > 50 = new segment)
+
+def _pdb_contiguous_segments(sorted_res):
+    """Split sorted residue numbers into segments (gap > 50 = new segment)."""
     segments = []
     seg_start = sorted_res[0]
     prev = seg_start
@@ -419,54 +418,81 @@ def _pdb_residue_range(pdb_path, chain="A", hotspot_residues=None):
             seg_start = r
         prev = r
     segments.append((seg_start, prev))
+    return segments
 
+
+def _select_hotspot_segment(chain, pdb_path, residues, segments, hotspot_residues):
+    """Validate hotspots and return the contiguous segment covering them."""
+    hotspot_set = {int(r) for r in hotspot_residues}
+    present = hotspot_set & residues
+    absent = sorted(hotspot_set - present)
+    if absent:
+        EvidenceLogger.error("design", "hotspot_absent_from_pdb",
+            f"hotspots {absent} absent from chain {chain} of {pdb_path}; "
+            f"present={sorted(present)}, pdb_residues={sorted(residues)}",
+            recovery="verify structure_resolution approved the correct PDB")
+        raise ValueError(
+            f"Approved binding-site residues {absent} are absent from "
+            f"the approved coordinate artifact {pdb_path} chain {chain}. "
+            f"Verify that structure_resolution approved the correct PDB."
+        )
+    # Which segments cover at least one hotspot?
+    covering = []
+    for s_start, s_end in segments:
+        covered = {r for r in present if s_start <= r <= s_end}
+        if covered:
+            covering.append((s_start, s_end, covered))
+    if not covering:
+        EvidenceLogger.error("design", "hotspot_no_contiguous_segment",
+            f"chain {chain} segments {segments} contain none of the "
+            f"hotspots {sorted(present)} in {pdb_path}",
+            recovery="verify PDB chain assignment and hotspot residue numbering")
+        raise ValueError(
+            f"No contiguous segment of chain {chain} contains any "
+            f"binding-site residue {sorted(present)}. "
+            f"PDB segments: {segments}"
+        )
+    if len(covering) > 1:
+        EvidenceLogger.error("design", "hotspot_multi_segment",
+            f"hotspots span {len(covering)} segments of chain {chain}: "
+            f"{[(c[0], c[1], sorted(c[2])) for c in covering]} in {pdb_path}",
+            recovery="narrow hotspot range to a single contiguous segment, "
+                     "or approve a PDB with co-located binding residues")
+        raise ValueError(
+            f"Binding-site residues span multiple segments of chain "
+            f"{chain}: {[(c[0], c[1], sorted(c[2])) for c in covering]}. "
+            f"Cannot build a single contig covering all hotspots."
+        )
+    # All hotspots in one segment - use it even if shorter than another
+    return covering[0][0], covering[0][1]
+
+
+def _pdb_residue_range(pdb_path, chain="A", hotspot_residues=None):
+    """Return (first, last) residue numbers for the chain segment that should
+    be used as the receptor contig window.
+
+    A gap > 50 residue numbers splits the chain into segments; by default the
+    **longest** segment wins (this ignores crystallographic outliers such as
+    ILE 100 in 3DAB).
+
+    When *hotspot_residues* (iterable of int residue numbers) is provided, the
+    function **validates that every hotspot falls inside a single contiguous
+    segment** and returns that segment -- even if it is shorter than another.
+    If hotspots span multiple segments or lie outside all segments it raises
+    ``ValueError``, preventing a contig that silently excludes approved
+    binding-site residues.
+    """
+    residues = _pdb_chain_residue_numbers(pdb_path, chain)
+    sorted_res = sorted(residues)
+    # Split into contiguous segments (gap > 50 = new segment)
+    segments = _pdb_contiguous_segments(sorted_res)
     if hotspot_residues:
-        hotspot_set = {int(r) for r in hotspot_residues}
-        present = hotspot_set & residues
-        absent = sorted(hotspot_set - present)
-        if absent:
-            EvidenceLogger.error("design", "hotspot_absent_from_pdb",
-                f"hotspots {absent} absent from chain {chain} of {pdb_path}; "
-                f"present={sorted(present)}, pdb_residues={sorted(residues)}",
-                recovery="verify structure_resolution approved the correct PDB")
-            raise ValueError(
-                f"Approved binding-site residues {absent} are absent from "
-                f"the approved coordinate artifact {pdb_path} chain {chain}. "
-                f"Verify that structure_resolution approved the correct PDB."
-            )
-        # Which segments cover at least one hotspot?
-        covering = []
-        for s_start, s_end in segments:
-            covered = {r for r in present if s_start <= r <= s_end}
-            if covered:
-                covering.append((s_start, s_end, covered))
-        if not covering:
-            EvidenceLogger.error("design", "hotspot_no_contiguous_segment",
-                f"chain {chain} segments {segments} contain none of the "
-                f"hotspots {sorted(present)} in {pdb_path}",
-                recovery="verify PDB chain assignment and hotspot residue numbering")
-            raise ValueError(
-                f"No contiguous segment of chain {chain} contains any "
-                f"binding-site residue {sorted(present)}. "
-                f"PDB segments: {segments}"
-            )
-        if len(covering) > 1:
-            EvidenceLogger.error("design", "hotspot_multi_segment",
-                f"hotspots span {len(covering)} segments of chain {chain}: "
-                f"{[(c[0], c[1], sorted(c[2])) for c in covering]} in {pdb_path}",
-                recovery="narrow hotspot range to a single contiguous segment, "
-                         "or approve a PDB with co-located binding residues")
-            raise ValueError(
-                f"Binding-site residues span multiple segments of chain "
-                f"{chain}: {[(c[0], c[1], sorted(c[2])) for c in covering]}. "
-                f"Cannot build a single contig covering all hotspots."
-            )
-        # All hotspots in one segment — use it even if shorter than another
-        best = (covering[0][0], covering[0][1])
+        best = _select_hotspot_segment(
+            chain, pdb_path, residues, segments, hotspot_residues
+        )
     else:
-        # No hotspot guidance → longest segment (backward compatible)
+        # No hotspot guidance -> longest segment (backward compatible)
         best = max(segments, key=lambda s: s[1] - s[0])
-
     return best[0], best[1]
 
 def _pdb_chain_residue_layout(pdb_path):
