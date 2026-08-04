@@ -424,6 +424,47 @@ def materialize_target_coordinates(
     text_head = payload[:200000].decode("utf-8", errors="ignore")
     if not any(line.startswith(("ATOM  ", "HETATM")) for line in text_head.splitlines()):
         raise StructureNotReadyError(f"downloaded artifact for {target_id} is not a PDB coordinate file")
+    chain_residues: dict[str, set[tuple[str, str]]] = {}
+    for line in text_head.splitlines():
+        if not line.startswith("ATOM  "):
+            continue
+        fields = line.split()
+        chain = line[21].strip() if len(line) > 21 else ""
+        if not chain:
+            # Accept the compact ATOM records used by reviewed fixtures and
+            # internal exports while keeping fixed-width PDB parsing primary.
+            if len(fields) >= 6 and len(fields[4]) == 1:
+                chain = fields[4]
+        if chain:
+            residue = (
+                (line[22:26].strip(), line[26].strip())
+                if len(line) >= 27
+                else ((fields[5] if len(fields) >= 6 else ""), "")
+            )
+            chain_residues.setdefault(chain, set()).add(residue)
+    configured_chain = str((target.get("structure") or {}).get("chain") or "").strip()
+    if not chain_residues and configured_chain:
+        # Some reviewed/internal minimal PDB artifacts omit strict fixed-width
+        # padding. Preserve an explicit configured chain, but record that the
+        # downloaded text could not independently verify it.
+        selected_chain = configured_chain
+        chain_method = "configured_chain_unverified_minimal_pdb"
+    elif not chain_residues:
+        raise StructureNotReadyError(f"downloaded artifact for {target_id} has no polymer chains")
+    elif configured_chain in chain_residues:
+        selected_chain = configured_chain
+        chain_method = "configured_chain_present"
+    else:
+        largest = max(len(residues) for residues in chain_residues.values())
+        candidates = sorted(
+            chain for chain, residues in chain_residues.items() if len(residues) == largest
+        )
+        if len(candidates) != 1:
+            raise StructureNotReadyError(
+                f"cannot identify one receptor chain for {target_id}; tied chains={candidates}"
+            )
+        selected_chain = candidates[0]
+        chain_method = "largest_polymer_chain_after_selected_structure_change"
 
     root = Path(target_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -447,6 +488,11 @@ def materialize_target_coordinates(
 
     target["structure"] = {
         **(target.get("structure") or {}),
+        "chain": selected_chain,
+        "chain_selection_method": chain_method,
+        "available_chain_residue_counts": {
+            chain: len(residues) for chain, residues in sorted(chain_residues.items())
+        },
         "coordinate_path": str(destination),
         "coordinate_sha256": hashlib.sha256(payload).hexdigest(),
         "coordinate_format": "pdb",

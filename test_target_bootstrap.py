@@ -234,6 +234,32 @@ class BootstrapTests(unittest.TestCase):
             with self.assertRaises(StructureNotReadyError):
                 assert_target_structure_ready(materialized, "NOVEL1")
 
+    def test_materialization_repairs_stale_chain_from_a_different_pdb(self):
+        config = {"targets": [{
+            "id": "NOVEL1",
+            "binding_site": {"residues": [1], "status": "user_reviewed"},
+            "structure": {"chain": "A"},
+            "structure_plan": {"selected": {
+                "id": "9XYZ", "pdb_id": "9XYZ", "kind": "experimental",
+                "quality_grade": "A", "pdb_url": "https://files.rcsb.org/download/9XYZ.pdb",
+            }},
+        }]}
+        payload = (
+            b"ATOM      1  CA  ALA M   1      1.000   2.000   3.000\n"
+            b"ATOM      2  CA  GLY M   2      2.000   2.000   3.000\n"
+            b"ATOM      3  CA  ALA P   1      3.000   2.000   3.000\nEND\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            updated = materialize_target_coordinates(
+                config, "NOVEL1", directory, downloader=lambda _url: payload
+            )
+        structure = updated["targets"][0]["structure"]
+        self.assertEqual(structure["chain"], "M")
+        self.assertEqual(
+            structure["chain_selection_method"],
+            "largest_polymer_chain_after_selected_structure_change",
+        )
+
     def test_planned_coordinate_requires_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             coordinate = Path(directory) / "target.pdb"
