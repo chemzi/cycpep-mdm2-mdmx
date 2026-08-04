@@ -9,7 +9,7 @@ import os
 from data_layer import EvidenceLogger, file_hash  # noqa: E402
 
 from . import config  # noqa: E402
-from .config import DESIGN_PIPELINE_VERSION  # noqa: E402
+from .config import DESIGN_PIPELINE_VERSION, DESIGN_PROTOCOL, DESIGN_PROTOCOL_SHA256  # noqa: E402
 from .validation import (  # noqa: E402
     _canonical_cyclization_type,
     _infer_cyclization_type,
@@ -79,6 +79,8 @@ def _write_manifest(
 
     manifest = {
         "design_pipeline_version": DESIGN_PIPELINE_VERSION,
+        "protocol_version": DESIGN_PROTOCOL["version"],
+        "protocol_sha256": DESIGN_PROTOCOL_SHA256,
         "candidate_id": cid, "sequence": seq, "length": len(seq),
         "source_route": route, "source_batch": batch_id,
         "cyclization_type": canonical_cyclization,

@@ -3,10 +3,22 @@
 Single home for runtime paths, tool locations, and design protocol constants.
 Module-level values are resolved at import time for backward compatibility;
 :class:`DesignContext` replaces them without changing public behaviour.
+
+Reproducibility contract
+------------------------
+- ????????????timesteps???????????? :data:`DESIGN_PROTOCOL`?
+  ?? ``protocol_sha256`` ??????? manifest?Engineering Standard P1-4??
+  ?????????? ``DESIGN_PROTOCOL["version"]``?
+- ???????????????``/root/...``???????????????????
+  ???????``CYCPEP_CONDA`` / ``RFDIFF_CONDA`` / ``RFDIFF_DIR`` /
+  ``LIGANDMPNN_DIR`` / ``COLABDESIGN_DIR`` / ``CYCPEP_DESIGN_ROOT`` ??
+  ?????????????????????
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import sys
 import threading
@@ -19,6 +31,44 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from project_config import load_project_config  # noqa: E402
+
+# ============================================================
+# ????????Engineering Standard P1-4?
+# ============================================================
+#
+# ??????????????timesteps?????????????? Magic
+# Numbers??????????????/?????? protocol_sha256 ????
+# ????????????????? version???? artifact ?????
+# ?????????
+
+DESIGN_PROTOCOL = {
+    "version": "design_v1",
+    "description": (
+        "RFdiffusion backbone generation + LigandMPNN sequence sampling + "
+        "AfCycDesign fixed-sequence refold, with global cheap pre-filter and "
+        "Route C template cyclization/mutation expansion."
+    ),
+    "ligandmpnn": {
+        "model_type": "protein_mpnn",
+        "checkpoint": "proteinmpnn_v_48_020.pt",
+        "n_seq_per_backbone": 8,
+    },
+    "rfdiff": {
+        "timesteps": 50,
+    },
+    "cheap_filter": {
+        "max_keep_per_backbone": 4,
+    },
+    "mutation": {
+        "attempts_factor": 10,
+        "protected_pharmacophore": "FWL",
+    },
+}
+
+DESIGN_PROTOCOL_SHA256 = hashlib.sha256(
+    json.dumps(DESIGN_PROTOCOL, sort_keys=True, ensure_ascii=True).encode("utf-8")
+).hexdigest()
+
 
 
 # ============================================================
@@ -77,18 +127,18 @@ def _resolve_output_dir(environ=None, damodel_data_root=None):
 
 DEFAULT_OUTPUT_DIR = _resolve_output_dir()
 OUTPUT_DIR = str(DEFAULT_OUTPUT_DIR)
-_raw_ts = os.environ.get("RFDIFF_TIMESTEPS") or "50"
+_raw_ts = os.environ.get("RFDIFF_TIMESTEPS") or str(DESIGN_PROTOCOL["rfdiff"]["timesteps"])
 try:
     RFDIFF_TIMESTEPS = max(1, int(_raw_ts))
 except (ValueError, TypeError):
-    RFDIFF_TIMESTEPS = 50
+    RFDIFF_TIMESTEPS = DESIGN_PROTOCOL["rfdiff"]["timesteps"]
     # Defer log until _run_rfdiff first consumes the value (P1: no
     # EvidenceLogger side-effects at import time).
     _RFDIFF_TIMESTEPS_INVALID = os.environ.get("RFDIFF_TIMESTEPS")
 else:
     _RFDIFF_TIMESTEPS_INVALID = None
-LIGANDMPNN_MODEL_TYPE = os.environ.get("LIGANDMPNN_MODEL_TYPE") or "protein_mpnn"
-LIGANDMPNN_CHECKPOINT = os.environ.get("LIGANDMPNN_CHECKPOINT") or f"{LIGANDMPNN_DIR}/model_params/proteinmpnn_v_48_020.pt"
+LIGANDMPNN_MODEL_TYPE = os.environ.get("LIGANDMPNN_MODEL_TYPE") or DESIGN_PROTOCOL["ligandmpnn"]["model_type"]
+LIGANDMPNN_CHECKPOINT = os.environ.get("LIGANDMPNN_CHECKPOINT") or f"{LIGANDMPNN_DIR}/model_params/{DESIGN_PROTOCOL['ligandmpnn']['checkpoint']}"
 DESIGN_PIPELINE_VERSION = "5.2.1"
 
 # Module-level state for _verify_colabdesign_runtime() (P3-3).
@@ -145,9 +195,9 @@ try:
     CHEAP_FILTER_MAX_KEEP = max(1, int(
         os.environ.get("CHEAP_FILTER_MAX_KEEP")
         or os.environ.get("CHEAP_FILTER_TOP_K")
-        or "4"))
+        or str(DESIGN_PROTOCOL["cheap_filter"]["max_keep_per_backbone"])))
 except (ValueError, TypeError):
-    CHEAP_FILTER_MAX_KEEP = 4
+    CHEAP_FILTER_MAX_KEEP = DESIGN_PROTOCOL["cheap_filter"]["max_keep_per_backbone"]
 HYDROPHOBIC = set("AILMFWV")
 POS_CHARGED = set("KR")
 NEG_CHARGED = set("DE")

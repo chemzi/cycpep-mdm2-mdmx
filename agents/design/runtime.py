@@ -210,13 +210,16 @@ def _cleanup_partial_rfdiff_output(output_prefix):
     except OSError:
         pass
 
-def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=8, binder_chain=None,
+def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=None, binder_chain=None,
                     fixed_residues=None, seed=42):
     """LigandMPNN subprocess with an explicitly validated binder chain.
 
     The RFdiffusion output chain labels are discovered from the emitted PDB,
     rather than inferred from the input receptor's chain label.
     fixed_residues: 空格分隔的 chain+resi 列表，如 'B25 B26 B27'，这些残基在 LigandMPNN 中固定不变。"""
+    if n_seq is None:
+        n_seq = config.DESIGN_PROTOCOL["ligandmpnn"]["n_seq_per_backbone"]
+
     if LIGANDMPNN_MODEL_TYPE != "protein_mpnn":
         EvidenceLogger.error(
             "design", "unsupported_inverse_folding_model",

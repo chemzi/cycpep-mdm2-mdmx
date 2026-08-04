@@ -931,6 +931,49 @@ check(merged['project_id'] == 'custom_injected_project',
       '_merge_config honours project_config injected via context')
 check(merged['seed'] == 7, 'seed merged from design_config via context path')
 
+# ── Test 23: versioned scientific protocol binding (P1-4) ──
+print('Test 23: versioned scientific protocol binding')
+from agents.design.config import DESIGN_PROTOCOL, DESIGN_PROTOCOL_SHA256
+
+check(DESIGN_PROTOCOL['version'] == 'design_v1',
+      f'protocol version present: {DESIGN_PROTOCOL["version"]}')
+check(DESIGN_PROTOCOL['ligandmpnn']['n_seq_per_backbone'] == 8,
+      'LigandMPNN sampling count is protocol-managed')
+check(DESIGN_PROTOCOL['mutation']['attempts_factor'] == 10,
+      'Route C mutation attempts factor is protocol-managed')
+check(DESIGN_PROTOCOL['mutation']['protected_pharmacophore'] == 'FWL',
+      'pharmacophore protection residues are protocol-managed')
+check(len(DESIGN_PROTOCOL_SHA256) == 64, 'protocol sha256 is a hex digest')
+check(
+    DESIGN_PROTOCOL_SHA256 == hashlib.sha256(
+        json.dumps(DESIGN_PROTOCOL, sort_keys=True, ensure_ascii=True).encode('utf-8')
+    ).hexdigest(),
+    'protocol sha256 is deterministic',
+)
+
+# Manifest binds the protocol so artifacts can be traced to a concrete protocol.
+tmp_pdb23 = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+tmp_pdb23.write(monomer_pdb('ACDEFGHI', nc_distance=1.33))
+tmp_pdb23.close()
+cfg23 = {'target_name': '1YCR', 'target_pdb': '/tmp/test.pdb', 'seed': 42}
+m23 = _write_manifest('C9001', 'ACDEFGHI', 'route_C_test', 'batch_proto',
+                      tmp_pdb23.name, cfg23)
+check(m23['protocol_version'] == DESIGN_PROTOCOL['version'],
+      'manifest records protocol_version')
+check(m23['protocol_sha256'] == DESIGN_PROTOCOL_SHA256,
+      'manifest records protocol_sha256')
+os.unlink(tmp_pdb23.name)
+
+# Route sources read the protocol instead of hard-coded magic numbers.
+route_a_src = Path('agents/design/route_a.py').read_text(encoding='utf-8')
+route_c_src = Path('agents/design/route_c.py').read_text(encoding='utf-8')
+check('n_seq_per_backbone' in route_a_src,
+      'Route A LigandMPNN n_seq reads the protocol')
+check('attempts_factor' in route_c_src,
+      'Route C mutation budget reads the protocol')
+check('protected_pharmacophore' in route_c_src,
+      'Route C pharmacophore residues read the protocol')
+
 os.unlink(target_fixture.name)
 
 # ── Summary ──
@@ -941,4 +984,4 @@ if failures:
         print(f'  - {f}')
     sys.exit(1)
 else:
-    print('ALL 22 TEST GROUPS PASSED')
+    print('ALL 23 TEST GROUPS PASSED')

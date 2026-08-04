@@ -11,7 +11,7 @@ from data_layer import CandidateIndex, EvidenceLogger  # noqa: E402
 
 from . import config  # noqa: E402
 from .candidates import _collect_raw_sequences, _register_refolded_candidate  # noqa: E402
-from .config import DESIGN_PIPELINE_VERSION, DesignContext  # noqa: E402
+from .config import DESIGN_PIPELINE_VERSION, DESIGN_PROTOCOL, DesignContext  # noqa: E402
 from .runtime import _run_ligandmpnn, _run_rfdiff  # noqa: E402
 from .service import (  # noqa: E402
     _load_existing_sequences,
@@ -78,7 +78,8 @@ def _route_a_generate_backbones(config, batch_dir):
             os.makedirs(mpnn_dir, exist_ok=True)
             mpnn_seed = (config["seed"] + total_gen) % 2**31
             seqs = _run_ligandmpnn(
-                str(bb_path), mpnn_dir, n_seq=8, binder_chain=binder_chain,
+                str(bb_path), mpnn_dir, n_seq=DESIGN_PROTOCOL["ligandmpnn"]["n_seq_per_backbone"],
+                binder_chain=binder_chain,
                 seed=mpnn_seed,
             )
             if not seqs:
