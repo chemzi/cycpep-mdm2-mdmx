@@ -104,8 +104,7 @@ def _atomic_json(path: Path, value: dict) -> None:
 
 
 @contextlib.contextmanager
-def _run_lock(run_path: Path):
-    lock_path = run_path.with_name(f".{run_path.name}.lock")
+def _exclusive_file_lock(lock_path: Path):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as stream:
         if fcntl is not None:
@@ -125,6 +124,13 @@ def _run_lock(run_path: Path):
             else:
                 stream.seek(0)
                 msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+@contextlib.contextmanager
+def _run_lock(run_path: Path):
+    lock_path = run_path.with_name(f".{run_path.name}.lock")
+    with _exclusive_file_lock(lock_path):
+        yield
 
 
 def _global_gpu_lease_path() -> Path:
@@ -138,25 +144,8 @@ def _global_gpu_lease_path() -> Path:
 def _global_gpu_lock():
     lease_path = _global_gpu_lease_path()
     lock_path = lease_path.with_name(f".{lease_path.name}.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as stream:
-        if fcntl is not None:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-        else:
-            stream.seek(0, os.SEEK_END)
-            if stream.tell() == 0:
-                stream.write("0")
-                stream.flush()
-            stream.seek(0)
-            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
-        try:
-            yield
-        finally:
-            if fcntl is not None:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
-            else:
-                stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+    with _exclusive_file_lock(lock_path):
+        yield
 
 
 def _acquire_global_gpu_lease(lease: dict) -> None:
@@ -495,7 +484,7 @@ def _refresh(run: dict, plan: dict) -> None:
         run["status"] = "failed"
     elif any(value["status"] == TaskStatus.CLAIMED.value for value in states.values()):
         run["status"] = "running"
-    elif any(value == TaskStatus.READY.value for value in states.values()):
+    elif any(value["status"] == TaskStatus.READY.value for value in states.values()):
         run["status"] = "ready"
     elif any(value == TaskStatus.AWAITING_APPROVAL.value for value in required_statuses):
         run["status"] = "awaiting_approval"
