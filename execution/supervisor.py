@@ -167,8 +167,15 @@ def run_process(
             "execution_process_timeout", f"{label} exceeded {timeout_seconds}s"
         )
     if returncode != 0:
-        tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-1500:]
+        stderr_tail = stderr_path.read_text(
+            encoding="utf-8", errors="replace"
+        )[-1000:].strip()
+        stdout_tail = stdout_path.read_text(
+            encoding="utf-8", errors="replace"
+        )[-1000:].strip()
+        diagnostic = stderr_tail or stdout_tail or "process produced no diagnostic output"
         raise ExecutionContractError(
-            "execution_process_failed", f"{label} exited {returncode}: {tail}"
+            "execution_process_failed",
+            f"{label} exited {returncode}: {diagnostic}",
         )
     return result

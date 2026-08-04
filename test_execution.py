@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -221,6 +222,21 @@ class ExecutionTests(unittest.TestCase):
         self.assertFalse(marker.exists())
         self.assertIn("safe; touch", Path(result["stdout"]).read_text())
 
+    def test_process_failure_reports_stdout_when_stderr_is_empty(self):
+        with self.assertRaisesRegex(
+            ExecutionContractError, "structured failure on stdout"
+        ):
+            run_process(
+                [
+                    sys.executable,
+                    "-c",
+                    "print('structured failure on stdout'); raise SystemExit(2)",
+                ],
+                cwd=self.root,
+                logs_dir=self.root / "stdout_failure_logs",
+                timeout_seconds=10,
+                label="stdout_failure",
+            )
     def test_calibration_handler_completes_without_mutating_thresholds(self):
         plan_result = planner_run(critic_report_path=self._report(calibration=True))
         task_id = plan_result["plan"]["tasks"][0]["task_id"]

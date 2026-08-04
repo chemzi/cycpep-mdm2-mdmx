@@ -21,6 +21,7 @@ from prediction_pipeline.contracts import (
 from prediction_pipeline.colabdesign_worker import (
     _assert_cyclic_offset_supported,
     _cyclic_offset,
+    _normalize_complex_target_chain,
 )
 from prediction_pipeline.boltz_worker import boltz_input_yaml
 from prediction_pipeline.metrics import (
@@ -63,6 +64,36 @@ ONE_TO_THREE = {
     "S": "SER", "T": "THR", "V": "VAL", "W": "TRP", "Y": "TYR",
 }
 SEQUENCE = "ACDEFGHI"
+
+
+class ColabDesignChainNormalizationTests(unittest.TestCase):
+    def test_complex_output_restores_reviewed_target_chain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "prediction.pdb"
+            target_pdb, serial = chain_pdb("AAAA", "A")
+            binder_pdb, _ = chain_pdb(SEQUENCE, "B", start=serial)
+            path.write_text(
+                target_pdb + binder_pdb + "END\n",
+                encoding="utf-8",
+            )
+            target_chain, binder_chain = _normalize_complex_target_chain(
+                path, SEQUENCE, "M"
+            )
+            structure = parse_pdb(path)
+            self.assertEqual((target_chain, binder_chain), ("M", "B"))
+            self.assertEqual(set(structure.chains), {"M", "B"})
+
+    def test_complex_output_rejects_target_binder_chain_collision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "prediction.pdb"
+            target_pdb, serial = chain_pdb("AAAA", "A")
+            binder_pdb, _ = chain_pdb(SEQUENCE, "B", start=serial)
+            path.write_text(
+                target_pdb + binder_pdb + "END\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ContractError, "collides"):
+                _normalize_complex_target_chain(path, SEQUENCE, "B")
 
 
 def atom_line(serial, atom, residue, chain, number, xyz, bfactor=90.0):

@@ -118,6 +118,53 @@ def _apply_cyclic_offset(model, start: int, length: int) -> None:
     model._inputs["offset"] = offset
 
 
+def _normalize_complex_target_chain(
+    pdb_path: Path, binder_sequence: str, requested_target_chain: str
+) -> tuple[str, str]:
+    """Restore the reviewed target chain after ColabDesign renumbers it.
+
+    ColabDesign's binder protocol emits target/binder as A/B regardless of the
+    source PDB chain.  Downstream provenance, hotspot numbering, PRODIGY and
+    Rosetta all use the reviewed chain identifier, so normalize the emitted
+    coordinate artifact before it is hashed or registered.
+    """
+    requested = str(requested_target_chain or "").strip()
+    if len(requested) != 1:
+        raise ContractError(
+            "target_chain_invalid", "PDB target chain must be one character"
+        )
+    structure = parse_pdb(pdb_path)
+    binder_chain = exact_sequence_chain(structure, binder_sequence)
+    target_chains = sorted(set(structure.chains) - {binder_chain})
+    if len(target_chains) != 1:
+        raise ContractError(
+            "target_chain_ambiguous",
+            f"expected one predicted target chain, observed {target_chains}",
+        )
+    observed = target_chains[0]
+    if requested == binder_chain:
+        raise ContractError(
+            "target_chain_collision",
+            f"requested target chain {requested} collides with binder chain",
+        )
+    if observed != requested:
+        records = {"ATOM  ", "HETATM", "ANISOU", "TER   "}
+        rewritten = []
+        for line in pdb_path.read_text(encoding="utf-8").splitlines(keepends=True):
+            if len(line) > 21 and line[:6] in records and line[21] == observed:
+                line = f"{line[:21]}{requested}{line[22:]}"
+            rewritten.append(line)
+        pdb_path.write_text("".join(rewritten), encoding="utf-8", newline="")
+        structure = parse_pdb(pdb_path)
+        if requested not in structure.chains or observed in structure.chains:
+            raise ContractError(
+                "target_chain_normalization_failed",
+                f"could not normalize predicted chain {observed} to {requested}",
+            )
+        binder_chain = exact_sequence_chain(structure, binder_sequence)
+    return requested, binder_chain
+
+
 def run(args: argparse.Namespace) -> dict:
     sequence = args.sequence.strip().upper()
     if not SEQUENCE_RE.fullmatch(sequence) or not (
@@ -200,6 +247,11 @@ def run(args: argparse.Namespace) -> dict:
         model.save_pdb(str(pdb_path), get_best=False, aux=aux)
         structure = parse_pdb(pdb_path)
         binder_chain = exact_sequence_chain(structure, sequence)
+        normalized_target_chain = args.target_chain
+        if args.target_pdb:
+            normalized_target_chain, binder_chain = _normalize_complex_target_chain(
+                pdb_path, sequence, args.target_chain
+            )
         pae = np.asarray(aux["pae"], dtype=float)
         plddt = np.asarray(aux["plddt"], dtype=float)
         if pae.ndim != 2 or pae.shape[0] != pae.shape[1]:
@@ -218,7 +270,7 @@ def run(args: argparse.Namespace) -> dict:
             "requested_sequence": sequence,
             "observed_sequence": observed_sequences[0],
             "binder_chain": binder_chain,
-            "target_chain": args.target_chain,
+            "target_chain": normalized_target_chain,
             "seed": args.seed,
             "model_number": args.model_number,
             "num_recycles": args.num_recycles,
