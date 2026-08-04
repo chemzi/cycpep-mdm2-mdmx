@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import data_layer
 from agents import planner
-from agents.orchestrator import claim, complete, fail, initialize, retry
+from agents.orchestrator import claim, initialize, retry, status
 from agents.planner import record_approval, run as planner_run
 from contracts import (
     ActionType,
@@ -25,6 +27,7 @@ from contracts import (
 from contracts.event import VALID_AGENTS, VALID_EVENT_TYPES
 from execution.action_registry import ACTION_REGISTRY, handler_for, validate_registry
 from execution.config import ExecutionConfig
+from execution.contracts import ExecutionContractError, validate_dispatch_packet
 from execution.worker import execute_task
 from prediction_pipeline.contracts import object_sha256
 
@@ -146,6 +149,26 @@ class ContractMigrationTests(unittest.TestCase):
         )
         return plan_result, approval, initialized
 
+    def _config(self) -> ExecutionConfig:
+        return ExecutionConfig(
+            repo_root=Path(__file__).resolve().parent,
+            execution_root=self.root / "execution",
+            core_python=Path(sys.executable),
+            design_python=Path(sys.executable),
+            prediction_python=Path(sys.executable),
+            prediction_artifacts_root=self.root / "artifacts",
+            prediction_runs_root=self.root / "prediction_runs",
+            colabdesign_dir=self.root,
+            colabdesign_params=self.root,
+            cuda_data_dir=self.root,
+            boltz_executable=None,
+            boltz_cache=None,
+            boltz_checkpoint=None,
+            prodigy_executable=None,
+            pyrosetta_python=None,
+            control_data_path=None,
+        )
+
     def test_action_registry_completeness_and_single_truth(self):
         validate_registry()
         self.assertFalse(hasattr(planner, "ACTION_SPECS"))
@@ -155,6 +178,60 @@ class ContractMigrationTests(unittest.TestCase):
             self.assertEqual(ACTION_REGISTRY[action], spec)
             if spec.executable:
                 self.assertTrue(callable(handler_for(action)))
+
+    def test_action_resource_class_is_derived_and_cross_checked(self):
+        self.assertTrue(planner.RECOMMENDATION_MAPPINGS)
+        self.assertTrue(all(
+            not hasattr(mapping, "resource_class")
+            for mapping in planner.RECOMMENDATION_MAPPINGS.values()
+        ))
+        plan_result, _, _ = self._plan_and_run(marker="resource")
+        task = plan_result["plan"]["tasks"][0]
+        spec = get_action_spec(task["action"])
+        self.assertEqual(task["resource_request"]["class"], spec.resource_class)
+        tampered = copy.deepcopy(plan_result["plan"])
+        tampered["tasks"][0]["resource_request"]["class"] = "cpu"
+        with self.assertRaises(planner.PlannerContractError) as raised:
+            planner._validate_plan_for_approval(tampered, Path(plan_result["plan_path"]))
+        self.assertEqual(raised.exception.code, "execution_resource_class_mismatch")
+
+    def test_v2_schemas_require_workflow_and_legacy_plan_adapts(self):
+        plan_result = planner_run(critic_report_path=self._report(marker="legacy"))
+        self.assertEqual(plan_result["plan"]["schema_version"], 2)
+        plan_schema = json.loads(
+            (Path(__file__).resolve().parent / "agents" / "planner_plan.schema.json").read_text()
+        )
+        run_schema = json.loads(
+            (Path(__file__).resolve().parent / "agents" / "orchestrator_run.schema.json").read_text()
+        )
+        self.assertEqual(plan_schema["properties"]["schema_version"]["const"], 2)
+        self.assertIn("workflow_id", plan_schema["required"])
+        self.assertIn("workflow_id", plan_schema["properties"]["source"]["required"])
+        self.assertEqual(run_schema["properties"]["schema_version"]["const"], 2)
+        self.assertIn("workflow_id", run_schema["required"])
+        self.assertIn("workflow_id", run_schema["properties"]["plan"]["required"])
+
+        legacy = copy.deepcopy(plan_result["plan"])
+        legacy["schema_version"] = 1
+        legacy.pop("workflow_id")
+        legacy["source"].pop("workflow_id")
+        legacy_path = self.root / "legacy_plan.json"
+        legacy_path.write_text(json.dumps(legacy), encoding="utf-8")
+        approval = record_approval(
+            plan_path=legacy_path,
+            task_ids=legacy["approval_request"]["required_task_ids"],
+            approver="PI-contract-test",
+            justification="approve legacy adapter fixture",
+        )
+        initialized = initialize(
+            plan_path=legacy_path, approval_paths=[approval["approval_path"]]
+        )
+        self.assertEqual(initialized["run"]["schema_version"], 2)
+        self.assertTrue(initialized["run"]["workflow_id"])
+        self.assertEqual(
+            initialized["run"]["workflow_id"],
+            initialized["run"]["plan"]["workflow_id"],
+        )
 
     def test_core_contract_round_trips_through_json(self):
         context = TraceContext(
@@ -228,6 +305,12 @@ class ContractMigrationTests(unittest.TestCase):
         self.assertEqual(
             ErrorInfo.from_dict(json.loads(json.dumps(error.to_dict()))), error
         )
+        self.assertTrue(
+            ErrorInfo.from_exception(TimeoutError("transient"), component="test").retryable
+        )
+        self.assertFalse(
+            ErrorInfo.from_exception(ValueError("invalid"), component="test").retryable
+        )
 
     def test_invalid_event_rejected_and_legacy_candidate_trace_kept(self):
         with self.assertRaises(ValueError):
@@ -256,24 +339,7 @@ class ContractMigrationTests(unittest.TestCase):
             run_path=initialized["run_path"],
             task_id=task_id,
             worker_id="fake-worker",
-            config=ExecutionConfig(
-                repo_root=Path(__file__).resolve().parent,
-                execution_root=self.root / "execution",
-                core_python=Path(sys.executable),
-                design_python=Path(sys.executable),
-                prediction_python=Path(sys.executable),
-                prediction_artifacts_root=self.root / "artifacts",
-                prediction_runs_root=self.root / "prediction_runs",
-                colabdesign_dir=self.root,
-                colabdesign_params=self.root,
-                cuda_data_dir=self.root,
-                boltz_executable=None,
-                boltz_cache=None,
-                boltz_checkpoint=None,
-                prodigy_executable=None,
-                pyrosetta_python=None,
-                control_data_path=None,
-            ),
+            config=self._config(),
         )
         self.assertEqual(receipt["workflow_id"], plan["workflow_id"])
         events = data_layer.EvidenceLogger.trace_workflow(plan["workflow_id"])
@@ -301,50 +367,92 @@ class ContractMigrationTests(unittest.TestCase):
         self.assertTrue(data_layer.EvidenceLogger.trace_run(initialized["run"]["run_id"]))
         self.assertTrue(data_layer.EvidenceLogger.trace_task(task_id))
 
+    def test_trace_task_rejects_ambiguous_workflows(self):
+        for workflow_id in ("workflow_one", "workflow_two"):
+            data_layer.EvidenceLogger.log(
+                "execution",
+                "execution_task_started",
+                {"worker": "fixture"},
+                trace_context=TraceContext(
+                    project_id="contract_migration_test",
+                    workflow_id=workflow_id,
+                    task_id="T001",
+                ),
+            )
+        with self.assertRaises(data_layer.EvidenceTraceQueryError) as raised:
+            data_layer.EvidenceLogger.trace_task("T001")
+        self.assertEqual(raised.exception.code, "ambiguous_trace_query")
+        scoped = data_layer.EvidenceLogger.trace_task(
+            "T001", workflow_id="workflow_one"
+        )
+        self.assertEqual({entry["workflow_id"] for entry in scoped}, {"workflow_one"})
+
+    def test_dispatch_trace_bindings_fail_closed(self):
+        plan_result, _, initialized = self._plan_and_run(marker="dispatch")
+        task_id = plan_result["plan"]["tasks"][0]["task_id"]
+        claimed = claim(
+            run_path=initialized["run_path"], task_id=task_id, worker="binding-worker"
+        )
+        packet = json.loads(Path(claimed["dispatch_packet_path"]).read_text())
+        validate_dispatch_packet(packet)
+        replacements = {
+            "workflow_id": "other_workflow",
+            "run_id": "orchestrator_other",
+            "plan_id": "planner_deadbeef0000",
+            "attempt_id": "T001-A99",
+        }
+        for field, replacement in replacements.items():
+            tampered = copy.deepcopy(packet)
+            tampered[field] = replacement
+            with self.assertRaises(ExecutionContractError) as raised:
+                validate_dispatch_packet(tampered)
+            self.assertEqual(raised.exception.code, "dispatch_trace_invalid")
+        tampered = copy.deepcopy(packet)
+        tampered["task"]["task_id"] = "T002"
+        with self.assertRaises(ExecutionContractError) as raised:
+            validate_dispatch_packet(tampered)
+        self.assertEqual(raised.exception.code, "dispatch_trace_invalid")
+
     def test_retry_keeps_workflow_task_and_distinguishes_attempts(self):
         plan_result, _, initialized = self._plan_and_run(marker="retry")
         plan = plan_result["plan"]
         task_id = plan["tasks"][0]["task_id"]
-        first = claim(
-            run_path=initialized["run_path"], task_id=task_id, worker="retry-worker"
-        )
-        fail(
-            run_path=initialized["run_path"],
-            task_id=task_id,
-            claim_token=first["claim_token"],
-            reason="transient fixture failure",
-            retryable=True,
-        )
+
+        class TransientHandlerFailure(RuntimeError):
+            retryable = True
+
+        def fail_handler(_context):
+            raise TransientHandlerFailure("temporary worker failure")
+
+        with patch("execution.worker.handler_for", return_value=fail_handler):
+            with self.assertRaises(TransientHandlerFailure):
+                execute_task(
+                    run_path=initialized["run_path"],
+                    task_id=task_id,
+                    worker_id="retry-worker",
+                    config=self._config(),
+                )
+        failed = status(run_path=initialized["run_path"])["run"]["tasks"][task_id]
+        self.assertEqual(failed["status"], "failed")
+        self.assertTrue(failed["last_error"]["retryable"])
+        self.assertEqual(failed["last_error"]["code"], "TransientHandlerFailure")
+        self.assertNotIn("error_code", failed["last_error"])
         retry(
             run_path=initialized["run_path"],
             task_id=task_id,
             operator="PI-contract-test",
             reason="retry transient fixture failure",
         )
-        second = claim(
-            run_path=initialized["run_path"], task_id=task_id, worker="retry-worker"
-        )
-        output = self.root / "retry-output.json"
-        output.write_text(json.dumps({
-            "schema_version": 1,
-            "execution_worker_version": "1.0.1",
-            "action": "propose_threshold_calibration",
-            "task_id": task_id,
-            "project_id": "contract_migration_test",
-            "status": "pending_controls",
-            "requested_threshold_keys": ["L2_ipsae:MDM2"],
-            "current_thresholds": {},
-            "control_requirements": {"same_protocol_required": True},
-            "applied_to_state": False,
-            "created_at": "2026-08-04T00:00:00+00:00",
-        }), encoding="utf-8")
-        complete(
+        receipt = execute_task(
             run_path=initialized["run_path"],
             task_id=task_id,
-            claim_token=second["claim_token"],
-            output_paths=[f"calibration_proposal={output}"],
+            worker_id="retry-worker",
+            config=self._config(),
         )
-        events = data_layer.EvidenceLogger.trace_task(task_id)
+        self.assertEqual(receipt["attempt_id"], "T001-A02")
+        events = data_layer.EvidenceLogger.trace_task(
+            task_id, workflow_id=plan["workflow_id"]
+        )
         attempts = {
             event.get("attempt_id")
             for event in events
@@ -357,6 +465,19 @@ class ContractMigrationTests(unittest.TestCase):
             {event["workflow_id"] for event in events if event.get("workflow_id")},
             {plan["workflow_id"]},
         )
+        first_attempt_events = data_layer.EvidenceLogger.trace_task(
+            task_id,
+            workflow_id=plan["workflow_id"],
+            attempt_id="T001-A01",
+        )
+        self.assertEqual(
+            {event.get("attempt_id") for event in first_attempt_events}, {"T001-A01"}
+        )
+        failure_event = next(
+            event for event in events if event["event_type"] == "execution_task_failed"
+        )
+        self.assertEqual(failure_event["code"], "TransientHandlerFailure")
+        self.assertNotIn("error_code", failure_event)
 
 
 if __name__ == "__main__":

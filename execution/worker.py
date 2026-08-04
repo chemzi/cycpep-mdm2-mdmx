@@ -174,6 +174,11 @@ def execute_task(
             else None
         )
         task_dir.mkdir(parents=True, exist_ok=True)
+        error_info = ErrorInfo.from_exception(
+            exc,
+            component="execution.worker",
+            code=str(getattr(exc, "code", exc.__class__.__name__)),
+        )
         failure = {
             "execution_worker_version": EXECUTION_WORKER_VERSION,
             "status": TaskStatus.FAILED.value,
@@ -184,27 +189,18 @@ def execute_task(
             "plan_id": trace_context.plan_id,
             "attempt": attempt,
             "attempt_id": trace_context.attempt_id,
-            "error_code": getattr(exc, "code", exc.__class__.__name__),
-            "message": str(exc),
-            "component": "execution.worker",
-            "retryable": False,
+            **error_info.to_dict(),
             "elapsed_seconds": elapsed_seconds,
             "gpu_minutes": gpu_minutes,
         }
-        failure.update(ErrorInfo(
-            code=failure["error_code"],
-            message=failure["message"],
-            component="execution.worker",
-            retryable=False,
-        ).to_dict())
         atomic_json(task_dir / "execution_failure.json", failure)
         try:
             fail(
                 run_path=run_path,
                 task_id=task_id,
                 claim_token=token,
-                reason=f"{failure['error_code']}: {failure['message']}",
-                retryable=False,
+                reason=f"{failure['code']}: {failure['message']}",
+                error_info=error_info,
                 gpu_minutes=gpu_minutes,
             )
         except Exception as close_exc:

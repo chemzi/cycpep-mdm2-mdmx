@@ -7,7 +7,7 @@ from enum import Enum
 import re
 from typing import Any, Mapping
 
-from .action import ActionType, coerce_action_type
+from .action import ActionType, coerce_action_type, get_action_spec
 from .trace import TraceContext
 
 
@@ -96,6 +96,12 @@ class ExecutionTask:
                 raise ValueError("outputs must contain strings or objects")
         object.__setattr__(self, "outputs", tuple(normalized_outputs))
         object.__setattr__(self, "resource_request", dict(self.resource_request))
+        expected_resource_class = get_action_spec(self.action).resource_class
+        if self.resource_request.get("class") != expected_resource_class:
+            raise ValueError(
+                "resource_request.class must match the canonical ActionSpec "
+                f"resource_class {expected_resource_class!r}"
+            )
         object.__setattr__(self, "parameters", dict(self.parameters))
         if isinstance(self.constraints, Mapping):
             normalized_constraints: Any = dict(self.constraints)

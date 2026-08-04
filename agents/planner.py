@@ -37,7 +37,8 @@ from contracts.trace import TraceContext, derive_workflow_id  # noqa: E402
 
 
 PLANNER_VERSION = "1.2.1"
-PLAN_SCHEMA_VERSION = 1
+PLAN_SCHEMA_VERSION = 2
+LEGACY_PLAN_SCHEMA_VERSION = 1
 APPROVAL_SCHEMA_VERSION = 1
 REPORT_ID_RE = re.compile(r"^critic_[0-9a-f]{12}$")
 PLAN_ID_RE = re.compile(r"^planner_[0-9a-f]{12}$")
@@ -58,23 +59,23 @@ PRIORITY_RANK = {"P0": 0, "P1": 1, "P2": 2}
 RECOMMENDATION_MAPPINGS: dict[str, RecommendationMapping] = {
     "regenerate_invalid_artifact": RecommendationMapping(
         "regenerate_invalid_artifact", "regenerate_invalid_artifacts",
-        "prediction/design", "iterate", "gpu", "recovery",
+        "prediction/design", "iterate", "recovery",
     ),
     "complete_prediction_evidence": RecommendationMapping(
         "complete_prediction_evidence", "evaluate_new_design_candidates",
-        "prediction", "evaluate", "gpu", "prediction",
+        "prediction", "evaluate", "prediction",
     ),
     "calibrate_thresholds": RecommendationMapping(
         "calibrate_thresholds", "propose_threshold_calibration",
-        "research", "research", "network_cpu", "policy_review",
+        "research", "research", "policy_review",
     ),
     "deduplicate_candidates": RecommendationMapping(
         "deduplicate_candidates", "audit_duplicate_candidates",
-        "design/data", "iterate", "cpu", "data_review",
+        "design/data", "iterate", "data_review",
     ),
     "repair_candidate_index": RecommendationMapping(
         "repair_candidate_index", "repair_candidate_index",
-        "design/data", "iterate", "cpu", "recovery",
+        "design/data", "iterate", "recovery",
     ),
 }
 
@@ -93,7 +94,7 @@ DESIGN_ITERATION_ACTIONS = frozenset({
 
 for _recommendation in DESIGN_ITERATION_ACTIONS:
     RECOMMENDATION_MAPPINGS[_recommendation] = RecommendationMapping(
-        _recommendation, "iterate_design", "design", "design", "gpu", "design"
+        _recommendation, "iterate_design", "design", "design", "design"
     )
 
 
@@ -453,10 +454,11 @@ def _materialize_design_jobs(
 
 def _approval(
     *,
-    resource_class: str,
+    action: str,
     critic_approval_required: bool,
     data_integrity: bool = False,
 ) -> dict:
+    resource_class = get_action_spec(action).resource_class
     types = []
     if resource_class == "gpu":
         types.append("execution_budget")
@@ -483,7 +485,6 @@ def _task(
     candidate_ids: list[str] | None = None,
     from_task_id: str | None = None,
     parameters: dict | None = None,
-    resource_class: str = "cpu",
     proposal_count: int = 0,
     candidate_limit: int = 0,
     approval: dict | None = None,
@@ -499,6 +500,7 @@ def _task(
         raise PlannerContractError(
             "planner_action_unknown", f"Planner task has unknown action {action!r}"
         ) from exc
+    resource_class = action_spec.resource_class
     if action_spec.executable:
         from execution.action_registry import handler_for
 
@@ -534,7 +536,7 @@ def _task(
             ),
         },
         "approval": approval or _approval(
-            resource_class=resource_class, critic_approval_required=False
+            action=action, critic_approval_required=False
         ),
         "depends_on": list(depends_on or []),
         "outputs": list(outputs or []),
@@ -587,7 +589,6 @@ def _add_critic_followup(
         reason_codes=reason_codes,
         from_task_id=from_task_id,
         parameters={"min_cohort": 3, "low_diversity_similarity": 0.80},
-        resource_class="cpu",
         depends_on=depends_on,
         outputs=["critic_report.json"],
         constraints=["consume_immutable_prediction_handoff"],
@@ -696,10 +697,9 @@ def build_plan(
                 ),
                 "reuse_existing_prediction_evidence": True,
             },
-            resource_class="gpu",
             proposal_count=proposal_count,
             candidate_limit=proposal_count,
-            approval=_approval(resource_class="gpu", critic_approval_required=False),
+            approval=_approval(action="iterate_design", critic_approval_required=False),
             outputs=["design_task_result.json"],
             constraints=[
                 "append_candidates_only",
@@ -722,9 +722,10 @@ def build_plan(
                 "evidence_mode": "reuse_or_generate_full",
                 "predictor_protocol": "af2_boltz2_prodigy_rosetta_postrelax_v1",
             },
-            resource_class="gpu",
             candidate_limit=min(proposal_count, config.max_prediction_candidates_per_task),
-            approval=_approval(resource_class="gpu", critic_approval_required=False),
+            approval=_approval(
+                action="evaluate_new_design_candidates", critic_approval_required=False
+            ),
             depends_on=[design_task["task_id"]],
             outputs=["prediction_handoff.json"],
             constraints=[
@@ -753,7 +754,7 @@ def build_plan(
         reason_codes = list(recommendation["reason_codes"])
         candidate_ids = _candidate_ids(reason_codes, issues_by_code)
         disposition = _reason_disposition(reason_codes, issues_by_code)
-        resource_class = mapping.resource_class
+        resource_class = get_action_spec(mapping.task_action).resource_class
         constraints = []
         data_integrity = False
         parameters: dict[str, Any] = {}
@@ -813,13 +814,12 @@ def build_plan(
             reason_codes=reason_codes,
             candidate_ids=candidate_ids,
             parameters=parameters,
-            resource_class=resource_class,
             candidate_limit=(
                 min(len(candidate_ids), config.max_prediction_candidates_per_task)
                 if resource_class == "gpu" else 0
             ),
             approval=_approval(
-                resource_class=resource_class,
+                action=mapping.task_action.value,
                 critic_approval_required=bool(recommendation.get("approval_required")),
                 data_integrity=data_integrity,
             ),
@@ -861,7 +861,6 @@ def build_plan(
                 "critic_report_id": report["report_id"],
                 "candidate_nomination_requires_human_review": True,
             },
-            resource_class="cpu",
             outputs=["candidate_review_packet"],
             constraints=["do_not_nominate_candidates_automatically"],
         )
@@ -1055,10 +1054,43 @@ def run(
     return {"plan": plan, "plan_path": str(output_path), "plan_sha256": plan_sha}
 
 
-def _validate_plan_for_approval(plan: dict, plan_path: Path) -> None:
-    """Recheck security invariants before an approval artifact can be issued."""
-    if plan.get("schema_version") != PLAN_SCHEMA_VERSION:
+def _canonicalize_plan(plan: dict) -> dict:
+    """Adapt a legacy v1 plan in memory to the strict v2 trace contract."""
+    if not isinstance(plan, dict):
+        raise PlannerContractError("plan_invalid", "plan must be an object")
+    version = plan.get("schema_version")
+    if version == LEGACY_PLAN_SCHEMA_VERSION:
+        canonical = json.loads(json.dumps(plan))
+        source = canonical.get("source")
+        if not isinstance(source, dict):
+            raise PlannerContractError("plan_source_invalid", "plan source must be an object")
+        project_id = str(source.get("project_id") or "unknown_project")
+        workflow_id = canonical.get("workflow_id") or source.get("workflow_id")
+        if not workflow_id:
+            source_id = str(source.get("critic_report_id") or canonical.get("plan_id") or "plan")
+            source_sha256 = str(
+                source.get("critic_report_sha256") or canonical.get("input_digest") or ""
+            )
+            if not re.fullmatch(r"[0-9a-f]{64}", source_sha256):
+                source_sha256 = object_sha256(plan)
+            workflow_id = derive_workflow_id(
+                project_id,
+                source_id,
+                source_sha256,
+                (canonical.get("cycle") or {}).get("source_round", 1),
+            )
+        canonical["workflow_id"] = str(workflow_id)
+        source["workflow_id"] = str(workflow_id)
+        canonical["schema_version"] = PLAN_SCHEMA_VERSION
+        return canonical
+    if version != PLAN_SCHEMA_VERSION:
         raise PlannerContractError("plan_schema_unsupported", "unsupported plan schema")
+    return plan
+
+
+def _validate_plan_for_approval(plan: dict, plan_path: Path) -> dict:
+    """Recheck security invariants before an approval artifact can be issued."""
+    plan = _canonicalize_plan(plan)
     if plan.get("planner_version") != PLANNER_VERSION:
         raise PlannerContractError(
             "plan_version_unsupported", "approval requires the current Planner version"
@@ -1083,6 +1115,24 @@ def _validate_plan_for_approval(plan: dict, plan_path: Path) -> None:
     source = plan.get("source")
     if not isinstance(source, dict):
         raise PlannerContractError("plan_source_invalid", "plan source must be an object")
+    workflow_id = plan.get("workflow_id")
+    source_workflow_id = source.get("workflow_id")
+    if not workflow_id or not source_workflow_id:
+        raise PlannerContractError(
+            "plan_workflow_id_missing", "canonical plan requires workflow_id at plan and source"
+        )
+    if workflow_id != source_workflow_id:
+        raise PlannerContractError(
+            "plan_workflow_id_mismatch", "plan and source workflow_id differ"
+        )
+    try:
+        TraceContext(
+            project_id=str(source.get("project_id") or "unknown_project"),
+            workflow_id=str(workflow_id),
+            plan_id=str(plan.get("plan_id") or "") or None,
+        )
+    except ValueError as exc:
+        raise PlannerContractError("plan_workflow_id_invalid", "plan workflow_id is invalid") from exc
     critic_path_value = str(source.get("critic_report") or "").strip()
     if not critic_path_value:
         raise PlannerContractError("plan_source_invalid", "plan has no Critic report path")
@@ -1185,6 +1235,7 @@ def _validate_plan_for_approval(plan: dict, plan_path: Path) -> None:
 
     for task_id in tasks_by_id:
         visit(task_id)
+    return plan
 
 
 def record_approval(
@@ -1202,7 +1253,7 @@ def record_approval(
     """Record explicit human approval bound to one immutable plan digest."""
     plan_path = Path(plan_path).expanduser().resolve()
     plan = _read_json(plan_path, "planner_plan")
-    _validate_plan_for_approval(plan, plan_path)
+    plan = _validate_plan_for_approval(plan, plan_path)
     plan_id = str(plan.get("plan_id") or "")
     input_digest = _validate_sha256(
         plan.get("input_digest"), "plan_input_digest_invalid", "plan input_digest"

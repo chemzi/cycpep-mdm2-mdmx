@@ -54,10 +54,12 @@ from contracts.task import (  # noqa: E402
     TaskStatus,
 )
 from contracts.trace import TraceContext, derive_workflow_id  # noqa: E402
+from execution.contracts import DISPATCH_SCHEMA_VERSION  # noqa: E402
 
 
 ORCHESTRATOR_VERSION = "1.1.1"
-RUN_SCHEMA_VERSION = 1
+RUN_SCHEMA_VERSION = 2
+LEGACY_RUN_SCHEMA_VERSION = 1
 RUN_ID_RE = re.compile(r"^orchestrator_[0-9a-f]{12}$")
 
 
@@ -194,7 +196,7 @@ def _load_plan(plan_path: str | Path) -> tuple[Path, dict, str]:
     path = Path(plan_path).expanduser().resolve()
     plan = _read_json(path, "planner_plan")
     try:
-        _validate_plan_for_approval(plan, path)
+        plan = _validate_plan_for_approval(plan, path)
     except (PlannerContractError, OSError) as exc:
         raise OrchestratorContractError(
             getattr(exc, "code", "planner_plan_invalid"), str(exc)
@@ -577,8 +579,30 @@ def _sync_state(run: dict, plan: dict) -> None:
         })
 
 
+def _upgrade_legacy_run(run: dict, plan: dict) -> None:
+    """Adapt a v1 run in memory; the immutable plan digest remains untouched."""
+    if run.get("schema_version") != LEGACY_RUN_SCHEMA_VERSION:
+        return
+    plan_ref = run.get("plan") or {}
+    expected_workflow_id = _workflow_id_for_plan(plan)
+    declared_ids = {
+        value for value in (run.get("workflow_id"), plan_ref.get("workflow_id"))
+        if value is not None
+    }
+    if declared_ids and declared_ids != {expected_workflow_id}:
+        raise OrchestratorContractError(
+            "workflow_id_mismatch", "legacy run workflow_id differs from Planner plan"
+        )
+    upgraded = json.loads(json.dumps(run))
+    upgraded["schema_version"] = RUN_SCHEMA_VERSION
+    upgraded["workflow_id"] = expected_workflow_id
+    upgraded.setdefault("plan", {})["workflow_id"] = expected_workflow_id
+    run.clear()
+    run.update(upgraded)
+
+
 def _validate_run_binding(run: dict, run_path: Path) -> tuple[Path, dict, str]:
-    if run.get("schema_version") != RUN_SCHEMA_VERSION:
+    if run.get("schema_version") not in {LEGACY_RUN_SCHEMA_VERSION, RUN_SCHEMA_VERSION}:
         raise OrchestratorContractError("run_schema_unsupported", "unsupported run schema")
     if run.get("orchestrator_version") != ORCHESTRATOR_VERSION:
         raise OrchestratorContractError(
@@ -594,11 +618,15 @@ def _validate_run_binding(run: dict, run_path: Path) -> tuple[Path, dict, str]:
         raise OrchestratorContractError(
             "run_plan_hash_mismatch", "Planner plan changed after run initialization"
         )
+    _upgrade_legacy_run(run, plan)
+    plan_ref = run["plan"]
     expected_workflow_id = _workflow_id_for_plan(plan)
-    declared_workflow_id = run.get("workflow_id") or plan_ref.get("workflow_id")
-    if declared_workflow_id is not None and declared_workflow_id != expected_workflow_id:
+    if (
+        run.get("workflow_id") != expected_workflow_id
+        or plan_ref.get("workflow_id") != expected_workflow_id
+    ):
         raise OrchestratorContractError(
-            "workflow_id_mismatch", "run workflow_id differs from Planner plan"
+            "workflow_id_mismatch", "run workflow_id differs from canonical Planner plan"
         )
     expected_run_id = f"orchestrator_{object_sha256({'plan_sha256': plan_sha, 'orchestrator_version': ORCHESTRATOR_VERSION})[:12]}"
     if run.get("run_id") != expected_run_id or not RUN_ID_RE.fullmatch(run.get("run_id", "")):
@@ -896,7 +924,7 @@ def claim(*, run_path: str | Path, task_id: str, worker: str) -> dict:
             for dependency in task["depends_on"]
         }
         packet = {
-            "schema_version": 1,
+            "schema_version": DISPATCH_SCHEMA_VERSION,
             "workflow_id": run.get("workflow_id") or plan.get("workflow_id"),
             "run_id": run["run_id"],
             "plan_id": plan["plan_id"],
@@ -1189,15 +1217,31 @@ def fail(
     run_path: str | Path,
     task_id: str,
     claim_token: str,
-    reason: str,
-    retryable: bool = False,
+    reason: str | None,
+    retryable: bool | None = None,
+    error_info: ErrorInfo | None = None,
     gpu_minutes: float | None = None,
 ) -> dict:
     """Fail a claimed task; retry is recorded but never scheduled automatically."""
     run_path = Path(run_path).expanduser().resolve()
     reason = str(reason or "").strip()
-    if not reason:
-        raise OrchestratorContractError("failure_reason_required", "failure reason is required")
+    if error_info is None:
+        if not reason:
+            raise OrchestratorContractError("failure_reason_required", "failure reason is required")
+        error_info = ErrorInfo(
+            code="orchestrator_task_failed",
+            message=reason,
+            component="orchestrator",
+            retryable=bool(retryable),
+        )
+    else:
+        if retryable is not None and retryable != error_info.retryable:
+            raise OrchestratorContractError(
+                "failure_retryability_conflict",
+                "retryable argument conflicts with ErrorInfo",
+            )
+        if not reason:
+            reason = f"{error_info.code}: {error_info.message}"
     release_global_gpu = False
     with _run_lock(run_path):
         run = _read_json(run_path, "orchestrator_run")
@@ -1222,20 +1266,12 @@ def fail(
             raise OrchestratorContractError(
                 "gpu_minutes_unexpected", "CPU task cannot report GPU minutes"
             )
-        error_info = ErrorInfo(
-            code="orchestrator_task_failed",
-            message=reason,
-            component="orchestrator",
-            retryable=bool(retryable),
-        )
         error = {
             "reason": reason,
-            "retryable": bool(retryable),
+            **error_info.to_dict(),
+            "retryable": bool(error_info.retryable),
             "automatic_retry_scheduled": False,
             "failed_at": _utcnow(),
-            "error_code": error_info.code,
-            "message": error_info.message,
-            "component": error_info.component,
         }
         state.update({
             "status": TaskStatus.FAILED.value,
@@ -1259,6 +1295,10 @@ def fail(
         "run_id": run["run_id"],
         "task_id": task_id,
         "error": error,
+        "code": error["code"],
+        "message": error["message"],
+        "component": error["component"],
+        "retryable": error["retryable"],
         "resource_usage": usage,
         "run_status": run["status"],
         "attempt": int(state.get("attempts") or 0),

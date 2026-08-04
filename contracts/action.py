@@ -86,12 +86,11 @@ class RecommendationMapping:
     task_action: ActionType
     agent: str
     phase: str
-    resource_class: str
     kind: str
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "task_action", _as_action(self.task_action))
-        for name in ("recommendation", "agent", "phase", "resource_class", "kind"):
+        for name in ("recommendation", "agent", "phase", "kind"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name):
                 raise ValueError(f"{name} must be non-empty")
 
@@ -101,7 +100,6 @@ class RecommendationMapping:
             "task_action": self.task_action.value,
             "agent": self.agent,
             "phase": self.phase,
-            "resource_class": self.resource_class,
             "kind": self.kind,
         }
 
@@ -112,7 +110,6 @@ class RecommendationMapping:
             task_action=_as_action(value["task_action"]),
             agent=value["agent"],
             phase=value["phase"],
-            resource_class=value["resource_class"],
             kind=value["kind"],
         )
 

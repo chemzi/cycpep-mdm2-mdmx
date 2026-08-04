@@ -3,7 +3,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import errno
 from typing import Any, Mapping
+
+
+def classify_retryable(exc: BaseException) -> bool:
+    """Return the explicit retry policy for one execution failure.
+
+    Contract violations are deterministic and therefore fail closed.  Runtime
+    transport/process failures may opt in through a ``retryable`` attribute;
+    common transient I/O failures are retryable by default.
+    """
+    declared = getattr(exc, "retryable", None)
+    if isinstance(declared, bool):
+        return declared
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    return isinstance(exc, OSError) and exc.errno in {
+        errno.EAGAIN,
+        errno.EBUSY,
+        errno.ETIMEDOUT,
+        errno.ECONNRESET,
+        errno.ECONNREFUSED,
+        errno.ENETDOWN,
+        errno.ENETUNREACH,
+    }
 
 
 @dataclass(frozen=True)
@@ -46,4 +70,9 @@ class ErrorInfo:
         code: str = "execution_error",
         retryable: bool | None = None,
     ) -> "ErrorInfo":
-        return cls(code=code, message=str(exc), component=component, retryable=retryable)
+        return cls(
+            code=code,
+            message=str(exc),
+            component=component,
+            retryable=(classify_retryable(exc) if retryable is None else retryable),
+        )

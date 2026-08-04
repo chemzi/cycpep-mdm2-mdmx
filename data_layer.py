@@ -58,6 +58,14 @@ STATE_PATH = DATA_DIR / "state.json"
 LOG_PATH   = EVIDENCE_DIR / "evidence_log.jsonl"
 INDEX_PATH = DATA_DIR / "candidate_index.csv"
 
+
+class EvidenceTraceQueryError(ValueError):
+    """A trace query is unsafe because its natural key is ambiguous."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
 _LEGACY_DEFAULT_DESIGN_BUDGET = {
     "route_A_mdm2": 400,
     "route_A_mdmx": 400,
@@ -540,8 +548,41 @@ class EvidenceLogger:
         return cls._trace_field("run_id", run_id)
 
     @classmethod
-    def trace_task(cls, task_id: str) -> list:
-        return cls._trace_field("task_id", task_id)
+    def trace_task(
+        cls,
+        task_id: str,
+        *,
+        workflow_id: str | None = None,
+        run_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> list:
+        """Read task evidence without silently joining distinct workflows.
+
+        ``task_id`` is plan-local (for example, every plan can contain
+        ``T001``).  Existing single-workflow callers remain compatible, while
+        an unscoped query spanning multiple workflows fails closed.
+        """
+        entries = cls._trace_field("task_id", task_id)
+        if workflow_id is not None:
+            if not isinstance(workflow_id, str) or not workflow_id:
+                raise ValueError("workflow_id must be a non-empty string")
+            entries = [entry for entry in entries if entry.get("workflow_id") == workflow_id]
+        if run_id is not None:
+            if not isinstance(run_id, str) or not run_id:
+                raise ValueError("run_id must be a non-empty string")
+            entries = [entry for entry in entries if entry.get("run_id") == run_id]
+        if attempt_id is not None:
+            if not isinstance(attempt_id, str) or not attempt_id:
+                raise ValueError("attempt_id must be a non-empty string")
+            entries = [entry for entry in entries if entry.get("attempt_id") == attempt_id]
+        if workflow_id is None and run_id is None:
+            workflow_scopes = {entry.get("workflow_id") for entry in entries}
+            if len(workflow_scopes) > 1:
+                raise EvidenceTraceQueryError(
+                    "ambiguous_trace_query",
+                    f"task_id {task_id} occurs in multiple workflows; provide workflow_id or run_id",
+                )
+        return entries
 
     @classmethod
     def trace_artifact(

@@ -30,6 +30,8 @@ from contracts.trace import TraceContext
 
 
 EXECUTION_SCHEMA_VERSION = 1
+DISPATCH_SCHEMA_VERSION = 2
+LEGACY_DISPATCH_SCHEMA_VERSION = 1
 EXECUTION_WORKER_VERSION = "1.0.1"
 
 CORE_ACTIONS = frozenset(action.value for action in EXECUTABLE_ACTION_TYPES)
@@ -299,6 +301,12 @@ def validate_task_parameters(task: dict) -> dict:
     resource = _require_object(
         task.get("resource_request"), "execution_resource_invalid", "resource_request"
     )
+    action_spec = get_action_spec(action)
+    if resource.get("class") != action_spec.resource_class:
+        raise ExecutionContractError(
+            "execution_resource_class_mismatch",
+            f"{action} requires resource class {action_spec.resource_class!r}",
+        )
     proposal_count = _require_int(
         resource.get("proposal_count", 0), "execution_resource_invalid", "proposal_count",
         maximum=10**9,
@@ -370,7 +378,8 @@ def assert_action_executable(task: dict) -> dict:
 
 def validate_dispatch_packet(packet: dict, *, expected_sha256: str | None = None) -> dict:
     packet = _require_object(packet, "dispatch_packet_invalid", "dispatch packet")
-    if packet.get("schema_version") != EXECUTION_SCHEMA_VERSION:
+    schema_version = packet.get("schema_version")
+    if schema_version not in {LEGACY_DISPATCH_SCHEMA_VERSION, DISPATCH_SCHEMA_VERSION}:
         raise ExecutionContractError(
             "dispatch_schema_unsupported", "unsupported dispatch schema version"
         )
@@ -384,6 +393,10 @@ def validate_dispatch_packet(packet: dict, *, expected_sha256: str | None = None
     if not re.fullmatch(r"[0-9a-f]{32}", token):
         raise ExecutionContractError("dispatch_claim_invalid", "dispatch packet has invalid claim token")
     trace = packet.get("trace_context")
+    if schema_version == DISPATCH_SCHEMA_VERSION and trace is None:
+        raise ExecutionContractError(
+            "dispatch_trace_missing", "canonical dispatch packet requires trace_context"
+        )
     if trace is not None:
         try:
             context = TraceContext.from_dict(trace)
@@ -391,18 +404,26 @@ def validate_dispatch_packet(packet: dict, *, expected_sha256: str | None = None
             raise ExecutionContractError(
                 "dispatch_trace_invalid", "dispatch packet has invalid trace context"
             ) from exc
-        if context.task_id is not None and context.task_id != packet["task"]["task_id"]:
+        task_id = packet["task"]["task_id"]
+        if context.task_id != task_id:
             raise ExecutionContractError(
                 "dispatch_trace_invalid", "trace task_id differs from dispatch task"
             )
-        if context.attempt_id is not None:
-            expected_attempt_id = TraceContext.attempt_id_for(
-                packet["task"]["task_id"], int(packet.get("task_attempt") or 0)
+        attempt = _require_int(
+            packet.get("task_attempt"), "dispatch_attempt_invalid", "task_attempt", minimum=1
+        )
+        expected_attempt_id = TraceContext.attempt_id_for(task_id, attempt)
+        if context.attempt_id != expected_attempt_id:
+            raise ExecutionContractError(
+                "dispatch_trace_invalid", "trace attempt_id differs from dispatch attempt"
             )
-            if context.attempt_id != expected_attempt_id:
-                raise ExecutionContractError(
-                    "dispatch_trace_invalid", "trace attempt_id differs from dispatch attempt"
-                )
+        if schema_version == DISPATCH_SCHEMA_VERSION:
+            for field in ("workflow_id", "run_id", "plan_id", "attempt_id"):
+                if packet.get(field) != getattr(context, field):
+                    raise ExecutionContractError(
+                        "dispatch_trace_invalid",
+                        f"trace {field} differs from dispatch packet binding",
+                    )
     assert_action_executable(packet["task"])
     return packet
 

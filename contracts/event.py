@@ -50,6 +50,7 @@ ENVELOPE_KEYS = {
     "timestamp", "event_id", "agent", "event_type", "phase", "round", "targets",
     "blocks", "payload", *TRACE_KEYS,
 }
+FAILURE_EVENT_TYPES = frozenset({"orchestrator_task_failed", "execution_task_failed"})
 
 
 def _timestamp(value: str) -> str:
@@ -87,6 +88,20 @@ class EvidenceEvent:
             raise ValueError(f"unknown evidence phase: {self.phase!r}")
         if not isinstance(self.payload, Mapping):
             raise ValueError("event payload must be an object")
+        if self.event_type in FAILURE_EVENT_TYPES:
+            for field in ("code", "message", "component", "retryable"):
+                if field not in self.payload:
+                    raise ValueError(f"{self.event_type} requires error field {field}")
+            if not isinstance(self.payload["code"], str) or not self.payload["code"]:
+                raise ValueError("error code must be a non-empty string")
+            if not isinstance(self.payload["message"], str) or not self.payload["message"]:
+                raise ValueError("error message must be a non-empty string")
+            if not isinstance(self.payload["component"], str) or not self.payload["component"]:
+                raise ValueError("error component must be a non-empty string")
+            if not isinstance(self.payload["retryable"], bool):
+                raise ValueError("error retryable must be boolean")
+            if "error_code" in self.payload:
+                raise ValueError("use canonical error field code, not error_code")
         if "trace_context" in self.payload:
             raise ValueError("trace fields must be top-level, not nested in trace_context")
         for key in TRACE_KEYS.intersection(self.payload):
@@ -162,6 +177,25 @@ class EvidenceEvent:
             if key not in {"timestamp", "event_id", "agent", "event_type", "phase", "round", "targets", "blocks"}
             and key not in TRACE_KEYS
         }
+        if (
+            value.get("event_type") in FAILURE_EVENT_TYPES
+            and "error_code" in payload
+            and "code" not in payload
+        ):
+            # Read historical PR2 failure rows through the canonical envelope;
+            # the append-only ledger itself is never rewritten.
+            payload["code"] = payload.pop("error_code")
+        if value.get("event_type") in FAILURE_EVENT_TYPES and isinstance(payload.get("error"), Mapping):
+            legacy_error = payload["error"]
+            legacy_code = legacy_error.get("code", legacy_error.get("error_code"))
+            for field, legacy_value in {
+                "code": legacy_code,
+                "message": legacy_error.get("message"),
+                "component": legacy_error.get("component"),
+                "retryable": legacy_error.get("retryable"),
+            }.items():
+                if field not in payload and legacy_value is not None:
+                    payload[field] = legacy_value
         return cls(
             timestamp=value.get("timestamp"),
             event_id=value.get("event_id"),

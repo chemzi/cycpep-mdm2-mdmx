@@ -77,6 +77,10 @@
     "attempt_id": {"type": "string", "pattern": "^T[0-9]{3}-A[0-9]{2,}$"},
     "parent_event_id": {"type": "string", "minLength": 1},
     "attempt": {"type": "integer", "minimum": 1},
+    "code": {"type": "string", "minLength": 1},
+    "message": {"type": "string", "minLength": 1},
+    "component": {"type": "string", "minLength": 1},
+    "retryable": {"type": "boolean"},
     "round": {
       "type": "integer",
       "minimum": 1
