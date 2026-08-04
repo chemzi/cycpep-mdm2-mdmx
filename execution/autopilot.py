@@ -133,6 +133,7 @@ def run(args: argparse.Namespace) -> dict:
         research_plan = planner.run_bootstrap(
             stage="research",
             output_root=session_root / "plans" / "research",
+            force_recompute=args.force_research,
         )
         research_run = _execute_plan(research_plan, args, "autopilot-research")
         status["runs"].append({
@@ -233,6 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-prediction-candidates", type=int, default=12)
     parser.add_argument("--max-gpu-minutes", type=float, default=360.0)
     parser.add_argument("--max-rounds", type=int, default=3)
+    parser.add_argument("--force-research", action="store_true")
     return parser
 
 

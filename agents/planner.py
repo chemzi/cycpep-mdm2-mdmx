@@ -1019,6 +1019,7 @@ def build_bootstrap_plan(
     state: dict | None = None,
     proposal_count: int = 12,
     prediction_limit: int | None = None,
+    force_recompute: bool = False,
 ) -> dict:
     """Build a formal startup plan before the first Critic report exists."""
     if stage not in {"research", "design"}:
@@ -1047,7 +1048,7 @@ def build_bootstrap_plan(
             priority="P0",
             disposition="required",
             reason_codes=["approved_project_requires_research"],
-            parameters={"force_recompute": True},
+            parameters={"force_recompute": bool(force_recompute)},
             resource_class="network_cpu",
             outputs=["research_result.json"],
             constraints=["approved_project_only", "preserve_stage_diagnostics"],
@@ -1241,6 +1242,7 @@ def run_bootstrap(
     state: dict | None = None,
     proposal_count: int = 12,
     prediction_limit: int | None = None,
+    force_recompute: bool = False,
 ) -> dict:
     """Freeze project state and persist a startup execution plan."""
     state = dict(state if state is not None else State.load())
@@ -1263,6 +1265,7 @@ def run_bootstrap(
         state=state,
         proposal_count=proposal_count,
         prediction_limit=prediction_limit,
+        force_recompute=force_recompute,
     )
     plan_path = output_root / "execution_plan.json"
     _atomic_json(plan_path, plan)
