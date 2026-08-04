@@ -15,11 +15,23 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from execution.supervisor import atomic_json
-
-
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _atomic_json(path: Path, value: dict) -> None:
+    """Write status without importing project-bound execution modules early."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _configure_runtime(args: argparse.Namespace) -> None:
@@ -116,7 +128,7 @@ def run(args: argparse.Namespace) -> dict:
             "max_rounds": args.max_rounds,
         },
     }
-    atomic_json(status_path, status)
+    _atomic_json(status_path, status)
     try:
         research_plan = planner.run_bootstrap(
             stage="research",
@@ -129,7 +141,7 @@ def run(args: argparse.Namespace) -> dict:
             "status": research_run["run"]["status"],
         })
         status.update({"stage": "design", "updated_at": _utcnow()})
-        atomic_json(status_path, status)
+        _atomic_json(status_path, status)
 
         # Structure preparation re-approves a hash-bound config, so reload it
         # before freezing the Design plan.
@@ -155,7 +167,7 @@ def run(args: argparse.Namespace) -> dict:
             if final_report.get("verdict") == "clear":
                 break
             status.update({"stage": f"iteration_{round_index}", "updated_at": _utcnow()})
-            atomic_json(status_path, status)
+            _atomic_json(status_path, status)
             iteration_plan = planner.run(
                 critic_report_path=critic_path,
                 output_path=session_root / "plans" / f"iteration_{round_index}" / "execution_plan.json",
@@ -193,7 +205,7 @@ def run(args: argparse.Namespace) -> dict:
             "finished_at": _utcnow(),
             "updated_at": _utcnow(),
         })
-        atomic_json(status_path, status)
+        _atomic_json(status_path, status)
         return status
     except BaseException as exc:
         status.update({
@@ -202,7 +214,7 @@ def run(args: argparse.Namespace) -> dict:
             "finished_at": _utcnow(),
             "updated_at": _utcnow(),
         })
-        atomic_json(status_path, status)
+        _atomic_json(status_path, status)
         raise
 
 
