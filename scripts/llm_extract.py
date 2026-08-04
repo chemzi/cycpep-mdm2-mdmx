@@ -124,9 +124,22 @@ def extract_one_paper(paper: dict, model: str, target_ids: list[str]) -> dict | 
         else:
             return None
 
+    if not isinstance(result, dict):
+        print(f"[llm_extract] PMID {pmid} 返回的 JSON 不是对象", file=sys.stderr)
+        return None
     if not result.get("is_relevant", True):
         return None
 
+    # OpenAI-compatible providers occasionally return a one-item list for a
+    # scalar display field. Keep one malformed paper from aborting the run.
+    for field in ("name", "type", "sequence", "design_insight"):
+        value = result.get(field)
+        if isinstance(value, list):
+            result[field] = "; ".join(
+                str(item).strip() for item in value if str(item).strip()
+            ) or None
+        elif value is not None and not isinstance(value, str):
+            result[field] = str(value)
     result["pmid"] = pmid  # 强制使用输入中的 PMID
     return result
 
@@ -180,7 +193,7 @@ def main() -> int:
                 n_processed += 1
                 if result and (result.get("name") or result.get("type") or result.get("sequence")):
                     all_binders.append(result)
-                    print(f"[llm_extract] {n_processed}/{len(papers)}: found '{result['name']}' from PMID {pmid}", file=sys.stderr)
+                    print(f"[llm_extract] {n_processed}/{len(papers)}: found '{result.get('name') or 'unnamed'}' from PMID {pmid}", file=sys.stderr)
                 else:
                     print(f"[llm_extract] {n_processed}/{len(papers)}: PMID {pmid} 无相关分子", file=sys.stderr)
             except Exception as e:
@@ -190,7 +203,8 @@ def main() -> int:
     seen = set()
     unique = []
     for b in all_binders:
-        key = (b.get("name") or "")[:30].lower()
+        name = b.get("name")
+        key = name[:30].lower() if isinstance(name, str) else ""
         if key and key not in seen:
             seen.add(key)
             unique.append(b)

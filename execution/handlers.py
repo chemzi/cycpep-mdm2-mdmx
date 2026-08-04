@@ -13,6 +13,12 @@ from typing import Callable
 import data_layer
 from data_layer import CandidateIndex, State
 from prediction_pipeline.contracts import file_sha256, object_sha256
+from structure_resolution import (
+    assert_target_structure_ready,
+    materialize_target_coordinates,
+    refresh_project_structure_readiness,
+)
+from target_bootstrap import approve_draft
 
 from .config import ExecutionConfig
 from .contracts import (
@@ -92,6 +98,135 @@ def _project_digest() -> str:
 def _resolve_manifest(raw: str, repo_root: Path) -> Path:
     path = Path(str(raw or "")).expanduser()
     return path.resolve() if path.is_absolute() else (repo_root / path).resolve()
+
+
+def run_research(context: HandlerContext) -> HandlerOutcome:
+    """Run the approved project's Research agent and freeze a typed receipt."""
+    params = context.parameters
+    expression = (
+        "from agents.research import recompute; recompute()"
+        if params["force_recompute"]
+        else "from agents.research import run; run()"
+    )
+    process = run_process(
+        [context.config.core_python, "-c", expression],
+        cwd=context.config.repo_root,
+        logs_dir=context.task_dir / "processes" / "research",
+        timeout_seconds=context.config.research_timeout_seconds,
+        label="research",
+    )
+    state = State.load()
+    metadata = state.get("research_pipeline_meta") or {}
+    run_status = metadata.get("run_status")
+    if run_status not in {"complete", "degraded_with_fallbacks"}:
+        raise ExecutionContractError(
+            "research_incomplete", f"Research ended with run_status={run_status!r}"
+        )
+    output = context.task_dir / "outputs" / "research_result.json"
+    atomic_json(output, {
+        "schema_version": EXECUTION_SCHEMA_VERSION,
+        "execution_worker_version": EXECUTION_WORKER_VERSION,
+        "action": context.task["action"],
+        "task_id": context.task["task_id"],
+        "project_id": state.get("project_id"),
+        "run_status": run_status,
+        "stage_status": metadata.get("stage_status") or {},
+        "stage_error_code": metadata.get("stage_error_code") or {},
+        "fallbacks_used": metadata.get("fallbacks_used") or [],
+        "state_sha256": object_sha256(state),
+        "completed_at": _utcnow(),
+    })
+    return HandlerOutcome(outputs=(("research_result", output),), processes=(process,))
+
+
+def _research_binding_residues(state: dict, target_id: str) -> list[int]:
+    targets = ((state.get("pocket_differences") or {}).get("targets") or {})
+    target = targets.get(target_id) or targets.get(str(target_id).upper()) or {}
+    consensus = target.get("consensus_residues") or {}
+    residues = []
+    for label, evidence in consensus.items():
+        if float((evidence or {}).get("frequency") or 0.0) < 0.5:
+            continue
+        digits = "".join(char for char in str(label) if char.isdigit())
+        if digits:
+            residues.append(int(digits))
+    return sorted(set(residues))
+
+
+def prepare_target_structures(context: HandlerContext) -> HandlerOutcome:
+    """Materialize the approved best-ranked structures using Research evidence."""
+    params = context.parameters
+    config_path = context.config.project_config_path
+    if config_path is None or not config_path.is_file():
+        raise ExecutionContractError(
+            "project_config_missing", "CYCPEP_PROJECT_CONFIG is unavailable to Execution"
+        )
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    state = State.load()
+    prepared = []
+    updated = json.loads(json.dumps(config))
+    for target in updated.get("targets", []):
+        if not target.get("required", True):
+            continue
+        target_id = str(target.get("id") or "")
+        binding_site = target.get("binding_site") or {}
+        if not binding_site.get("residues") and params["derive_binding_site_from_research"]:
+            residues = _research_binding_residues(state, target_id)
+            if not residues:
+                raise ExecutionContractError(
+                    "research_binding_site_missing",
+                    f"Research produced no auditable interface consensus for {target_id}",
+                )
+            target["binding_site"] = {
+                "residues": residues,
+                "status": "known",
+                "source": "research_dynamic_interface_aggregation",
+                "selection_rule": "frequency_gte_0.5",
+                "automatically_derived": True,
+            }
+        updated = refresh_project_structure_readiness(updated)
+        selected = ((next(
+            item for item in updated["targets"] if str(item.get("id")) == target_id
+        ).get("structure_plan") or {}).get("selected") or {})
+        updated = materialize_target_coordinates(
+            updated,
+            target_id,
+            context.config.target_structures_root,
+            structure_record_id=selected.get("id") or selected.get("pdb_id"),
+        )
+    updated = refresh_project_structure_readiness(updated)
+    atomic_json(config_path, updated)
+    approved = approve_draft(config_path, output_path=config_path)
+    state = State.sync_project_config(approved)
+    for target in approved.get("targets", []):
+        if not target.get("required", True):
+            continue
+        ready = assert_target_structure_ready(approved, str(target["id"]))
+        structure = ready.get("structure") or {}
+        plan = ready.get("structure_plan") or {}
+        prepared.append({
+            "target_id": ready["id"],
+            "selected_structure_id": ((plan.get("selected") or {}).get("id")),
+            "coordinate_path": structure.get("coordinate_path"),
+            "coordinate_sha256": structure.get("coordinate_sha256"),
+            "binding_site_residues": (ready.get("binding_site") or {}).get("residues") or [],
+            "ready_for_design": plan.get("ready_for_design") is True,
+        })
+    output = context.task_dir / "outputs" / "structure_preparation.json"
+    atomic_json(output, {
+        "schema_version": EXECUTION_SCHEMA_VERSION,
+        "execution_worker_version": EXECUTION_WORKER_VERSION,
+        "action": context.task["action"],
+        "task_id": context.task["task_id"],
+        "project_id": approved.get("project_id"),
+        "selection_policy": params["selection_policy"],
+        "project_config_digest": object_sha256(approved),
+        "approved_digest": (approved.get("review") or {}).get("approved_digest"),
+        "targets": prepared,
+        "state_sha256": object_sha256(state),
+        "completed_at": _utcnow(),
+    })
+    return HandlerOutcome(outputs=(("structure_preparation", output),))
 
 
 def iterate_design(context: HandlerContext) -> HandlerOutcome:
@@ -475,6 +610,8 @@ def propose_threshold_calibration(context: HandlerContext) -> HandlerOutcome:
 
 
 HANDLERS: dict[str, Callable[[HandlerContext], HandlerOutcome]] = {
+    "run_research": run_research,
+    "prepare_target_structures": prepare_target_structures,
     "iterate_design": iterate_design,
     "evaluate_new_design_candidates": evaluate_new_design_candidates,
     "review_prediction_handoff": review_prediction_handoff,

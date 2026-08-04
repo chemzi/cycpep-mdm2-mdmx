@@ -1012,6 +1012,273 @@ def run(
     return {"plan": plan, "plan_path": str(output_path), "plan_sha256": plan_sha}
 
 
+def build_bootstrap_plan(
+    *,
+    stage: str,
+    source_snapshot_path: str | Path,
+    state: dict | None = None,
+    proposal_count: int = 12,
+    prediction_limit: int | None = None,
+) -> dict:
+    """Build a formal startup plan before the first Critic report exists."""
+    if stage not in {"research", "design"}:
+        raise PlannerContractError("bootstrap_stage_invalid", f"unsupported stage {stage!r}")
+    state = dict(state if state is not None else State.load())
+    project = state.get("project_config") or {}
+    review = project.get("review") or {}
+    if review.get("status") != "approved" or review.get("approved_digest") != review.get("content_digest"):
+        raise PlannerContractError(
+            "bootstrap_project_unapproved", "bootstrap planning requires current project approval"
+        )
+    source_path = Path(source_snapshot_path).expanduser().resolve()
+    source_snapshot = _read_json(source_path, "bootstrap_source")
+    if source_snapshot.get("project_id") != state.get("project_id"):
+        raise PlannerContractError(
+            "bootstrap_project_mismatch", "bootstrap source belongs to another project"
+        )
+    source_sha = file_sha256(source_path)
+    tasks: list[dict] = []
+    if stage == "research":
+        research = _task(
+            tasks,
+            agent="research",
+            action="run_research",
+            phase="research",
+            priority="P0",
+            disposition="required",
+            reason_codes=["approved_project_requires_research"],
+            parameters={"force_recompute": True},
+            resource_class="network_cpu",
+            outputs=["research_result.json"],
+            constraints=["approved_project_only", "preserve_stage_diagnostics"],
+        )
+        _task(
+            tasks,
+            agent="structure",
+            action="prepare_target_structures",
+            phase="research",
+            priority="P0",
+            disposition="required",
+            reason_codes=["materialize_selected_coordinates"],
+            parameters={
+                "selection_policy": "approved_best_ranked",
+                "derive_binding_site_from_research": True,
+            },
+            resource_class="network_cpu",
+            approval=_approval(
+                resource_class="network_cpu",
+                critic_approval_required=False,
+                data_integrity=True,
+            ),
+            depends_on=[research["task_id"]],
+            outputs=["structure_preparation.json"],
+            constraints=[
+                "use_only_approved_structure_candidates",
+                "derive_binding_site_only_from_research_consensus",
+                "hash_materialized_coordinates",
+            ],
+        )
+    else:
+        from structure_resolution import assert_target_structure_ready
+
+        required_targets = [
+            str(item["id"]) for item in project.get("targets", []) if item.get("required", True)
+        ]
+        for target_id in required_targets:
+            assert_target_structure_ready(project, target_id)
+        proposal_count = int(proposal_count)
+        if proposal_count < 1 or proposal_count > 1000:
+            raise PlannerContractError(
+                "bootstrap_proposal_count_invalid", "proposal_count must be within [1, 1000]"
+            )
+        prediction_limit = proposal_count if prediction_limit is None else int(prediction_limit)
+        if prediction_limit < 1 or prediction_limit > proposal_count:
+            raise PlannerContractError(
+                "bootstrap_prediction_limit_invalid",
+                "prediction_limit must be positive and no larger than proposal_count",
+            )
+        budgets, total_budget = _budget_snapshot(state)
+        # Prediction consumes every candidate emitted by the upstream Design
+        # task.  Until a reviewed shortlist action exists, do not generate a
+        # larger cohort than the user has authorized Prediction to evaluate.
+        requested = min(proposal_count, prediction_limit, total_budget)
+        jobs = _materialize_design_jobs(
+            state=state,
+            required_targets=required_targets,
+            budgets=budgets,
+            requested=requested,
+            seed_material=source_sha,
+        )
+        actual_count = sum(job["proposal_count"] for job in jobs)
+        if actual_count < 1:
+            raise PlannerContractError(
+                "bootstrap_design_budget_missing", "approved project has no usable Design budget"
+            )
+        design = _task(
+            tasks,
+            agent="design",
+            action="iterate_design",
+            phase="design",
+            priority="P0",
+            disposition="required",
+            reason_codes=["initial_candidate_generation"],
+            parameters={
+                "strategy_directives": ["generate_review_cohort"],
+                "required_targets": required_targets,
+                "route_budget_snapshot": budgets,
+                "design_jobs": jobs,
+                "project_config_digest": object_sha256(project),
+                "reuse_existing_prediction_evidence": True,
+            },
+            resource_class="gpu",
+            proposal_count=actual_count,
+            candidate_limit=actual_count,
+            approval=_approval(resource_class="gpu", critic_approval_required=False),
+            outputs=["design_task_result.json"],
+            constraints=["append_candidates_only", "single_gpu_serial_execution"],
+        )
+        prediction = _task(
+            tasks,
+            agent="prediction",
+            action="evaluate_new_design_candidates",
+            phase="evaluate",
+            priority="P0",
+            disposition="required",
+            reason_codes=["initial_prediction_evaluation"],
+            from_task_id=design["task_id"],
+            parameters={
+                "reuse_complete_evidence": True,
+                "evidence_mode": "reuse_or_generate_full",
+                "predictor_protocol": "af2_boltz2_prodigy_rosetta_postrelax_v1",
+            },
+            resource_class="gpu",
+            candidate_limit=actual_count,
+            approval=_approval(resource_class="gpu", critic_approval_required=False),
+            depends_on=[design["task_id"]],
+            outputs=["prediction_handoff.json"],
+            constraints=["reuse_complete_prediction_evidence", "single_gpu_serial_execution"],
+        )
+        _add_critic_followup(
+            tasks,
+            depends_on=[prediction["task_id"]],
+            priority="P0",
+            disposition="required",
+            reason_codes=["initial_prediction_evaluation"],
+            from_task_id=prediction["task_id"],
+        )
+
+    required_approval_tasks = [
+        task["task_id"] for task in tasks
+        if task["approval"]["required"] and task["disposition"] != "optional"
+    ]
+    source_round = int(state.get("round") or 1)
+    target_round = source_round + (1 if stage == "design" else 0)
+    input_digest = object_sha256({
+        "kind": "bootstrap",
+        "stage": stage,
+        "source_sha256": source_sha,
+        "project_id": state.get("project_id"),
+        "approved_digest": review.get("approved_digest"),
+        "tasks": tasks,
+        "planner_version": PLANNER_VERSION,
+    })
+    plan_id = f"planner_{input_digest[:12]}"
+    return {
+        "schema_version": PLAN_SCHEMA_VERSION,
+        "planner_version": PLANNER_VERSION,
+        "plan_id": plan_id,
+        "input_digest": input_digest,
+        "source": {
+            "kind": "bootstrap",
+            "stage": stage,
+            "bootstrap_snapshot": str(source_path),
+            "bootstrap_snapshot_sha256": source_sha,
+            "project_id": state.get("project_id"),
+            "approved_digest": review.get("approved_digest"),
+        },
+        "status": "awaiting_approval" if required_approval_tasks else "ready",
+        "summary": f"Bootstrap {stage} plan contains {len(tasks)} task(s).",
+        "cycle": {
+            "source_round": source_round,
+            "target_round": target_round,
+            "round_advancement_deferred_to_orchestrator": True,
+        },
+        "budget_request": {
+            "configured_design_budget_snapshot": _budget_snapshot(state)[0],
+            "configured_design_budget_total": _budget_snapshot(state)[1],
+            "requested_design_proposals": sum(
+                task["resource_request"]["proposal_count"] for task in tasks
+            ),
+            "requested_gpu_job_slots": max(
+                [task["resource_request"]["gpu_job_slots"] for task in tasks] or [0]
+            ),
+            "gpu_minutes": None,
+            "gpu_minutes_status": "approval_ceiling_required",
+            "reservation_status": "not_reserved",
+        },
+        "policy_constraints": sorted(MANDATORY_POLICY_CONSTRAINTS),
+        "approval_request": {
+            "artifact_required": bool(required_approval_tasks),
+            "required_task_ids": required_approval_tasks,
+            "optional_task_ids": [],
+            "approval_schema_version": APPROVAL_SCHEMA_VERSION,
+            "approval_must_bind_plan_sha256": True,
+        },
+        "execution": {
+            "automatic_dispatch_allowed": False,
+            "blocked_task_ids": [],
+            "entry_task_ids": [tasks[0]["task_id"]] if tasks else [],
+            "orchestrator_required": True,
+        },
+        "tasks": tasks,
+    }
+
+
+def run_bootstrap(
+    *,
+    stage: str,
+    output_root: str | Path,
+    state: dict | None = None,
+    proposal_count: int = 12,
+    prediction_limit: int | None = None,
+) -> dict:
+    """Freeze project state and persist a startup execution plan."""
+    state = dict(state if state is not None else State.load())
+    output_root = Path(output_root).expanduser().resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    source_path = output_root / "bootstrap_source.json"
+    _atomic_json(source_path, {
+        "schema_version": 1,
+        "kind": "bootstrap",
+        "stage": stage,
+        "project_id": state.get("project_id"),
+        "approved_digest": state.get("approved_digest"),
+        "project_config": state.get("project_config"),
+        "state_round": int(state.get("round") or 1),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    plan = build_bootstrap_plan(
+        stage=stage,
+        source_snapshot_path=source_path,
+        state=state,
+        proposal_count=proposal_count,
+        prediction_limit=prediction_limit,
+    )
+    plan_path = output_root / "execution_plan.json"
+    _atomic_json(plan_path, plan)
+    plan_sha = file_sha256(plan_path)
+    State.update({"phase": stage, "planner": {
+        "planner_version": PLANNER_VERSION,
+        "plan_id": plan["plan_id"],
+        "plan_path": str(plan_path),
+        "plan_sha256": plan_sha,
+        "status": plan["status"],
+        "task_count": len(plan["tasks"]),
+        "required_approval_task_ids": plan["approval_request"]["required_task_ids"],
+    }})
+    return {"plan": plan, "plan_path": str(plan_path), "plan_sha256": plan_sha}
+
+
 def _validate_plan_for_approval(plan: dict, plan_path: Path) -> None:
     """Recheck security invariants before an approval artifact can be issued."""
     if plan.get("schema_version") != PLAN_SCHEMA_VERSION:
@@ -1040,23 +1307,39 @@ def _validate_plan_for_approval(plan: dict, plan_path: Path) -> None:
     source = plan.get("source")
     if not isinstance(source, dict):
         raise PlannerContractError("plan_source_invalid", "plan source must be an object")
-    critic_path_value = str(source.get("critic_report") or "").strip()
-    if not critic_path_value:
-        raise PlannerContractError("plan_source_invalid", "plan has no Critic report path")
-    critic_path = Path(critic_path_value).expanduser()
-    if not critic_path.is_absolute():
-        critic_path = (plan_path.parent / critic_path).resolve()
-    else:
-        critic_path = critic_path.resolve()
-    declared_critic_sha = _validate_sha256(
-        source.get("critic_report_sha256"),
-        "plan_source_hash_invalid",
-        "plan Critic report SHA-256",
-    )
-    if file_sha256(critic_path) != declared_critic_sha:
-        raise PlannerContractError(
-            "plan_source_hash_mismatch", "Critic report changed after planning"
+    if source.get("kind") == "bootstrap":
+        snapshot_value = str(source.get("bootstrap_snapshot") or "").strip()
+        if not snapshot_value:
+            raise PlannerContractError("plan_source_invalid", "bootstrap plan has no source snapshot")
+        snapshot_path = Path(snapshot_value).expanduser()
+        snapshot_path = snapshot_path.resolve() if snapshot_path.is_absolute() else (plan_path.parent / snapshot_path).resolve()
+        declared_snapshot_sha = _validate_sha256(
+            source.get("bootstrap_snapshot_sha256"),
+            "plan_source_hash_invalid",
+            "bootstrap snapshot SHA-256",
         )
+        if file_sha256(snapshot_path) != declared_snapshot_sha:
+            raise PlannerContractError(
+                "plan_source_hash_mismatch", "bootstrap source changed after planning"
+            )
+    else:
+        critic_path_value = str(source.get("critic_report") or "").strip()
+        if not critic_path_value:
+            raise PlannerContractError("plan_source_invalid", "plan has no Critic report path")
+        critic_path = Path(critic_path_value).expanduser()
+        if not critic_path.is_absolute():
+            critic_path = (plan_path.parent / critic_path).resolve()
+        else:
+            critic_path = critic_path.resolve()
+        declared_critic_sha = _validate_sha256(
+            source.get("critic_report_sha256"),
+            "plan_source_hash_invalid",
+            "plan Critic report SHA-256",
+        )
+        if file_sha256(critic_path) != declared_critic_sha:
+            raise PlannerContractError(
+                "plan_source_hash_mismatch", "Critic report changed after planning"
+            )
 
     tasks = plan.get("tasks")
     if not isinstance(tasks, list):

@@ -155,6 +155,8 @@ class ExecutionTests(unittest.TestCase):
             prodigy_executable=None,
             pyrosetta_python=None,
             control_data_path=None,
+            project_config_path=None,
+            target_structures_root=self.root / "target_structures",
         )
 
     def test_planner_materializes_a_typed_design_job(self):

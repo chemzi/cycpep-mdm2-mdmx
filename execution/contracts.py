@@ -21,6 +21,8 @@ EXECUTION_SCHEMA_VERSION = 1
 EXECUTION_WORKER_VERSION = "1.0.1"
 
 CORE_ACTIONS = frozenset({
+    "run_research",
+    "prepare_target_structures",
     "iterate_design",
     "evaluate_new_design_candidates",
     "review_prediction_handoff",
@@ -49,6 +51,8 @@ TASK_ID_RE = re.compile(r"^T[0-9]{3}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 ACTION_OUTPUT_ROLES = {
+    "run_research": ("research_result",),
+    "prepare_target_structures": ("structure_preparation",),
     "iterate_design": ("design_result",),
     "evaluate_new_design_candidates": ("prediction_handoff",),
     "review_prediction_handoff": ("critic_report",),
@@ -56,6 +60,8 @@ ACTION_OUTPUT_ROLES = {
 }
 
 ACTION_DECLARED_OUTPUTS = {
+    "run_research": ("research_result.json",),
+    "prepare_target_structures": ("structure_preparation.json",),
     "iterate_design": ("design_task_result.json",),
     "evaluate_new_design_candidates": ("prediction_handoff.json",),
     "review_prediction_handoff": ("critic_report.json",),
@@ -173,7 +179,43 @@ def validate_task_parameters(task: dict) -> dict:
         task.get("parameters"), "execution_parameters_invalid", f"{action}.parameters"
     )
 
-    if action == "iterate_design":
+    if action == "run_research":
+        allowed = {"force_recompute"}
+        _require_exact_keys(parameters, allowed, "execution_parameters_invalid", action)
+        if set(parameters) != allowed:
+            raise ExecutionContractError(
+                "execution_parameters_invalid",
+                f"{action} parameters must contain {sorted(allowed)}",
+            )
+        normalized = {
+            "force_recompute": _require_bool(
+                parameters.get("force_recompute"),
+                "research_force_invalid",
+                "force_recompute",
+            )
+        }
+    elif action == "prepare_target_structures":
+        allowed = {"selection_policy", "derive_binding_site_from_research"}
+        _require_exact_keys(parameters, allowed, "execution_parameters_invalid", action)
+        if set(parameters) != allowed:
+            raise ExecutionContractError(
+                "execution_parameters_invalid",
+                f"{action} parameters must contain {sorted(allowed)}",
+            )
+        policy = str(parameters.get("selection_policy") or "")
+        if policy != "approved_best_ranked":
+            raise ExecutionContractError(
+                "structure_selection_policy_invalid", f"unsupported policy {policy!r}"
+            )
+        normalized = {
+            "selection_policy": policy,
+            "derive_binding_site_from_research": _require_bool(
+                parameters.get("derive_binding_site_from_research"),
+                "structure_binding_site_policy_invalid",
+                "derive_binding_site_from_research",
+            ),
+        }
+    elif action == "iterate_design":
         allowed = {
             "strategy_directives",
             "required_targets",
@@ -578,6 +620,65 @@ def _validate_calibration_proposal(
             "calibration_proposal_invalid",
             f"calibration proposal lacks {sorted(required - set(value))}",
         )
+
+
+def _validate_research_result(
+    value: dict,
+    task: dict,
+    dependency_outputs: dict[str, list[dict]] | None = None,
+) -> None:
+    required = {
+        "schema_version", "execution_worker_version", "action", "task_id",
+        "project_id", "run_status", "stage_status", "state_sha256", "completed_at",
+    }
+    if not required.issubset(value):
+        raise ExecutionContractError(
+            "research_result_invalid", f"Research result lacks {sorted(required - set(value))}"
+        )
+    if value.get("action") != task.get("action") or value.get("task_id") != task.get("task_id"):
+        raise ExecutionContractError("research_result_invalid", "Research result identity mismatch")
+    if value.get("run_status") not in {"complete", "degraded_with_fallbacks"}:
+        raise ExecutionContractError(
+            "research_result_incomplete", f"Research ended with {value.get('run_status')!r}"
+        )
+    if not isinstance(value.get("stage_status"), dict):
+        raise ExecutionContractError("research_result_invalid", "stage_status must be an object")
+
+
+def _validate_structure_preparation(
+    value: dict,
+    task: dict,
+    dependency_outputs: dict[str, list[dict]] | None = None,
+) -> None:
+    required = {
+        "schema_version", "execution_worker_version", "action", "task_id",
+        "project_id", "project_config_digest", "targets", "completed_at",
+    }
+    if not required.issubset(value):
+        raise ExecutionContractError(
+            "structure_preparation_invalid",
+            f"structure preparation lacks {sorted(required - set(value))}",
+        )
+    if value.get("action") != task.get("action") or value.get("task_id") != task.get("task_id"):
+        raise ExecutionContractError(
+            "structure_preparation_invalid", "structure preparation identity mismatch"
+        )
+    targets = value.get("targets")
+    if not isinstance(targets, list) or not targets:
+        raise ExecutionContractError(
+            "structure_preparation_invalid", "structure preparation has no targets"
+        )
+    for target in targets:
+        path = Path(str((target or {}).get("coordinate_path") or "")).expanduser().resolve()
+        digest = str((target or {}).get("coordinate_sha256") or "")
+        if not path.is_file() or not SHA256_RE.fullmatch(digest) or file_sha256(path) != digest:
+            raise ExecutionContractError(
+                "structure_coordinate_invalid", f"prepared coordinate is missing or changed: {path}"
+            )
+        if (target or {}).get("ready_for_design") is not True:
+            raise ExecutionContractError(
+                "structure_preparation_incomplete", f"target {(target or {}).get('target_id')} is not design-ready"
+            )
     if value.get("action") != task.get("action") or value.get("task_id") != task.get("task_id"):
         raise ExecutionContractError("calibration_proposal_invalid", "proposal identity mismatch")
     if value.get("applied_to_state") is not False:
@@ -587,6 +688,8 @@ def _validate_calibration_proposal(
 
 
 OUTPUT_VALIDATORS = {
+    "run_research": _validate_research_result,
+    "prepare_target_structures": _validate_structure_preparation,
     "iterate_design": _validate_design_result,
     "evaluate_new_design_candidates": _validate_prediction_handoff,
     "review_prediction_handoff": _validate_critic_report,

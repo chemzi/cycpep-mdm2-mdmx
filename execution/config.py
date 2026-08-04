@@ -48,6 +48,9 @@ class ExecutionConfig:
     prodigy_executable: Path | None
     pyrosetta_python: Path | None
     control_data_path: Path | None
+    project_config_path: Path | None
+    target_structures_root: Path
+    research_timeout_seconds: int = 3600
     design_timeout_seconds: int = 7200
     prediction_timeout_seconds: int = 3600
     rosetta_timeout_seconds: int = 1800
@@ -110,6 +113,13 @@ class ExecutionConfig:
                 "/root/damodel-tmp/envs/pyrosetta-2026.29-minsizerel/bin/python",
             ),
             control_data_path=_optional_path("CYCPEP_CONTROL_DATA"),
+            project_config_path=_optional_path("CYCPEP_PROJECT_CONFIG"),
+            target_structures_root=_path(
+                "CYCPEP_TARGET_STRUCTURES_ROOT", data_root / "target_structures"
+            ),
+            research_timeout_seconds=int(
+                os.environ.get("CYCPEP_EXECUTION_RESEARCH_TIMEOUT", "3600")
+            ),
             design_timeout_seconds=int(
                 os.environ.get("CYCPEP_EXECUTION_DESIGN_TIMEOUT", "7200")
             ),

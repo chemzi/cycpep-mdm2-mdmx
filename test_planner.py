@@ -12,6 +12,7 @@ import data_layer
 from agents.planner import (
     PlannerContractError,
     build_plan,
+    build_bootstrap_plan,
     plan,
     record_approval,
     run,
@@ -206,6 +207,23 @@ class PlannerTests(unittest.TestCase):
             research["parameters"]["threshold_keys"],
             ["L2_ipsae:MDM2", "L2_ipsae:MDMX"],
         )
+
+    def test_bootstrap_research_plan_uses_registered_front_half_actions(self):
+        state = self._state()
+        source = self.root / "bootstrap.json"
+        source.write_text(json.dumps({
+            "project_id": state["project_id"],
+            "approved_digest": "a" * 64,
+        }), encoding="utf-8")
+        result = build_bootstrap_plan(
+            stage="research", source_snapshot_path=source, state=state
+        )
+        self.assertEqual(
+            [task["action"] for task in result["tasks"]],
+            ["run_research", "prepare_target_structures"],
+        )
+        self.assertEqual(result["tasks"][1]["depends_on"], ["T001"])
+        self.assertEqual(result["approval_request"]["required_task_ids"], ["T002"])
 
     def test_missing_design_budget_blocks_gpu_iteration(self):
         report_path = self._report([

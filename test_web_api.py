@@ -72,6 +72,27 @@ class WebApiTrustBoundaryTests(unittest.TestCase):
         self.assertFalse(server._bind_host_is_loopback("0.0.0.0"))
         self.assertFalse(server._bind_host_is_loopback("192.0.2.10"))
 
+    def test_ssh_password_profile_does_not_require_key_alias(self):
+        profile = server._validate_ssh_profile({
+            "host": "example.ssh.damodel.com",
+            "username": "root",
+            "port": 40584,
+            "password": "temporary-secret",
+            "workspace_root": "/srv/cycpep",
+        })
+        self.assertIsNone(profile["key_path"])
+        self.assertEqual(profile["password"], "temporary-secret")
+
+    def test_workflow_start_requires_project_binding(self):
+        with self.assertRaisesRegex(ValueError, "批准或切换"):
+            server.ssh_start_workflow({
+                "host": "example.ssh.damodel.com",
+                "username": "root",
+                "port": 40584,
+                "password": "temporary-secret",
+                "workspace_root": "/srv/cycpep",
+            }, {})
+
 
 if __name__ == "__main__":
     unittest.main()
