@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -94,11 +95,14 @@ def run(args: argparse.Namespace) -> dict:
     work_root = Path(args.work_root).resolve()
     work_root.mkdir(parents=True, exist_ok=True)
     status_path = work_root / "autopilot_status.json"
+    workflow_id = f"workflow_{uuid.uuid4().hex[:12]}"
+    session_root = work_root / "sessions" / workflow_id
     config = load_project_config(args.project_config)
     assert_project_approved(config)
     State.sync_project_config(config)
     status = {
         "schema_version": 1,
+        "workflow_id": workflow_id,
         "project_id": config["project_id"],
         "status": "running",
         "stage": "research",
@@ -116,7 +120,7 @@ def run(args: argparse.Namespace) -> dict:
     try:
         research_plan = planner.run_bootstrap(
             stage="research",
-            output_root=work_root / "plans" / "research",
+            output_root=session_root / "plans" / "research",
         )
         research_run = _execute_plan(research_plan, args, "autopilot-research")
         status["runs"].append({
@@ -132,7 +136,7 @@ def run(args: argparse.Namespace) -> dict:
         State.sync_project_config(load_project_config(args.project_config))
         design_plan = planner.run_bootstrap(
             stage="design",
-            output_root=work_root / "plans" / "design_round_1",
+            output_root=session_root / "plans" / "design_round_1",
             proposal_count=args.max_design_proposals,
             prediction_limit=args.max_prediction_candidates,
         )
@@ -154,7 +158,7 @@ def run(args: argparse.Namespace) -> dict:
             atomic_json(status_path, status)
             iteration_plan = planner.run(
                 critic_report_path=critic_path,
-                output_path=work_root / "plans" / f"iteration_{round_index}" / "execution_plan.json",
+                output_path=session_root / "plans" / f"iteration_{round_index}" / "execution_plan.json",
             )
             proposed_actions = {
                 task["action"] for task in iteration_plan["plan"]["tasks"]
