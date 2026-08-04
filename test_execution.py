@@ -19,6 +19,7 @@ from execution.contracts import (
     _validate_research_result,
 )
 from execution.supervisor import run_process
+from execution.handlers import _binding_residue_numbers
 from execution.worker import execute_task
 from prediction_pipeline.contracts import object_sha256
 
@@ -32,6 +33,14 @@ POLICY_CONSTRAINTS = [
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_reviewed_residue_labels_are_normalized_for_design(self):
+        self.assertEqual(
+            _binding_residue_numbers(["Trp23", "A:54LEU", 61, "Met62"]),
+            [23, 54, 61, 62],
+        )
+        with self.assertRaisesRegex(ExecutionContractError, "invalid binding-site"):
+            _binding_residue_numbers(["unknown"])
+
     def test_research_receipt_is_not_validated_as_calibration(self):
         task = {"action": "run_research", "task_id": "T001"}
         _validate_research_result({

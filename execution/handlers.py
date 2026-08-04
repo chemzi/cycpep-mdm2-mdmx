@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -153,6 +154,31 @@ def _research_binding_residues(state: dict, target_id: str) -> list[int]:
     return sorted(set(residues))
 
 
+def _binding_residue_numbers(values) -> list[int]:
+    """Normalize reviewed residue labels such as ``Trp23`` to PDB numbers."""
+    normalized = []
+    for value in values or []:
+        if isinstance(value, bool):
+            raise ExecutionContractError(
+                "binding_site_residue_invalid", f"invalid binding-site residue {value!r}"
+            )
+        if isinstance(value, int):
+            number = value
+        else:
+            match = re.search(r"(-?\d+)", str(value))
+            if match is None:
+                raise ExecutionContractError(
+                    "binding_site_residue_invalid", f"invalid binding-site residue {value!r}"
+                )
+            number = int(match.group(1))
+        if number < 1:
+            raise ExecutionContractError(
+                "binding_site_residue_invalid", f"binding-site residue must be positive: {value!r}"
+            )
+        normalized.append(number)
+    return sorted(set(normalized))
+
+
 def prepare_target_structures(context: HandlerContext) -> HandlerOutcome:
     """Materialize the approved best-ranked structures using Research evidence."""
     params = context.parameters
@@ -170,6 +196,14 @@ def prepare_target_structures(context: HandlerContext) -> HandlerOutcome:
             continue
         target_id = str(target.get("id") or "")
         binding_site = target.get("binding_site") or {}
+        if binding_site.get("residues"):
+            original_labels = list(binding_site["residues"])
+            target["binding_site"] = {
+                **binding_site,
+                "residues": _binding_residue_numbers(original_labels),
+                "original_residue_labels": original_labels,
+            }
+            binding_site = target["binding_site"]
         if not binding_site.get("residues") and params["derive_binding_site_from_research"]:
             residues = _research_binding_residues(state, target_id)
             if not residues:
