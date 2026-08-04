@@ -933,8 +933,12 @@ check(merged['seed'] == 7, 'seed merged from design_config via context path')
 
 # ── Test 23: versioned scientific protocol binding (P1-4) ──
 print('Test 23: versioned scientific protocol binding')
-from agents.design.config import DESIGN_PROTOCOL, DESIGN_PROTOCOL_SHA256
+from agents.design.config import (
+    DESIGN_PROTOCOL, DESIGN_PROTOCOL_PATH, DESIGN_PROTOCOL_SHA256,
+)
 
+check(DESIGN_PROTOCOL_PATH.is_file(),
+      f'protocol file exists: {DESIGN_PROTOCOL_PATH}')
 check(DESIGN_PROTOCOL['version'] == 'design_v1',
       f'protocol version present: {DESIGN_PROTOCOL["version"]}')
 check(DESIGN_PROTOCOL['ligandmpnn']['n_seq_per_backbone'] == 8,
@@ -943,12 +947,16 @@ check(DESIGN_PROTOCOL['mutation']['attempts_factor'] == 10,
       'Route C mutation attempts factor is protocol-managed')
 check(DESIGN_PROTOCOL['mutation']['protected_pharmacophore'] == 'FWL',
       'pharmacophore protection residues are protocol-managed')
+check(
+    json.loads(DESIGN_PROTOCOL_PATH.read_text(encoding='utf-8')) == DESIGN_PROTOCOL,
+    'DESIGN_PROTOCOL is loaded from protocols/design_v1.json',
+)
 check(len(DESIGN_PROTOCOL_SHA256) == 64, 'protocol sha256 is a hex digest')
 check(
     DESIGN_PROTOCOL_SHA256 == hashlib.sha256(
-        json.dumps(DESIGN_PROTOCOL, sort_keys=True, ensure_ascii=True).encode('utf-8')
+        DESIGN_PROTOCOL_PATH.read_bytes()
     ).hexdigest(),
-    'protocol sha256 is deterministic',
+    'protocol sha256 is the SHA-256 of the protocol file bytes',
 )
 
 # Manifest binds the protocol so artifacts can be traced to a concrete protocol.
