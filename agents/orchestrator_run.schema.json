@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://novapeptide.local/schemas/orchestrator-run-v1.json",
+  "$id": "https://novapeptide.local/schemas/orchestrator-run-v2.json",
   "title": "NovaPeptide Orchestrator Run",
   "type": "object",
   "additionalProperties": false,
@@ -8,6 +8,7 @@
     "schema_version",
     "orchestrator_version",
     "run_id",
+    "workflow_id",
     "run_path",
     "plan",
     "status",
@@ -18,19 +19,21 @@
     "resources"
   ],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "orchestrator_version": {"type": "string", "minLength": 1},
     "run_id": {"type": "string", "pattern": "^orchestrator_[0-9a-f]{12}$"},
+    "workflow_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"},
     "run_path": {"type": "string", "minLength": 1},
     "plan": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["plan_id", "plan_path", "plan_sha256", "project_id"],
+      "required": ["plan_id", "plan_path", "plan_sha256", "project_id", "workflow_id"],
       "properties": {
         "plan_id": {"type": "string", "pattern": "^planner_[0-9a-f]{12}$"},
         "plan_path": {"type": "string", "minLength": 1},
         "plan_sha256": {"$ref": "#/$defs/sha256"},
-        "project_id": {"type": ["string", "null"]}
+        "project_id": {"type": ["string", "null"]},
+        "workflow_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"}
       }
     },
     "status": {
@@ -121,7 +124,13 @@
         "role": {"type": "string", "minLength": 1},
         "path": {"type": "string", "minLength": 1},
         "sha256": {"$ref": "#/$defs/sha256"},
-        "size_bytes": {"type": "integer", "minimum": 0}
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "artifact_id": {"type": "string", "minLength": 1},
+        "artifact_type": {"type": "string", "minLength": 1},
+        "producer_task_id": {"anyOf": [{"$ref": "#/$defs/task_id"}, {"type": "null"}]},
+        "producer_attempt_id": {"type": ["string", "null"]},
+        "schema_version": {"type": ["string", "integer", "null"]},
+        "input_artifact_ids": {"type": "array", "items": {"type": "string"}}
       }
     },
     "task_state": {
@@ -155,7 +164,8 @@
         "outputs": {"type": "array", "items": {"$ref": "#/$defs/artifact"}},
         "resource_usage": {"type": "object"},
         "last_error": {"type": ["object", "null"]},
-        "completed_at": {"type": ["string", "null"], "format": "date-time"}
+        "completed_at": {"type": ["string", "null"], "format": "date-time"},
+        "attempt_history": {"type": "array", "items": {"type": "object"}}
       }
     }
   }

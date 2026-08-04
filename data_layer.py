@@ -38,6 +38,8 @@ from project_config import (
     threshold_for_target,
 )
 from threshold_contract import merge_thresholds, normalize_thresholds
+from contracts.event import EvidenceEvent
+from contracts.trace import TraceContext
 
 ROOT = Path(__file__).resolve().parent
 ACTIVE_PROJECT_CONFIG = load_project_config()
@@ -55,6 +57,14 @@ EVIDENCE_DIR = Path(os.environ.get("CYCPEP_EVIDENCE_DIR", _DEFAULT_EVIDENCE_DIR)
 STATE_PATH = DATA_DIR / "state.json"
 LOG_PATH   = EVIDENCE_DIR / "evidence_log.jsonl"
 INDEX_PATH = DATA_DIR / "candidate_index.csv"
+
+
+class EvidenceTraceQueryError(ValueError):
+    """A trace query is unsafe because its natural key is ambiguous."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 _LEGACY_DEFAULT_DESIGN_BUDGET = {
     "route_A_mdm2": 400,
@@ -308,6 +318,9 @@ class EvidenceLogger:
     
     @classmethod
     def _write(cls, entry: dict):
+        # Every new write passes through the same event contract.  Existing
+        # JSONL rows remain untouched and are still readable by get_all().
+        EvidenceEvent.from_dict(entry)
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(LOG_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -315,18 +328,23 @@ class EvidenceLogger:
     @classmethod
     def log(cls, agent: str, event_type: str, payload: dict,
             targets: list = None, phase: str = None,
-            round_num: int = None, blocks: list = None):
-        entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "event_id": str(uuid.uuid4())[:12],
-            "agent": agent,
-            "event_type": event_type
-        }
-        if phase:    entry["phase"] = phase
-        if round_num: entry["round"] = round_num
-        if targets:  entry["targets"] = targets
-        if blocks:   entry["blocks"] = blocks
-        entry.update(payload)
+            round_num: int = None, blocks: list = None,
+            trace_context: TraceContext | dict | None = None):
+        if trace_context is not None and not isinstance(trace_context, TraceContext):
+            trace_context = TraceContext.from_dict(trace_context)
+        event = EvidenceEvent(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            event_id=str(uuid.uuid4())[:12],
+            agent=agent,
+            event_type=event_type,
+            payload=dict(payload or {}),
+            trace_context=trace_context,
+            phase=phase,
+            round_num=round_num,
+            targets=targets,
+            blocks=blocks,
+        )
+        entry = event.to_dict()
         cls._write(entry)
         return entry["event_id"]
 
@@ -435,9 +453,12 @@ class EvidenceLogger:
     @classmethod
     def planner_plan(cls, plan_id: str, plan_path: str, plan_sha256: str,
                      critic_report_id: str, status: str, task_count: int,
-                     required_approval_task_ids: list):
+                     required_approval_task_ids: list,
+                     critic_report_path: str | None = None,
+                     critic_report_sha256: str | None = None,
+                     trace_context: TraceContext | dict | None = None):
         """Record one immutable Planner plan without authorizing execution."""
-        return cls.log("planner", "planner_plan", {
+        payload = {
             "plan_id": plan_id,
             "plan_path": plan_path,
             "plan_sha256": plan_sha256,
@@ -445,15 +466,21 @@ class EvidenceLogger:
             "status": status,
             "task_count": task_count,
             "required_approval_task_ids": required_approval_task_ids,
-        }, targets=list(required_target_ids(
+        }
+        if critic_report_path:
+            payload["critic_report_path"] = critic_report_path
+        if critic_report_sha256:
+            payload["critic_report_sha256"] = critic_report_sha256
+        return cls.log("planner", "planner_plan", payload, targets=list(required_target_ids(
             State.load().get("project_config") or State._project_config
-        )), phase="iterate")
+        )), phase="iterate", trace_context=trace_context)
 
     @classmethod
     def planner_approval_recorded(
         cls, approval_id: str, approval_path: str, approval_sha256: str,
         plan_id: str, plan_sha256: str, approved_task_ids: list,
         approver: str, budget_limits: dict,
+        trace_context: TraceContext | dict | None = None,
     ):
         """Record a human approval artifact bound to an immutable plan digest."""
         return cls.log("planner", "planner_approval_recorded", {
@@ -467,7 +494,7 @@ class EvidenceLogger:
             "budget_limits": budget_limits,
         }, targets=list(required_target_ids(
             State.load().get("project_config") or State._project_config
-        )), phase="iterate")
+        )), phase="iterate", trace_context=trace_context)
 
     @classmethod
     def error(cls, agent: str, error_type: str, message: str,
@@ -505,6 +532,86 @@ class EvidenceLogger:
         return [e for e in cls.get_all()
                 if e.get("candidate_id") == candidate_id
                 or (isinstance(e.get("candidate"), dict) and e["candidate"].get("candidate_id") == candidate_id)]
+
+    @classmethod
+    def _trace_field(cls, field: str, value: str) -> list:
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{field} must be a non-empty string")
+        return [entry for entry in cls.get_all() if entry.get(field) == value]
+
+    @classmethod
+    def trace_workflow(cls, workflow_id: str) -> list:
+        return cls._trace_field("workflow_id", workflow_id)
+
+    @classmethod
+    def trace_run(cls, run_id: str) -> list:
+        return cls._trace_field("run_id", run_id)
+
+    @classmethod
+    def trace_task(
+        cls,
+        task_id: str,
+        *,
+        workflow_id: str | None = None,
+        run_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> list:
+        """Read task evidence without silently joining distinct workflows.
+
+        ``task_id`` is plan-local (for example, every plan can contain
+        ``T001``).  Existing single-workflow callers remain compatible, while
+        an unscoped query spanning multiple workflows fails closed.
+        """
+        entries = cls._trace_field("task_id", task_id)
+        if workflow_id is not None:
+            if not isinstance(workflow_id, str) or not workflow_id:
+                raise ValueError("workflow_id must be a non-empty string")
+            entries = [entry for entry in entries if entry.get("workflow_id") == workflow_id]
+        if run_id is not None:
+            if not isinstance(run_id, str) or not run_id:
+                raise ValueError("run_id must be a non-empty string")
+            entries = [entry for entry in entries if entry.get("run_id") == run_id]
+        if attempt_id is not None:
+            if not isinstance(attempt_id, str) or not attempt_id:
+                raise ValueError("attempt_id must be a non-empty string")
+            entries = [entry for entry in entries if entry.get("attempt_id") == attempt_id]
+        if workflow_id is None and run_id is None:
+            workflow_scopes = {entry.get("workflow_id") for entry in entries}
+            if len(workflow_scopes) > 1:
+                raise EvidenceTraceQueryError(
+                    "ambiguous_trace_query",
+                    f"task_id {task_id} occurs in multiple workflows; provide workflow_id or run_id",
+                )
+        return entries
+
+    @classmethod
+    def trace_artifact(
+        cls,
+        artifact_id: str | None = None,
+        *,
+        path: str | None = None,
+        sha256: str | None = None,
+    ) -> list:
+        if not any((artifact_id, path, sha256)):
+            raise ValueError("trace_artifact requires artifact_id, path or sha256")
+        values = {key: value for key, value in {
+            "artifact_id": artifact_id, "path": path, "sha256": sha256
+        }.items() if value}
+        results = []
+        for entry in cls.get_all():
+            if any(entry.get(key) == value for key, value in values.items()):
+                results.append(entry)
+                continue
+            for collection_name in ("artifacts", "outputs"):
+                artifacts = entry.get(collection_name)
+                if isinstance(artifacts, list) and any(
+                    isinstance(item, dict)
+                    and any(item.get(key) == value for key, value in values.items())
+                    for item in artifacts
+                ):
+                    results.append(entry)
+                    break
+        return results
 
 
 # ============================================================
