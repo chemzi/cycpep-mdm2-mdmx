@@ -294,6 +294,7 @@ class OrchestratorTests(unittest.TestCase):
         )
         self.assertTrue(first["approval_added"])
         self.assertFalse(second["approval_added"])
+        self.assertEqual(first["run"]["status"], "ready")
         self.assertEqual(first["run"]["tasks"]["T001"]["status"], "ready")
         self.assertEqual(first["run"]["tasks"]["T002"]["status"], "pending_dependency")
         self.assertEqual(first["run"]["tasks"]["T004"]["status"], "ready")
@@ -312,6 +313,7 @@ class OrchestratorTests(unittest.TestCase):
         run_path = initialized["run_path"]
 
         t1 = claim(run_path=run_path, task_id="T001", worker="design-agent")
+        self.assertEqual(t1["run"]["status"], "running")
         complete(
             run_path=run_path,
             task_id="T001",
@@ -519,6 +521,19 @@ class OrchestratorTests(unittest.TestCase):
             claim(
                 run_path=initialized["run_path"], task_id="T001", worker="design-agent"
             )
+
+    def test_blocked_plan_projects_blocked_run_status(self):
+        report = self._critic_report([
+            self._issue(
+                "candidate_index_sequence_mismatch",
+                "repair_candidate_index",
+                severity="blocker",
+                priority="P0",
+            )
+        ], verdict="blocked", marker="blocked-run")
+        plan_result = planner_run(critic_report_path=report)
+        initialized = initialize(plan_path=plan_result["plan_path"])
+        self.assertEqual(initialized["run"]["status"], "blocked")
 
     def test_active_plan_conflict_and_global_gpu_lease_artifact(self):
         first_plan = self._required_plan(marker="first")

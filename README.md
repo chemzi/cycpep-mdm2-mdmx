@@ -1,25 +1,87 @@
 # cycpep-mdm2-mdmx
 
-MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当前目标是在一个月赛期内形成可追溯的 Research → Design → Prediction → Critic/Planner 闭环，并交付通过约定计算指标的候选；项目不包含 wet-lab 验证。
+MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico 设计与评估项目。系统把 Research、Design、Prediction、Critic、Planner、Orchestrator 和受控 Execution Worker 串成可审计的工作流；项目不包含 wet-lab 验证。
 
-本仓库同时支持以 MDM2/MDMX 为回归基准的可迁移靶点流程：最小 gene、UniProt
-或 PDB 输入可自动补全为项目草稿，用户检查并批准后才能启动 Research/Design。
+## 1. Overview
 
-- [中文：可迁移流程、结构闸门与阈值校准](docs/transferable_pipeline.md)
-- [English: transferable workflow, structure gate, and calibration](docs/transferable_pipeline.en.md)
-- [前端 API contract、请求示例与状态机](docs/frontend_api_contract.md)
-- [环肽反向折叠：ProteinMPNN 的适用范围与验证要求](docs/cyclic_inverse_folding.md)
-- [Design v5.2.0：Route C 独立 L7 reference 合同](docs/design_integrity_v5.2.0.md)
-- [Prediction v1.4.1：Boltz-2 / PyRosetta 真实双靶标验证](docs/prediction_v1.4.1_pyrosetta_validation_20260802.md)
-- [Prediction v1.5.0：环肽 post-relax 与完整七层回归](docs/prediction_v1.5.0_post_relax_validation_20260802.md)
-- [Execution Worker v1.0：封闭动作执行、类型化产物与 v2 docking/MD 扩展](docs/execution_agent.md)
-- [Critic v1.1：Prediction 审查合同与 Planner handoff](docs/critic_agent.md)
-- [Critic v1.0：C0514 真实审查验证](docs/critic_v1.0_validation_20260802.md)
-- [Planner v1.2：物化 Design jobs、任务图与摘要绑定审批](docs/planner_agent.md)
-- [Agent loop v1.1：C1250/L6 服务器回归记录](docs/agent_loop_v1.1_server_validation_20260803.md)
-- [Planner v1.0：C0514 真实规划验证](docs/planner_v1.0_validation_20260802.md)
-- [Orchestrator v1.1：类型化完成合同、GPU 租约与恢复](docs/orchestrator_agent.md)
-- [Orchestrator v1.0：C0514 真实计划无执行验证](docs/orchestrator_v1.0_validation_20260802.md)
+当前完整概念链为：
+
+```text
+Research → Design → Prediction → Critic → Planner
+                                         ↓
+                                      Orchestrator
+                                         ↓
+                                  Execution Worker
+                                         ↓
+                                   Action Handler
+                                         ↓
+                              Design / Prediction / Recovery
+```
+
+每轮运行的正式结果进入三个不同职责的数据面：`State`、`CandidateIndex` 和 Evidence Ledger。当前仓库建立了追踪基础设施，但不宣称已经具备完整生产级分布式 tracing、全并发安全或完全可复现环境。
+
+## 2. Current System Architecture
+
+```text
+                    Project Config
+                         │
+                         ▼
+                      Research
+                         │
+                         ▼
+                       Design
+                         │
+                         ▼
+                     Prediction
+                         │
+                         ▼
+                       Critic
+                         │
+                         ▼
+                      Planner
+                         │  deterministic execution plan
+                         ▼
+                    Orchestrator
+                         │  validated dispatch packet
+                         ▼
+                  Execution Worker
+                         │
+                    Action Registry
+                         │
+                       Handler
+                   ┌─────┴─────┐
+                   ▼           ▼
+                Design     Prediction
+                   └─────┬─────┘
+                         ▼
+                  Evidence Ledger
+```
+
+`contracts/` 是 Planner、Orchestrator、Execution 和 Evidence 之间共享协议的来源；`execution/` 负责受控调度、动作解析、handler 查找和结果回写。Target bootstrap 先把最小 target 输入补全为项目草稿，再以摘要绑定的 approval 作为下游入口。
+
+## 3. Core Architectural Invariants
+
+1. Planner 只生成 deterministic execution plan，不执行任务。
+2. Orchestrator 不直接运行科学模型；它负责 plan/approval validation、依赖状态、task claim、GPU lease、dispatch，以及完成/失败/恢复状态。
+3. Execution Worker 不执行任意 shell command，只执行 `execution/action_registry.py` 显式登记且存在 handler 的 action。没有 handler 的任务不得标为 `ready`。
+4. Agent 间公共 Action、Task Status、Trace Contract 必须来自统一 `contracts/`，禁止复制第二套公共协议。
+5. 正式 artifact 可以是 `execution_plan.json`、`approval.json`、`run.json`、`dispatch_snapshot.json` 或 `execution_receipt.json`，但必须通过 Evidence 保存 ID、path、SHA256、producer 和 lineage/trace context。
+6. 禁止 shadow state / shadow log。影响正式 workflow 的状态不能只保存在私有临时 JSON 或 agent 私有日志中。
+7. `workflow_id` 必须从 Planner 向下传播至 Orchestrator 和 Execution；下游不得重新生成一条独立 workflow。
+8. 正式状态应通过统一 Store/数据层访问；执行失败不能留下已部分写入的正式 CandidateIndex 或 State。
+
+## 4. Quick Start
+
+```bash
+git clone https://github.com/chemzi/cycpep-mdm2-mdmx.git
+cd cycpep-mdm2-mdmx
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# Linux/macOS: source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+创建并批准一个 target 配置：
 
 ```bash
 python -m target_bootstrap draft --identifier P12345 --type uniprot --output projects/new_target.draft.json
@@ -27,177 +89,163 @@ python -m target_bootstrap show --draft projects/new_target.draft.json
 python -m target_bootstrap approve --draft projects/new_target.draft.json --output projects/new_target.json
 ```
 
-The bootstrapper resolves and enriches minimal target input with the configured
-LLM. Explicit, digest-bound approval is required before downstream execution;
-editing approved content invalidates that approval.
+批准内容经过编辑会使 approval 失效。`requirements.txt` 只覆盖基础 Python 依赖；它不能单独提供完整 Design/Prediction 所需的模型、checkpoint、GPU 驱动和外部科学工具。
 
-## 快速开始
+## 5. Target Bootstrap / Project Configuration
 
-```bash
-git clone https://github.com/chemzi/cycpep-mdm2-mdmx.git
-cd cycpep-mdm2-mdmx
-pip install -r requirements.txt
-```
+`target_bootstrap.py` 接收 gene、UniProt 或 PDB 等最小输入，解析并补全项目草稿；用户检查后生成摘要绑定的 approved project configuration。项目配置、科学参数和外部工具路径应通过显式配置传入，避免继续扩大 import-time 全局状态。
 
-## 环境安装
+## 6. Agent Workflow
 
-当前仓库中已提交的 Python 代码，基础依赖通过下面这条即可安装：
+- **Research**：收集靶点、结构、文献和阈值证据，并把工具调用与结果写入 Evidence。
+- **Design**：按批准配置生成和筛选环肽候选，产出 Design artifacts。
+- **Prediction**：摄取经过契约校验的输入，运行结构预测/评估并产出类型化 artifacts。
+- **Critic**：审查 Prediction 结果、分类问题并生成结构化 Planner handoff；recommendation 不是 execution action。
+- **Planner**：把 Critic 建议转换为带依赖、预算和审批闸门的确定性 execution plan。
+- **Orchestrator**：验证计划和审批、管理依赖与资源、创建 dispatch packet，并协调 Worker 的完成、失败和恢复。
+- **Execution Worker**：领取 ready task，按 Action Registry 找到唯一 handler，执行并返回 typed outputs。
 
-```bash
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# Linux/macOS: source .venv/bin/activate
-pip install -r requirements.txt
-```
+## 7. Contracts and Execution Model
 
-这会安装当前 `Research` 脚本和回归测试实际会用到的基础包：
+`contracts/` 定义 Agent 边界上的稳定协议，包括当前代码中的 `ActionSpec`、`ActionType`、`TaskStatus`、`TraceContext`、`ArtifactRef`、`ErrorInfo` 和 `EvidenceEvent`。业务逻辑 != Contract；`Critic recommendation` != `Execution action`。
 
-- `numpy`
-- `biotite`
-
-如果不安装 `biotite`，`Research` 的结构分析脚本和 `test_reliability_regressions.py` 会在导入或运行时失败。
-
-### 可选 / 路线相关依赖
-
-下面这些依赖与特定设计路线或后续规划有关，不包含在当前的最小 `requirements.txt` 中：
-
-- `torch`：Route B 接入 ProteinMPNN adapter 时需要
-- `colabdesign`：Route A 的 ColabDesign 原型需要
-- `proteinmpnn`：Route B 当前代码期望的适配模块
-- `boltz[cuda]==2.2.1`：Prediction 的独立第二模型家族；在 GPU 服务器上使用隔离环境部署
-
-### 计划中的外部工具
-
-根据 v5 方案，下面这些属于外部工具栈或独立部署组件，不建议直接当作普通 pip 依赖处理：
-
-- RFpeptides / RFdiffusion
-- LigandMPNN
-- AfCycDesign / ColabFold
-- HADDOCK
-- Rosetta FastRelax；PyRosetta InterfaceAnalyzer 已按非商业研究许可独立部署
-- PRODIGY
-- RDKit
-
-当前仓库状态下：
-
-- `Research` 已有可运行实现
-- `Design` 已有 RFdiffusion 宏环骨架、ProteinMPNN 反向折叠、
-  AfCycDesign 固定序列回折、真实闭环原子几何门禁和候选登记逻辑
-- `Prediction` 已有严格 artifact 摄取、七层指标计算、状态判定和断点续跑实现；
-  Boltz-2 独立复合物 predictor 与 PyRosetta InterfaceAnalyzer 已在 4090
-  服务器完成 C0514 双靶标真实回归
-- `Critic` v1.1 已实现冻结 Prediction handoff/record 摄取、哈希校验、问题分类、
-  候选池统计和结构化 Planner handoff，并能把 L7 reference 缺失准确归因给 Design
-- `Planner` v1.1 已实现 Critic 报告摄取、确定性任务图、预算/审批闸门、启动阶段判断，
-  并将完整证据下的 L6 姿态不收敛映射为 Design 迭代
-  和摘要绑定 approval artifact
-- `Orchestrator` v1.0 已实现 plan/approval 验证、任务依赖、Worker dispatch packet、
-  单 GPU 租约、输出哈希、失败/中断恢复和成功后的 State round 推进
-- 当前 Orchestrator 采用受控 Worker 模式，不直接启动模型进程；Design/Prediction
-  Worker 按 dispatch packet 执行后登记结果
-
-所以如果只是跑数据层、Research 和不调用模型的回归测试，先装
-`requirements.txt` 即可；完整 Design/Prediction 需要按部署文档准备模型、
-checkpoint 和外部工具。
-
-## 当前运行策略
-
-根据 PR #4 后的代码状态和单 GPU 实测，v5 里的“约 1000 条候选”现在按 **proposal pool** 理解，不再表示 1000 条都要跑完整 AfCycDesign refold 和七层重模型验证。
-
-实际采用多层漏斗：
+`execution/action_registry.py` 是 Execution capability 的唯一权威来源：
 
 ```text
-Route A/B/C 生成 proposal pool
--> 序列合法性、长度、去重、来源和 manifest 检查
--> AfCycDesign quick refold 粗筛 top 50-200
--> confirm refold / 多 seed / 复合物预测验证 top 10-30
--> 七层指标电池 + Pareto front + Critic 审查
+Planner executable task → Action Registry → Handler
 ```
 
-AfCycDesign 分两档使用：
+Worker 的实际流程是：
 
-- `quick refold`：低迭代、单 seed、限时运行，只作为粗筛 evidence。
-- `confirm refold`：只对 top candidates 使用更完整参数，作为正式 Prediction evidence。
-
-单 GPU 运行时，RFdiffusion / RFpeptides / AfCycDesign / ColabFold 等 GPU 任务必须进入队列串行执行。三条 Route 可以在策略上并行探索，但实际 GPU 进程不要同时启动多个 RFdiffusion/RFpeptides 任务，否则容易 OOM。CPU 侧的 manifest、去重、日志整理和便宜规则检查可以并行。
-
-每轮 Critic 调整策略后，不重跑全量历史候选；只追加一小批新 proposal，并复用已有的 manifest、分数和 evidence。Week 1 的目标是证明端到端流程跑通，而不是完成 1000 条全量重验证。
-
-共享数据入口：
-
-```python
-from data_layer import (
-    State, EvidenceLogger, CandidateIndex,
-    evaluate_battery, compute_pareto_front,
-)
+```text
+claim
+→ validate dispatch packet
+→ resolve semantic action
+→ lookup handler
+→ execute
+→ collect typed outputs
+→ complete / fail via Orchestrator
+→ record Evidence
 ```
 
-详细用法见 [数据层使用手册](./数据层使用手册.md)。
+因此 `Orchestrator != Worker`：前者维护流程状态和调度边界，后者只执行已批准且已注册的动作。
 
-协作上手资料：
+## 8. Data Layer and Traceability
 
-- [赵嘉策上手指南：Planner / Critic / Orchestrator](./docs/赵嘉策上手指南.md)
+三类数据职责不同：
 
-## 目录
-
+```text
+State          = current project/runtime projection
+CandidateIndex = materialized current view of candidates
+Evidence Ledger = append-only audit/provenance history
 ```
+
+Evidence Ledger 用于 audit、debug、scientific provenance 和 workflow reconstruction。事件/追踪合同支持 `workflow_id`、`plan_id`、`run_id`、`task_id`、`attempt_id`、`candidate_id` 及 artifact reference；正式 artifact 还应带 producer、path 和 SHA256。详细读写边界见[数据层使用手册](./数据层使用手册.md)。
+
+一个目标级追溯关系可以表示为：
+
+```text
+Candidate C0042
+    ↑
+Prediction artifact
+    ↑
+Execution task T007 / attempt 2
+    ↑
+Orchestrator run
+    ↑
+Planner plan
+    ↑
+Critic report
+```
+
+这表示 trace foundation：目标是能从最终候选反查计算链路和执行来源，而不是宣称已经完成生产级分布式追踪。
+
+## 9. Repository Layout
+
+```text
 cycpep-mdm2-mdmx/
-├── data_layer.py              ← State、Evidence、候选索引、七层判定
-├── test_data_layer.py         ← 隔离的数据层集成测试
-├── test_prediction_pipeline.py ← Prediction 契约、指标与端到端回归测试
-├── test_reliability_regressions.py ← Research/Design 回归测试
-├── 数据层使用手册.md           ← 必读
-├── v5可靠性修复说明_人类可读版.md
-├── .gitignore
-├── README.md
-├── evidence/
-│   ├── evidence_schema.json   ← v5 事件、候选和评分格式
-│   └── .gitkeep
-├── data/
-│   └── .gitkeep               ← 运行时产出目录，不进Git
-└── agents/                    ← 每人改自己的文件
-    ├── planner.py             ← Critic 驱动任务图、预算与审批规划
-    ├── orchestrator.py        ← 审批执行、任务 DAG、GPU 租约与运行恢复
-    ├── critic.py              ← Prediction 失败审查、候选池诊断与 Planner handoff
-    ├── design/               ← 于嘉乐：三条设计路线（design.py 保留为 CLI shim）
-    ├── prediction.py          ← 七层生产编排入口（无 placeholder/demo）
-    └── research.py            ← RCSB/PubMed/阈值证据调研
+├── agents/                  # research, design, prediction, critic, planner, orchestrator
+├── contracts/               # shared action/task/trace/artifact/error/event contracts
+├── execution/               # worker, supervisor, registry, handlers and execution contracts
+├── prediction_pipeline/     # prediction adapters, workers, metrics and artifacts
+├── data_layer.py            # State, CandidateIndex and Evidence access
+├── evidence/                # evidence schema and append-only runtime log
+├── data/                    # runtime data such as state and candidate index
+├── projects/                # project configurations and target bootstrap outputs
+├── docs/                    # architecture, agent and validation documentation
+├── test_*.py                # fast and component/regression tests
+├── requirements.txt         # base Python dependencies
+└── ENGINEERING_STANDARD.md  # mandatory engineering and architecture rules
 ```
 
-## 协作约定
+## 10. Environment and External Tooling
 
-- 共享 schema 变更需要张义忱、Design 和 Prediction 三方确认。
-- 各人只改 `agents/` 下自己的文件。
-- `data/`、`evidence/evidence_log.jsonl` 是运行时产出，不进 Git。
-- 跑任务前在服务器上 `git pull`。
+- **Base Python dependencies**：`requirements.txt`，用于数据层、Research 基础能力和不依赖模型的回归测试。
+- **External scientific tooling**：RFdiffusion/RFpeptides、ProteinMPNN、AfCycDesign、Boltz、ColabFold、HADDOCK、Rosetta/PyRosetta、PRODIGY、RDKit 等按各自部署文档准备。
+- **GPU-specific environments**：Design/Prediction 的 GPU 路线需要匹配的 CUDA、模型权重、checkpoint 和隔离环境；请以对应 agent/validation 文档为准。
 
-## 验证
+完整流程的可运行性取决于实际工具和配置，不应将基础依赖安装等同于完整 GPU bootstrap。
+
+## 11. Validation / Tests
+
+### Fast / CPU tests
 
 ```bash
-python3 test_data_layer.py
-python3 test_design.py
-python3 -m unittest -v test_prediction_pipeline.py
-python3 -m unittest -v test_critic.py
-python3 -m unittest -v test_planner.py
-python3 -m unittest -v test_orchestrator.py
-./.venv/bin/python -m unittest -v test_reliability_regressions.py
+python -m unittest -v test_data_layer.py
+python -m unittest -v test_reliability_regressions.py
+python -m unittest -v test_threshold_research.py
 ```
 
-部署环境中的固定序列 GPU 回归测试需要显式启用，普通 CI 会安全跳过：
+### Component tests
 
 ```bash
-CYCPEP_RUN_GPU_TESTS=1 \
-/root/damodel-tmp/envs/cycpep-prediction/bin/python \
--m unittest -v test_design_gpu.py
+python -m unittest -v test_planner.py test_orchestrator.py test_execution.py
+python -m unittest -v test_critic.py test_prediction_pipeline.py test_target_bootstrap.py
 ```
 
-Prediction 的 Design 交接契约、artifact schema、七层计算定义、状态语义与
-4090 运行命令见 [Prediction 生产管线](./docs/prediction_pipeline.md)。
+### GPU / external-tool validation
 
-强制从网络重跑 Research、绕过旧缓存：
+`test_design_gpu.py`、Prediction 服务器回归和外部工具验证需要专用环境与显式配置，不能在基础 CPU 环境中默认运行。具体命令、数据和许可要求见 `docs/` 下的 validation 文档。
 
-```bash
-python -c "from agents.research import recompute; recompute()"
-```
+## 12. Development Rules
 
-Research 的 `run_status` 和每个 `stage_status` 必须随结果一起检查。缺少 LLM API key 时，结构与 PubMed 部分仍可成功，LLM 提取会明确标为 degraded，并使用带来源标记的 fallback。
+- One PR = one architectural purpose。
+- No big-bang rewrite；优先 behavior-preserving refactor。
+- Public interface changes must be declared，并更新调用方和测试。
+- Do not duplicate contract definitions；共享基础设施修改必须显式 review。
+- Do not bypass Evidence，也不要新增 shadow state / shadow log。
+- 不要绕过 Action Registry 或让未实现 action 进入 `ready`。
+- 不要未经批准直接改变 scientific thresholds；参数应进入版本化 protocol/config。
+- 按模块 ownership 和 PR scope 修改代码。`contracts/`、data layer、execution boundary 属于共享基础设施，不适用按个人目录隔离修改的旧规则。
+- 所有人工开发和 Codex 修改都必须遵守 [ENGINEERING_STANDARD.md](./ENGINEERING_STANDARD.md)。当前仓库未提供额外的根目录 `AGENTS.md`。
+
+当前已知的文档化技术债包括 State/CandidateIndex 的并发与事务边界、execution transaction boundary、ProjectContext，以及大型 agent 模块的拆分；这些不是本 README 的实现承诺。
+
+## 13. Documentation Index
+
+### Architecture
+
+- [可迁移流程](./docs/transferable_pipeline.md)
+- [数据层使用手册](./数据层使用手册.md)
+- [工程标准](./ENGINEERING_STANDARD.md)
+- [前端 API contract](./docs/frontend_api_contract.md)
+
+### Agents and execution
+
+- [Critic agent](./docs/critic_agent.md)
+- [Planner agent](./docs/planner_agent.md)
+- [Orchestrator agent](./docs/orchestrator_agent.md)
+- [Execution agent](./docs/execution_agent.md)
+
+### Prediction / Design
+
+- [Prediction pipeline](./docs/prediction_pipeline.md)
+- [Cyclic inverse folding](./docs/cyclic_inverse_folding.md)
+- [Design integrity](./docs/design_integrity_v5.2.0.md)
+
+### Validation records
+
+- [Agent loop validation](./docs/agent_loop_v1.1_server_validation_20260803.md)
+- [Backend end-to-end validation](./docs/backend_e2e_mdm2_mdmx_20260803.md)
+- [Prediction pipeline 与验证入口](./docs/prediction_pipeline.md)
+- 更多历史记录见 `docs/`；历史验证不是当前架构定义。

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import fcntl
 import json
 import math
 import os
@@ -24,6 +23,12 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+try:
+    import fcntl  # type: ignore
+except ImportError:  # pragma: no cover - exercised on Windows
+    fcntl = None
+    import msvcrt  # type: ignore
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -40,19 +45,21 @@ from agents.planner import (  # noqa: E402
 import data_layer  # noqa: E402
 from data_layer import EvidenceLogger, State  # noqa: E402
 from prediction_pipeline.contracts import file_sha256, object_sha256  # noqa: E402
+from contracts.artifact import ArtifactRef  # noqa: E402
+from contracts.errors import ErrorInfo  # noqa: E402
+from contracts.task import (  # noqa: E402
+    MUTABLE_TASK_STATUSES,
+    SUCCESS_TASK_STATUSES,
+    TERMINAL_TASK_STATUSES,
+    TaskStatus,
+)
+from contracts.trace import TraceContext, derive_workflow_id  # noqa: E402
+from execution.contracts import DISPATCH_SCHEMA_VERSION  # noqa: E402
 
 
 ORCHESTRATOR_VERSION = "1.1.1"
-RUN_SCHEMA_VERSION = 1
-TERMINAL_TASK_STATUSES = frozenset({"succeeded", "failed", "skipped"})
-SUCCESS_TASK_STATUSES = frozenset({"succeeded", "skipped"})
-MUTABLE_TASK_STATUSES = frozenset({
-    "blocked",
-    "blocked_dependency",
-    "awaiting_approval",
-    "pending_dependency",
-    "ready",
-})
+RUN_SCHEMA_VERSION = 2
+LEGACY_RUN_SCHEMA_VERSION = 1
 RUN_ID_RE = re.compile(r"^orchestrator_[0-9a-f]{12}$")
 
 
@@ -97,15 +104,33 @@ def _atomic_json(path: Path, value: dict) -> None:
 
 
 @contextlib.contextmanager
-def _run_lock(run_path: Path):
-    lock_path = run_path.with_name(f".{run_path.name}.lock")
+def _exclusive_file_lock(lock_path: Path):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as stream:
-        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        if fcntl is not None:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        else:
+            stream.seek(0, os.SEEK_END)
+            if stream.tell() == 0:
+                stream.write("0")
+                stream.flush()
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
         try:
             yield
         finally:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            if fcntl is not None:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            else:
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+@contextlib.contextmanager
+def _run_lock(run_path: Path):
+    lock_path = run_path.with_name(f".{run_path.name}.lock")
+    with _exclusive_file_lock(lock_path):
+        yield
 
 
 def _global_gpu_lease_path() -> Path:
@@ -119,13 +144,8 @@ def _global_gpu_lease_path() -> Path:
 def _global_gpu_lock():
     lease_path = _global_gpu_lease_path()
     lock_path = lease_path.with_name(f".{lease_path.name}.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as stream:
-        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+    with _exclusive_file_lock(lock_path):
+        yield
 
 
 def _acquire_global_gpu_lease(lease: dict) -> None:
@@ -165,7 +185,7 @@ def _load_plan(plan_path: str | Path) -> tuple[Path, dict, str]:
     path = Path(plan_path).expanduser().resolve()
     plan = _read_json(path, "planner_plan")
     try:
-        _validate_plan_for_approval(plan, path)
+        plan = _validate_plan_for_approval(plan, path)
     except (PlannerContractError, OSError) as exc:
         raise OrchestratorContractError(
             getattr(exc, "code", "planner_plan_invalid"), str(exc)
@@ -175,6 +195,69 @@ def _load_plan(plan_path: str | Path) -> tuple[Path, dict, str]:
 
 def _task_map(plan: dict) -> dict[str, dict]:
     return {task["task_id"]: task for task in plan["tasks"]}
+
+
+def _workflow_id_for_plan(plan: dict) -> str:
+    """Read the Planner workflow ID, deriving one only for legacy plans."""
+    source = plan.get("source") or {}
+    project_id = str(source.get("project_id") or "unknown_project")
+    workflow_id = plan.get("workflow_id") or source.get("workflow_id")
+    if workflow_id:
+        try:
+            TraceContext(project_id=project_id, workflow_id=str(workflow_id))
+        except ValueError as exc:
+            raise OrchestratorContractError(
+                "workflow_id_invalid", "Planner workflow_id is invalid"
+            ) from exc
+        return str(workflow_id)
+    source_id = str(source.get("critic_report_id") or plan.get("plan_id") or "plan")
+    source_sha256 = str(
+        source.get("critic_report_sha256")
+        or plan.get("input_digest")
+        or "0" * 64
+    )
+    if not re.fullmatch(r"[0-9a-f]{64}", source_sha256):
+        source_sha256 = object_sha256(plan)
+    return derive_workflow_id(
+        project_id,
+        source_id,
+        source_sha256,
+        (plan.get("cycle") or {}).get("source_round", 1),
+    )
+
+
+def _trace_for_run(
+    run: dict,
+    *,
+    task_id: str | None = None,
+    attempt: int | None = None,
+) -> TraceContext:
+    plan_ref = run.get("plan") or {}
+    project_id = str(plan_ref.get("project_id") or "unknown_project")
+    workflow_id = str(run.get("workflow_id") or plan_ref.get("workflow_id") or "")
+    if not workflow_id:
+        workflow_id = _workflow_id_for_plan({
+            "workflow_id": workflow_id or None,
+            "source": {
+                "project_id": project_id,
+                "workflow_id": workflow_id or None,
+                "critic_report_id": plan_ref.get("plan_id"),
+                "critic_report_sha256": plan_ref.get("plan_sha256"),
+            },
+            "plan_id": plan_ref.get("plan_id"),
+            "cycle": {"source_round": 1},
+        })
+    attempt_id = None
+    if task_id is not None and attempt is not None:
+        attempt_id = TraceContext.attempt_id_for(task_id, attempt)
+    return TraceContext(
+        project_id=project_id,
+        workflow_id=workflow_id,
+        run_id=run.get("run_id"),
+        plan_id=plan_ref.get("plan_id"),
+        task_id=task_id,
+        attempt_id=attempt_id,
+    )
 
 
 def _approval_semantic(approval: dict) -> dict:
@@ -359,22 +442,26 @@ def _refresh(run: dict, plan: dict) -> None:
     plan_tasks = _task_map(plan)
     states = run["tasks"]
     for task_id, state in states.items():
-        if state["status"] in TERMINAL_TASK_STATUSES or state["status"] == "claimed":
+        if state["status"] in TERMINAL_TASK_STATUSES or state["status"] == TaskStatus.CLAIMED.value:
             continue
         task = plan_tasks[task_id]
         if task["execution_gate"]["status"] == "blocked":
-            state["status"] = "blocked"
+            state["status"] = TaskStatus.BLOCKED.value
             continue
         if task["approval"]["required"] and _authorization_for_task(run, task_id) is None:
-            state["status"] = "awaiting_approval"
+            state["status"] = TaskStatus.AWAITING_APPROVAL.value
             continue
         dependency_statuses = [states[value]["status"] for value in task["depends_on"]]
-        if any(value in {"failed", "blocked", "blocked_dependency"} for value in dependency_statuses):
-            state["status"] = "blocked_dependency"
+        if any(value in {
+            TaskStatus.FAILED.value,
+            TaskStatus.BLOCKED.value,
+            TaskStatus.BLOCKED_DEPENDENCY.value,
+        } for value in dependency_statuses):
+            state["status"] = TaskStatus.BLOCKED_DEPENDENCY.value
         elif all(value in SUCCESS_TASK_STATUSES for value in dependency_statuses):
-            state["status"] = "ready"
+            state["status"] = TaskStatus.READY.value
         else:
-            state["status"] = "pending_dependency"
+            state["status"] = TaskStatus.PENDING_DEPENDENCY.value
 
     required_ids = [
         task["task_id"] for task in plan["tasks"] if task["disposition"] != "optional"
@@ -384,7 +471,7 @@ def _refresh(run: dict, plan: dict) -> None:
     ]
     required_statuses = [states[value]["status"] for value in required_ids]
     optional_statuses = [states[value]["status"] for value in optional_ids]
-    if required_statuses and all(value == "succeeded" for value in required_statuses):
+    if required_statuses and all(value == TaskStatus.SUCCEEDED.value for value in required_statuses):
         run["status"] = (
             "completed" if all(value in TERMINAL_TASK_STATUSES for value in optional_statuses)
             else "completed_required"
@@ -393,15 +480,17 @@ def _refresh(run: dict, plan: dict) -> None:
         value in TERMINAL_TASK_STATUSES for value in optional_statuses
     ):
         run["status"] = "completed"
-    elif any(value == "failed" for value in required_statuses):
+    elif any(value == TaskStatus.FAILED.value for value in required_statuses):
         run["status"] = "failed"
-    elif any(value["status"] == "claimed" for value in states.values()):
+    elif any(value["status"] == TaskStatus.CLAIMED.value for value in states.values()):
         run["status"] = "running"
-    elif any(value == "ready" for value in states.values()):
+    elif any(value["status"] == TaskStatus.READY.value for value in states.values()):
         run["status"] = "ready"
-    elif any(value == "awaiting_approval" for value in required_statuses):
+    elif any(value == TaskStatus.AWAITING_APPROVAL.value for value in required_statuses):
         run["status"] = "awaiting_approval"
-    elif any(value in {"blocked", "blocked_dependency"} for value in required_statuses):
+    elif any(value in {
+        TaskStatus.BLOCKED.value, TaskStatus.BLOCKED_DEPENDENCY.value
+    } for value in required_statuses):
         run["status"] = "blocked"
     else:
         run["status"] = "pending"
@@ -422,6 +511,7 @@ def _run_summary(run: dict) -> dict:
     return {
         "orchestrator_version": ORCHESTRATOR_VERSION,
         "run_id": run["run_id"],
+        "workflow_id": run.get("workflow_id") or run["plan"].get("workflow_id"),
         "run_path": run["run_path"],
         "plan_id": run["plan"]["plan_id"],
         "plan_sha256": run["plan"]["plan_sha256"],
@@ -449,13 +539,13 @@ def _sync_state(run: dict, plan: dict) -> None:
         patches["round"] = max(current_round, target_round)
         if any(
             task["agent"] == "critic"
-            and run["tasks"][task["task_id"]]["status"] == "succeeded"
+            and run["tasks"][task["task_id"]]["status"] == TaskStatus.SUCCEEDED.value
             for task in plan["tasks"]
         ):
             patches["phase"] = "critic"
         elif any(
             task["agent"] == "reporter"
-            and run["tasks"][task["task_id"]]["status"] == "succeeded"
+            and run["tasks"][task["task_id"]]["status"] == TaskStatus.SUCCEEDED.value
             for task in plan["tasks"]
         ):
             patches["phase"] = "report"
@@ -478,8 +568,30 @@ def _sync_state(run: dict, plan: dict) -> None:
         })
 
 
+def _upgrade_legacy_run(run: dict, plan: dict) -> None:
+    """Adapt a v1 run in memory; the immutable plan digest remains untouched."""
+    if run.get("schema_version") != LEGACY_RUN_SCHEMA_VERSION:
+        return
+    plan_ref = run.get("plan") or {}
+    expected_workflow_id = _workflow_id_for_plan(plan)
+    declared_ids = {
+        value for value in (run.get("workflow_id"), plan_ref.get("workflow_id"))
+        if value is not None
+    }
+    if declared_ids and declared_ids != {expected_workflow_id}:
+        raise OrchestratorContractError(
+            "workflow_id_mismatch", "legacy run workflow_id differs from Planner plan"
+        )
+    upgraded = json.loads(json.dumps(run))
+    upgraded["schema_version"] = RUN_SCHEMA_VERSION
+    upgraded["workflow_id"] = expected_workflow_id
+    upgraded.setdefault("plan", {})["workflow_id"] = expected_workflow_id
+    run.clear()
+    run.update(upgraded)
+
+
 def _validate_run_binding(run: dict, run_path: Path) -> tuple[Path, dict, str]:
-    if run.get("schema_version") != RUN_SCHEMA_VERSION:
+    if run.get("schema_version") not in {LEGACY_RUN_SCHEMA_VERSION, RUN_SCHEMA_VERSION}:
         raise OrchestratorContractError("run_schema_unsupported", "unsupported run schema")
     if run.get("orchestrator_version") != ORCHESTRATOR_VERSION:
         raise OrchestratorContractError(
@@ -494,6 +606,16 @@ def _validate_run_binding(run: dict, run_path: Path) -> tuple[Path, dict, str]:
     if plan_sha != plan_ref.get("plan_sha256") or plan.get("plan_id") != plan_ref.get("plan_id"):
         raise OrchestratorContractError(
             "run_plan_hash_mismatch", "Planner plan changed after run initialization"
+        )
+    _upgrade_legacy_run(run, plan)
+    plan_ref = run["plan"]
+    expected_workflow_id = _workflow_id_for_plan(plan)
+    if (
+        run.get("workflow_id") != expected_workflow_id
+        or plan_ref.get("workflow_id") != expected_workflow_id
+    ):
+        raise OrchestratorContractError(
+            "workflow_id_mismatch", "run workflow_id differs from canonical Planner plan"
         )
     expected_run_id = f"orchestrator_{object_sha256({'plan_sha256': plan_sha, 'orchestrator_version': ORCHESTRATOR_VERSION})[:12]}"
     if run.get("run_id") != expected_run_id or not RUN_ID_RE.fullmatch(run.get("run_id", "")):
@@ -561,6 +683,7 @@ def initialize(
             "orchestrator_project_mismatch", "State and Planner plan projects differ"
         )
     run_id = f"orchestrator_{object_sha256({'plan_sha256': plan_sha, 'orchestrator_version': ORCHESTRATOR_VERSION})[:12]}"
+    workflow_id = _workflow_id_for_plan(plan)
     active = State.load().get("orchestrator") or {}
     if (
         isinstance(active, dict)
@@ -590,12 +713,14 @@ def initialize(
                 "schema_version": RUN_SCHEMA_VERSION,
                 "orchestrator_version": ORCHESTRATOR_VERSION,
                 "run_id": run_id,
+                "workflow_id": workflow_id,
                 "run_path": str(run_path),
                 "plan": {
                     "plan_id": plan["plan_id"],
                     "plan_path": str(resolved_plan_path),
                     "plan_sha256": plan_sha,
                     "project_id": plan_project or None,
+                    "workflow_id": workflow_id,
                 },
                 "status": "pending",
                 "created_at": now,
@@ -603,13 +728,14 @@ def initialize(
                 "approvals": [],
                 "tasks": {
                     task["task_id"]: {
-                        "status": "pending_dependency",
+                        "status": TaskStatus.PENDING_DEPENDENCY.value,
                         "attempts": 0,
                         "claim": None,
                         "outputs": [],
                         "resource_usage": {},
                         "last_error": None,
                         "completed_at": None,
+                        "attempt_history": [],
                     }
                     for task in plan["tasks"]
                 },
@@ -619,6 +745,11 @@ def initialize(
                     "gpu_minutes_by_approval": {},
                 },
             }
+        # Legacy plans/runs may not carry workflow_id yet.  Derive the adapter
+        # once at this boundary and persist it so Worker never invents a new
+        # trace identity.
+        run.setdefault("workflow_id", workflow_id)
+        run.setdefault("plan", {}).setdefault("workflow_id", workflow_id)
         added_approvals = []
         for approval_path in approval_paths:
             approval, added = _add_approval_in_memory(
@@ -646,14 +777,14 @@ def initialize(
             "plan_id": plan["plan_id"],
             "plan_sha256": plan_sha,
             "status": run["status"],
-        }, phase="iterate")
+        }, phase="iterate", trace_context=_trace_for_run(run))
     for approval in added_approvals:
         EvidenceLogger.log("orchestrator", "orchestrator_approval_loaded", {
             "run_id": run_id,
             "approval_id": approval["approval_id"],
             "approval_sha256": approval["approval_sha256"],
             "approved_task_ids": approval["approved_task_ids"],
-        }, phase="iterate")
+        }, phase="iterate", trace_context=_trace_for_run(run))
     return {"run": run, "run_path": str(run_path), "run_sha256": file_sha256(run_path)}
 
 
@@ -679,7 +810,7 @@ def authorize(*, run_path: str | Path, approval_path: str | Path) -> dict:
             "approval_id": approval["approval_id"],
             "approval_sha256": approval["approval_sha256"],
             "approved_task_ids": approval["approved_task_ids"],
-        }, phase="iterate")
+        }, phase="iterate", trace_context=_trace_for_run(run))
     return {"run": run, "run_path": str(run_path), "approval_added": added}
 
 
@@ -692,6 +823,9 @@ def claim(*, run_path: str | Path, task_id: str, worker: str) -> dict:
     with _run_lock(run_path):
         run = _read_json(run_path, "orchestrator_run")
         _, plan, _ = _validate_run_binding(run, run_path)
+        workflow_id = run.get("workflow_id") or _workflow_id_for_plan(plan)
+        run["workflow_id"] = workflow_id
+        run.setdefault("plan", {}).setdefault("workflow_id", workflow_id)
         active = State.load().get("orchestrator") or {}
         if isinstance(active, dict) and active.get("run_id") not in {None, run["run_id"]}:
             raise OrchestratorContractError(
@@ -710,7 +844,7 @@ def claim(*, run_path: str | Path, task_id: str, worker: str) -> dict:
         if task_id not in tasks:
             raise OrchestratorContractError("task_unknown", f"unknown task {task_id}")
         state = run["tasks"][task_id]
-        if state["status"] != "ready":
+        if state["status"] != TaskStatus.READY.value:
             raise OrchestratorContractError(
                 "task_not_ready", f"task {task_id} status is {state['status']}"
             )
@@ -755,10 +889,17 @@ def claim(*, run_path: str | Path, task_id: str, worker: str) -> dict:
             }
             _acquire_global_gpu_lease(global_lease)
         state.update({
-            "status": "claimed",
+            "status": TaskStatus.CLAIMED.value,
             "attempts": attempt,
             "claim": claim_value,
             "last_error": None,
+        })
+        state.setdefault("attempt_history", []).append({
+            "attempt": attempt,
+            "attempt_id": TraceContext.attempt_id_for(task_id, attempt),
+            "worker": worker,
+            "claimed_at": claimed_at,
+            "status": TaskStatus.CLAIMED.value,
         })
         if task["resource_request"]["class"] == "gpu":
             run["resources"]["gpu_lease"] = {
@@ -772,12 +913,17 @@ def claim(*, run_path: str | Path, task_id: str, worker: str) -> dict:
             for dependency in task["depends_on"]
         }
         packet = {
-            "schema_version": 1,
+            "schema_version": DISPATCH_SCHEMA_VERSION,
+            "workflow_id": run.get("workflow_id") or plan.get("workflow_id"),
             "run_id": run["run_id"],
             "plan_id": plan["plan_id"],
             "plan_sha256": run["plan"]["plan_sha256"],
             "task": task,
             "task_attempt": attempt,
+            "attempt_id": TraceContext.attempt_id_for(task_id, attempt),
+            "trace_context": _trace_for_run(
+                run, task_id=task_id, attempt=attempt
+            ).to_dict(),
             "claim_token": token,
             "worker": worker,
             "claimed_at": claimed_at,
@@ -810,15 +956,21 @@ def claim(*, run_path: str | Path, task_id: str, worker: str) -> dict:
         "run_id": run["run_id"],
         "task_id": task_id,
         "attempt": attempt,
+        "attempt_id": TraceContext.attempt_id_for(task_id, attempt),
         "worker": worker,
         "dispatch_packet_path": str(packet_path),
         "dispatch_packet_sha256": file_sha256(packet_path),
         "resource_class": task["resource_request"]["class"],
-    }, phase=task["phase"])
+    }, phase=task["phase"], trace_context=_trace_for_run(
+        run, task_id=task_id, attempt=attempt
+    ))
     return {
         "run": run,
         "run_path": str(run_path),
         "task_id": task_id,
+        "workflow_id": run.get("workflow_id"),
+        "attempt": attempt,
+        "attempt_id": TraceContext.attempt_id_for(task_id, attempt),
         "claim_token": token,
         "dispatch_packet_path": str(packet_path),
         "dispatch_packet_sha256": file_sha256(packet_path),
@@ -829,7 +981,7 @@ def _validate_claim(run: dict, task_id: str, claim_token: str) -> dict:
     state = (run.get("tasks") or {}).get(task_id)
     if state is None:
         raise OrchestratorContractError("task_unknown", f"unknown task {task_id}")
-    if state.get("status") != "claimed" or not isinstance(state.get("claim"), dict):
+    if state.get("status") != TaskStatus.CLAIMED.value or not isinstance(state.get("claim"), dict):
         raise OrchestratorContractError(
             "task_not_claimed", f"task {task_id} has no active claim"
         )
@@ -843,9 +995,9 @@ def _validate_claim(run: dict, task_id: str, claim_token: str) -> dict:
 def _verify_dependency_outputs(run: dict, task: dict) -> None:
     for dependency in task["depends_on"]:
         state = run["tasks"][dependency]
-        if state["status"] == "skipped":
+        if state["status"] == TaskStatus.SKIPPED.value:
             continue
-        if state["status"] != "succeeded" or not state.get("outputs"):
+        if state["status"] != TaskStatus.SUCCEEDED.value or not state.get("outputs"):
             raise OrchestratorContractError(
                 "dependency_output_missing",
                 f"dependency {dependency} has no successful output inventory",
@@ -863,7 +1015,12 @@ def _verify_dependency_outputs(run: dict, task: dict) -> None:
                 )
 
 
-def _inventory_outputs(values: Iterable[str | Path]) -> list[dict]:
+def _inventory_outputs(
+    values: Iterable[str | Path],
+    *,
+    producer_task_id: str | None = None,
+    producer_attempt_id: str | None = None,
+) -> list[dict]:
     inventory = []
     seen_paths: set[str] = set()
     for raw in values:
@@ -884,11 +1041,27 @@ def _inventory_outputs(values: Iterable[str | Path]) -> list[dict]:
                 "task_output_duplicate", f"duplicate task output: {path}"
             )
         seen_paths.add(str(path))
+        artifact_type = role or path.name
+        sha256 = file_sha256(path)
+        artifact = ArtifactRef(
+            artifact_id="artifact_" + object_sha256({
+                "artifact_type": artifact_type,
+                "path": str(path),
+                "sha256": sha256,
+                "producer_task_id": producer_task_id,
+                "producer_attempt_id": producer_attempt_id,
+            })[:12],
+            artifact_type=artifact_type,
+            path=str(path),
+            sha256=sha256,
+            producer_task_id=producer_task_id,
+            producer_attempt_id=producer_attempt_id,
+            schema_version=1,
+        )
         inventory.append({
-            "role": role or path.name,
-            "path": str(path),
-            "sha256": file_sha256(path),
+            "role": artifact_type,
             "size_bytes": path.stat().st_size,
+            **artifact.to_dict(),
         })
     return inventory
 
@@ -943,8 +1116,8 @@ def complete(
 ) -> dict:
     """Complete a claimed task after hashing outputs and checking GPU usage."""
     run_path = Path(run_path).expanduser().resolve()
-    inventory = _inventory_outputs(output_paths)
-    if not inventory:
+    output_values = list(output_paths)
+    if not output_values:
         raise OrchestratorContractError(
             "task_output_required", "successful task completion requires an output file"
         )
@@ -954,6 +1127,13 @@ def complete(
         _, plan, _ = _validate_run_binding(run, run_path)
         state = _validate_claim(run, task_id, claim_token)
         task = _task_map(plan)[task_id]
+        inventory = _inventory_outputs(
+            output_values,
+            producer_task_id=task_id,
+            producer_attempt_id=TraceContext.attempt_id_for(
+                task_id, int(state.get("attempts") or 0)
+            ),
+        )
         try:
             from execution.contracts import validate_output_inventory
 
@@ -987,12 +1167,19 @@ def complete(
                 "gpu_minutes_unexpected", "CPU task cannot report GPU minutes"
             )
         state.update({
-            "status": "succeeded",
+            "status": TaskStatus.SUCCEEDED.value,
             "claim": None,
             "outputs": inventory,
             "resource_usage": usage,
             "completed_at": _utcnow(),
         })
+        history = state.setdefault("attempt_history", [])
+        if history:
+            history[-1].update({
+                "status": TaskStatus.SUCCEEDED.value,
+                "completed_at": state["completed_at"],
+                "outputs": inventory,
+            })
         _refresh(run, plan)
         _atomic_json(run_path, run)
     if release_global_gpu:
@@ -1004,7 +1191,13 @@ def complete(
         "outputs": inventory,
         "resource_usage": usage,
         "run_status": run["status"],
-    }, phase=task["phase"])
+        "attempt": int(state.get("attempts") or 0),
+        "attempt_id": TraceContext.attempt_id_for(
+            task_id, int(state.get("attempts") or 0)
+        ),
+    }, phase=task["phase"], trace_context=_trace_for_run(
+        run, task_id=task_id, attempt=int(state.get("attempts") or 0)
+    ))
     return {"run": run, "run_path": str(run_path), "task_id": task_id}
 
 
@@ -1013,15 +1206,31 @@ def fail(
     run_path: str | Path,
     task_id: str,
     claim_token: str,
-    reason: str,
-    retryable: bool = False,
+    reason: str | None,
+    retryable: bool | None = None,
+    error_info: ErrorInfo | None = None,
     gpu_minutes: float | None = None,
 ) -> dict:
     """Fail a claimed task; retry is recorded but never scheduled automatically."""
     run_path = Path(run_path).expanduser().resolve()
     reason = str(reason or "").strip()
-    if not reason:
-        raise OrchestratorContractError("failure_reason_required", "failure reason is required")
+    if error_info is None:
+        if not reason:
+            raise OrchestratorContractError("failure_reason_required", "failure reason is required")
+        error_info = ErrorInfo(
+            code="orchestrator_task_failed",
+            message=reason,
+            component="orchestrator",
+            retryable=bool(retryable),
+        )
+    else:
+        if retryable is not None and retryable != error_info.retryable:
+            raise OrchestratorContractError(
+                "failure_retryability_conflict",
+                "retryable argument conflicts with ErrorInfo",
+            )
+        if not reason:
+            reason = f"{error_info.code}: {error_info.message}"
     release_global_gpu = False
     with _run_lock(run_path):
         run = _read_json(run_path, "orchestrator_run")
@@ -1048,16 +1257,24 @@ def fail(
             )
         error = {
             "reason": reason,
-            "retryable": bool(retryable),
+            **error_info.to_dict(),
+            "retryable": bool(error_info.retryable),
             "automatic_retry_scheduled": False,
             "failed_at": _utcnow(),
         }
         state.update({
-            "status": "failed",
+            "status": TaskStatus.FAILED.value,
             "claim": None,
             "last_error": error,
             "resource_usage": usage,
         })
+        history = state.setdefault("attempt_history", [])
+        if history:
+            history[-1].update({
+                "status": TaskStatus.FAILED.value,
+                "failed_at": error["failed_at"],
+                "error": error,
+            })
         _refresh(run, plan)
         _atomic_json(run_path, run)
     if release_global_gpu:
@@ -1067,9 +1284,19 @@ def fail(
         "run_id": run["run_id"],
         "task_id": task_id,
         "error": error,
+        "code": error["code"],
+        "message": error["message"],
+        "component": error["component"],
+        "retryable": error["retryable"],
         "resource_usage": usage,
         "run_status": run["status"],
-    }, phase=task["phase"])
+        "attempt": int(state.get("attempts") or 0),
+        "attempt_id": TraceContext.attempt_id_for(
+            task_id, int(state.get("attempts") or 0)
+        ),
+    }, phase=task["phase"], trace_context=_trace_for_run(
+        run, task_id=task_id, attempt=int(state.get("attempts") or 0)
+    ))
     return {"run": run, "run_path": str(run_path), "task_id": task_id}
 
 
@@ -1090,12 +1317,12 @@ def skip(*, run_path: str | Path, task_id: str, reason: str) -> dict:
                 "required_task_skip_forbidden", f"task {task_id} is not optional"
             )
         state = run["tasks"][task_id]
-        if state["status"] == "claimed" or state["status"] in TERMINAL_TASK_STATUSES:
+        if state["status"] == TaskStatus.CLAIMED.value or state["status"] in TERMINAL_TASK_STATUSES:
             raise OrchestratorContractError(
                 "task_skip_invalid", f"task {task_id} status is {state['status']}"
             )
         state.update({
-            "status": "skipped",
+            "status": TaskStatus.SKIPPED.value,
             "last_error": {"reason": reason, "skipped_at": _utcnow()},
             "completed_at": _utcnow(),
         })
@@ -1107,7 +1334,7 @@ def skip(*, run_path: str | Path, task_id: str, reason: str) -> dict:
         "task_id": task_id,
         "reason": reason,
         "run_status": run["status"],
-    }, phase=task["phase"])
+    }, phase=task["phase"], trace_context=_trace_for_run(run, task_id=task_id))
     return {"run": run, "run_path": str(run_path), "task_id": task_id}
 
 
@@ -1147,8 +1374,63 @@ def recover(
         "operator": operator,
         "reason": reason,
         "process_stopped_confirmed": True,
-    }, phase="iterate")
+    }, phase="iterate", trace_context=_trace_for_run(
+        result["run"], task_id=task_id,
+        attempt=int(result["run"]["tasks"][task_id].get("attempts") or 0),
+    ))
     return result
+
+
+def retry(
+    *,
+    run_path: str | Path,
+    task_id: str,
+    operator: str,
+    reason: str,
+) -> dict:
+    """Explicitly requeue a retryable failed task; never automatic."""
+    run_path = Path(run_path).expanduser().resolve()
+    operator = str(operator or "").strip()
+    reason = str(reason or "").strip()
+    if not operator or not reason:
+        raise OrchestratorContractError(
+            "retry_audit_required", "retry requires operator and reason"
+        )
+    with _run_lock(run_path):
+        run = _read_json(run_path, "orchestrator_run")
+        _, plan, _ = _validate_run_binding(run, run_path)
+        task = _task_map(plan).get(task_id)
+        if task is None:
+            raise OrchestratorContractError("task_unknown", f"unknown task {task_id}")
+        state = run["tasks"][task_id]
+        if state.get("status") != TaskStatus.FAILED.value:
+            raise OrchestratorContractError(
+                "retry_status_invalid", f"task {task_id} is not failed"
+            )
+        last_error = state.get("last_error") or {}
+        if last_error.get("retryable") is not True:
+            raise OrchestratorContractError(
+                "retry_not_allowed", f"task {task_id} failure is not retryable"
+            )
+        state["status"] = TaskStatus.PENDING_DEPENDENCY.value
+        state["last_error"] = dict(last_error, retry_requested_by=operator,
+                                    retry_reason=reason, retry_requested_at=_utcnow())
+        _refresh(run, plan)
+        _atomic_json(run_path, run)
+    _sync_state(run, plan)
+    attempt = int(run["tasks"][task_id].get("attempts") or 0)
+    EvidenceLogger.log("orchestrator", "orchestrator_task_retry_requested", {
+        "run_id": run["run_id"],
+        "task_id": task_id,
+        "attempt": attempt,
+        "attempt_id": TraceContext.attempt_id_for(task_id, attempt),
+        "operator": operator,
+        "reason": reason,
+        "status": run["tasks"][task_id]["status"],
+    }, phase=task["phase"], trace_context=_trace_for_run(
+        run, task_id=task_id, attempt=attempt
+    ))
+    return {"run": run, "run_path": str(run_path), "task_id": task_id}
 
 
 def status(*, run_path: str | Path) -> dict:

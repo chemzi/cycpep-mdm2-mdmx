@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://novapeptide.local/schemas/planner-plan-v1.json",
+  "$id": "https://novapeptide.local/schemas/planner-plan-v2.json",
   "title": "NovaPeptide Planner Execution Plan",
   "type": "object",
   "additionalProperties": false,
@@ -8,6 +8,7 @@
     "schema_version",
     "planner_version",
     "plan_id",
+    "workflow_id",
     "input_digest",
     "source",
     "status",
@@ -20,9 +21,10 @@
     "tasks"
   ],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "planner_version": {"type": "string", "minLength": 1},
     "plan_id": {"type": "string", "pattern": "^planner_[0-9a-f]{12}$"},
+    "workflow_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"},
     "input_digest": {"$ref": "#/$defs/sha256"},
     "source": {
       "type": "object",
@@ -33,7 +35,8 @@
         "critic_report_id",
         "critic_verdict",
         "prediction_run_id",
-        "project_id"
+        "project_id",
+        "workflow_id"
       ],
       "properties": {
         "critic_report": {"type": "string", "minLength": 1},
@@ -41,7 +44,8 @@
         "critic_report_id": {"type": "string", "pattern": "^critic_[0-9a-f]{12}$"},
         "critic_verdict": {"enum": ["blocked", "iterate", "review", "clear"]},
         "prediction_run_id": {"type": ["string", "null"]},
-        "project_id": {"type": ["string", "null"]}
+        "project_id": {"type": ["string", "null"]},
+        "workflow_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"}
       }
     },
     "status": {

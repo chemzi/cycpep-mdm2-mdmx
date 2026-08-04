@@ -2,6 +2,7 @@
 
 from .contracts import (
     CORE_ACTIONS,
+    DISPATCH_SCHEMA_VERSION,
     EXECUTION_SCHEMA_VERSION,
     V2_RESERVED_ACTIONS,
     ExecutionContractError,
@@ -9,6 +10,7 @@ from .contracts import (
 
 __all__ = [
     "CORE_ACTIONS",
+    "DISPATCH_SCHEMA_VERSION",
     "EXECUTION_SCHEMA_VERSION",
     "V2_RESERVED_ACTIONS",
     "ExecutionContractError",

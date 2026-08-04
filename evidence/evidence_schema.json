@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Cyclic peptide Agent evidence log v5",
-  "description": "Append-only evidence entries for Research, Design, Prediction, Critic and Planner.",
+  "description": "Append-only Evidence Ledger entries for all workflow agents.",
   "type": "object",
   "required": ["timestamp", "event_id", "agent", "event_type"],
   "properties": {
@@ -14,12 +14,14 @@
     },
     "agent": {
       "type": "string",
-      "enum": ["orchestrator", "planner", "research", "design", "prediction", "critic", "reporter", "system"]
+      "enum": ["orchestrator", "planner", "research", "design", "prediction", "critic", "reporter", "execution", "system"]
     },
     "event_type": {
       "type": "string",
       "enum": [
         "research_targets",
+        "research_cache_invalidated",
+        "threshold_calibration",
         "tool_call",
         "design_batch",
         "candidate_registered",
@@ -35,6 +37,8 @@
         "planner_plan",
         "planner_approval_recorded",
         "planner_adjust",
+        "state_project_config_sync",
+        "threshold_cache_sync",
         "orchestrator_run_initialized",
         "orchestrator_approval_loaded",
         "orchestrator_task_claimed",
@@ -42,14 +46,41 @@
         "orchestrator_task_failed",
         "orchestrator_task_skipped",
         "orchestrator_claim_recovered",
+        "orchestrator_task_retry_requested",
+        "execution_task_started",
+        "execution_task_completed",
+        "execution_task_failed",
+        "colabdesign_verify_skipped",
+        "cheap_filter_empty",
+        "route_c_fallback_binder",
+        "route_c_under_target",
+        "mdm_legacy_defaults_active",
+        "invalid_RFDIFF_TIMESTEPS",
+        "ligandmpnn_multiple_fasta",
+        "ligandmpnn_fasta_no_id_marker",
+        "pdb_insertion_code_detected",
+        "benchmark_reference_candidate_registered",
         "candidate_finalized",
-        "error"
+        "error",
+        "test"
       ]
     },
     "phase": {
       "type": "string",
       "enum": ["research", "design", "evaluate", "critic", "iterate", "report"]
     },
+    "project_id": {"type": "string", "minLength": 1},
+    "workflow_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"},
+    "run_id": {"type": "string", "minLength": 1},
+    "plan_id": {"type": "string", "minLength": 1},
+    "task_id": {"type": "string", "pattern": "^T[0-9]{3}$"},
+    "attempt_id": {"type": "string", "pattern": "^T[0-9]{3}-A[0-9]{2,}$"},
+    "parent_event_id": {"type": "string", "minLength": 1},
+    "attempt": {"type": "integer", "minimum": 1},
+    "code": {"type": "string", "minLength": 1},
+    "message": {"type": "string", "minLength": 1},
+    "component": {"type": "string", "minLength": 1},
+    "retryable": {"type": "boolean"},
     "round": {
       "type": "integer",
       "minimum": 1
