@@ -293,6 +293,7 @@ def run(args) -> dict:
             target_values.pop("rosetta_output", None)
             target_values.pop("rosetta_output_sha256", None)
             rosetta_outputs = []
+            rosetta_failures = []
             for prediction in target_values["complex_predictions"]:
                 pdb, _, metadata = _prediction_paths(prediction, source_bundle.parent)
                 binder_chain = str(
@@ -301,23 +302,31 @@ def run(args) -> dict:
                     or exact_sequence_chain(parse_pdb(pdb), candidate.sequence)
                 )
                 safe_model = str(metadata.get("model_id") or "model").replace("/", "_")
-                rosetta_outputs.append(run_rosetta_interface(
-                    executable=args.rosetta_scripts,
-                    pyrosetta_python=args.pyrosetta_python,
-                    complex_pdb=pdb,
-                    target_chain=target_chain,
-                    binder_chain=binder_chain,
-                    binder_sequence=candidate.sequence,
-                    predictor=prediction["predictor"],
-                    model_id=str(metadata.get("model_id") or ""),
-                    seed=prediction["seed"],
-                    output_dir=(
-                        candidate_dir / "rosetta_interface" / target_id
-                        / f"{prediction['predictor']}_{safe_model}_seed_{prediction['seed']}"
-                    ),
-                    timeout=args.rosetta_timeout,
-                ))
+                try:
+                    rosetta_outputs.append(run_rosetta_interface(
+                        executable=args.rosetta_scripts,
+                        pyrosetta_python=args.pyrosetta_python,
+                        complex_pdb=pdb,
+                        target_chain=target_chain,
+                        binder_chain=binder_chain,
+                        binder_sequence=candidate.sequence,
+                        predictor=prediction["predictor"],
+                        model_id=str(metadata.get("model_id") or ""),
+                        seed=prediction["seed"],
+                        output_dir=(
+                            candidate_dir / "rosetta_interface" / target_id
+                            / f"{prediction['predictor']}_{safe_model}_seed_{prediction['seed']}"
+                        ),
+                        timeout=args.rosetta_timeout,
+                    ))
+                except ContractError as exc:
+                    rosetta_failures.append({
+                        "prediction_pdb_sha256": file_sha256(pdb),
+                        "code": exc.code,
+                        "message": str(exc),
+                    })
             target_values["rosetta_outputs"] = rosetta_outputs
+            target_values["rosetta_failures"] = rosetta_failures
 
     output_bundle = candidate_dir / "artifacts.json"
     output_bundle.write_text(

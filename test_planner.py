@@ -18,6 +18,7 @@ from agents.planner import (
     run,
 )
 from prediction_pipeline.contracts import object_sha256
+from execution.protocols import PREDICTION_PROTOCOL
 
 
 POLICY_CONSTRAINTS = [
@@ -292,7 +293,8 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(prediction["parameters"], {
             "reuse_complete_evidence": True,
             "evidence_mode": "reuse_or_generate_full",
-            "predictor_protocol": "af2_boltz2_prodigy_rosetta_postrelax_v1",
+            "predictor_protocol": PREDICTION_PROTOCOL.version,
+            "predictor_protocol_sha256": PREDICTION_PROTOCOL.sha256,
         })
         self.assertEqual(critic["action"], "review_prediction_handoff")
         self.assertEqual(critic["depends_on"], [prediction["task_id"]])

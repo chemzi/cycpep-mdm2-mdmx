@@ -1034,6 +1034,34 @@ class PredictionPipelineTests(unittest.TestCase):
         )
         self.assertEqual(record["issues"][0]["code"], "rosetta_metadata_missing")
 
+    def test_scientific_rosetta_failure_is_reviewable_not_pipeline_fatal(self):
+        reference = self._register_candidate()
+        self._write_complete_artifacts(reference)
+        bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
+        bundle = json.loads(bundle_path.read_text())
+        target = bundle["targets"]["MDM2"]
+        target.pop("rosetta_output")
+        target["rosetta_outputs"] = []
+        target["rosetta_failures"] = []
+        for prediction in target["complex_predictions"]:
+            pdb = self.artifacts_root / "C0001" / prediction["pdb"]
+            target["rosetta_failures"].append({
+                "prediction_pdb_sha256": hashlib.sha256(pdb.read_bytes()).hexdigest(),
+                "code": "rosetta_cyclic_bond_open",
+                "message": "input terminal C--N distance is 2.217 A",
+            })
+        bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+
+        summary = self._pipeline(thresholds=justified_thresholds()).run()
+        self.assertNotIn("invalid", summary["status_counts"])
+        record = json.loads(
+            (self.run_root / "test_run" / "records" / "C0001.json").read_text()
+        )
+        self.assertIn(
+            "rosetta_cyclic_bond_open",
+            {issue["code"] for issue in record["issues"]},
+        )
+
     def test_withdrawn_artifacts_clear_authoritative_and_display_metrics(self):
         reference = self._register_candidate()
         self._write_complete_artifacts(reference)

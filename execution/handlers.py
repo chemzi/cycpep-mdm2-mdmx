@@ -22,6 +22,7 @@ from structure_resolution import (
 from target_bootstrap import approve_draft
 
 from .config import ExecutionConfig
+from .protocols import PREDICTION_PROTOCOL
 from .contracts import (
     EXECUTION_SCHEMA_VERSION,
     EXECUTION_WORKER_VERSION,
@@ -415,7 +416,11 @@ def _artifact_bundle_complete(path: Path, required_targets: list[str]) -> bool:
                 return False
             if len(values.get("prodigy_outputs") or []) != len(predictions):
                 return False
-            if len(values.get("rosetta_outputs") or []) != len(predictions):
+            rosetta_outcomes = (
+                len(values.get("rosetta_outputs") or [])
+                + len(values.get("rosetta_failures") or [])
+            )
+            if rosetta_outcomes != len(predictions):
                 return False
     except ExecutionContractError:
         return False
@@ -450,6 +455,15 @@ def _require_prediction_tools(config: ExecutionConfig) -> None:
 
 def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
     params = context.parameters
+    protocol = PREDICTION_PROTOCOL
+    if (
+        params["predictor_protocol"] != protocol.version
+        or params["predictor_protocol_sha256"] != protocol.sha256
+    ):
+        raise ExecutionContractError(
+            "prediction_protocol_mismatch",
+            "dispatched Prediction protocol is not registered by Execution",
+        )
     candidate_ids = _prediction_candidate_ids(context)
     state = State.load()
     project = state.get("project_config") or State._project_config
@@ -484,9 +498,9 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
             "--data-dir", context.config.colabdesign_params,
             "--colabdesign-dir", context.config.colabdesign_dir,
             "--cuda-data-dir", context.config.cuda_data_dir,
-            "--seeds", "0,1,2",
-            "--model-numbers", "0,1,2",
-            "--num-recycles", "3",
+            "--seeds", ",".join(map(str, protocol.colabdesign_seeds)),
+            "--model-numbers", ",".join(map(str, protocol.colabdesign_model_numbers)),
+            "--num-recycles", str(protocol.colabdesign_num_recycles),
             "--timeout", str(context.config.prediction_timeout_seconds),
             "--prodigy", context.config.prodigy_executable,
         ]
@@ -515,9 +529,9 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
                 "--prodigy", context.config.prodigy_executable,
                 "--pyrosetta-python", context.config.pyrosetta_python,
                 "--post-relax-python", context.config.pyrosetta_python,
-                "--seed", str(101 + offset),
-                "--post-relax-seed", str(20260802 + offset),
-                "--post-relax-repeats", "3",
+                "--seed", str(protocol.boltz_seed_base + offset),
+                "--post-relax-seed", str(protocol.post_relax_seed_base + offset),
+                "--post-relax-repeats", str(protocol.post_relax_repeats),
                 "--timeout", str(context.config.prediction_timeout_seconds),
                 "--rosetta-timeout", str(context.config.rosetta_timeout_seconds),
                 "--post-relax-timeout", str(context.config.post_relax_timeout_seconds),

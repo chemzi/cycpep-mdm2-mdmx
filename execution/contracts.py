@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from prediction_pipeline.contracts import file_sha256, object_sha256
+from .protocols import PREDICTION_PROTOCOL
 
 
 EXECUTION_SCHEMA_VERSION = 1
@@ -281,6 +282,7 @@ def validate_task_parameters(task: dict) -> dict:
             "reuse_complete_evidence",
             "evidence_mode",
             "predictor_protocol",
+            "predictor_protocol_sha256",
         }
         _require_exact_keys(parameters, allowed, "execution_parameters_invalid", action)
         if set(parameters) != allowed:
@@ -294,9 +296,15 @@ def validate_task_parameters(task: dict) -> dict:
                 "prediction_evidence_mode_invalid", f"unsupported mode {evidence_mode!r}"
             )
         protocol = str(parameters.get("predictor_protocol") or "")
-        if protocol != "af2_boltz2_prodigy_rosetta_postrelax_v1":
+        if protocol != PREDICTION_PROTOCOL.version:
             raise ExecutionContractError(
                 "prediction_protocol_invalid", f"unsupported protocol {protocol!r}"
+            )
+        protocol_sha = str(parameters.get("predictor_protocol_sha256") or "")
+        if protocol_sha != PREDICTION_PROTOCOL.sha256:
+            raise ExecutionContractError(
+                "prediction_protocol_hash_invalid",
+                "prediction protocol SHA-256 does not match the registered protocol",
             )
         normalized = {
             "reuse_complete_evidence": _require_bool(
@@ -306,6 +314,7 @@ def validate_task_parameters(task: dict) -> dict:
             ),
             "evidence_mode": evidence_mode,
             "predictor_protocol": protocol,
+            "predictor_protocol_sha256": protocol_sha,
         }
     elif action == "review_prediction_handoff":
         allowed = {"min_cohort", "low_diversity_similarity"}

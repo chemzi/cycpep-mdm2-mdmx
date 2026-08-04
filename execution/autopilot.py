@@ -107,6 +107,105 @@ def _research_state_is_current(state: dict, config: dict) -> bool:
     )
 
 
+def _stabilize_research(
+    *, planner, State, load_project_config, args, session_root: Path,
+    status: dict, status_path: Path,
+) -> None:
+    """Run audited Research/structure passes until their digests agree."""
+    for bootstrap_pass in range(1, 4):
+        stage_name = (
+            "research" if bootstrap_pass == 1
+            else f"research_stabilization_{bootstrap_pass}"
+        )
+        status.update({"stage": stage_name, "updated_at": _utcnow()})
+        _atomic_json(status_path, status)
+        plan = planner.run_bootstrap(
+            stage="research",
+            output_root=session_root / "plans" / stage_name,
+            force_recompute=args.force_research and bootstrap_pass == 1,
+        )
+        executed = _execute_plan(plan, args, f"autopilot-{stage_name}")
+        status["runs"].append({
+            "stage": stage_name,
+            "plan_id": plan["plan"]["plan_id"],
+            "run_id": executed["run"]["run_id"],
+            "run_path": executed["run_path"],
+            "status": executed["run"]["status"],
+        })
+        config = load_project_config(args.project_config)
+        State.sync_project_config(config)
+        if _research_state_is_current(State.load(), config):
+            return
+    raise RuntimeError(
+        "Research thresholds did not stabilize against the approved "
+        "structure configuration after 3 audited passes"
+    )
+
+
+def _run_initial_design(*, planner, args, session_root: Path, status: dict) -> Path:
+    plan = planner.run_bootstrap(
+        stage="design",
+        output_root=session_root / "plans" / "design_round_1",
+        proposal_count=args.max_design_proposals,
+        prediction_limit=args.max_prediction_candidates,
+    )
+    executed = _execute_plan(plan, args, "autopilot-design-1")
+    status["runs"].append({
+        "stage": "design_round_1",
+        "plan_id": plan["plan"]["plan_id"],
+        "run_id": executed["run"]["run_id"],
+        "run_path": executed["run_path"],
+        "status": executed["run"]["status"],
+    })
+    critic_path = _output_with_role(executed["run_path"], "critic_report")
+    if critic_path is None:
+        raise RuntimeError("initial Design cycle completed without a Critic report")
+    return critic_path
+
+
+def _run_iterations(
+    *, planner, args, session_root: Path, status: dict,
+    status_path: Path, critic_path: Path,
+) -> tuple[Path, dict]:
+    report = json.loads(critic_path.read_text(encoding="utf-8"))
+    for round_index in range(2, args.max_rounds + 1):
+        if report.get("verdict") == "clear":
+            break
+        status.update({"stage": f"iteration_{round_index}", "updated_at": _utcnow()})
+        _atomic_json(status_path, status)
+        plan = planner.run(
+            critic_report_path=critic_path,
+            output_path=(
+                session_root / "plans" / f"iteration_{round_index}"
+                / "execution_plan.json"
+            ),
+        )
+        from execution.contracts import CORE_ACTIONS
+        proposed = {
+            task["action"] for task in plan["plan"]["tasks"]
+            if task["execution_gate"]["status"] == "proposed"
+        }
+        unsupported = sorted(proposed - CORE_ACTIONS)
+        if unsupported:
+            raise RuntimeError(
+                f"Planner requested unavailable automatic actions: {unsupported}"
+            )
+        executed = _execute_plan(plan, args, f"autopilot-iteration-{round_index}")
+        status["runs"].append({
+            "stage": f"iteration_{round_index}",
+            "plan_id": plan["plan"]["plan_id"],
+            "run_id": executed["run"]["run_id"],
+            "run_path": executed["run_path"],
+            "status": executed["run"]["status"],
+        })
+        next_critic = _output_with_role(executed["run_path"], "critic_report")
+        if next_critic is None:
+            break
+        critic_path = next_critic
+        report = json.loads(critic_path.read_text(encoding="utf-8"))
+    return critic_path, report
+
+
 def run(args: argparse.Namespace) -> dict:
     _configure_runtime(args)
     # Import only after project-scoped environment variables are fixed.
@@ -141,94 +240,20 @@ def run(args: argparse.Namespace) -> dict:
     }
     _atomic_json(status_path, status)
     try:
-        # Research selects structures; materialization can therefore change the
-        # approved project digest and correctly clear thresholds bound to the
-        # previous digest. Repeat the audited bootstrap until both structure
-        # approval and Research thresholds refer to the same stable digest.
-        for bootstrap_pass in range(1, 4):
-            stage_name = (
-                "research" if bootstrap_pass == 1
-                else f"research_stabilization_{bootstrap_pass}"
-            )
-            status.update({"stage": stage_name, "updated_at": _utcnow()})
-            _atomic_json(status_path, status)
-            research_plan = planner.run_bootstrap(
-                stage="research",
-                output_root=session_root / "plans" / stage_name,
-                force_recompute=args.force_research and bootstrap_pass == 1,
-            )
-            research_run = _execute_plan(
-                research_plan, args, f"autopilot-{stage_name}"
-            )
-            status["runs"].append({
-                "stage": stage_name,
-                "plan_id": research_plan["plan"]["plan_id"],
-                "run_id": research_run["run"]["run_id"],
-                "run_path": research_run["run_path"],
-                "status": research_run["run"]["status"],
-            })
-            current_config = load_project_config(args.project_config)
-            State.sync_project_config(current_config)
-            if _research_state_is_current(State.load(), current_config):
-                break
-        else:
-            raise RuntimeError(
-                "Research thresholds did not stabilize against the approved "
-                "structure configuration after 3 audited passes"
-            )
+        _stabilize_research(
+            planner=planner, State=State, load_project_config=load_project_config,
+            args=args, session_root=session_root, status=status,
+            status_path=status_path,
+        )
         status.update({"stage": "design", "updated_at": _utcnow()})
         _atomic_json(status_path, status)
-
-        # Freeze Design only after the hash-bound config and thresholds agree.
-        design_plan = planner.run_bootstrap(
-            stage="design",
-            output_root=session_root / "plans" / "design_round_1",
-            proposal_count=args.max_design_proposals,
-            prediction_limit=args.max_prediction_candidates,
+        critic_path = _run_initial_design(
+            planner=planner, args=args, session_root=session_root, status=status,
         )
-        design_run = _execute_plan(design_plan, args, "autopilot-design-1")
-        status["runs"].append({
-            "stage": "design_round_1", "plan_id": design_plan["plan"]["plan_id"],
-            "run_id": design_run["run"]["run_id"], "run_path": design_run["run_path"],
-            "status": design_run["run"]["status"],
-        })
-        critic_path = _output_with_role(design_run["run_path"], "critic_report")
-        if critic_path is None:
-            raise RuntimeError("initial Design cycle completed without a Critic report")
-
-        final_report = json.loads(critic_path.read_text(encoding="utf-8"))
-        for round_index in range(2, args.max_rounds + 1):
-            if final_report.get("verdict") == "clear":
-                break
-            status.update({"stage": f"iteration_{round_index}", "updated_at": _utcnow()})
-            _atomic_json(status_path, status)
-            iteration_plan = planner.run(
-                critic_report_path=critic_path,
-                output_path=session_root / "plans" / f"iteration_{round_index}" / "execution_plan.json",
-            )
-            proposed_actions = {
-                task["action"] for task in iteration_plan["plan"]["tasks"]
-                if task["execution_gate"]["status"] == "proposed"
-            }
-            from execution.contracts import CORE_ACTIONS
-            unsupported = sorted(proposed_actions - CORE_ACTIONS)
-            if unsupported:
-                raise RuntimeError(f"Planner requested unavailable automatic actions: {unsupported}")
-            iteration_run = _execute_plan(
-                iteration_plan, args, f"autopilot-iteration-{round_index}"
-            )
-            status["runs"].append({
-                "stage": f"iteration_{round_index}",
-                "plan_id": iteration_plan["plan"]["plan_id"],
-                "run_id": iteration_run["run"]["run_id"],
-                "run_path": iteration_run["run_path"],
-                "status": iteration_run["run"]["status"],
-            })
-            next_critic = _output_with_role(iteration_run["run_path"], "critic_report")
-            if next_critic is None:
-                break
-            critic_path = next_critic
-            final_report = json.loads(critic_path.read_text(encoding="utf-8"))
+        critic_path, final_report = _run_iterations(
+            planner=planner, args=args, session_root=session_root, status=status,
+            status_path=status_path, critic_path=critic_path,
+        )
 
         final_status = "completed_clear" if final_report.get("verdict") == "clear" else "completed_review_required"
         status.update({

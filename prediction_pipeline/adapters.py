@@ -383,7 +383,7 @@ def load_artifact_bundle(
             "prodigy_output", "prodigy_output_sha256",
             "prodigy_outputs",
             "rosetta_output", "rosetta_output_sha256",
-            "rosetta_outputs",
+            "rosetta_outputs", "rosetta_failures",
         })
         if unknown:
             raise ContractError(
@@ -493,13 +493,50 @@ def load_artifact_bundle(
         linked_prediction_hashes = {
             item["prediction_pdb_sha256"] for item in result["rosetta_outputs"]
         }
-        if result["rosetta_outputs"] and (
-            len(result["rosetta_outputs"]) != len(result["complex_predictions"])
-            or linked_prediction_hashes != set(predictions_by_hash)
-        ):
+        failures = values.get("rosetta_failures") or []
+        if not isinstance(failures, list):
+            raise ContractError(
+                "rosetta_failure_type", f"{target_id}.rosetta_failures must be a list"
+            )
+        result["rosetta_failures"] = []
+        for index, failure in enumerate(failures):
+            if not isinstance(failure, dict) or set(failure) != {
+                "prediction_pdb_sha256", "code", "message"
+            }:
+                raise ContractError(
+                    "rosetta_failure_invalid",
+                    f"{target_id}.rosetta_failures[{index}] has invalid fields",
+                )
+            prediction_hash = str(failure["prediction_pdb_sha256"])
+            code = str(failure["code"] or "").strip()
+            message = str(failure["message"] or "").strip()
+            if prediction_hash not in predictions_by_hash or not code or not message:
+                raise ContractError(
+                    "rosetta_failure_invalid",
+                    f"{target_id}.rosetta_failures[{index}] is not auditable",
+                )
+            result["rosetta_failures"].append({
+                "prediction_pdb_sha256": prediction_hash,
+                "code": code,
+                "message": message,
+            })
+        failure_hashes = {
+            item["prediction_pdb_sha256"] for item in result["rosetta_failures"]
+        }
+        if linked_prediction_hashes & failure_hashes:
+            raise ContractError(
+                "rosetta_coverage_duplicate",
+                f"{target_id} declares Rosetta success and failure for one prediction",
+            )
+        rosetta_declared = (
+            "rosetta_outputs" in values or "rosetta_failures" in values
+        )
+        if rosetta_declared and (
+            linked_prediction_hashes | failure_hashes
+        ) != set(predictions_by_hash):
             raise ContractError(
                 "rosetta_coverage_mismatch",
-                f"{target_id}.rosetta_outputs must cover every complex prediction once",
+                f"{target_id} Rosetta outcomes must cover every complex prediction once",
             )
         for key in ("prodigy_output", "rosetta_output"):
             if values.get(key):

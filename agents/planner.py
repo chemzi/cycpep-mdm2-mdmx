@@ -32,6 +32,7 @@ if str(ROOT) not in sys.path:
 from data_layer import CandidateIndex, EvidenceLogger, State  # noqa: E402
 from prediction_pipeline.contracts import file_sha256, object_sha256  # noqa: E402
 from project_config import target_slug  # noqa: E402
+from execution.protocols import PREDICTION_PROTOCOL  # noqa: E402
 
 
 PLANNER_VERSION = "1.2.1"
@@ -687,7 +688,8 @@ def build_plan(
             parameters={
                 "reuse_complete_evidence": True,
                 "evidence_mode": "reuse_or_generate_full",
-                "predictor_protocol": "af2_boltz2_prodigy_rosetta_postrelax_v1",
+                "predictor_protocol": PREDICTION_PROTOCOL.version,
+                "predictor_protocol_sha256": PREDICTION_PROTOCOL.sha256,
             },
             resource_class="gpu",
             candidate_limit=min(proposal_count, config.max_prediction_candidates_per_task),
@@ -760,7 +762,8 @@ def build_plan(
             parameters.update({
                 "reuse_complete_evidence": True,
                 "evidence_mode": "reuse_or_generate_full",
-                "predictor_protocol": "af2_boltz2_prodigy_rosetta_postrelax_v1",
+                "predictor_protocol": PREDICTION_PROTOCOL.version,
+                "predictor_protocol_sha256": PREDICTION_PROTOCOL.sha256,
             })
             outputs = ["prediction_handoff.json"]
         elif action == "regenerate_invalid_artifact":
@@ -1150,7 +1153,8 @@ def build_bootstrap_plan(
             parameters={
                 "reuse_complete_evidence": True,
                 "evidence_mode": "reuse_or_generate_full",
-                "predictor_protocol": "af2_boltz2_prodigy_rosetta_postrelax_v1",
+                "predictor_protocol": PREDICTION_PROTOCOL.version,
+                "predictor_protocol_sha256": PREDICTION_PROTOCOL.sha256,
             },
             resource_class="gpu",
             candidate_limit=actual_count,

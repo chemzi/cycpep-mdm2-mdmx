@@ -701,6 +701,13 @@ class PredictionPipeline:
             values = bundle.target_artifacts[target_id]
             target_metrics: dict[str, Any] = {}
             metrics["targets"][target_id] = target_metrics
+            for failure in values.get("rosetta_failures") or []:
+                self._issue(
+                    issues,
+                    str(failure["code"]),
+                    f"Rosetta evidence unavailable for {target_id}: {failure['message']}",
+                    layer=3,
+                )
             configured_chain = str(
                 values.get("target_chain")
                 or (target_config.get("structure") or {}).get("chain")
