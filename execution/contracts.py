@@ -620,6 +620,12 @@ def _validate_calibration_proposal(
             "calibration_proposal_invalid",
             f"calibration proposal lacks {sorted(required - set(value))}",
         )
+    if value.get("action") != task.get("action") or value.get("task_id") != task.get("task_id"):
+        raise ExecutionContractError("calibration_proposal_invalid", "proposal identity mismatch")
+    if value.get("applied_to_state") is not False:
+        raise ExecutionContractError(
+            "calibration_proposal_invalid", "calibration proposal must not mutate thresholds"
+        )
 
 
 def _validate_research_result(
@@ -679,14 +685,6 @@ def _validate_structure_preparation(
             raise ExecutionContractError(
                 "structure_preparation_incomplete", f"target {(target or {}).get('target_id')} is not design-ready"
             )
-    if value.get("action") != task.get("action") or value.get("task_id") != task.get("task_id"):
-        raise ExecutionContractError("calibration_proposal_invalid", "proposal identity mismatch")
-    if value.get("applied_to_state") is not False:
-        raise ExecutionContractError(
-            "calibration_proposal_invalid", "calibration proposal must not mutate thresholds"
-        )
-
-
 OUTPUT_VALIDATORS = {
     "run_research": _validate_research_result,
     "prepare_target_structures": _validate_structure_preparation,

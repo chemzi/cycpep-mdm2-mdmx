@@ -16,6 +16,7 @@ from execution.contracts import (
     ExecutionContractError,
     assert_action_executable,
     validate_task_parameters,
+    _validate_research_result,
 )
 from execution.supervisor import run_process
 from execution.worker import execute_task
@@ -31,6 +32,20 @@ POLICY_CONSTRAINTS = [
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_research_receipt_is_not_validated_as_calibration(self):
+        task = {"action": "run_research", "task_id": "T001"}
+        _validate_research_result({
+            "schema_version": 1,
+            "execution_worker_version": "1.0.1",
+            "action": "run_research",
+            "task_id": "T001",
+            "project_id": "project",
+            "run_status": "complete",
+            "stage_status": {"rcsb_search": "complete"},
+            "state_sha256": "a" * 64,
+            "completed_at": "2026-08-04T00:00:00+00:00",
+        }, task)
+
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="execution-test-"))
         self.original_paths = (
