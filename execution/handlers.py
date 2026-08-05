@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -22,17 +21,18 @@ from .contracts import (
     validate_task_parameters,
 )
 from .supervisor import atomic_json, run_process
+from .results import ExecutionActionResult
 
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-@dataclass(frozen=True)
 class HandlerContext:
-    packet: dict
-    config: ExecutionConfig
-    task_dir: Path
+    def __init__(self, packet: dict, config: ExecutionConfig, task_dir: Path):
+        self.packet = packet
+        self.config = config
+        self.task_dir = task_dir
 
     @property
     def task(self) -> dict:
@@ -41,16 +41,6 @@ class HandlerContext:
     @property
     def parameters(self) -> dict:
         return validate_task_parameters(self.task)
-
-
-@dataclass(frozen=True)
-class HandlerOutcome:
-    outputs: tuple[tuple[str, Path], ...]
-    processes: tuple[dict, ...] = ()
-
-    @property
-    def elapsed_seconds(self) -> float:
-        return sum(float(item.get("elapsed_seconds") or 0.0) for item in self.processes)
 
 
 def _dependency_output(context: HandlerContext, role: str) -> Path:
@@ -94,7 +84,7 @@ def _resolve_manifest(raw: str, repo_root: Path) -> Path:
     return path.resolve() if path.is_absolute() else (repo_root / path).resolve()
 
 
-def iterate_design(context: HandlerContext) -> HandlerOutcome:
+def iterate_design(context: HandlerContext) -> ExecutionActionResult:
     params = context.parameters
     state = State.load()
     project = state.get("project_config") or State._project_config
@@ -195,7 +185,7 @@ def iterate_design(context: HandlerContext) -> HandlerOutcome:
         "existing_rows_unchanged": True,
         "completed_at": _utcnow(),
     })
-    return HandlerOutcome(
+    return ExecutionActionResult(
         outputs=(("design_result", result_path),),
         processes=tuple(processes),
     )
@@ -279,7 +269,7 @@ def _require_prediction_tools(config: ExecutionConfig) -> None:
         )
 
 
-def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
+def evaluate_new_design_candidates(context: HandlerContext) -> ExecutionActionResult:
     params = context.parameters
     candidate_ids = _prediction_candidate_ids(context)
     state = State.load()
@@ -399,13 +389,13 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
         raise ExecutionContractError(
             "prediction_handoff_missing", f"Prediction did not write handoff: {handoff}"
         )
-    return HandlerOutcome(
+    return ExecutionActionResult(
         outputs=(("prediction_handoff", handoff),),
         processes=tuple(processes),
     )
 
 
-def review_prediction_handoff(context: HandlerContext) -> HandlerOutcome:
+def review_prediction_handoff(context: HandlerContext) -> ExecutionActionResult:
     params = context.parameters
     handoff = _dependency_output(context, "prediction_handoff")
     output = context.task_dir / "outputs" / "critic_report.json"
@@ -424,13 +414,13 @@ def review_prediction_handoff(context: HandlerContext) -> HandlerOutcome:
         timeout_seconds=900,
         label="critic_review",
     )
-    return HandlerOutcome(
+    return ExecutionActionResult(
         outputs=(("critic_report", output),),
         processes=(process,),
     )
 
 
-def propose_threshold_calibration(context: HandlerContext) -> HandlerOutcome:
+def propose_threshold_calibration(context: HandlerContext) -> ExecutionActionResult:
     params = context.parameters
     state = State.load()
     project = state.get("project_config") or State._project_config
@@ -471,10 +461,10 @@ def propose_threshold_calibration(context: HandlerContext) -> HandlerOutcome:
         "applied_to_state": False,
         "created_at": _utcnow(),
     })
-    return HandlerOutcome(outputs=(("calibration_proposal", output),))
+    return ExecutionActionResult(outputs=(("calibration_proposal", output),))
 
 
-HANDLERS: dict[str, Callable[[HandlerContext], HandlerOutcome]] = {
+HANDLERS: dict[str, Callable[[HandlerContext], ExecutionActionResult]] = {
     "iterate_design": iterate_design,
     "evaluate_new_design_candidates": evaluate_new_design_candidates,
     "review_prediction_handoff": review_prediction_handoff,

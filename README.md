@@ -146,6 +146,13 @@ Evidence Ledger = append-only audit/provenance history
 
 Evidence Ledger 用于 audit、debug、scientific provenance 和 workflow reconstruction。事件/追踪合同支持 `workflow_id`、`plan_id`、`run_id`、`task_id`、`attempt_id`、`candidate_id` 及 artifact reference；正式 artifact 还应带 producer、path 和 SHA256。详细读写边界见[数据层使用手册](./数据层使用手册.md)。
 
+### Migration Status
+
+- [x] Transaction Layer
+- [x] SQLite Store backend
+- [ ] All Agents migrated
+- [ ] Legacy data_layer removed
+
 一个目标级追溯关系可以表示为：
 
 ```text

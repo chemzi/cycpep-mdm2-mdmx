@@ -348,7 +348,6 @@ def validate_task_parameters(task: dict) -> dict:
 
 def assert_action_executable(task: dict) -> dict:
     action = str((task or {}).get("action") or "").strip()
-    normalized = validate_task_parameters(task)
     try:
         spec = get_action_spec(action)
     except ValueError as exc:
@@ -360,6 +359,7 @@ def assert_action_executable(task: dict) -> dict:
             "execution_action_reserved_v2",
             f"{action} is reserved for v2 and has no executable handler",
         )
+    normalized = validate_task_parameters(task)
     if not spec.executable:
         raise ExecutionContractError(
             "execution_action_unimplemented", f"{action} has no reviewed Execution v1 handler"

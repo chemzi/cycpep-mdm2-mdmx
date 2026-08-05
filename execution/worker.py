@@ -11,6 +11,8 @@ import argparse
 import json
 import sys
 import time
+import traceback as traceback_module
+from typing import Any, Callable
 from pathlib import Path
 
 
@@ -41,6 +43,117 @@ from execution.contracts import (  # noqa: E402
 from execution.action_registry import handler_for  # noqa: E402
 from execution.handlers import HandlerContext  # noqa: E402
 from execution.supervisor import atomic_json  # noqa: E402
+
+from contracts.transaction import ErrorInfo as TransactionErrorInfo  # noqa: E402
+from contracts.transaction import ErrorType, TransactionContext, TransactionStatus  # noqa: E402
+from execution.commit_manager import CommitManager  # noqa: E402
+from execution.results import ExecutionActionResult  # noqa: E402
+from execution.staging import StagingArea  # noqa: E402
+from storage.base import Store  # noqa: E402
+
+
+class ExecutionFailure(RuntimeError):
+    """Raised after a transaction has been failed and recorded."""
+
+    def __init__(self, error: TransactionErrorInfo):
+        super().__init__(error.message)
+        self.error = error
+
+
+ExecutionResult = ExecutionActionResult
+
+
+class ExecutionWorker:
+    """Run one typed action through staging, validation and atomic commit."""
+
+    def __init__(self, store: Store, staging_root: str | Path, artifact_root: str | Path):
+        self.store = store
+        self.staging_root = Path(staging_root)
+        self.commit_manager = CommitManager(store, artifact_root)
+
+    def run(
+        self,
+        context: TransactionContext,
+        handler: Callable[[TransactionContext, StagingArea], ExecutionActionResult],
+        *,
+        validator: Callable[[ExecutionActionResult], None] | None = None,
+    ) -> ExecutionActionResult:
+        staging = StagingArea(self.staging_root, context.transaction_id).create()
+        context.transition(TransactionStatus.STAGING)
+        self.store.append(self._event(context, "execution_started"))
+        try:
+            result = handler(context, staging)
+            if not isinstance(result, ExecutionActionResult):
+                raise TypeError(
+                    "execution handler must return ExecutionActionResult, "
+                    f"got {type(result).__name__}"
+                )
+            context.transition(TransactionStatus.VALIDATING)
+            if validator is not None:
+                validator(result)
+            self.commit_manager.commit(
+                context,
+                candidate_updates=result.candidate_updates,
+                state_updates=result.state_updates,
+                artifacts=result.artifacts,
+                staging_path=staging.path,
+            )
+            staging.discard()
+            return result
+        except Exception as exc:
+            error = self._error_info(context, exc)
+            if context.status not in {TransactionStatus.FAILED, TransactionStatus.COMMITTED}:
+                if context.status == TransactionStatus.ROLLED_BACK:
+                    context.transition(TransactionStatus.FAILED)
+                else:
+                    context.transition(TransactionStatus.FAILED)
+            staging.write_manifest("error.json", error.to_dict())
+            staging.write_manifest("transaction.json", context.to_dict())
+            self.store.record_task_failure(context=context.to_dict(), error=error.to_dict())
+            self.store.append(self._event(context, "execution_failed", **error.to_dict()))
+            raise ExecutionFailure(error) from exc
+
+    @staticmethod
+    def _error_info(context: TransactionContext, exc: Exception) -> TransactionErrorInfo:
+        if isinstance(exc, TypeError):
+            error_type = ErrorType.CONTRACT_ERROR
+        elif isinstance(exc, ValueError):
+            error_type = ErrorType.VALIDATION_ERROR
+        elif isinstance(exc, OSError):
+            error_type = ErrorType.IO_ERROR
+        else:
+            error_type = ErrorType.SYSTEM_ERROR
+        error_code = exc.code if isinstance(exc, ExecutionContractError) else exc.__class__.__name__
+        metadata = context.metadata
+        return TransactionErrorInfo(
+            error_code=error_code,
+            error_type=error_type,
+            message=str(exc) or exc.__class__.__name__,
+            traceback=traceback_module.format_exc(limit=30),
+            task_id=context.task_id,
+            transaction_id=context.transaction_id,
+            workflow_id=context.workflow_id,
+            run_id=context.run_id,
+            attempt_id=context.attempt_id,
+            component="execution.worker",
+            retryable=isinstance(exc, (TimeoutError, ConnectionError)),
+            action_name=str(metadata.get("action_name", "")),
+            agent_name=str(metadata.get("agent_name", "execution")),
+            input_hash=str(metadata.get("input_hash", "")),
+        )
+
+    @staticmethod
+    def _event(context: TransactionContext, event_type: str, **payload: Any) -> dict[str, Any]:
+        return {
+            "workflow_id": context.workflow_id,
+            "run_id": context.run_id,
+            "task_id": context.task_id,
+            "agent": "execution",
+            "event_type": event_type,
+            "transaction_id": context.transaction_id,
+            "attempt_id": context.attempt_id,
+            **payload,
+        }
 
 
 def _read_packet(path: Path, expected_sha256: str) -> dict:
@@ -125,6 +238,12 @@ def execute_task(
             "attempt": attempt,
         }, phase=task["phase"], trace_context=trace_context)
         outcome = handler(HandlerContext(packet=packet, config=config, task_dir=task_dir))
+        if not isinstance(outcome, ExecutionActionResult):
+            raise ExecutionContractError(
+                "handler_result_contract",
+                "execution handler must return ExecutionActionResult, "
+                f"got {type(outcome).__name__}",
+            )
         elapsed_seconds = max(0.0, time.monotonic() - started)
         output_values = [f"{role}={path}" for role, path in outcome.outputs]
         gpu_minutes = (

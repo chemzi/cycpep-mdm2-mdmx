@@ -30,6 +30,7 @@ from .task import (
     TaskStatus,
 )
 from .trace import TraceContext, derive_workflow_id
+from .transaction import ErrorType, TransactionContext, TransactionStatus
 
 __all__ = [
     "ACTION_CATALOG",
@@ -56,4 +57,7 @@ __all__ = [
     "TaskStatus",
     "TraceContext",
     "derive_workflow_id",
+    "ErrorType",
+    "TransactionContext",
+    "TransactionStatus",
 ]
