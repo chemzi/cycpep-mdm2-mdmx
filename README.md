@@ -148,15 +148,18 @@ Evidence Ledger 用于 audit、debug、scientific provenance 和 workflow recons
 
 ### Migration Status
 
-- [x] Transaction Layer
+- [x] Transaction Layer (`TransactionContext` / `StagingArea` / `CommitManager`)
 - [x] SQLite Store backend
-- [ ] All Agents migrated
-- [ ] Legacy data_layer removed
+- [x] execute_task transaction boundary (PR36 Migration)
+- [ ] All Handlers migrated to transactional adapters
 
-> 交易层（`ExecutionWorker` / `CommitManager` / `StagingArea`）目前只被单元测试
-> 覆盖；真实执行入口 `execute_task` 仍走 Orchestrator claim → handler →
-> complete/fail 旧流程。将真实 handler 迁移到交易层属于后续独立 PR，未在本
-> 提交范围内。
+> Execution path is now transactional: `execute_task` drives every action
+> through `TransactionContext.create` → `ExecutionWorker.run` →
+> `CommitManager.commit` → `Store.commit_transaction` →
+> `Orchestrator.complete(transaction_managed=True)`. `iterate_design` is
+> fully transactional (candidate writes cross the boundary); prediction,
+> critic and calibration still use the legacy bridge adapter
+> (`make_legacy_handler_adapter`) and remain a Phase 2 migration item.
 
 一个目标级追溯关系可以表示为：
 

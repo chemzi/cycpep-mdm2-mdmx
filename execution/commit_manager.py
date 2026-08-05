@@ -102,7 +102,10 @@ class CommitManager:
             }
             event_ids = self.store.commit_transaction(
                 context=context.to_dict(),
-                candidate_updates=list(candidate_updates),
+                candidate_updates=[
+                    cu.to_dict() if hasattr(cu, "to_dict") else cu
+                    for cu in candidate_updates
+                ],
                 state_updates=dict(state_updates or {}),
                 artifacts=registrations,
                 completed_event=event,

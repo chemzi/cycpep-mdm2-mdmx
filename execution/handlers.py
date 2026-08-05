@@ -22,6 +22,10 @@ from .contracts import (
 )
 from .supervisor import atomic_json, run_process
 from .results import ExecutionActionResult
+from .staging import StagingArea
+from contracts.candidate_update import CandidateUpdateBatch
+from contracts.transaction import TransactionContext
+from .adapters import make_iterate_design_adapter, make_legacy_handler_adapter
 
 
 def _utcnow() -> str:
@@ -101,6 +105,10 @@ def iterate_design(context: HandlerContext) -> ExecutionActionResult:
         json.dumps(before_rows, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    # PR36 migration: design.py emits CandidateUpdate JSON instead of writing
+    # CandidateIndex directly. The handler reads the batch via contract and
+    # passes candidate_updates to CommitManager for transactional commit.
+    updates_path = context.task_dir / "candidate_updates.json"
     processes = []
     for index, job in enumerate(params["design_jobs"], start=1):
         argv = [
@@ -111,6 +119,7 @@ def iterate_design(context: HandlerContext) -> ExecutionActionResult:
             "--n", str(job["proposal_count"]),
             "--lengths", ",".join(str(value) for value in job["lengths"]),
             "--seed", str(job["seed"]),
+            "--candidate-updates-path", str(updates_path),
         ]
         processes.append(run_process(
             argv,
@@ -120,6 +129,17 @@ def iterate_design(context: HandlerContext) -> ExecutionActionResult:
             label=f"iterate_design[{index}]",
         ))
 
+    # Read candidate updates via contract (JSON -> CandidateUpdateBatch ->
+    # CandidateUpdate). Do NOT bypass the contract by hand-assembling dicts.
+    if not updates_path.is_file():
+        raise ExecutionContractError(
+            "design_candidate_updates_missing",
+            f"design.py did not emit candidate_updates.json: {updates_path}",
+        )
+    batch = CandidateUpdateBatch.from_dict(
+        json.loads(updates_path.read_text(encoding="utf-8"))
+    )
+    # Sanity: in emit mode design.py must not have written CandidateIndex.
     after_rows = CandidateIndex.load()
     after_by_id = {str(row.get("candidate_id")): row for row in after_rows}
     changed = sorted(
@@ -131,7 +151,7 @@ def iterate_design(context: HandlerContext) -> ExecutionActionResult:
             "candidate_index_existing_row_changed",
             f"Design modified existing candidate rows: {changed}",
         )
-    new_ids = sorted(set(after_by_id) - set(before_by_id))
+    new_ids = sorted(cu.candidate_id for cu in batch.candidate_updates)
     limit = int(context.task["resource_request"]["candidate_limit"])
     if len(new_ids) > limit:
         raise ExecutionContractError(
@@ -139,22 +159,20 @@ def iterate_design(context: HandlerContext) -> ExecutionActionResult:
             f"Design registered {len(new_ids)} candidates; task limit is {limit}",
         )
     candidates = []
-    for candidate_id in new_ids:
-        row = after_by_id[candidate_id]
-        manifest = _resolve_manifest(str(row.get("manifest_path") or ""), context.config.repo_root)
+    for cu in batch.candidate_updates:
+        manifest = _resolve_manifest(cu.manifest_path, context.config.repo_root)
         if not manifest.is_file():
             raise ExecutionContractError(
-                "design_manifest_missing", f"new candidate {candidate_id} lacks manifest: {manifest}"
+                "design_manifest_missing", f"new candidate {cu.candidate_id} lacks manifest: {manifest}"
             )
         candidates.append({
-            "candidate_id": candidate_id,
-            "sequence": row.get("sequence"),
-            "source_route": row.get("source_route"),
+            "candidate_id": cu.candidate_id,
+            "sequence": cu.sequence,
+            "source_route": cu.source_route,
             "manifest_path": str(manifest),
-            "manifest_sha256": file_sha256(manifest),
-            "design_pdb_path": row.get("design_pdb_path"),
-            "design_pdb_hash": row.get("design_pdb_hash"),
-            "backbone_pdb": row.get("backbone_pdb"),
+            "manifest_sha256": cu.manifest_sha256,
+            "design_pdb_path": cu.design_pdb_path,
+            "design_pdb_hash": cu.design_pdb_hash,
         })
     result_path = context.task_dir / "outputs" / "design_task_result.json"
     after_snapshot = context.task_dir / "snapshots" / "candidate_index_after.json"
@@ -186,9 +204,14 @@ def iterate_design(context: HandlerContext) -> ExecutionActionResult:
         "completed_at": _utcnow(),
     })
     return ExecutionActionResult(
+        candidate_updates=tuple(batch.candidate_updates),
         outputs=(("design_result", result_path),),
         processes=tuple(processes),
     )
+
+
+# make_iterate_design_adapter moved to execution/adapters.py (PR36 migration).
+# Re-exported at top of this module via ``from .adapters import make_iterate_design_adapter``.
 
 
 def _prediction_candidate_ids(context: HandlerContext) -> list[str]:

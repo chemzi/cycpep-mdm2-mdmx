@@ -1113,8 +1113,14 @@ def complete(
     claim_token: str,
     output_paths: Iterable[str | Path],
     gpu_minutes: float | None = None,
+    transaction_managed: bool = False,
 ) -> dict:
-    """Complete a claimed task after hashing outputs and checking GPU usage."""
+    """Complete a claimed task after hashing outputs and checking GPU usage.
+
+    When ``transaction_managed=True`` the legacy output inventory diff
+    validation is skipped, because the transaction boundary (CommitManager)
+    has already guaranteed artifact/candidate/state consistency atomically.
+    """
     run_path = Path(run_path).expanduser().resolve()
     output_values = list(output_paths)
     if not output_values:
@@ -1134,22 +1140,23 @@ def complete(
                 task_id, int(state.get("attempts") or 0)
             ),
         )
-        try:
-            from execution.contracts import validate_output_inventory
+        if not transaction_managed:
+            try:
+                from execution.contracts import validate_output_inventory
 
-            dependency_outputs = {
-                dependency: run["tasks"][dependency]["outputs"]
-                for dependency in task["depends_on"]
-            }
-            validate_output_inventory(
-                task, inventory, dependency_outputs=dependency_outputs
-            )
-        except Exception as exc:
-            if isinstance(exc, OrchestratorContractError):
-                raise
-            raise OrchestratorContractError(
-                getattr(exc, "code", "task_output_contract_invalid"), str(exc)
-            ) from exc
+                dependency_outputs = {
+                    dependency: run["tasks"][dependency]["outputs"]
+                    for dependency in task["depends_on"]
+                }
+                validate_output_inventory(
+                    task, inventory, dependency_outputs=dependency_outputs
+                )
+            except Exception as exc:
+                if isinstance(exc, OrchestratorContractError):
+                    raise
+                raise OrchestratorContractError(
+                    getattr(exc, "code", "task_output_contract_invalid"), str(exc)
+                ) from exc
         usage: dict[str, Any] = {}
         if task["resource_request"]["class"] == "gpu":
             usage = _consume_gpu_usage(

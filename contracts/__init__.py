@@ -31,6 +31,11 @@ from .task import (
 )
 from .trace import TraceContext, derive_workflow_id
 from .transaction import ErrorType, TransactionContext, TransactionStatus
+from .candidate_update import (
+    CANDIDATE_UPDATE_SCHEMA_VERSION,
+    CandidateUpdate,
+    CandidateUpdateBatch,
+)
 
 __all__ = [
     "ACTION_CATALOG",
@@ -60,4 +65,7 @@ __all__ = [
     "ErrorType",
     "TransactionContext",
     "TransactionStatus",
+    "CANDIDATE_UPDATE_SCHEMA_VERSION",
+    "CandidateUpdate",
+    "CandidateUpdateBatch",
 ]

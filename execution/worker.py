@@ -27,7 +27,7 @@ from agents.orchestrator import (  # noqa: E402
     fail,
     status,
 )
-from data_layer import EvidenceLogger  # noqa: E402
+from data_layer import get_storage_backend  # noqa: E402
 from prediction_pipeline.contracts import file_sha256  # noqa: E402
 from contracts.errors import ErrorInfo  # noqa: E402
 from contracts.task import TaskStatus  # noqa: E402
@@ -41,7 +41,8 @@ from execution.contracts import (  # noqa: E402
     validate_dispatch_packet,
 )
 from execution.action_registry import handler_for  # noqa: E402
-from execution.handlers import HandlerContext  # noqa: E402
+from execution.handlers import HandlerContext
+from execution.adapters import adapter_for  # noqa: E402
 from execution.supervisor import atomic_json  # noqa: E402
 
 from contracts.transaction import ErrorType, TransactionContext, TransactionStatus  # noqa: E402
@@ -187,6 +188,7 @@ def execute_task(
     packet = None
     task = None
     action = "unknown"
+    transaction_context = None
     trace_context = TraceContext(
         project_id=str((claimed["run"].get("plan") or {}).get("project_id") or "unknown_project"),
         workflow_id=str(
@@ -228,21 +230,24 @@ def execute_task(
             "normalized_parameters": parameters,
             "started_monotonic_recorded": True,
         })
-        EvidenceLogger.log("execution", "execution_task_started", {
-            "run_id": packet["run_id"],
-            "task_id": task_id,
-            "action": action,
-            "worker": worker_id,
-            "task_dir": str(task_dir),
-            "attempt": attempt,
-        }, phase=task["phase"], trace_context=trace_context)
-        outcome = handler(HandlerContext(packet=packet, config=config, task_dir=task_dir))
-        if not isinstance(outcome, ExecutionActionResult):
-            raise ExecutionContractError(
-                "handler_result_contract",
-                "execution handler must return ExecutionActionResult, "
-                f"got {type(outcome).__name__}",
-            )
+        transaction_context = TransactionContext.create(
+            workflow_id=trace_context.workflow_id,
+            run_id=run_id,
+            task_id=task_id,
+            attempt_id=trace_context.attempt_id,
+        )
+        transaction_context.metadata.update({
+            "action_name": action,
+            "agent_name": "execution",
+            "input_hash": str(claimed.get("dispatch_packet_sha256") or ""),
+        })
+        adapter = adapter_for(action, handler, packet, config, task_dir)
+        worker = ExecutionWorker(
+            store=get_storage_backend(),
+            staging_root=config.execution_root / "staging",
+            artifact_root=config.execution_root / "committed",
+        )
+        outcome = worker.run(transaction_context, adapter)
         elapsed_seconds = max(0.0, time.monotonic() - started)
         output_values = [f"{role}={path}" for role, path in outcome.outputs]
         gpu_minutes = (
@@ -255,6 +260,7 @@ def execute_task(
             claim_token=token,
             output_paths=output_values,
             gpu_minutes=gpu_minutes,
+            transaction_managed=True,
         )
         receipt = {
             "execution_worker_version": EXECUTION_WORKER_VERSION,
@@ -266,6 +272,7 @@ def execute_task(
             "plan_id": trace_context.plan_id,
             "attempt": attempt,
             "attempt_id": trace_context.attempt_id,
+            "transaction_id": transaction_context.transaction_id,
             "elapsed_seconds": elapsed_seconds,
             "gpu_minutes": gpu_minutes,
             "outputs": result["run"]["tasks"][task_id].get("outputs") or [
@@ -276,10 +283,6 @@ def execute_task(
             "orchestrator_status": result["run"]["status"],
         }
         atomic_json(task_dir / "execution_receipt.json", receipt)
-        EvidenceLogger.log(
-            "execution", "execution_task_completed", receipt,
-            phase=task["phase"], trace_context=trace_context,
-        )
         return receipt
     except BaseException as exc:
         elapsed_seconds = max(0.0, time.monotonic() - started)
@@ -292,11 +295,14 @@ def execute_task(
             else None
         )
         task_dir.mkdir(parents=True, exist_ok=True)
-        error_info = ErrorInfo.from_exception(
-            exc,
-            component="execution.worker",
-            code=str(getattr(exc, "code", exc.__class__.__name__)),
-        )
+        if isinstance(exc, ExecutionFailure):
+            error_info = exc.error
+        else:
+            error_info = ErrorInfo.from_exception(
+                exc,
+                component="execution.worker",
+                code=str(getattr(exc, "code", exc.__class__.__name__)),
+            )
         failure = {
             "execution_worker_version": EXECUTION_WORKER_VERSION,
             "status": TaskStatus.FAILED.value,
@@ -308,6 +314,7 @@ def execute_task(
             "plan_id": trace_context.plan_id,
             "attempt": attempt,
             "attempt_id": trace_context.attempt_id,
+            "transaction_id": transaction_context.transaction_id if transaction_context else "",
             "elapsed_seconds": elapsed_seconds,
             "gpu_minutes": gpu_minutes,
         }
@@ -327,11 +334,6 @@ def execute_task(
                 "message": str(close_exc),
             }
             atomic_json(task_dir / "execution_failure.json", failure)
-        EvidenceLogger.log(
-            "execution", "execution_task_failed", failure,
-            phase=task["phase"] if task else "iterate",
-            trace_context=trace_context,
-        )
         raise
 
 

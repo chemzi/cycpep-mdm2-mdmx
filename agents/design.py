@@ -35,6 +35,22 @@ from peptide_contract import (
     STANDARD_AMINO_ACIDS,
     supported_length_message,
 )
+from contracts.candidate_update import (
+    CANDIDATE_UPDATE_SCHEMA_VERSION,
+    CandidateUpdate,
+    CandidateUpdateBatch,
+)
+
+
+# ============================================================
+# Transaction staging state (PR36 migration)
+# ============================================================
+# When --candidate-updates-path is set, _emit_candidate_update collects
+# CandidateUpdate records here instead of writing CandidateIndex directly;
+# the __main__ block flushes them to JSON on exit. CandidateIndex remains
+# the single source of truth after the handler's CommitManager commits.
+_CANDIDATE_UPDATES_PATH = None
+_PENDING_CANDIDATE_UPDATES = []
 
 
 # ============================================================
@@ -604,7 +620,7 @@ def design_rfpeptides(target_spec=None, design_config=None):
                 manifest, plddt,
                 notes={"quality_score": round(quality_score, 3)},
             )
-            CandidateIndex.add(candidate)
+            _emit_candidate_update(candidate)
             EvidenceLogger.log("design", "candidate_registered",
                 {"candidate": candidate},
                 targets=[config["target_id"]], phase="design")
@@ -764,7 +780,7 @@ def design_motif_guided(target_spec=None, design_config=None):
                 manifest, plddt,
                 notes={"quality_score": round(quality_score, 3)},
             )
-            CandidateIndex.add(candidate)
+            _emit_candidate_update(candidate)
             EvidenceLogger.log("design", "candidate_registered",
                 {"candidate": candidate},
                 targets=[config["target_id"]], phase="design")
@@ -1050,7 +1066,7 @@ def design_atsp_derived(target_spec=None, design_config=None):
                     str(exc), recovery="skip mismatched candidate (P1-7)")
                 continue
             candidate = _candidate_from_manifest(manifest, plddt, notes={"design": desc})
-            CandidateIndex.add(candidate)
+            _emit_candidate_update(candidate)
             EvidenceLogger.log("design", "candidate_registered",
                 {"candidate": candidate},
                 targets=[config["target_id"]], phase="design")
@@ -1371,6 +1387,38 @@ def _candidate_from_manifest(manifest, plddt, notes=None):
         "monomer_plddt": round(float(plddt), 3),
         "notes": json.dumps(note_payload, ensure_ascii=False),
     }
+
+
+def _emit_candidate_update(candidate):
+    """Unified exit point for candidate persistence (PR36 migration).
+
+    Replaces the 3 direct CandidateIndex.add() call sites (route A/B/C). When
+    --candidate-updates-path is set, collects a CandidateUpdate for transactional
+    commit by the iterate_design handler; otherwise falls back to
+    CandidateIndex.add for backward compatibility with legacy callers and tests
+    that do not pass the flag. Keeping one exit point prevents schema drift
+    across the three routes.
+    """
+    if _CANDIDATE_UPDATES_PATH is None:
+        CandidateIndex.add(candidate)
+        return
+    manifest_path = str(candidate.get("manifest_path") or "")
+    manifest_sha256 = file_hash(manifest_path) if manifest_path else ""
+    _PENDING_CANDIDATE_UPDATES.append(CandidateUpdate(
+        candidate_id=candidate["candidate_id"],
+        sequence=candidate["sequence"],
+        length=candidate["length"],
+        source_route=candidate["source_route"],
+        source_batch=candidate["source_batch"],
+        cyclization_type=candidate["cyclization_type"],
+        cyclization_bonds=tuple(candidate.get("cyclization_bonds") or ()),
+        design_pdb_path=str(candidate.get("design_pdb_path") or ""),
+        design_pdb_hash=str(candidate.get("design_pdb_hash") or ""),
+        manifest_path=manifest_path,
+        manifest_sha256=manifest_sha256,
+        monomer_plddt=candidate["monomer_plddt"],
+        notes=str(candidate.get("notes") or ""),
+    ))
 
 
 # ============================================================
@@ -2633,7 +2681,10 @@ if __name__ == "__main__":
     p.add_argument("--chain", default=None,
                    help="must match the approved target chain when provided")
     p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--candidate-updates-path", default=None,
+                   help="emit CandidateUpdate JSON instead of writing CandidateIndex directly (PR36 migration)")
     args = p.parse_args()
+    _CANDIDATE_UPDATES_PATH = args.candidate_updates_path
 
     lengths = [int(x) for x in args.lengths.split(",")]
     ts = {}
@@ -2663,4 +2714,20 @@ if __name__ == "__main__":
         print(f"[Route C] 完成: {len(result)} candidates")
 
     print(f"\nDone: {len(all_cands)} candidates")
+    if _CANDIDATE_UPDATES_PATH and _PENDING_CANDIDATE_UPDATES:
+        from datetime import datetime, timezone
+        batch = CandidateUpdateBatch(
+            schema_version=CANDIDATE_UPDATE_SCHEMA_VERSION,
+            emitter="design",
+            source_route=str(args.route),
+            generated_at=datetime.now(timezone.utc).isoformat(),
+            candidate_updates=tuple(_PENDING_CANDIDATE_UPDATES),
+        )
+        _out = Path(_CANDIDATE_UPDATES_PATH)
+        _out.parent.mkdir(parents=True, exist_ok=True)
+        _out.write_text(
+            json.dumps(batch.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"[design] emitted {len(_PENDING_CANDIDATE_UPDATES)} candidate_updates -> {_out}")
     print(CandidateIndex.stats())
