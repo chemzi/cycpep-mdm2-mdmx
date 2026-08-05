@@ -43,6 +43,13 @@ test("defaults the browser to the JSON adapter instead of the frontend route", a
   assert.match(page, /body\.data/);
 });
 
+test("starts the adapter with an SSH-capable Python and keeps the UI off port 3000", async () => {
+  const launcher = await readFile(new URL("../start-local.ps1", import.meta.url), "utf8");
+  assert.match(launcher, /paramiko/);
+  assert.match(launcher, /localhost:4173/);
+  assert.match(launcher, /--port 4173/);
+});
+
 test("does not carry the retired starter preview into the workbench", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(page, /SkeletonPreview|codex-preview|_sites-preview/);
