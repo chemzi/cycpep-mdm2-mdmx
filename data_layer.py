@@ -40,6 +40,8 @@ from project_config import (
 from threshold_contract import merge_thresholds, normalize_thresholds
 from contracts.event import EvidenceEvent
 from contracts.trace import TraceContext
+from storage import SQLiteStore
+from storage.file_store import FileStore
 
 ROOT = Path(__file__).resolve().parent
 ACTIVE_PROJECT_CONFIG = load_project_config()
@@ -57,6 +59,18 @@ EVIDENCE_DIR = Path(os.environ.get("CYCPEP_EVIDENCE_DIR", _DEFAULT_EVIDENCE_DIR)
 STATE_PATH = DATA_DIR / "state.json"
 LOG_PATH   = EVIDENCE_DIR / "evidence_log.jsonl"
 INDEX_PATH = DATA_DIR / "candidate_index.csv"
+SQLITE_DB_PATH = Path(os.environ["CYCPEP_DB_PATH"]) if os.environ.get("CYCPEP_DB_PATH") else None
+
+
+def get_storage_backend():
+    """Return the configured backend without exposing backend details to Agents.
+
+    The legacy file backend remains the default for backwards compatibility.
+    Set ``CYCPEP_DB_PATH`` to opt a runtime into SQLite during migration.
+    """
+    if SQLITE_DB_PATH:
+        return SQLiteStore(SQLITE_DB_PATH, project_id=ACTIVE_PROJECT_CONFIG["project_id"])
+    return FileStore(DATA_DIR, EVIDENCE_DIR)
 
 
 class EvidenceTraceQueryError(ValueError):
