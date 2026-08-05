@@ -39,8 +39,19 @@ test("server-renders the CycPep Studio workbench", async () => {
 test("defaults the browser to the JSON adapter instead of the frontend route", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /apiBase:\s*"http:\/\/127\.0\.0\.1:8765\/api\/v1"/);
+  assert.match(page, /normaliseApiBase/);
   assert.match(page, /该地址没有提供 CycPep JSON 数据服务/);
   assert.match(page, /body\.data/);
+});
+
+test("exposes an explicit candidate resolution step before approval", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const server = await readFile(new URL("../../web_api/server.py", import.meta.url), "utf8");
+  assert.match(page, /ambiguous_identifier_requires_user_selection/);
+  assert.match(page, /connections\/ssh\/project-drafts\/resolved-candidate/);
+  assert.match(page, /选择此候选并继续/);
+  assert.match(server, /ssh_select_resolved_candidate/);
+  assert.match(server, /project-drafts\/resolved-candidate/);
 });
 
 test("starts the adapter with an SSH-capable Python and keeps the UI off port 3000", async () => {

@@ -193,6 +193,11 @@ interface Review {
 | `POST /project-drafts/{draft_id}/approve` | implemented | `approve_draft()` |
 | `GET /project-drafts/{draft_id}/review` | implemented | `review_project_config()` |
 
+SSH 适配器对上述候选选择提供等价路由
+`POST /connections/ssh/project-drafts/resolved-candidate`，请求体包含
+`connection_id`、`draft_id` 和 `candidate_ref`；候选仍由远端 draft 的
+`bootstrap.resolved_candidates` 校验，未选定前不得调用 approve。
+
 ### 创建 draft
 
 `POST /project-drafts`

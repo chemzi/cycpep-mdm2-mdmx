@@ -21,7 +21,7 @@ if (-not $python) {
     throw "找不到带 paramiko 的 Python。请执行 python -m pip install -r requirements.txt，或设置 CYCPEP_PYTHON 指向正确环境。"
 }
 
-$env:CYCPEP_UI_ORIGIN = "http://localhost:4173"
+$env:CYCPEP_UI_ORIGIN = "http://127.0.0.1:4173"
 $apiProcess = Start-Process $python -ArgumentList @($adapter, "--host", "127.0.0.1", "--port", "8765") -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru
 
 try {

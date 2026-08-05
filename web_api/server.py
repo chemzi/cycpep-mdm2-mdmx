@@ -33,6 +33,7 @@ from target_bootstrap import (  # noqa: E402
     TargetBootstrapper,
     approve_draft,
     edit_target_draft,
+    select_resolved_candidate,
 )
 
 STORE = Path(os.environ.get("CYCPEP_WEB_STORE", ROOT / "data" / "web_api"))
@@ -343,359 +344,4 @@ if log_path.is_file():
  except OSError: pass
 process_logs=[]
 try:
- for candidate in sorted((work_root/"execution").rglob("*.log"),key=lambda item:item.stat().st_mtime,reverse=True)[:6]:
-  process_logs.append("### "+candidate.name+" Â· "+str(candidate.parent.relative_to(work_root)))
-  process_logs.extend(candidate.read_text(encoding="utf-8",errors="replace").splitlines()[-30:])
-except OSError: pass
-if process_logs: workflow["process_log_tail"]="\\n".join(process_logs)
-print(json.dumps({{"state":state,"rows":rows,"events":events,"projects":projects,"workflow":workflow}},ensure_ascii=False))'''
-    payload = _ssh_json(profile, remote_code)
-    state, rows = payload["state"], payload["rows"]
-    warnings = [key for key, present in (
-        ("state_missing_project_id", state.get("project_id")),
-        ("state_missing_project_config", state.get("project_config")),
-        ("state_missing_approved_digest", state.get("approved_digest")),
-    ) if not present]
-    return {
-        "source": {"mode": "ssh", "connected": True, "host": profile["host"]},
-        "project": {"project_id": state.get("project_id"), "name": state.get("project"),
-                    "config": state.get("project_config"), "targets": list((state.get("targets") or {}).keys())},
-        "state": {"phase": state.get("phase"), "round": state.get("round"),
-                  "candidate_count": state.get("candidate_count"),
-                  "iteration_history": state.get("iteration_history") or [],
-                  "thresholds_ready": bool(state.get("thresholds")),
-                  "workflow": payload.get("workflow") or {}},
-        "stats": {"total_candidates": len(rows),
-                  "all_layers_pass": sum(_truthy(r.get("all_layers_pass")) for r in rows),
-                  "finalized": sum(r.get("final_status") == "finalized" for r in rows)},
-        # Remote paths must never be interpreted by this process.  SSH remains
-        # read-only until a real remote artifact transport is implemented.
-        "candidates": [_candidate_payload(r, allow_artifacts=False) for r in rows],
-        "recent_evidence": payload["events"], "integrity_warnings": warnings,
-        "projects": payload.get("projects") or [],
-    }
-
-
-def ssh_switch_project(profile: dict, slug: str) -> dict:
-    profile = _validate_ssh_profile(profile)
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", str(slug)):
-        raise ValueError("invalid project slug")
-    context_b64 = _remote_context(profile)
-    slug_b64 = base64.b64encode(str(slug).encode()).decode()
-    remote_code = f'''import base64,json,os,sys
-from pathlib import Path
-ctx=json.loads(base64.b64decode("{context_b64}").decode()); root=Path(os.path.expanduser(ctx["workspace_root"])).resolve(); slug=base64.b64decode("{slug_b64}").decode()
-config_path=(root/"projects"/(slug+".json")).resolve()
-if config_path.parent != (root/"projects").resolve() or not config_path.is_file(): raise FileNotFoundError("project not found")
-config=json.loads(config_path.read_text(encoding="utf-8")); approved=((config.get("review") or {{}}).get("approved_digest"))
-if not config.get("project_id") or not approved: raise ValueError("project is not approved")
-data_dir=root/"data"/"projects"/slug; evidence_dir=root/"evidence"/"projects"/slug; work_root=data_dir/"autopilot"
-data_dir.mkdir(parents=True,exist_ok=True); evidence_dir.mkdir(parents=True,exist_ok=True)
-os.environ["CYCPEP_PROJECT_CONFIG"]=str(config_path); os.environ["CYCPEP_DATA_DIR"]=str(data_dir); os.environ["CYCPEP_EVIDENCE_DIR"]=str(evidence_dir)
-sys.path.insert(0,str(root)); from data_layer import State; State.sync_project_config(config)
-print(json.dumps({{"project_config_path":str(config_path),"data_dir":str(data_dir),"evidence_dir":str(evidence_dir),"work_root":str(work_root),"project_id":config["project_id"]}},ensure_ascii=False))'''
-    return _ssh_json(profile, remote_code, command_timeout=60)
-
-
-def ssh_create_draft(profile: dict, request: dict) -> dict:
-    profile = _validate_ssh_profile(profile)
-    identifier = str(request.get("identifier", "")).strip()
-    identifier_type = str(request.get("identifier_type", "auto")).strip() or "auto"
-    if not identifier or identifier_type not in {"auto", "gene", "uniprot", "pdb"}:
-        raise ValueError("invalid target identifier")
-    payload_b64 = base64.b64encode(json.dumps({
-        "identifier": identifier, "identifier_type": identifier_type,
-        "organism_id": int(request.get("organism_id", 9606)),
-        "epitope": request.get("epitope"), "objective": request.get("objective", "binder"),
-    }).encode()).decode()
-    root_b64 = base64.b64encode(profile["workspace_root"].encode()).decode()
-    remote_code = f'''import base64,json,os,sys,uuid
-from pathlib import Path
-root=Path(os.path.expanduser(base64.b64decode("{root_b64}").decode())).resolve(); os.chdir(root); sys.path.insert(0,str(root)); request=json.loads(base64.b64decode("{payload_b64}").decode())
-from target_bootstrap import TargetBootstrapper
-draft_id="drf_"+uuid.uuid4().hex[:12]; draft=TargetBootstrapper().create_draft(**request); draft["draft_id"]=draft_id
-path=root/"data"/"web_api"/"drafts"/(draft_id+".json"); path.parent.mkdir(parents=True,exist_ok=True); temp=path.with_suffix("."+uuid.uuid4().hex+".tmp"); temp.write_text(json.dumps(draft,ensure_ascii=False,indent=2),encoding="utf-8"); os.replace(temp,path)
-print(json.dumps(draft,ensure_ascii=False))'''
-    return _ssh_json(profile, remote_code, command_timeout=180)
-
-
-def _run_ssh_draft_job(job_id: str, profile: dict, request: dict) -> None:
-    try:
-        update = {"status": "complete", "result": ssh_create_draft(profile, request)}
-    except Exception as exc:
-        update = {"status": "failed", "error": str(exc)[-1200:]}
-    with JOBS_LOCK:
-        if job_id in JOBS:
-            JOBS[job_id].update(update)
-            JOBS[job_id]["finished_at"] = time.time()
-
-
-def start_ssh_draft_job(profile: dict, request: dict) -> dict:
-    if not str(request.get("identifier", "")).strip():
-        raise ValueError("target identifier is required")
-    job_id = f"job_{uuid.uuid4().hex[:12]}"
-    job = {"job_id": job_id, "status": "running", "message": "æ­£åœ¨è§£æžé¶ç‚¹å¹¶æ£€ç´¢ç»“æž„", "created_at": time.time()}
-    with JOBS_LOCK:
-        JOBS[job_id] = job
-    threading.Thread(target=_run_ssh_draft_job, args=(job_id, dict(profile), dict(request)), daemon=True).start()
-    return dict(job)
-
-
-def get_job(job_id: str) -> dict:
-    with JOBS_LOCK:
-        if job_id not in JOBS:
-            raise FileNotFoundError("job not found")
-        return dict(JOBS[job_id])
-
-
-def ssh_approve_remote_draft(profile: dict, draft_id: str) -> dict:
-    profile = _validate_ssh_profile(profile)
-    if not re.fullmatch(r"drf_[A-Za-z0-9]+", str(draft_id)):
-        raise ValueError("invalid draft id")
-    root_b64 = base64.b64encode(profile["workspace_root"].encode()).decode()
-    draft_b64 = base64.b64encode(str(draft_id).encode()).decode()
-    remote_code = f'''import base64,json,os,sys
-from pathlib import Path
-root=Path(os.path.expanduser(base64.b64decode("{root_b64}").decode())).resolve(); os.chdir(root); sys.path.insert(0,str(root)); draft_id=base64.b64decode("{draft_b64}").decode(); draft_path=root/"data"/"web_api"/"drafts"/(draft_id+".json")
-if not draft_path.is_file(): raise FileNotFoundError("remote draft not found")
-from project_config import target_slug
-from target_bootstrap import approve_draft
-draft=json.loads(draft_path.read_text(encoding="utf-8")); slug=target_slug(draft["project_id"]); config_path=root/"projects"/(slug+".json"); config=approve_draft(draft_path,output_path=config_path)
-data_dir=root/"data"/"projects"/slug; evidence_dir=root/"evidence"/"projects"/slug; work_root=data_dir/"autopilot"; data_dir.mkdir(parents=True,exist_ok=True); evidence_dir.mkdir(parents=True,exist_ok=True)
-os.environ["CYCPEP_PROJECT_CONFIG"]=str(config_path); os.environ["CYCPEP_DATA_DIR"]=str(data_dir); os.environ["CYCPEP_EVIDENCE_DIR"]=str(evidence_dir)
-from data_layer import State
-State.sync_project_config(config)
-print(json.dumps({{"project_config_path":str(config_path),"data_dir":str(data_dir),"evidence_dir":str(evidence_dir),"work_root":str(work_root),"project_id":config["project_id"],"slug":slug}},ensure_ascii=False))'''
-    return _ssh_json(profile, remote_code, command_timeout=60)
-
-
-def ssh_start_workflow(profile: dict, request: dict) -> dict:
-    profile = _validate_ssh_profile(profile)
-    required = ("project_config_path", "data_dir", "evidence_dir", "work_root")
-    if any(not profile.get(key) for key in required):
-        raise ValueError("è¯·å…ˆæ‰¹å‡†æˆ–åˆ‡æ¢åˆ°ä¸€ä¸ªé¡¹ç›®")
-    limits = {
-        "max_design_proposals": int(request.get("max_design_proposals", 4)),
-        "max_prediction_candidates": int(request.get("max_prediction_candidates", 4)),
-        "max_gpu_minutes": float(request.get("max_gpu_minutes", 360)),
-        "max_rounds": int(request.get("max_rounds", 2)),
-    }
-    if not 1 <= limits["max_design_proposals"] <= 100:
-        raise ValueError("Design æ•°é‡å¿…é¡»åœ¨ 1 åˆ° 100 ä¹‹é—´")
-    if not 1 <= limits["max_prediction_candidates"] <= limits["max_design_proposals"]:
-        raise ValueError("Prediction æ•°é‡å¿…é¡»åœ¨ 1 åˆ° Design æ•°é‡ä¹‹é—´")
-    if not 1 <= limits["max_rounds"] <= 10 or not 1 <= limits["max_gpu_minutes"] <= 10080:
-        raise ValueError("è½®æ•°æˆ– GPU æ—¶é—´é¢„ç®—è¶…å‡ºå…è®¸èŒƒå›´")
-    payload = {**{key: profile.get(key) for key in (
-        "workspace_root", "project_config_path", "data_dir", "evidence_dir", "work_root",
-        "core_python", "design_python", "prediction_python",
-    )}, **limits, "approver": str(request.get("approver") or "web-user")[:128],
-        "justification": str(request.get("justification") or "User approved full automatic workflow in CycPep Studio")[:500]}
-    payload_b64 = base64.b64encode(json.dumps(payload).encode()).decode()
-    remote_code = f'''import base64,json,os,subprocess,sys,time
-from pathlib import Path
-p=json.loads(base64.b64decode("{payload_b64}").decode()); root=Path(os.path.expanduser(p["workspace_root"])).resolve(); work=Path(p["work_root"]).resolve(); work.mkdir(parents=True,exist_ok=True); process_file=work/"autopilot_process.json"
-if process_file.is_file():
- old=json.loads(process_file.read_text(encoding="utf-8")); old_pid=int(old.get("pid") or 0)
- if old_pid>0 and Path("/proc").joinpath(str(old_pid)).exists(): raise RuntimeError("è¯¥é¡¹ç›®å·²æœ‰å·¥ä½œæµæ­£åœ¨è¿è¡Œ")
-defaults={{"core_python":"/root/damodel-tmp/envs/novapeptide-core/bin/python","design_python":"/root/damodel-tmp/envs/rfdiffusion-design/bin/python","prediction_python":"/root/damodel-tmp/envs/cycpep-prediction/bin/python"}}
-for key,value in defaults.items():
- if not p.get(key) and Path(value).is_file(): p[key]=value
-python=p.get("core_python") if p.get("core_python") and Path(p["core_python"]).is_file() else sys.executable
-argv=[python,"-m","execution.autopilot","--project-config",p["project_config_path"],"--data-dir",p["data_dir"],"--evidence-dir",p["evidence_dir"],"--work-root",p["work_root"],"--approver",p["approver"],"--justification",p["justification"],"--max-design-proposals",str(p["max_design_proposals"]),"--max-prediction-candidates",str(p["max_prediction_candidates"]),"--max-gpu-minutes",str(p["max_gpu_minutes"]),"--max-rounds",str(p["max_rounds"])]
-for flag,key in (("--core-python","core_python"),("--design-python","design_python"),("--prediction-python","prediction_python")):
- if p.get(key): argv.extend([flag,p[key]])
-child_env=os.environ.copy(); env_file=Path.home()/".config"/"cycpep"/"runtime.env"; allowed={{"STEP_API_KEY","STEP_BASE_URL","OPENAI_API_KEY","OPENAI_BASE_URL","CYCPEP_LLM_API_KEY","CYCPEP_LLM_BASE_URL"}}
-if env_file.is_file():
- for line in env_file.read_text(encoding="utf-8").splitlines():
-  if "=" not in line or line.lstrip().startswith("#"): continue
-  key,value=line.split("=",1)
-  if key.strip() in allowed: child_env[key.strip()]=value.strip()
-log=open(work/"autopilot.log","a",encoding="utf-8"); proc=subprocess.Popen(argv,cwd=root,env=child_env,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,start_new_session=True,close_fds=True); process_file.write_text(json.dumps({{"pid":proc.pid,"started_at":time.time(),"alive":True}},indent=2),encoding="utf-8"); print(json.dumps({{"pid":proc.pid,"status":"running"}}))'''
-    return _ssh_json(profile, remote_code, command_timeout=30)
-
-
-def ssh_stop_workflow(profile: dict) -> dict:
-    profile = _validate_ssh_profile(profile)
-    if not profile.get("work_root"):
-        raise ValueError("no active project")
-    work_b64 = base64.b64encode(profile["work_root"].encode()).decode()
-    remote_code = f'''import base64,json,os,signal,time
-from pathlib import Path
-work=Path(base64.b64decode("{work_b64}").decode()).resolve(); process_file=work/"autopilot_process.json"
-if not process_file.is_file(): print(json.dumps({{"status":"not_running"}}))
-else:
- p=json.loads(process_file.read_text(encoding="utf-8")); pid=int(p.get("pid") or 0); alive=pid>0 and Path("/proc").joinpath(str(pid)).exists()
- if alive: os.killpg(pid,signal.SIGTERM)
- p.update({{"alive":False,"stopped_at":time.time()}}); process_file.write_text(json.dumps(p,indent=2),encoding="utf-8")
- status_file=work/"autopilot_status.json"
- if status_file.is_file():
-  try:
-   status=json.loads(status_file.read_text(encoding="utf-8")); status.update({{"status":"stopped","updated_at":__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()}}); status_file.write_text(json.dumps(status,ensure_ascii=False,indent=2),encoding="utf-8")
-  except (OSError,ValueError,TypeError): pass
- print(json.dumps({{"status":"stopped" if alive else "not_running","pid":pid}}))'''
-    return _ssh_json(profile, remote_code)
-
-
-class Handler(BaseHTTPRequestHandler):
-    server_version = "CycPepWebAdapter/0.1"
-
-    def _json(self, status: int, data=None, error=None):
-        body = {"request_id": f"req_{uuid.uuid4().hex[:12]}"}
-        body["data" if error is None else "error"] = data if error is None else error
-        encoded = json.dumps(body, ensure_ascii=False).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", os.environ.get("CYCPEP_UI_ORIGIN", "http://localhost:3000"))
-        self.send_header("Content-Length", str(len(encoded)))
-        self.end_headers(); self.wfile.write(encoded)
-
-    def _body(self):
-        size = int(self.headers.get("Content-Length", "0"))
-        return json.loads(self.rfile.read(size) or b"{}")
-
-    def do_OPTIONS(self):
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", os.environ.get("CYCPEP_UI_ORIGIN", "http://localhost:3000"))
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS")
-        self.end_headers()
-
-    def do_GET(self):
-        path = urlparse(self.path).path
-        try:
-            if path == "/api/v1/health":
-                return self._json(200, {"status": "ok", "adapter": "local"})
-            if path == "/api/v1/projects":
-                state = State.load(); projects = [{"kind": "runtime", "project_id": state.get("project_id"), "name": state.get("project")}]
-                if DRAFTS.exists():
-                    projects += [{"kind": "draft", "draft_id": p.stem, "project_id": d.get("project_id"), "name": d.get("name")}
-                                 for p in DRAFTS.glob("drf_*.json") for d in [_read_json(p)]]
-                return self._json(200, projects)
-            if path == "/api/v1/snapshot":
-                return self._json(200, local_snapshot())
-            artifact_match = re.fullmatch(r"/api/v1/artifacts/(art_[a-f0-9]{24})/coordinates", path)
-            if artifact_match:
-                artifact = ARTIFACTS.get(artifact_match.group(1))
-                if not artifact:
-                    return self._json(404, error={"code": "artifact_not_found", "message": "Verified artifact is not registered"})
-                payload = artifact["path"].read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "chemical/x-pdb" if artifact["format"] == "pdb" else "chemical/x-mmcif")
-                self.send_header("X-Artifact-SHA256", artifact["sha256"])
-                self.send_header("Cache-Control", "private, no-store")
-                self.send_header("Access-Control-Allow-Origin", os.environ.get("CYCPEP_UI_ORIGIN", "http://localhost:3000"))
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
-                return
-            match = re.fullmatch(r"/api/v1/project-drafts/(drf_[A-Za-z0-9]+)", path)
-            if match:
-                return self._json(200, _read_json(_draft_path(match.group(1))))
-            return self._json(404, error={"code": "not_found", "message": "Route not found"})
-        except FileNotFoundError:
-            return self._json(404, error={"code": "not_found", "message": "Resource not found"})
-        except Exception as exc:
-            return self._json(500, error={"code": "adapter_error", "message": str(exc)})
-
-    def do_POST(self):
-        path = urlparse(self.path).path
-        try:
-            body = self._body()
-            if path == "/api/v1/project-drafts":
-                draft_id = f"drf_{uuid.uuid4().hex[:12]}"
-                draft = TargetBootstrapper().create_draft(
-                    identifier=body["identifier"], identifier_type=body.get("identifier_type", "auto"),
-                    organism_id=int(body.get("organism_id", 9606)), epitope=body.get("epitope"),
-                    objective=body.get("objective", "binder"),
-                )
-                draft["draft_id"] = draft_id
-                _write_json(_draft_path(draft_id), draft)
-                return self._json(201, draft)
-            if path == "/api/v1/connections/ssh":
-                snapshot = ssh_snapshot(body)
-                connection_id = f"conn_{uuid.uuid4().hex[:12]}"
-                CONNECTIONS[connection_id] = {k: body[k] for k in (
-                    "host", "username", "port", "key_alias", "password", "workspace_root",
-                    "core_python", "design_python", "prediction_python",
-                ) if k in body}
-                return self._json(200, {"connection_id": connection_id, "snapshot": snapshot})
-            if path == "/api/v1/connections/ssh/snapshot":
-                profile = CONNECTIONS.get(body.get("connection_id"))
-                if not profile: raise FileNotFoundError("connection expired")
-                return self._json(200, ssh_snapshot(profile))
-            if path == "/api/v1/connections/ssh/projects/switch":
-                profile = CONNECTIONS.get(body.get("connection_id"))
-                if not profile: raise FileNotFoundError("connection expired")
-                result = ssh_switch_project(profile, body.get("slug", ""))
-                profile.update({key: result[key] for key in (
-                    "project_config_path", "data_dir", "evidence_dir", "work_root"
-                )})
-                return self._json(200, {**result, "snapshot": ssh_snapshot(profile)})
-            if path == "/api/v1/connections/ssh/project-drafts":
-                profile = CONNECTIONS.get(body.get("connection_id"))
-                if not profile: raise FileNotFoundError("connection expired")
-                return self._json(202, start_ssh_draft_job(profile, body))
-            if path == "/api/v1/connections/ssh/project-drafts/status":
-                return self._json(200, get_job(body.get("job_id", "")))
-            if path == "/api/v1/connections/ssh/project-drafts/approve":
-                profile = CONNECTIONS.get(body.get("connection_id"))
-                if not profile: raise FileNotFoundError("connection expired")
-                result = ssh_approve_remote_draft(profile, body.get("draft_id", ""))
-                profile.update({key: result[key] for key in (
-                    "project_config_path", "data_dir", "evidence_dir", "work_root"
-                )})
-                return self._json(200, {**result, "snapshot": ssh_snapshot(profile)})
-            if path in {"/api/v1/connections/ssh/workflow/start", "/api/v1/connections/ssh/workflow/retry"}:
-                profile = CONNECTIONS.get(body.get("connection_id"))
-                if not profile: raise FileNotFoundError("connection expired")
-                return self._json(202, ssh_start_workflow(profile, body))
-            if path == "/api/v1/connections/ssh/workflow/stop":
-                profile = CONNECTIONS.get(body.get("connection_id"))
-                if not profile: raise FileNotFoundError("connection expired")
-                return self._json(200, ssh_stop_workflow(profile))
-            match = re.fullmatch(r"/api/v1/project-drafts/(drf_[A-Za-z0-9]+)/approve", path)
-            if match:
-                force = bool(body.get("force"))
-                if force and os.environ.get("CYCPEP_ALLOW_FORCE_APPROVE") != "1":
-                    return self._json(403, error={
-                        "code": "force_approval_disabled",
-                        "message": "force approval requires CYCPEP_ALLOW_FORCE_APPROVE=1",
-                    })
-                return self._json(200, approve_draft(_draft_path(match.group(1)), force=force, justification=body.get("justification")))
-            return self._json(404, error={"code": "not_found", "message": "Route not found"})
-        except ReviewRequiredError as exc:
-            return self._json(409, error={"code": "review_required", "message": str(exc)})
-        except (BootstrapError, ValueError, KeyError, json.JSONDecodeError) as exc:
-            return self._json(400, error={"code": "validation_error", "message": str(exc)})
-        except FileNotFoundError:
-            return self._json(404, error={"code": "not_found", "message": "Resource not found"})
-        except Exception as exc:
-            return self._json(502, error={"code": "connection_failed", "message": str(exc)})
-
-    def do_PATCH(self):
-        match = re.fullmatch(r"/api/v1/project-drafts/(drf_[A-Za-z0-9]+)/targets/([^/]+)", urlparse(self.path).path)
-        if not match:
-            return self._json(404, error={"code": "not_found", "message": "Route not found"})
-        try:
-            return self._json(200, edit_target_draft(_draft_path(match.group(1)), match.group(2), self._body()))
-        except (BootstrapError, ValueError, KeyError) as exc:
-            return self._json(400, error={"code": "validation_error", "message": str(exc)})
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
-    args = parser.parse_args()
-    if not _bind_host_is_loopback(args.host) and os.environ.get("CYCPEP_ALLOW_INSECURE_REMOTE") != "1":
-        parser.error(
-            "binding outside loopback requires explicit CYCPEP_ALLOW_INSECURE_REMOTE=1; "
-            "the adapter has no authentication layer"
-        )
-    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
-
-
-if __name__ == "__main__":
-    main()
+ for candidß½y¶‰žËkºwµçH°€‰‘…Ñ…}‘¥Èˆ°€‰•Ù¥‘•¹•}‘¥Èˆ°€‰Ý½É­}É½½Ðˆ°4(€€€€€€€€‰½É•}ÁåÑ¡½¸ˆ°€‰‘•Í¥¹}ÁåÑ¡½¸ˆ°€‰ÁÉ•‘¥Ñ¥½¹}ÁåÑ¡½¸ˆ°4(€€€€¥ô°€¨©±¥µ¥ÑÌ°€‰…ÁÁÉ½Ù•ÈˆèÍÑÈ¡É•ÅÕ•ÍÐ¹•Ð ‰…ÁÁÉ½Ù•Èˆ¤½È€‰Ý•ˆµÕÍ•Èˆ¥lèÄÈát°4(€€€€€€€€‰©ÕÍÑ¥™¥…Ñ¥½¸ˆèÍÑÈ¡É•ÅÕ•ÍÐ¹•Ð ‰©ÕÍÑ¥™¥…Ñ¥½¸ˆ¤½È€‰UÍ•È…ÁÁÉ½Ù•™Õ±°…ÕÑ½µ…Ñ¥ŒÝ½É­™±½Ü¥¸åA•ÀMÑÕ‘¥¼ˆ¥lèÔÀÁuô4(€€€Á…å±½…‘}ˆØÐ€ô‰…Í”ØÐ¹ˆØÑ•¹½‘”¡©Í½¸¹‘ÕµÁÌ¡Á…å±½…¤¹•¹½‘” ¤¤¹‘•½‘” ¤4(€€€É•µ½Ñ•}½‘”€ô˜œœ¥µÁ½ÉÐ‰…Í”ØÐ±©Í½¸±½Ì±ÍÕ‰ÁÉ½•ÍÌ±ÍåÌ±Ñ¥µ”4)™É½´Á…Ñ¡±¥ˆ¥µÁ½ÉÐA…Ñ 4)Àõ©Í½¸¹±½…‘Ì¡‰…Í”ØÐ¹ˆØÑ‘•½‘” ‰íÁ…å±½…‘}ˆØÑôˆ¤¹‘•½‘” ¤¤ìÉ½½ÐõA…Ñ ¡½Ì¹Á…Ñ ¹•áÁ…¹‘ÕÍ•È¡Ál‰Ý½É­ÍÁ…•}É½½Ð‰t¤¤¹É•Í½±Ù” ¤ìÝ½É¬õA…Ñ ¡Ál‰Ý½É­}É½½Ð‰t¤¹É•Í½±Ù” ¤ìÝ½É¬¹µ­‘¥È¡Á…É•¹ÑÌõQÉÕ”±•á¥ÍÑ}½¬õQÉÕ”¤ìÁÉ½•ÍÍ}™¥±”õÝ½É¬¼‰…ÕÑ½Á¥±½Ñ}ÁÉ½•ÍÌ¹©Í½¸ˆ4)¥˜ÁÉ½•ÍÍ}™¥±”¹¥Í}™¥±” ¤è4(½±õ©Í½¸¹±½…‘Ì¡ÁÉ½•ÍÍ}™¥±”¹É•…‘}Ñ•áÐ¡•¹½‘¥¹œô‰ÕÑ˜´àˆ¤¤ì½±‘}Á¥õ¥¹Ð¡½±¹•Ð ‰Á¥ˆ¤½È€À¤4(¥˜½±‘}Á¥øÀ…¹A…Ñ  ˆ½ÁÉ½Œˆ¤¹©½¥¹Á…Ñ ¡ÍÑÈ¡½±‘}Á¥¤¤¹•á¥ÍÑÌ ¤èÉ…¥Í”IÕ¹Ñ¥µ•ÉÉ½È ‹¢¾—¦†çžn»–ÞËšr'–Þ—’ösšÖš¶–r£¢þC¢†0ˆ¤4)‘•™…Õ±ÑÌõíì‰½É•}ÁåÑ¡½¸ˆèˆ½É½½Ð½‘…µ½‘•°µÑµÀ½•¹ÙÌ½¹½Ù…Á•ÁÑ¥‘”µ½É”½‰¥¸½ÁåÑ¡½¸ˆ°‰‘•Í¥¹}ÁåÑ¡½¸ˆèˆ½É½½Ð½‘…µ½‘•°µÑµÀ½•¹ÙÌ½É™‘¥™™ÕÍ¥½¸µ‘•Í¥¸½‰¥¸½ÁåÑ¡½¸ˆ°‰ÁÉ•‘¥Ñ¥½¹}ÁåÑ¡½¸ˆèˆ½É½½Ð½‘…µ½‘•°µÑµÀ½•¹ÙÌ½åÁ•ÀµÁÉ•‘¥Ñ¥½¸½‰¥¸½ÁåÑ¡½¸‰õô4)™½È­•ä±Ù…±Õ”¥¸‘•™…Õ±ÑÌ¹¥Ñ•µÌ ¤è4(¥˜¹½ÐÀ¹•Ð¡­•ä¤…¹A…Ñ ¡Ù…±Õ”¤¹¥Í}™¥±” ¤èÁm­•åtõÙ…±Õ”4)ÁåÑ¡½¸õÀ¹•Ð ‰½É•}ÁåÑ¡½¸ˆ¤¥˜À¹•Ð ‰½É•}ÁåÑ¡½¸ˆ¤…¹A…Ñ ¡Ál‰½É•}ÁåÑ¡½¸‰t¤¹¥Í}™¥±” ¤•±Í”ÍåÌ¹•á•ÕÑ…‰±”4)…ÉØõmÁåÑ¡½¸°ˆµ´ˆ°‰•á•ÕÑ¥½¸¹…ÕÑ½Á¥±½Ðˆ°ˆ´µÁÉ½©•Ðµ½¹™¥œˆ±Ál‰ÁÉ½©•Ñ}½¹™¥}Á…Ñ ‰t°ˆ´µ‘…Ñ„µ‘¥Èˆ±Ál‰‘…Ñ…}‘¥È‰t°ˆ´µ•Ù¥‘•¹”µ‘¥Èˆ±Ál‰•Ù¥‘•¹•}‘¥È‰t°ˆ´µÝ½É¬µÉ½½Ðˆ±Ál‰Ý½É­}É½½Ð‰t°ˆ´µ…ÁÁÉ½Ù•Èˆ±Ál‰…ÁÁÉ½Ù•È‰t°ˆ´µ©ÕÍÑ¥™¥…Ñ¥½¸ˆ±Ál‰©ÕÍÑ¥™¥…Ñ¥½¸‰t°ˆ´µµ…àµ‘•Í¥¸µÁÉ½Á½Í…±Ìˆ±ÍÑÈ¡Ál‰µ…á}‘•Í¥¹}ÁÉ½Á½Í…±Ì‰t¤°ˆ´µµ…àµÁÉ•‘¥Ñ¥½¸µ…¹‘¥‘…Ñ•Ìˆ±ÍÑÈ¡Ál‰µ…á}ÁÉ•‘¥Ñ¥½¹}…¹‘¥‘…Ñ•Ì‰t¤°ˆ´µµ…àµÁÔµµ¥¹ÕÑ•Ìˆ±ÍÑÈ¡Ál‰µ…á}ÁÕ}µ¥¹ÕÑ•Ì‰t¤°ˆ´µµ…àµÉ½Õ¹‘Ìˆ±ÍÑÈ¡Ál‰µ…á}É½Õ¹‘Ì‰t¥t4)™½È™±…œ±­•ä¥¸€  ˆ´µ½É”µÁåÑ¡½¸ˆ°‰½É•}ÁåÑ¡½¸ˆ¤° ˆ´µ‘•Í¥¸µÁåÑ¡½¸ˆ°‰‘•Í¥¹}ÁåÑ¡½¸ˆ¤° ˆ´µÁÉ•‘¥Ñ¥½¸µÁåÑ¡½¸ˆ°‰ÁÉ•‘¥Ñ¥½¹}ÁåÑ¡½¸ˆ¤¤è4(¥˜À¹•Ð¡­•ä¤è…ÉØ¹•áÑ•¹¡m™±…œ±Ám­•åut¤4)¡¥±‘}•¹Øõ½Ì¹•¹Ù¥É½¸¹½Áä ¤ì•¹Ù}™¥±”õA…Ñ ¹¡½µ” ¤¼ˆ¹½¹™¥œˆ¼‰åÁ•Àˆ¼‰ÉÕ¹Ñ¥µ”¹•¹Øˆì…±±½Ý•õíì‰MQA}A%}-dˆ°‰MQA}	M}UI0ˆ°‰=A9%}A%}-dˆ°‰=A9%}	M}UI0ˆ°‰eAA}115}A%}-dˆ°‰eAA}115}	M}UI0‰õô4)¥˜•¹Ù}™¥±”¹¥Í}™¥±” ¤è4(™½È±¥¹”¥¸•¹Ù}™¥±”¹É•…‘}Ñ•áÐ¡•¹½‘¥¹œô‰ÕÑ˜´àˆ¤¹ÍÁ±¥Ñ±¥¹•Ì ¤è4(€¥˜€ˆôˆ¹½Ð¥¸±¥¹”½È±¥¹”¹±ÍÑÉ¥À ¤¹ÍÑ…ÉÑÍÝ¥Ñ  ˆŒˆ¤è½¹Ñ¥¹Õ”4(€­•ä±Ù…±Õ”õ±¥¹”¹ÍÁ±¥Ð ˆôˆ°Ä¤4(€¥˜­•ä¹ÍÑÉ¥À ¤¥¸…±±½Ý•è¡¥±‘}•¹Ùm­•ä¹ÍÑÉ¥À ¥tõÙ…±Õ”¹ÍÑÉ¥À ¤4)±½œõ½Á•¸¡Ý½É¬¼‰…ÕÑ½Á¥±½Ð¹±½œˆ°‰„ˆ±•¹½‘¥¹œô‰ÕÑ˜´àˆ¤ìÁÉ½ŒõÍÕ‰ÁÉ½•ÍÌ¹A½Á•¸¡…ÉØ±ÝõÉ½½Ð±•¹Øõ¡¥±‘}•¹Ø±ÍÑ‘¥¸õÍÕ‰ÁÉ½•ÍÌ¹Y9U10±ÍÑ‘½ÕÐõ±½œ±ÍÑ‘•ÉÈõÍÕ‰ÁÉ½•ÍÌ¹MQ=UP±ÍÑ…ÉÑ}¹•Ý}Í•ÍÍ¥½¸õQÉÕ”±±½Í•}™‘ÌõQÉÕ”¤ìÁÉ½•ÍÍ}™¥±”¹ÝÉ¥Ñ•}Ñ•áÐ¡©Í½¸¹‘ÕµÁÌ¡íì‰Á¥ˆéÁÉ½Œ¹Á¥°‰ÍÑ…ÉÑ•‘}…ÐˆéÑ¥µ”¹Ñ¥µ” ¤°‰…±¥Ù”ˆéQÉÕ•õô±¥¹‘•¹ÐôÈ¤±•¹½‘¥¹œô‰ÕÑ˜´àˆ¤ìÁÉ¥¹Ð¡©Í½¸¹‘ÕµÁÌ¡íì‰Á¥ˆéÁÉ½Œ¹Á¥°‰ÍÑ…ÑÕÌˆè‰ÉÕ¹¹¥¹œ‰õô¤¤œœœ4(€€€É•ÑÕÉ¸}ÍÍ¡}©Í½¸¡ÁÉ½™¥±”°É•µ½Ñ•}½‘”°½µµ…¹‘}Ñ¥µ•½ÕÐôÌÀ¤4(4(4)‘•˜ÍÍ¡}ÍÑ½Á}Ý½É­™±½Ü¡ÁÉ½™¥±”è‘¥Ð¤€´ø‘¥Ðè4(€€€ÁÉ½™¥±”€ô}Ù…±¥‘…Ñ•}ÍÍ¡}ÁÉ½™¥±”¡ÁÉ½™¥±”¤4(€€€¥˜¹½ÐÁÉ½™¥±”¹•Ð ‰Ý½É­}É½½Ðˆ¤è4(€€€€€€€É…¥Í”Y…±Õ•ÉÉ½È ‰¹¼…Ñ¥Ù”ÁÉ½©•Ðˆ¤4(€€€Ý½É­}ˆØÐ€ô‰…Í”ØÐ¹ˆØÑ•¹½‘”¡ÁÉ½™¥±•l‰Ý½É­}É½½Ð‰t¹•¹½‘” ¤¤¹‘•½‘” ¤4(€€€É•µ½Ñ•}½‘”€ô˜œœ¥µÁ½ÉÐ‰…Í”ØÐ±©Í½¸±½Ì±Í¥¹…°±Ñ¥µ”4)™É½´Á…Ñ¡±¥ˆ¥µÁ½ÉÐA…Ñ 4)Ý½É¬õA…Ñ ¡‰…Í”ØÐ¹ˆØÑ‘•½‘” ‰íÝ½É­}ˆØÑôˆ¤¹‘•½‘” ¤¤¹É•Í½±Ù” ¤ìÁÉ½•ÍÍ}™¥±”õÝ½É¬¼‰…ÕÑ½Á¥±½Ñ}ÁÉ½•ÍÌ¹©Í½¸ˆ4)¥˜¹½ÐÁÉ½•ÍÍ}™¥±”¹¥Í}™¥±” ¤èÁÉ¥¹Ð¡©Í½¸¹‘ÕµÁÌ¡íì‰ÍÑ…ÑÕÌˆè‰¹½Ñ}ÉÕ¹¹¥¹œ‰õô¤¤4)•±Í”è4(Àõ©Í½¸¹±½…‘Ì¡ÁÉ½•ÍÍ}™¥±”¹É•…‘}Ñ•áÐ¡•¹½‘¥¹œô‰ÕÑ˜´àˆ¤¤ìÁ¥õ¥¹Ð¡À¹•Ð ‰Á¥ˆ¤½È€À¤ì…±¥Ù”õÁ¥øÀ…¹A…Ñ  ˆ½ÁÉ½Œˆ¤¹©½¥¹Á…Ñ ¡ÍÑÈ¡Á¥¤¤¹•á¥ÍÑÌ ¤4(¥˜…±¥Ù”è½Ì¹­¥±±Áœ¡Á¥±Í¥¹…°¹M%QI4¤4(À¹ÕÁ‘…Ñ”¡íì‰…±¥Ù”ˆé…±Í”°‰ÍÑ½ÁÁ•‘}…ÐˆéÑ¥µ”¹Ñ¥µ” ¥õô¤ìÁÉ½•ÍÍ}™¥±”¹ÝÉ¥Ñ•}Ñ•áÐ¡©Í½¸¹‘ÕµÁÌ¡À±¥¹‘•¹ÐôÈ¤±•¹½‘¥¹œô‰ÕÑ˜´àˆ¤4(ÍÑ…ÑÕÍ}™¥±”õÝ½É¬¼‰…ÕÑ½Á¥±½Ñ}ÍÑ…ÑÕÌ¹©Í½¸ˆ4(¥˜ÍÑ…ÑÕÍ}™¥±”¹¥Í}™¥±” ¤è4(€ÑÉäè4(€€ÍÑ…ÑÕÌõ©Í½¸¹±½…‘Ì¡ÍÑ…ÑÕÍ}™¥±”¹É•…‘}Ñ•áÐ¡•¹½‘¥¹œô‰ÕÑ˜´àˆ¤¤ìÍÑ…ÑÕÌ¹ÕÁ‘…Ñ”¡íì‰ÍÑ…ÑÕÌˆè‰ÍÑ½ÁÁ•ˆ°‰ÕÁ‘…Ñ•‘}…Ðˆé}}¥µÁ½ÉÑ}| ‰‘…Ñ•Ñ¥µ”ˆ¤¹‘…Ñ•Ñ¥µ”¹¹½Ü¡}}¥µÁ½ÉÑ}| ‰‘…Ñ•Ñ¥µ”ˆ¤¹Ñ¥µ•é½¹”¹ÕÑŒ¤¹¥Í½™½Éµ…Ð ¥õô¤ìÍÑ…ÑÕÍ}™¥±”¹ÝÉ¥Ñ•}Ñ•áÐ¡©Í½¸¹‘ÕµÁÌ¡ÍÑ…ÑÕÌ±•¹ÍÕÉ•}…Í¥¤õ…±Í”±¥¹‘•¹ÐôÈ¤±•¹½‘¥¹œô‰ÕÑ˜´àˆ¤4(€•á•ÁÐ€¡=MÉÉ½È±Y…±Õ•ÉÉ½È±QåÁ•ÉÉ½È¤èÁ…ÍÌ4(ÁÉ¥¹Ð¡©Í½¸¹‘ÕµÁÌ¡íì‰ÍÑ…ÑÕÌˆè‰ÍÑ½ÁÁ•ˆ¥˜…±¥Ù”•±Í”€‰¹½Ñ}ÉÕ¹¹¥¹œˆ°‰Á¥ˆéÁ¥‘õô¤¤œœœ4(€€€É•ÑÕÉ¸}ÍÍ¡}©Í½¸¡ÁÉ½™¥±”°É•µ½Ñ•}½‘”¤4(4(4)±…ÍÌ!…¹‘±•È¡	…Í•!QQAI•ÅÕ•ÍÑ!…¹‘±•È¤è(€€€Í•ÉÙ•É}Ù•ÉÍ¥½¸€ô€‰åA•Á]•‰‘…ÁÑ•È¼À¸Äˆ((€€€‘•˜}½ÉÍ}½É¥¥¸¡Í•±˜¤€´øÍÑÈè(€€€€€€€É•ÅÕ•ÍÑ•€ôÍ•±˜¹¡•…‘•ÉÌ¹•Ð ‰=É¥¥¸ˆ°€ˆˆ¤(€€€€€€€½¹™¥ÕÉ•€ô½Ì¹•¹Ù¥É½¸¹•Ð ‰eAA}U%}=I%%8ˆ°€‰¡ÑÑÀè¼¼ÄÈÜ¸À¸À¸ÄèÐÄÜÌˆ¤(€€€€€€€…±±½Ý•€ôí½¹™¥ÕÉ•°€‰¡ÑÑÀè¼¼ÄÈÜ¸À¸À¸ÄèÐÄÜÌˆ°€‰¡ÑÑÀè¼½±½…±¡½ÍÐèÐÄÜÌˆ°€‰¡ÑÑÀè¼½±½…±¡½ÍÐèÌÀÀÀ‰ô(€€€€€€€É•ÑÕÉ¸É•ÅÕ•ÍÑ•¥˜É•ÅÕ•ÍÑ•¥¸…±±½Ý••±Í”½¹™¥ÕÉ•(4(€€€‘•˜}©Í½¸¡Í•±˜°ÍÑ…ÑÕÌè¥¹Ð°‘…Ñ„õ9½¹”°•ÉÉ½Èõ9½¹”¤è4(€€€€€€€‰½‘ä€ôì‰É•ÅÕ•ÍÑ}¥ˆè˜‰É•Å}íÕÕ¥¹ÕÕ¥Ð ¤¹¡•álèÄÉuô‰ô4(€€€€€€€‰½‘ål‰‘…Ñ„ˆ¥˜•ÉÉ½È¥Ì9½¹”•±Í”€‰•ÉÉ½È‰t€ô‘…Ñ„¥˜•ÉÉ½È¥Ì9½¹”•±Í”•ÉÉ½È4(€€€€€€€•¹½‘•€ô©Í½¸¹‘ÕµÁÌ¡‰½‘ä°•¹ÍÕÉ•}…Í¥¤õ…±Í”¤¹•¹½‘” ¤4(€€€€€€€Í•±˜¹Í•¹‘}É•ÍÁ½¹Í”¡ÍÑ…ÑÕÌ¤4(€€€€€€€Í•±˜¹Í•¹‘}¡•…‘•È ‰½¹Ñ•¹ÐµQåÁ”ˆ°€‰…ÁÁ±¥…Ñ¥½¸½©Í½¸ì¡…ÉÍ•ÐõÕÑ˜´àˆ¤4(€€€€€€€Í•±˜¹Í•¹‘}¡•…‘•È ‰…¡”µ½¹ÑÉ½°ˆ°€‰¹¼µÍÑ½É”ˆ¤4(€€€€€€€Í•±˜¹Í•¹‘}¡•…‘•È ‰•ÍÌµ½¹ÑÉ½°µ±±½Üµ=É¥¥¸ˆ°Í•±˜¹}½ÉÍ}½É¥¥¸ ¤¤(€€€€€€€Í•±˜¹Í•¹‘}¡•…‘•È ‰½¹Ñ•¹Ðµ1•¹Ñ ˆ°ÍÑÈ¡±•¸¡•¹½‘•¤¤¤4(€€€€€€€Í•±˜¹•¹‘}¡•…‘•ÉÌ ¤ìÍ•±˜¹Ý™¥±”¹ÝÉ¥Ñ”¡•¹½‘•¤4(4(€€€‘•˜}‰½‘ä¡Í•±˜¤è4(€€€€€€€Í¥é”€ô¥¹Ð¡Í•±˜¹¡•…‘•ÉÌ¹•Ð ‰½¹Ñ•¹Ðµ1•¹Ñ ˆ°€ˆÀˆ¤¤4(€€€€€€€É•ÑÕÉ¸©Í½¸¹±½…‘Ì¡Í•±˜¹É™¥±”¹É•…¡Í¥é”¤½Èˆ‰íôˆ¤4(4(€€€‘•˜‘½}=AQ%=9L¡Í•±˜¤è4(€€€€€€€Í•±˜¹Í•¹‘}É•ÍÁ½¹Í” ÈÀÐ¤4(€€€€€€€Í•±˜¹Í•¹‘}¡•…‘•È ‰•ÍÌµ½¹ÑÉ½°µ±±½Üµ=É¥¥¸ˆ°Í•±˜¹}½ÉÍ}½É¥¥¸ ¤¤(€€€€€€€Í•±˜¹Í•¹‘}¡•…‘•È ‰•ÍÌµ½¹ÑÉ½°µ±±½Üµ!•…‘•ÉÌˆ°€‰½¹Ñ•¹ÐµQåÁ”ˆ¤4(€€€€€€€Í•±˜¹Í•¹‘}¡•…‘•È ‰•ÍÌµ½¹ÑÉ½°µ±±½Üµ5•Ñ¡½‘Ìˆ°€‰P±A=MP±AQ ±=AQ%=9Lˆ¤4(€€€€€€€Í•±˜¹•¹‘}¡•…‘•ÉÌ ¤4(4(€€€‘•˜‘½}P¡Í•±˜¤è4(€€€€€€€Á…Ñ €ôÕÉ±Á…ÉÍ”¡Í•±˜¹Á…Ñ ¤¹Á…Ñ 4(€€€€€€€ÑÉäè4(€€€€€€€€€€€¥˜Á…Ñ €ôô€ˆ½…Á¤½ØÄ½¡•…±Ñ ˆè4(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÀ°ì‰ÍÑ…ÑÕÌˆè€‰½¬ˆ°€‰…‘…ÁÑ•Èˆè€‰±½…°‰ô¤4(€€€€€€€€€€€¥˜Á…Ñ €ôô€ˆ½…Á¤½ØÄ½ÁÉ½©•ÑÌˆè4(€€€€€€€€€€€€€€€ÍÑ…Ñ”€ôMÑ…Ñ”¹±½… ¤ìÁÉ½©•ÑÌ€ômì‰­¥¹ˆè€‰ÉÕ¹Ñ¥µ”ˆ°€‰ÁÉ½©•Ñ}¥ˆèÍÑ…Ñ”¹•Ð ‰ÁÉ½©•Ñ}¥ˆ¤°€‰¹…µ”ˆèÍÑ…Ñ”¹•Ð ‰ÁÉ½©•Ðˆ¥õt4(€€€€€€€€€€€€€€€¥˜IQL¹•á¥ÍÑÌ ¤è4(€€€€€€€€€€€€€€€€€€€ÁÉ½©•ÑÌ€¬ômì‰­¥¹ˆè€‰‘É…™Ðˆ°€‰‘É…™Ñ}¥ˆèÀ¹ÍÑ•´°€‰ÁÉ½©•Ñ}¥ˆè¹•Ð ‰ÁÉ½©•Ñ}¥ˆ¤°€‰¹…µ”ˆè¹•Ð ‰¹…µ”ˆ¥ô4(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€™½ÈÀ¥¸IQL¹±½ˆ ‰‘É™|¨¹©Í½¸ˆ¤™½È¥¸m}É•…‘}©Í½¸¡À¥ut4(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÀ°ÁÉ½©•ÑÌ¤4(€€€€€€€€€€€¥˜Á…Ñ €ôô€ˆ½…Á¤½ØÄ½Í¹…ÁÍ¡½Ðˆè4(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÀ°±½…±}Í¹…ÁÍ¡½Ð ¤¤4(€€€€€€€€€€€…ÉÑ¥™…Ñ}µ…Ñ €ôÉ”¹™Õ±±µ…Ñ ¡Èˆ½…Á¤½ØÄ½…ÉÑ¥™…ÑÌ¼¡…ÉÑ}m„µ˜À´åuìÈÑô¤½½½É‘¥¹…Ñ•Ìˆ°Á…Ñ ¤4(€€€€€€€€€€€¥˜…ÉÑ¥™…Ñ}µ…Ñ è4(€€€€€€€€€€€€€€€…ÉÑ¥™…Ð€ôIQ%QL¹•Ð¡…ÉÑ¥™…Ñ}µ…Ñ ¹É½ÕÀ Ä¤¤4(€€€€€€€€€€€€€€€¥˜¹½Ð…ÉÑ¥™…Ðè4(€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÐÀÐ°•ÉÉ½Èõì‰½‘”ˆè€‰…ÉÑ¥™…Ñ}¹½Ñ}™½Õ¹ˆ°€‰µ•ÍÍ…”ˆè€‰Y•É¥™¥•…ÉÑ¥™…Ð¥Ì¹½ÐÉ•¥ÍÑ•É•‰ô¤4(€€€€€€€€€€€€€€€Á…å±½…€ô…ÉÑ¥™…Ñl‰Á…Ñ ‰t¹É•…‘}‰åÑ•Ì ¤4(€€€€€€€€€€€€€€€Í•±˜¹Í•¹‘}É•ÍÁ½¹Í” ÈÀÀ¤4(€€€€€€€€€€€€€€€Í•±˜¹Í•¹‘}¡•…‘•È ‰½¹Ñ•¹ÐµQåÁ”ˆ°€‰¡•µ¥…°½àµÁ‘ˆˆ¥˜…ÉÑ¥™…Ñl‰™½Éµ…Ð‰t€ôô€‰Á‘ˆˆ•±Í”€‰¡•µ¥…°½àµµµ¥˜ˆ¤4(€€€€€€€€€€€€€€€Í•±˜¹Í•¹‘}¡•…‘•È ‰`µÉÑ¥™…ÐµM!ÈÔØˆ°…ÉÑ¥™…Ñl‰Í¡„ÈÔØ‰t¤4(€€€€€€€€€€€€€€€Í•±˜¹Í•¹‘}¡•…‘•È ‰…¡”µ½¹ÑÉ½°ˆ°€‰ÁÉ¥Ù…Ñ”°¹¼µÍÑ½É”ˆ¤4(€€€€€€€€€€€€€€€Í•±˜¹Í•¹‘}¡•…‘•È ‰•ÍÌµ½¹ÑÉ½°µ±±½Üµ=É¥¥¸ˆ°Í•±˜¹}½ÉÍ}½É¥¥¸ ¤¤(€€€€€€€€€€€€€€€Í•±˜¹Í•¹‘}¡•…‘•È ‰½¹Ñ•¹Ðµ1•¹Ñ ˆ°ÍÑÈ¡±•¸¡Á…å±½…¤¤¤4(€€€€€€€€€€€€€€€Í•±˜¹•¹‘}¡•…‘•ÉÌ ¤4(€€€€€€€€€€€€€€€Í•±˜¹Ý™¥±”¹ÝÉ¥Ñ”¡Á…å±½…¤4(€€€€€€€€€€€€€€€É•ÑÕÉ¸4(€€€€€€€€€€€µ…Ñ €ôÉ”¹™Õ±±µ…Ñ ¡Èˆ½…Á¤½ØÄ½ÁÉ½©•Ðµ‘É…™ÑÌ¼¡‘É™}mµi„µèÀ´åt¬¤ˆ°Á…Ñ ¤4(€€€€€€€€€€€¥˜µ…Ñ è4(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÀ°}É•…‘}©Í½¸¡}‘É…™Ñ}Á…Ñ ¡µ…Ñ ¹É½ÕÀ Ä¤¤¤¤4(€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÐÀÐ°•ÉÉ½Èõì‰½‘”ˆè€‰¹½Ñ}™½Õ¹ˆ°€‰µ•ÍÍ…”ˆè€‰I½ÕÑ”¹½Ð™½Õ¹‰ô¤4(€€€€€€€•á•ÁÐ¥±•9½Ñ½Õ¹‘ÉÉ½Èè4(€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÐÀÐ°•ÉÉ½Èõì‰½‘”ˆè€‰¹½Ñ}™½Õ¹ˆ°€‰µ•ÍÍ…”ˆè€‰I•Í½ÕÉ”¹½Ð™½Õ¹‰ô¤4(€€€€€€€•á•ÁÐá•ÁÑ¥½¸…Ì•áŒè4(€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÔÀÀ°•ÉÉ½Èõì‰½‘”ˆè€‰…‘…ÁÑ•É}•ÉÉ½Èˆ°€‰µ•ÍÍ…”ˆèÍÑÈ¡•áŒ¥ô¤4(4(€€€‘•˜‘½}A=MP¡Í•±˜¤è4(€€€€€€€Á…Ñ €ôÕÉ±Á…ÉÍ”¡Í•±˜¹Á…Ñ ¤¹Á…Ñ 4(€€€€€€€ÑÉäè4(€€€€€€€€€€€‰½‘ä€ôÍ•±˜¹}‰½‘ä ¤4(€€€€€€€€€€€¥˜Á…Ñ €ôô€ˆ½…Á¤½ØÄ½ÁÉ½©•Ðµ‘É…™ÑÌˆè4(€€€€€€€€€€€€€€€‘É…™Ñ}¥€ô˜‰‘É™}íÕÕ¥¹ÕÕ¥Ð ¤¹¡•álèÄÉuôˆ4(€€€€€€€€€€€€€€€‘É…™Ð€ôQ…É•Ñ	½½ÑÍÑÉ…ÁÁ•È ¤¹É•…Ñ•}‘É…™Ð 4(€€€€€€€€€€€€€€€€€€€¥‘•¹Ñ¥™¥•Èõ‰½‘ål‰¥‘•¹Ñ¥™¥•È‰t°¥‘•¹Ñ¥™¥•É}ÑåÁ”õ‰½‘ä¹•Ð ‰¥‘•¹Ñ¥™¥•É}ÑåÁ”ˆ°€‰…ÕÑ¼ˆ¤°4(€€€€€€€€€€€€€€€€€€€½É…¹¥Íµ}¥õ¥¹Ð¡‰½‘ä¹•Ð ‰½É…¹¥Íµ}¥ˆ°€äØÀØ¤¤°•Á¥Ñ½Á”õ‰½‘ä¹•Ð ‰•Á¥Ñ½Á”ˆ¤°4(€€€€€€€€€€€€€€€€€€€½‰©•Ñ¥Ù”õ‰½‘ä¹•Ð ‰½‰©•Ñ¥Ù”ˆ°€‰‰¥¹‘•Èˆ¤°4(€€€€€€€€€€€€€€€€¤4(€€€€€€€€€€€€€€€‘É…™Ñl‰‘É…™Ñ}¥‰t€ô‘É…™Ñ}¥4(€€€€€€€€€€€€€€€}ÝÉ¥Ñ•}©Í½¸¡}‘É…™Ñ}Á…Ñ ¡‘É…™Ñ}¥¤°‘É…™Ð¤4(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÄ°‘É…™Ð¤4(€€€€€€€€€€€¥˜Á…Ñ €ôô€ˆ½…Á¤½ØÄ½½¹¹•Ñ¥½¹Ì½ÍÍ ˆè4(€€€€€€€€€€€€€€€Í¹…ÁÍ¡½Ð€ôÍÍ¡}Í¹…ÁÍ¡½Ð¡‰½‘ä¤4(€€€€€€€€€€€€€€€½¹¹•Ñ¥½¹}¥€ô˜‰½¹¹}íÕÕ¥¹ÕÕ¥Ð ¤¹¡•álèÄÉuôˆ4(€€€€€€€€€€€€€€€=99Q%=9Mm½¹¹•Ñ¥½¹}¥‘t€ôí¬è‰½‘åm­t™½È¬¥¸€ 4(€€€€€€€€€€€€€€€€€€€€‰¡½ÍÐˆ°€‰ÕÍ•É¹…µ”ˆ°€‰Á½ÉÐˆ°€‰­•å}…±¥…Ìˆ°€‰Á…ÍÍÝ½Éˆ°€‰Ý½É­ÍÁ…•}É½½Ðˆ°4(€€€€€€€€€€€€€€€€€€€€‰½É•}ÁåÑ¡½¸ˆ°€‰‘•Í¥¹}ÁåÑ¡½¸ˆ°€‰ÁÉ•‘¥Ñ¥½¹}ÁåÑ¡½¸ˆ°4(€€€€€€€€€€€€€€€€¤¥˜¬¥¸‰½‘åô4(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÀ°ì‰½¹¹•Ñ¥½¹}¥ˆè½¹¹•Ñ¥½¹}¥°€‰Í¹…ÁÍ¡½ÐˆèÍ¹…ÁÍ¡½Ñô¤4(€€€€€€€€€€€¥˜Á…Ñ €ôô€ˆ½…Á¤½ØÄ½½¹¹•Ñ¥½¹Ì½ÍÍ ½Í¹…ÁÍ¡½Ðˆè4(€€€€€€€€€€€€€€€ÁÉ½™¥±”€ô=99Q%=9L¹•Ð¡‰½‘ä¹•Ð ‰½¹¹•Ñ¥½¹}¥ˆ¤¤4(€€€€€€€€€€€€€€€¥˜¹½ÐÁÉ½™¥±”èÉ…¥Í”¥±•9½Ñ½Õ¹‘ÉÉ½È ‰½¹¹•Ñ¥½¸•áÁ¥É•ˆ¤4(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÀ°ÍÍ¡}Í¹…ÁÍ¡½Ð¡ÁÉ½™¥±”¤¤4(€€€€€€€€€€€¥˜Á…Ñ €ôô€ˆ½…Á¤½ØÄ½½¹¹•Ñ¥½¹Ì½ÍÍ ½ÁÉ½©•ÑÌ½ÍÝ¥Ñ ˆè4(€€€€€€€€€€€€€€€ÁÉ½™¥±”€ô=99Q%=9L¹•Ð¡‰½‘ä¹•Ð ‰½¹¹•Ñ¥½¹}¥ˆ¤¤4(€€€€€€€€€€€€€€€¥˜¹½ÐÁÉ½™¥±”èÉ…¥Í”¥±•9½Ñ½Õ¹‘ÉÉ½È ‰½¹¹•Ñ¥½¸•áÁ¥É•ˆ¤4(€€€€€€€€€€€€€€€É•ÍÕ±Ð€ôÍÍ¡}ÍÝ¥Ñ¡}ÁÉ½©•Ð¡ÁÉ½™¥±”°‰½‘ä¹•Ð ‰Í±Õœˆ°€ˆˆ¤¤4(€€€€€€€€€€€€€€€ÁÉ½™¥±”¹ÕÁ‘…Ñ”¡í­•äèÉ•ÍÕ±Ñm­•åt™½È­•ä¥¸€ 4(€€€€€€€€€€€€€€€€€€€€‰ÁÉ½©•Ñ}½¹™¥}Á…Ñ ˆ°€‰‘…Ñ…}‘¥Èˆ°€‰•Ù¥‘•¹•}‘¥Èˆ°€‰Ý½É­}É½½Ðˆ4(€€€€€€€€€€€€€€€€¥ô¤4(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÀ°ì¨©É•ÍÕ±Ð°€‰Í¹…ÁÍ¡½ÐˆèÍÍ¡}Í¹…ÁÍ¡½Ð¡ÁÉ½™¥±”¥ô¤4(€€€€€€€€€€€¥˜Á…Ñ €ôô€ˆ½…Á¤½ØÄ½½¹¹•Ñ¥½¹Ì½ÍÍ ½ÁÉ½©•Ðµ‘É…™ÑÌˆè4(€€€€€€€€€€€€€€€ÁÉ½™¥±”€ô=99Q%=9L¹•Ð¡‰½‘ä¹•Ð ‰½¹¹•Ñ¥½¹}¥ˆ¤¤4(€€€€€€€€€€€€€€€¥˜¹½ÐÁÉ½™¥±”èÉ…¥Í”¥±•9½Ñ½Õ¹‘ÉÉ½È ‰½¹¹•Ñ¥½¸•áÁ¥É•ˆ¤4(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÈ°ÍÑ…ÉÑ}ÍÍ¡}‘É…™Ñ}©½ˆ¡ÁÉ½™¥±”°‰½‘ä¤¤4(€€€€€€€€€€€¥˜Á…Ñ €ôô€ˆ½…Á¤½ØÄ½½¹¹•Ñ¥½¹Ì½ÍÍ ½ÁÉ½©•Ðµ‘É…™ÑÌ½ÍÑ…ÑÕÌˆè(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÀ°•Ñ}©½ˆ¡‰½‘ä¹•Ð ‰©½‰}¥ˆ°€ˆˆ¤¤¤(€€€€€€€€€€€¥˜Á…Ñ €ôô€ˆ½…Á¤½ØÄ½½¹¹•Ñ¥½¹Ì½ÍÍ ½ÁÉ½©•Ðµ‘É…™ÑÌ½É•Í½±Ù•µ…¹‘¥‘…Ñ”ˆè(€€€€€€€€€€€€€€€ÁÉ½™¥±”€ô=99Q%=9L¹•Ð¡‰½‘ä¹•Ð ‰½¹¹•Ñ¥½¹}¥ˆ¤¤(€€€€€€€€€€€€€€€¥˜¹½ÐÁÉ½™¥±”èÉ…¥Í”¥±•9½Ñ½Õ¹‘ÉÉ½È ‰½¹¹•Ñ¥½¸•áÁ¥É•ˆ¤(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÀ°ÍÍ¡}Í•±•Ñ}É•Í½±Ù•‘}…¹‘¥‘…Ñ” (€€€€€€€€€€€€€€€€€€€ÁÉ½™¥±”°‰½‘ä¹•Ð ‰‘É…™Ñ}¥ˆ°€ˆˆ¤°‰½‘ä¹•Ð ‰…¹‘¥‘…Ñ•}É•˜ˆ°€ˆˆ¤(€€€€€€€€€€€€€€€€¤¤(€€€€€€€€€€€¥˜Á…Ñ €ôô€ˆ½…Á¤½ØÄ½½¹¹•Ñ¥½¹Ì½ÍÍ ½ÁÉ½©•Ðµ‘É…™ÑÌ½…ÁÁÉ½Ù”ˆè(€€€€€€€€€€€€€€€ÁÉ½™¥±”€ô=99Q%=9L¹•Ð¡‰½‘ä¹•Ð ‰½¹¹•Ñ¥½¹}¥ˆ¤¤4(€€€€€€€€€€€€€€€¥˜¹½ÐÁÉ½™¥±”èÉ…¥Í”¥±•9½Ñ½Õ¹‘ÉÉ½È ‰½¹¹•Ñ¥½¸•áÁ¥É•ˆ¤4(€€€€€€€€€€€€€€€É•ÍÕ±Ð€ôÍÍ¡}…ÁÁÉ½Ù•}É•µ½Ñ•}‘É…™Ð¡ÁÉ½™¥±”°‰½‘ä¹•Ð ‰‘É…™Ñ}¥ˆ°€ˆˆ¤¤4(€€€€€€€€€€€€€€€ÁÉ½™¥±”¹ÕÁ‘…Ñ”¡í­•äèÉ•ÍÕ±Ñm­•åt™½È­•ä¥¸€ 4(€€€€€€€€€€€€€€€€€€€€‰ÁÉ½©•Ñ}½¹™¥}Á…Ñ ˆ°€‰‘…Ñ…}‘¥Èˆ°€‰•Ù¥‘•¹•}‘¥Èˆ°€‰Ý½É­}É½½Ðˆ4(€€€€€€€€€€€€€€€€¥ô¤4(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÀ°ì¨©É•ÍÕ±Ð°€‰Í¹…ÁÍ¡½ÐˆèÍÍ¡}Í¹…ÁÍ¡½Ð¡ÁÉ½™¥±”¥ô¤4(€€€€€€€€€€€¥˜Á…Ñ ¥¸ìˆ½…Á¤½ØÄ½½¹¹•Ñ¥½¹Ì½ÍÍ ½Ý½É­™±½Ü½ÍÑ…ÉÐˆ°€ˆ½…Á¤½ØÄ½½¹¹•Ñ¥½¹Ì½ÍÍ ½Ý½É­™±½Ü½É•ÑÉä‰ôè4(€€€€€€€€€€€€€€€ÁÉ½™¥±”€ô=99Q%=9L¹•Ð¡‰½‘ä¹•Ð ‰½¹¹•Ñ¥½¹}¥ˆ¤¤4(€€€€€€€€€€€€€€€¥˜¹½ÐÁÉ½™¥±”èÉ…¥Í”¥±•9½Ñ½Õ¹‘ÉÉ½È ‰½¹¹•Ñ¥½¸•áÁ¥É•ˆ¤4(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÈ°ÍÍ¡}ÍÑ…ÉÑ}Ý½É­™±½Ü¡ÁÉ½™¥±”°‰½‘ä¤¤4(€€€€€€€€€€€¥˜Á…Ñ €ôô€ˆ½…Á¤½ØÄ½½¹¹•Ñ¥½¹Ì½ÍÍ ½Ý½É­™±½Ü½ÍÑ½Àˆè4(€€€€€€€€€€€€€€€ÁÉ½™¥±”€ô=99Q%=9L¹•Ð¡‰½‘ä¹•Ð ‰½¹¹•Ñ¥½¹}¥ˆ¤¤4(€€€€€€€€€€€€€€€¥˜¹½ÐÁÉ½™¥±”èÉ…¥Í”¥±•9½Ñ½Õ¹‘ÉÉ½È ‰½¹¹•Ñ¥½¸•áÁ¥É•ˆ¤4(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÀ°ÍÍ¡}ÍÑ½Á}Ý½É­™±½Ü¡ÁÉ½™¥±”¤¤4(€€€€€€€€€€€µ…Ñ €ôÉ”¹™Õ±±µ…Ñ ¡Èˆ½…Á¤½ØÄ½ÁÉ½©•Ðµ‘É…™ÑÌ¼¡‘É™}mµi„µèÀ´åt¬¤½…ÁÁÉ½Ù”ˆ°Á…Ñ ¤(€€€€€€€€€€€¥˜µ…Ñ è(€€€€€€€€€€€€€€€™½É”€ô‰½½°¡‰½‘ä¹•Ð ‰™½É”ˆ¤¤4(€€€€€€€€€€€€€€€¥˜™½É”…¹½Ì¹•¹Ù¥É½¸¹•Ð ‰eAA}11=]}=I}AAI=Yˆ¤€„ô€ˆÄˆè4(€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÐÀÌ°•ÉÉ½Èõì4(€€€€€€€€€€€€€€€€€€€€€€€€‰½‘”ˆè€‰™½É•}…ÁÁÉ½Ù…±}‘¥Í…‰±•ˆ°4(€€€€€€€€€€€€€€€€€€€€€€€€‰µ•ÍÍ…”ˆè€‰™½É”…ÁÁÉ½Ù…°É•ÅÕ¥É•ÌeAA}11=]}=I}AAI=YôÄˆ°4(€€€€€€€€€€€€€€€€€€€ô¤4(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÀ°…ÁÁÉ½Ù•}‘É…™Ð¡}‘É…™Ñ}Á…Ñ ¡µ…Ñ ¹É½ÕÀ Ä¤¤°™½É”õ™½É”°©ÕÍÑ¥™¥…Ñ¥½¸õ‰½‘ä¹•Ð ‰©ÕÍÑ¥™¥…Ñ¥½¸ˆ¤¤¤(€€€€€€€€€€€µ…Ñ €ôÉ”¹™Õ±±µ…Ñ ¡Èˆ½…Á¤½ØÄ½ÁÉ½©•Ðµ‘É…™ÑÌ¼¡‘É™}mµi„µèÀ´åt¬¤½É•Í½±Ù•µ…¹‘¥‘…Ñ”ˆ°Á…Ñ ¤(€€€€€€€€€€€¥˜µ…Ñ è(€€€€€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÀ°Í•±•Ñ}É•Í½±Ù•‘}…¹‘¥‘…Ñ” (€€€€€€€€€€€€€€€€€€€}‘É…™Ñ}Á…Ñ ¡µ…Ñ ¹É½ÕÀ Ä¤¤°‰½‘ä¹•Ð ‰…¹‘¥‘…Ñ•}É•˜ˆ°€ˆˆ¤(€€€€€€€€€€€€€€€€¤¤(€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÐÀÐ°•ÉÉ½Èõì‰½‘”ˆè€‰¹½Ñ}™½Õ¹ˆ°€‰µ•ÍÍ…”ˆè€‰I½ÕÑ”¹½Ð™½Õ¹‰ô¤4(€€€€€€€•á•ÁÐI•Ù¥•ÝI•ÅÕ¥É•‘ÉÉ½È…Ì•áŒè4(€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÐÀä°•ÉÉ½Èõì‰½‘”ˆè€‰É•Ù¥•Ý}É•ÅÕ¥É•ˆ°€‰µ•ÍÍ…”ˆèÍÑÈ¡•áŒ¥ô¤4(€€€€€€€•á•ÁÐ€¡	½½ÑÍÑÉ…ÁÉÉ½È°Y…±Õ•ÉÉ½È°-•åÉÉ½È°©Í½¸¹)M=9•½‘•ÉÉ½È¤…Ì•áŒè4(€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÐÀÀ°•ÉÉ½Èõì‰½‘”ˆè€‰Ù…±¥‘…Ñ¥½¹}•ÉÉ½Èˆ°€‰µ•ÍÍ…”ˆèÍÑÈ¡•áŒ¥ô¤4(€€€€€€€•á•ÁÐ¥±•9½Ñ½Õ¹‘ÉÉ½Èè4(€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÐÀÐ°•ÉÉ½Èõì‰½‘”ˆè€‰¹½Ñ}™½Õ¹ˆ°€‰µ•ÍÍ…”ˆè€‰I•Í½ÕÉ”¹½Ð™½Õ¹‰ô¤4(€€€€€€€•á•ÁÐá•ÁÑ¥½¸…Ì•áŒè4(€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÔÀÈ°•ÉÉ½Èõì‰½‘”ˆè€‰½¹¹•Ñ¥½¹}™…¥±•ˆ°€‰µ•ÍÍ…”ˆèÍÑÈ¡•áŒ¥ô¤4(4(€€€‘•˜‘½}AQ ¡Í•±˜¤è4(€€€€€€€µ…Ñ €ôÉ”¹™Õ±±µ…Ñ ¡Èˆ½…Á¤½ØÄ½ÁÉ½©•Ðµ‘É…™ÑÌ¼¡‘É™}mµi„µèÀ´åt¬¤½Ñ…É•ÑÌ¼¡mx½t¬¤ˆ°ÕÉ±Á…ÉÍ”¡Í•±˜¹Á…Ñ ¤¹Á…Ñ ¤4(€€€€€€€¥˜¹½Ðµ…Ñ è4(€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÐÀÐ°•ÉÉ½Èõì‰½‘”ˆè€‰¹½Ñ}™½Õ¹ˆ°€‰µ•ÍÍ…”ˆè€‰I½ÕÑ”¹½Ð™½Õ¹‰ô¤4(€€€€€€€ÑÉäè4(€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÈÀÀ°•‘¥Ñ}Ñ…É•Ñ}‘É…™Ð¡}‘É…™Ñ}Á…Ñ ¡µ…Ñ ¹É½ÕÀ Ä¤¤°µ…Ñ ¹É½ÕÀ È¤°Í•±˜¹}‰½‘ä ¤¤¤4(€€€€€€€•á•ÁÐ€¡	½½ÑÍÑÉ…ÁÉÉ½È°Y…±Õ•ÉÉ½È°-•åÉÉ½È¤…Ì•áŒè4(€€€€€€€€€€€É•ÑÕÉ¸Í•±˜¹}©Í½¸ ÐÀÀ°•ÉÉ½Èõì‰½‘”ˆè€‰Ù…±¥‘…Ñ¥½¹}•ÉÉ½Èˆ°€‰µ•ÍÍ…”ˆèÍÑÈ¡•áŒ¥ô¤4(4(4)‘•˜µ…¥¸ ¤€´ø9½¹”è4(€€€Á…ÉÍ•È€ô…ÉÁ…ÉÍ”¹ÉÕµ•¹ÑA…ÉÍ•È ¤4(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ð ˆ´µ¡½ÍÐˆ°‘•™…Õ±ÐôˆÄÈÜ¸À¸À¸Äˆ¤4(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ð ˆ´µÁ½ÉÐˆ°ÑåÁ”õ¥¹Ð°‘•™…Õ±ÐôàÜØÔ¤4(€€€…ÉÌ€ôÁ…ÉÍ•È¹Á…ÉÍ•}…ÉÌ ¤4(€€€¥˜¹½Ð}‰¥¹‘}¡½ÍÑ}¥Í}±½½Á‰…¬¡…ÉÌ¹¡½ÍÐ¤…¹½Ì¹•¹Ù¥É½¸¹•Ð ‰eAA}11=]}%9MUI}I5=Qˆ¤€„ô€ˆÄˆè4(€€€€€€€Á…ÉÍ•È¹•ÉÉ½È 4(€€€€€€€€€€€€‰‰¥¹‘¥¹œ½ÕÑÍ¥‘”±½½Á‰…¬É•ÅÕ¥É•Ì•áÁ±¥¥ÐeAA}11=]}%9MUI}I5=QôÄì€ˆ4(€€€€€€€€€€€€‰Ñ¡”…‘…ÁÑ•È¡…Ì¹¼…ÕÑ¡•¹Ñ¥…Ñ¥½¸±…å•Èˆ4(€€€€€€€€¤4(€€€Q¡É•…‘¥¹!QQAM•ÉÙ•È ¡…ÉÌ¹¡½ÍÐ°…ÉÌ¹Á½ÉÐ¤°!…¹‘±•È¤¹Í•ÉÙ•}™½É•Ù•È ¤4(4(4)¥˜}}¹…µ•}|€ôô€‰}}µ…¥¹}|ˆè4(€€€µ…¥¸ ¤4(
