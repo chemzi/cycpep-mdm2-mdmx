@@ -1,4 +1,4 @@
-"""SQLite storage backend using one connection per operation."""
+­r‡^Ñf¥–Ø¦{OlyÊ'vÃ®¶›­"""SQLite storage backend using one connection per operation."""
 
 from __future__ import annotations
 
@@ -232,3 +232,90 @@ class SQLiteStore(Store):
             connection.execute("INSERT OR IGNORE INTO artifacts(artifact_id, artifact_type, path, sha256, producer_task_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                                (artifact_id, value.get("artifact_type"), value.get("path"), value.get("sha256"), value.get("producer_task_id"), value.get("created_at") or _now()))
         return artifact_id
+
+    def commit_transaction(
+        self,
+        *,
+        context: Mapping[str, Any],
+        candidate_updates: list[Mapping[str, Any]],
+        state_updates: Mapping[str, Any],
+        artifacts: list[Mapping[str, Any]],
+        completed_event: Mapping[str, Any],
+    ) -> list[str]:
+        """Commit all formal execution effects in one SQLite transaction.
+
+        This is the only execution-facing write that may update candidates,
+        state, artifact registry and task completion together.
+        """
+        now = _now()
+        event_value = _mapping(completed_event)
+        event_id = str(event_value.get("event_id") or uuid.uuid4())
+        payload = dict(event_value)
+        for key in ("event_id", "timestamp", "workflow_id", "run_id", "task_id", "candidate_id", "agent", "event_type"):
+            payload.pop(key, None)
+        with self._connect() as connection:
+            project_id = self.project_id
+            connection.execute(
+                "INSERT INTO projects(project_id, created_at, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(project_id) DO UPDATE SET updated_at=excluded.updated_at",
+                (project_id, now, now),
+            )
+            if state_updates:
+                row = connection.execute("SELECT payload_json FROM states WHERE project_id = ?", (project_id,)).fetchone()
+                state = json.loads(row["payload_json"]) if row else {}
+                state.update(dict(state_updates))
+                connection.execute(
+                    "INSERT INTO states(project_id, phase, round, active_workflow_id, updated_at, payload_json) VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(project_id) DO UPDATE SET phase=excluded.phase, round=excluded.round, "
+                    "active_workflow_id=excluded.active_workflow_id, updated_at=excluded.updated_at, payload_json=excluded.payload_json",
+                    (project_id, state.get("phase"), state.get("round"), state.get("active_workflow_id"), now, _json(state)),
+                )
+            for candidate in candidate_updates:
+                value = _mapping(candidate)
+                candidate_id = value.get("candidate_id")
+                sequence = value.get("sequence")
+                if not candidate_id or not sequence:
+                    raise ValueError("candidate_id and sequence are required")
+                row = connection.execute("SELECT payload_json FROM candidates WHERE candidate_id = ?", (str(candidate_id),)).fetchone()
+                existing = json.loads(row["payload_json"]) if row else {}
+                merged = {**existing, **value, "updated_at": now}
+                created_at = existing.get("created_at", now)
+                merged["created_at"] = created_at
+                metrics = merged.get("metrics") if isinstance(merged.get("metrics"), dict) else merged.get("metrics_json", {})
+                if isinstance(metrics, str):
+                    metrics = json.loads(metrics)
+                connection.execute(
+                    "INSERT INTO candidates(candidate_id, sequence, status, metrics_json, created_at, updated_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(candidate_id) DO UPDATE SET sequence=excluded.sequence, status=excluded.status, metrics_json=excluded.metrics_json, updated_at=excluded.updated_at, payload_json=excluded.payload_json",
+                    (str(candidate_id), str(sequence), merged.get("status") or merged.get("final_status"), _json(metrics), created_at, now, _json(merged)),
+                )
+            for artifact in artifacts:
+                value = _mapping(artifact)
+                connection.execute(
+                    "INSERT OR IGNORE INTO artifacts(artifact_id, artifact_type, path, sha256, producer_task_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (str(value["artifact_id"]), value.get("artifact_type"), value.get("path"), value.get("sha256"), value.get("producer_task_id"), now),
+                )
+            task_id = str(context["task_id"])
+            connection.execute(
+                "INSERT INTO tasks(task_id, workflow_id, action, status, created_at, updated_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(task_id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at, payload_json=excluded.payload_json",
+                (task_id, context.get("workflow_id"), context.get("action"), "SUCCEEDED", context.get("created_at", now), now, _json(dict(context, status="SUCCEEDED"))),
+            )
+            connection.execute(
+                "INSERT INTO evidence_events(event_id, workflow_id, run_id, task_id, candidate_id, agent, event_type, timestamp, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (event_id, event_value.get("workflow_id"), event_value.get("run_id"), event_value.get("task_id"), event_value.get("candidate_id"), event_value.get("agent"), event_value.get("event_type"), event_value.get("timestamp", now), _json(payload)),
+            )
+        return [event_id]
+
+    def record_task_failure(self, *, context: Mapping[str, Any], error: Mapping[str, Any]) -> None:
+        """Persist retry classification after formal transaction rollback."""
+        now = _now()
+        status = "FAILED_RETRYABLE" if error.get("retryable") else "FAILED_FINAL"
+        payload = dict(context)
+        payload.update({"status": status, "error": dict(error)})
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO tasks(task_id, workflow_id, action, status, created_at, updated_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(task_id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at, payload_json=excluded.payload_json",
+                (str(context["task_id"]), context.get("workflow_id"), context.get("action"), status, context.get("created_at", now), now, _json(payload)),
+            )

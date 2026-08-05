@@ -1,4 +1,4 @@
-# cycpep-mdm2-mdmx
+�r�^�f��ئ{Oly�'vî���# cycpep-mdm2-mdmx
 
 MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当前目标是在一个月赛期内形成可追溯的 Research → Design → Prediction → Critic/Planner 闭环，并交付通过约定计算指标的候选；项目不包含 wet-lab 验证。
 
@@ -112,6 +112,15 @@ from data_layer import (
 ```
 
 详细用法见 [数据层使用手册](./数据层使用手册.md)。
+
+### Execution transaction boundary (PR4)
+
+每个 ExecutionTask 绑定一个 transaction；重试保持 `task_id` 和
+`workflow_id` 不变，但使用新的 `attempt_id`。Worker 先创建 transaction
+并写入 staging，再执行 handler、校验输出，最后由 `CommitManager` 在一个
+SQLite 事务中提交 candidate、state、artifact registry、任务状态和完成证据。
+handler 不直接写正式 Store。失败会丢弃 staging、回滚正式写入并记录带有
+`error_code`、`component`、`transaction_id` 和 `retryable` 的失败证据。
 
 ### 存储架构（PR3）
 
