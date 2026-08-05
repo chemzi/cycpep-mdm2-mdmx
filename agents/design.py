@@ -19,6 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+import data_layer
 from data_layer import EvidenceLogger, CandidateIndex, State, file_hash
 from project_config import (
     load_project_config,
@@ -2397,21 +2398,13 @@ def _validate_sequence(seq):
 
 
 def _next_candidate_id():
-    """Return the next C**** candidate ID (thread-safe within a single process).
+    """Return the next C**** candidate ID.
 
-    Assumes single-process execution.  Multi-process orchestration must use an
-    external lock (fcntl.flock / Redis / DB sequence) to avoid ID collisions.
+    Allocated from the store's sequence inside a BEGIN IMMEDIATE transaction
+    (data_layer.allocate_candidate_id), so concurrent worker processes cannot
+    collide; candidate_count in State is advanced in the same transaction.
     """
-    with _LOCK:
-        s = State.load()
-        existing_max = 0
-        for row in CandidateIndex.load():
-            candidate_id = str(row.get("candidate_id") or "").strip()
-            if re.fullmatch(r"C\d{4,}", candidate_id):
-                existing_max = max(existing_max, int(candidate_id[1:]))
-        s["candidate_count"] = max(int(s.get("candidate_count", 0)), existing_max) + 1
-        State.save(s)
-        return f"C{s['candidate_count']:04d}"
+    return data_layer.allocate_candidate_id()
 
 
 def _describe_cyclize(n_term, c_term, linker):

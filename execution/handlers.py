@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 import data_layer
+import store
 from data_layer import CandidateIndex, State
 from prediction_pipeline.contracts import file_sha256, object_sha256
 
@@ -103,7 +104,6 @@ def iterate_design(context: HandlerContext) -> HandlerOutcome:
             "project_config_drift", "approved project config changed after planning"
         )
     before_rows = CandidateIndex.load()
-    before_by_id = {str(row.get("candidate_id")): row for row in before_rows}
     before_digest = object_sha256(before_rows)
     before_snapshot = context.task_dir / "snapshots" / "candidate_index_before.json"
     before_snapshot.parent.mkdir(parents=True, exist_ok=True)
@@ -111,6 +111,18 @@ def iterate_design(context: HandlerContext) -> HandlerOutcome:
         json.dumps(before_rows, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    # Stage the subprocess: design.py writes into an isolated data dir, so a
+    # failed validation below cannot leak partial candidates into the formal
+    # CandidateIndex/State/Evidence (P0-3).  The staged ID sequence continues
+    # the formal one, so staged IDs never collide with existing candidates.
+    staging_data = context.task_dir / "staging" / "data"
+    staging_evidence = context.task_dir / "staging" / "evidence"
+    staging_data.mkdir(parents=True, exist_ok=True)
+    staging_evidence.mkdir(parents=True, exist_ok=True)
+    (staging_data / "state.json").write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    data_layer.seed_staged_sequence(staging_data)
     processes = []
     for index, job in enumerate(params["design_jobs"], start=1):
         argv = [
@@ -127,30 +139,33 @@ def iterate_design(context: HandlerContext) -> HandlerOutcome:
             cwd=context.config.repo_root,
             logs_dir=context.task_dir / "processes" / f"design_job_{index:02d}",
             timeout_seconds=context.config.design_timeout_seconds,
+            environment={
+                "CYCPEP_DATA_DIR": str(staging_data),
+                "CYCPEP_EVIDENCE_DIR": str(staging_evidence),
+            },
             label=f"iterate_design[{index}]",
         ))
 
-    after_rows = CandidateIndex.load()
-    after_by_id = {str(row.get("candidate_id")): row for row in after_rows}
-    changed = sorted(
-        candidate_id for candidate_id, row in before_by_id.items()
-        if after_by_id.get(candidate_id) != row
-    )
-    if changed:
-        raise ExecutionContractError(
-            "candidate_index_existing_row_changed",
-            f"Design modified existing candidate rows: {changed}",
-        )
-    new_ids = sorted(set(after_by_id) - set(before_by_id))
+    # Validate staged rows before anything touches the formal store.
+    staged_conn = store.connect(staging_data / "store.db")
+    try:
+        staged_rows = [
+            json.loads(record[0])
+            for record in staged_conn.execute(
+                "SELECT row_json FROM candidates ORDER BY seq"
+            )
+        ]
+    finally:
+        staged_conn.close()
     limit = int(context.task["resource_request"]["candidate_limit"])
-    if len(new_ids) > limit:
+    if len(staged_rows) > limit:
         raise ExecutionContractError(
             "design_candidate_limit_exceeded",
-            f"Design registered {len(new_ids)} candidates; task limit is {limit}",
+            f"Design registered {len(staged_rows)} candidates; task limit is {limit}",
         )
     candidates = []
-    for candidate_id in new_ids:
-        row = after_by_id[candidate_id]
+    for row in staged_rows:
+        candidate_id = str(row.get("candidate_id"))
         manifest = _resolve_manifest(str(row.get("manifest_path") or ""), context.config.repo_root)
         if not manifest.is_file():
             raise ExecutionContractError(
@@ -166,6 +181,10 @@ def iterate_design(context: HandlerContext) -> HandlerOutcome:
             "design_pdb_hash": row.get("design_pdb_hash"),
             "backbone_pdb": row.get("backbone_pdb"),
         })
+    # Atomically merge the validated run; any failure here leaves no trace.
+    merged = data_layer.import_staged_run(staging_data)
+    new_ids = sorted(merged["candidate_ids"])
+    after_rows = CandidateIndex.load()
     result_path = context.task_dir / "outputs" / "design_task_result.json"
     after_snapshot = context.task_dir / "snapshots" / "candidate_index_after.json"
     after_snapshot.write_text(

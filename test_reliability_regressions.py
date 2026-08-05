@@ -17,6 +17,14 @@ os.environ["CYCPEP_DESIGN_ROOT"] = str(TEST_ROOT / "designs")
 
 import agents.design as design_module
 import data_layer
+# Under unittest discover, data_layer is already imported before the env vars
+# above are set; redirect its paths explicitly so these tests never read or
+# write the repository's real data directory.
+data_layer.DATA_DIR = TEST_ROOT / "data"
+data_layer.EVIDENCE_DIR = TEST_ROOT / "evidence"
+data_layer.STATE_PATH = data_layer.DATA_DIR / "state.json"
+data_layer.LOG_PATH = data_layer.EVIDENCE_DIR / "evidence_log.jsonl"
+data_layer.INDEX_PATH = data_layer.DATA_DIR / "candidate_index.csv"
 from agents.design import design_atsp_cyclize, design_motif_graft
 from agents.research import _build_dynamic_pockets
 from data_layer import CandidateIndex, State
@@ -194,7 +202,20 @@ class DesignReliabilityTests(unittest.TestCase):
         }
 
     def setUp(self):
-        for path in (data_layer.STATE_PATH, data_layer.LOG_PATH, data_layer.INDEX_PATH):
+        # Do not rely on module-level paths surviving other test modules:
+        # point the data layer at this module's sandbox and clear every store
+        # artifact (projections and the SQLite store) for a clean slate.
+        data_layer.DATA_DIR = TEST_ROOT / "data"
+        data_layer.EVIDENCE_DIR = TEST_ROOT / "evidence"
+        data_layer.STATE_PATH = data_layer.DATA_DIR / "state.json"
+        data_layer.LOG_PATH = data_layer.EVIDENCE_DIR / "evidence_log.jsonl"
+        data_layer.INDEX_PATH = data_layer.DATA_DIR / "candidate_index.csv"
+        for path in (
+            data_layer.STATE_PATH,
+            data_layer.LOG_PATH,
+            data_layer.INDEX_PATH,
+            data_layer.DATA_DIR / "store.db",
+        ):
             path.unlink(missing_ok=True)
 
     def test_route_b_does_not_register_when_backbone_generation_fails(self):

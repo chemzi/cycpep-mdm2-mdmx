@@ -43,6 +43,23 @@ def file_hash(path):
             return hashlib.sha256(f.read()).hexdigest()[:16]
     return ''
 
+# ── data_layer module stub (design.py calls data_layer.allocate_candidate_id) ──
+import types
+_data_layer_stub = types.ModuleType('data_layer')
+def _allocate_candidate_id():
+    # Mirror the store contract on the stub stores: the sequence reconciles
+    # against existing candidates and the state counter, then advances both.
+    existing_max = 0
+    for row in CandidateIndex.load():
+        cid = str(row.get('candidate_id') or '').strip()
+        if cid.startswith('C') and cid[1:].isdigit():
+            existing_max = max(existing_max, int(cid[1:]))
+    state = State.load()
+    state['candidate_count'] = max(int(state.get('candidate_count', 0)), existing_max) + 1
+    State.save(state)
+    return f"C{state['candidate_count']:04d}"
+_data_layer_stub.allocate_candidate_id = _allocate_candidate_id
+
 # ── Load design.py with stubs ──
 import __main__
 src = open('agents/design.py', encoding='utf-8').read()
@@ -52,7 +69,19 @@ src = src.replace(
 )
 # Prevent CLI execution
 src = src.replace('if __name__ == "__main__":', 'if False and __name__ == "__main__":')
-exec(src)
+# Temporarily swap in the stub so the exec'd `import data_layer` binds to it.
+# Restore the original entry afterwards: deleting it would force a second
+# module instance on the next import and split path state from the bindings
+# other modules already hold.
+_previous_data_layer = sys.modules.get('data_layer')
+sys.modules['data_layer'] = _data_layer_stub
+try:
+    exec(src)
+finally:
+    if _previous_data_layer is None:
+        sys.modules.pop('data_layer', None)
+    else:
+        sys.modules['data_layer'] = _previous_data_layer
 
 # ── Approved target fixture used by Design v5 config integration ──
 from target_bootstrap import ReviewRequiredError, config_digest

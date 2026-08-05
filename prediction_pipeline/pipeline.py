@@ -1065,7 +1065,6 @@ class PredictionPipeline:
                 column = f"{key}_{slug}"
                 if column in data_layer.INDEX_COLUMNS:
                     scores[column] = ""
-        CandidateIndex.update_score(candidate.candidate_id, scores)
         old_notes = str(row.get("notes") or "").strip()
         prediction_note = (
             f"prediction_run={self.run_id}; status={record['status']}; "
@@ -1075,11 +1074,15 @@ class PredictionPipeline:
             old_notes if prediction_note in old_notes
             else f"{old_notes}; {prediction_note}".strip("; ")
         )
-        CandidateIndex.update_status(
-            candidate.candidate_id,
-            record["status"],
-            notes=combined_notes,
-        )
+        # Score and status commit in one transaction: a crash between them must
+        # not leave a half-written candidate row in the formal index.
+        with data_layer.transaction():
+            CandidateIndex.update_score(candidate.candidate_id, scores)
+            CandidateIndex.update_status(
+                candidate.candidate_id,
+                record["status"],
+                notes=combined_notes,
+            )
 
     def _writeback_invalid(self, row: dict, record: dict) -> None:
         """Withdraw all Prediction-owned values after a contract failure."""
@@ -1129,8 +1132,6 @@ class PredictionPipeline:
                 column = f"{key}_{slug}"
                 if column in data_layer.INDEX_COLUMNS:
                     scores[column] = ""
-        CandidateIndex.update_score(candidate_id, scores)
-
         old_notes = str(row.get("notes") or "").strip()
         error_code = record["issues"][0]["code"]
         prediction_note = (
@@ -1141,7 +1142,11 @@ class PredictionPipeline:
             old_notes if prediction_note in old_notes
             else f"{old_notes}; {prediction_note}".strip("; ")
         )
-        CandidateIndex.update_status(candidate_id, "invalid", notes=combined_notes)
+        # Same atomicity rule as _writeback: score withdrawal and the invalid
+        # status land together or not at all.
+        with data_layer.transaction():
+            CandidateIndex.update_score(candidate_id, scores)
+            CandidateIndex.update_status(candidate_id, "invalid", notes=combined_notes)
 
     def _distance_pass(self, value: float) -> str:
         threshold = self.thresholds.get("L4_nc_term_dist") or {}

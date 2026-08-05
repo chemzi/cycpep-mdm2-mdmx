@@ -15,6 +15,14 @@ os.environ["CYCPEP_EVIDENCE_DIR"] = str(EVIDENCE_DIR)
 os.chdir(str(ROOT))
 
 import data_layer
+# data_layer may already be imported (e.g. under unittest discover), in which
+# case the env vars above took no effect.  Point the module paths at the
+# sandbox explicitly so this script never touches the real data directory.
+data_layer.DATA_DIR = DATA_DIR
+data_layer.EVIDENCE_DIR = EVIDENCE_DIR
+data_layer.STATE_PATH = DATA_DIR / "state.json"
+data_layer.LOG_PATH = EVIDENCE_DIR / "evidence_log.jsonl"
+data_layer.INDEX_PATH = DATA_DIR / "candidate_index.csv"
 from data_layer import (
     State, EvidenceLogger, CandidateIndex, file_hash, sanitize_id,
     evaluate_battery, compute_pareto_front, INDEX_COLUMNS,

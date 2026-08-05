@@ -1,6 +1,17 @@
 """
 环肽Agent证据日志 & 候选索引表 - 共享数据层
-所有Agent通过此模块读写 state.json、evidence_log.jsonl、candidate_index.csv
+
+存储架构（P0-2/P0-3 之后）：
+- DATA_DIR/store.db（SQLite，WAL + BEGIN IMMEDIATE）是唯一事实源，
+  State / CandidateIndex / Evidence 的读写都在事务内完成，多进程安全；
+- state.json / candidate_index.csv / evidence_log.jsonl 是每次提交后自动
+  导出的投影，供证据链哈希、Excel 查看与既有测试继续使用；
+- 旧目录首次使用时自动从三个文件迁移；投影文件被外部手改（mtime 检测）
+  会自动回导，保留表格编辑逃生门；
+- data_layer.transaction() 把多次写入合并为一个原子提交；
+- allocate_candidate_id() 从事务内序列分配候选 ID，多进程不撞号；
+- 子进程 staging：seed_staged_sequence() + import_staged_run() 实现
+  "隔离运行 → 校验 → 原子合并"，Execution 失败不再污染正式数据（P0-3）。
 
 使用方式:
     from data_layer import State, EvidenceLogger, CandidateIndex, evaluate_battery
@@ -24,10 +35,13 @@
         # 准入下一阶段
         ...
 """
-import json, csv, hashlib, os, statistics, tempfile, uuid
+import json, csv, hashlib, os, re, sqlite3, statistics, tempfile, uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+import store
 
 from project_config import (
     global_value,
@@ -98,6 +112,244 @@ def _write_json_atomic(path: str | Path, payload: dict):
     finally:
         if os.path.exists(temp_name):
             os.unlink(temp_name)
+
+
+# ============================================================
+# SQLite 事务存储（store.db 为事实源；JSON/CSV/JSONL 为提交后导出的投影）
+# ============================================================
+def _db_path() -> Path:
+    return DATA_DIR / "store.db"
+
+
+def _export(conn, domains: set):
+    """Re-export dirty projection files after a successful commit."""
+    if "state" in domains:
+        row = conn.execute("SELECT data FROM state WHERE id = 1").fetchone()
+        if row:
+            _write_json_atomic(STATE_PATH, json.loads(row[0]))
+            store.meta_set(
+                conn, "projection_state_mtime", str(STATE_PATH.stat().st_mtime)
+            )
+    if "candidates" in domains:
+        rows = [
+            json.loads(record[0])
+            for record in conn.execute("SELECT row_json FROM candidates ORDER BY seq")
+        ]
+        CandidateIndex._write_rows(rows)
+        store.meta_set(
+            conn, "projection_index_mtime", str(INDEX_PATH.stat().st_mtime)
+        )
+    if "evidence" in domains:
+        last = int(store.meta_get(conn, "projection_evidence_seq") or 0)
+        new_entries = list(conn.execute(
+            "SELECT seq, entry_json FROM evidence WHERE seq > ? ORDER BY seq", (last,)
+        ))
+        if new_entries:
+            LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(LOG_PATH, "a", encoding="utf-8") as handle:
+                for _, entry_json in new_entries:
+                    handle.write(entry_json + "\n")
+            store.meta_set(
+                conn, "projection_evidence_seq", str(new_entries[-1][0])
+            )
+
+
+def _sync_external_edits(conn):
+    """Re-import projection files that changed outside the store.
+
+    First run doubles as migration: with no recorded projection mtime, existing
+    legacy files are imported once.  Unparseable hand edits are ignored (the
+    database stays authoritative) and reported through Evidence.
+    """
+    if STATE_PATH.exists():
+        recorded = store.meta_get(conn, "projection_state_mtime")
+        mtime = STATE_PATH.stat().st_mtime
+        if recorded is None or mtime > float(recorded):
+            try:
+                payload = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                _sync_warnings.append(f"state.json re-import skipped: {exc}")
+            else:
+                conn.execute(
+                    "INSERT OR REPLACE INTO state (id, data) VALUES (1, ?)",
+                    (json.dumps(payload, ensure_ascii=False),),
+                )
+                store.meta_set(conn, "projection_state_mtime", str(mtime))
+    if INDEX_PATH.exists():
+        recorded = store.meta_get(conn, "projection_index_mtime")
+        mtime = INDEX_PATH.stat().st_mtime
+        if recorded is None or mtime > float(recorded):
+            _reimport_candidates(conn, mtime)
+    if store.meta_get(conn, "projection_evidence_seq") is None and LOG_PATH.exists():
+        imported = 0
+        try:
+            with open(LOG_PATH, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    json.loads(line)  # validate before importing
+                    conn.execute("INSERT INTO evidence (entry_json) VALUES (?)", (line,))
+                    imported += 1
+        except (OSError, json.JSONDecodeError) as exc:
+            _sync_warnings.append(f"evidence_log.jsonl import stopped: {exc}")
+        if imported:
+            last = conn.execute("SELECT MAX(seq) FROM evidence").fetchone()[0]
+            store.meta_set(conn, "projection_evidence_seq", str(last or 0))
+        else:
+            store.meta_set(conn, "projection_evidence_seq", "0")
+
+
+def _reimport_candidates(conn, mtime: float):
+    """Load candidate_index.csv into the store (schema-migrating if needed)."""
+    try:
+        with open(INDEX_PATH, "r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.reader(handle)
+            header = next(reader, [])
+            raw_rows = [dict(zip(header, values)) for values in reader if values]
+    except (OSError, csv.Error) as exc:
+        _sync_warnings.append(f"candidate_index.csv re-import skipped: {exc}")
+        return
+    if header != INDEX_COLUMNS:
+        CandidateIndex._migrate_schema(header)
+        with open(INDEX_PATH, "r", encoding="utf-8-sig", newline="") as handle:
+            raw_rows = list(csv.DictReader(handle))
+    conn.execute("DELETE FROM candidates")
+    seen = set()
+    max_number = 0
+    for raw in raw_rows:
+        row = {col: raw.get(col, "") for col in INDEX_COLUMNS}
+        candidate_id = str(row.get("candidate_id") or "").strip()
+        if not candidate_id or candidate_id in seen:
+            _sync_warnings.append(f"duplicate/empty candidate_id dropped: {candidate_id!r}")
+            continue
+        seen.add(candidate_id)
+        if re.fullmatch(r"C\d{4,}", candidate_id):
+            max_number = max(max_number, int(candidate_id[1:]))
+        conn.execute(
+            "INSERT INTO candidates (candidate_id, row_json) VALUES (?, ?)",
+            (candidate_id, json.dumps(row, ensure_ascii=False)),
+        )
+    previous = int(store.meta_get(conn, "candidate_seq") or 0)
+    store.meta_set(conn, "candidate_seq", str(max(previous, max_number)))
+    store.meta_set(conn, "projection_index_mtime", str(mtime))
+
+
+_sync_warnings: list[str] = []
+
+
+@contextmanager
+def _tx():
+    """One atomic store transaction with projection sync/export."""
+    nested = store.current(_db_path()) is not None
+    with store.transaction(_db_path(), export=_export) as conn:
+        if not nested:
+            _sync_external_edits(conn)
+            for warning in _sync_warnings:
+                EvidenceLogger.log("system", "store_sync_warning", {"warning": warning})
+            _sync_warnings.clear()
+        yield conn
+
+
+def transaction():
+    """Batch multiple State/CandidateIndex/Evidence writes into one commit.
+
+    Public data-layer methods called inside the block reuse the same
+    transaction; projections are exported once after the outermost COMMIT, and
+    any exception rolls every write back.
+    """
+    return _tx()
+
+
+def allocate_candidate_id() -> str:
+    """Allocate the next C**** ID from the store sequence, atomically."""
+    with _tx() as conn:
+        number = int(store.meta_get(conn, "candidate_seq") or 0) + 1
+        store.meta_set(conn, "candidate_seq", str(number))
+        row = conn.execute("SELECT data FROM state WHERE id = 1").fetchone()
+        state = json.loads(row[0]) if row else json.loads(json.dumps(State._default))
+        state["candidate_count"] = number
+        conn.execute(
+            "INSERT OR REPLACE INTO state (id, data) VALUES (1, ?)",
+            (json.dumps(state, ensure_ascii=False),),
+        )
+        store.mark_dirty(_db_path(), "state")
+        return f"C{number:04d}"
+
+
+def current_candidate_sequence() -> int:
+    """Current value of the formal candidate ID sequence."""
+    with _tx() as conn:
+        return int(store.meta_get(conn, "candidate_seq") or 0)
+
+
+def seed_staged_sequence(staging_data_dir: str | Path) -> None:
+    """Initialise a staging store so its IDs continue the formal sequence."""
+    staging_conn = store.connect(Path(staging_data_dir) / "store.db")
+    try:
+        store.meta_set(
+            staging_conn, "candidate_seq", str(current_candidate_sequence())
+        )
+    finally:
+        staging_conn.close()
+
+
+def import_staged_run(staging_data_dir: str | Path) -> dict:
+    """Merge one validated staging run into the formal store, atomically.
+
+    A staged subprocess writes candidates, evidence and its ID sequence into
+    an isolated DATA_DIR.  Everything merges in a single transaction; any ID
+    collision or failure rolls all of it back, so a rejected run leaves the
+    formal CandidateIndex/State/Evidence untouched (P0-3).
+    """
+    staging_db = Path(staging_data_dir) / "store.db"
+    if not staging_db.exists():
+        return {"candidate_ids": [], "evidence_count": 0}
+    staging = store.connect(staging_db)
+    try:
+        staged_rows = list(staging.execute(
+            "SELECT candidate_id, row_json FROM candidates ORDER BY seq"
+        ))
+        staged_evidence = list(staging.execute(
+            "SELECT entry_json FROM evidence ORDER BY seq"
+        ))
+        staged_seq = int(store.meta_get(staging, "candidate_seq") or 0)
+    finally:
+        staging.close()
+    with _tx() as conn:
+        for candidate_id, row_json in staged_rows:
+            try:
+                conn.execute(
+                    "INSERT INTO candidates (candidate_id, row_json) VALUES (?, ?)",
+                    (candidate_id, row_json),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(
+                    f"staged candidate_id collides with formal index: {candidate_id}"
+                ) from exc
+        for (entry_json,) in staged_evidence:
+            conn.execute("INSERT INTO evidence (entry_json) VALUES (?)", (entry_json,))
+        if staged_seq > int(store.meta_get(conn, "candidate_seq") or 0):
+            store.meta_set(conn, "candidate_seq", str(staged_seq))
+            record = conn.execute("SELECT data FROM state WHERE id = 1").fetchone()
+            state = (
+                json.loads(record[0]) if record
+                else json.loads(json.dumps(State._default))
+            )
+            state["candidate_count"] = staged_seq
+            conn.execute(
+                "INSERT OR REPLACE INTO state (id, data) VALUES (1, ?)",
+                (json.dumps(state, ensure_ascii=False),),
+            )
+            store.mark_dirty(_db_path(), "state")
+        if staged_rows:
+            store.mark_dirty(_db_path(), "candidates")
+        if staged_evidence:
+            store.mark_dirty(_db_path(), "evidence")
+    return {
+        "candidate_ids": [candidate_id for candidate_id, _ in staged_rows],
+        "evidence_count": len(staged_evidence),
+    }
 
 # v5: 七层指标电池主列。旧列名保留做 alias（见 _ALIAS_MAP），不破坏已有代码。
 INDEX_COLUMNS = [
@@ -192,13 +444,20 @@ class State:
     
     @classmethod
     def load(cls) -> dict:
-        if STATE_PATH.exists():
-            return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        with _tx() as conn:
+            row = conn.execute("SELECT data FROM state WHERE id = 1").fetchone()
+        if row:
+            return json.loads(row[0])
         return json.loads(json.dumps(cls._default))
-    
+
     @classmethod
     def save(cls, data: dict):
-        _write_json_atomic(STATE_PATH, data)
+        with _tx() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO state (id, data) VALUES (1, ?)",
+                (json.dumps(data, ensure_ascii=False),),
+            )
+            store.mark_dirty(_db_path(), "state")
     
     @classmethod
     def update(cls, patches: dict):
@@ -321,9 +580,12 @@ class EvidenceLogger:
         # Every new write passes through the same event contract.  Existing
         # JSONL rows remain untouched and are still readable by get_all().
         EvidenceEvent.from_dict(entry)
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        with _tx() as conn:
+            conn.execute(
+                "INSERT INTO evidence (entry_json) VALUES (?)",
+                (json.dumps(entry, ensure_ascii=False),),
+            )
+            store.mark_dirty(_db_path(), "evidence")
     
     @classmethod
     def log(cls, agent: str, event_type: str, payload: dict,
@@ -512,9 +774,9 @@ class EvidenceLogger:
 
     @classmethod
     def get_all(cls) -> list:
-        if not LOG_PATH.exists():
-            return []
-        return [json.loads(line) for line in LOG_PATH.read_text(encoding="utf-8").strip().split("\n") if line]
+        with _tx() as conn:
+            rows = list(conn.execute("SELECT entry_json FROM evidence ORDER BY seq"))
+        return [json.loads(row[0]) for row in rows]
 
     @classmethod
     def filter(cls, agent: str = None, event_type: str = None, candidate_id: str = None) -> list:
@@ -618,21 +880,14 @@ class EvidenceLogger:
 # 候选索引表
 # ============================================================
 class CandidateIndex:
-    """所有环肽候选的主索引——CSV格式，可在Excel/GoogleSheets/WPS中打开"""
+    """所有环肽候选的主索引——存储于 store.db，CSV 为提交后自动导出的投影，
+    仍可在Excel/GoogleSheets/WPS中打开查看。"""
 
     @classmethod
     def _ensure_exists(cls):
-        if not INDEX_PATH.exists():
-            INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with open(INDEX_PATH, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.writer(f)
-                writer.writerow(INDEX_COLUMNS)
-            return
-
-        with open(INDEX_PATH, "r", encoding="utf-8-sig", newline="") as f:
-            header = next(csv.reader(f), [])
-        if header != INDEX_COLUMNS:
-            cls._migrate_schema(header)
+        """确保候选索引已初始化且 CSV 投影已导出（兼容旧测试/脚本的调用）。"""
+        with _tx() as conn:
+            store.mark_dirty(_db_path(), "candidates")
 
     @classmethod
     def _migrate_schema(cls, old_header: list[str]):
@@ -714,98 +969,116 @@ class CandidateIndex:
     @classmethod
     def add(cls, row: dict):
         """添加一条新候选。必须包含 candidate_id 和 sequence。"""
-        cls._ensure_exists()
-        ordered = cls._prepare_row(row)
-        if cls.find(ordered["candidate_id"]):
-            raise ValueError(f"duplicate candidate_id: {ordered['candidate_id']}")
-        with open(INDEX_PATH, "a", newline="", encoding="utf-8-sig") as f:
-            csv.DictWriter(f, fieldnames=INDEX_COLUMNS, extrasaction="ignore").writerow(ordered)
+        cls.add_batch([row])
 
     @classmethod
     def add_batch(cls, rows: list[dict]):
-        cls._ensure_exists()
         prepared = [cls._prepare_row(row) for row in rows]
-        existing_ids = {row["candidate_id"] for row in cls.load()}
         new_ids = [row["candidate_id"] for row in prepared]
-        duplicates = existing_ids.intersection(new_ids)
-        duplicates.update(cid for cid in new_ids if new_ids.count(cid) > 1)
-        if duplicates:
-            raise ValueError(f"duplicate candidate_id(s): {sorted(duplicates)}")
-        with open(INDEX_PATH, "a", newline="", encoding="utf-8-sig") as f:
-            writer = csv.DictWriter(f, fieldnames=INDEX_COLUMNS, extrasaction="ignore")
-            writer.writerows(prepared)
+        with _tx() as conn:
+            existing_ids = {
+                record[0]
+                for record in conn.execute(
+                    f"SELECT candidate_id FROM candidates WHERE candidate_id IN "
+                    f"({','.join('?' * len(new_ids))})",
+                    new_ids,
+                )
+            } if new_ids else set()
+            duplicates = existing_ids | {
+                cid for cid in new_ids if new_ids.count(cid) > 1
+            }
+            if duplicates:
+                raise ValueError(f"duplicate candidate_id(s): {sorted(duplicates)}")
+            conn.executemany(
+                "INSERT INTO candidates (candidate_id, row_json) VALUES (?, ?)",
+                [
+                    (row["candidate_id"], json.dumps(row, ensure_ascii=False))
+                    for row in prepared
+                ],
+            )
+            store.mark_dirty(_db_path(), "candidates")
 
     @classmethod
     def load(cls) -> list[dict]:
-        cls._ensure_exists()
-        with open(INDEX_PATH, "r", encoding="utf-8-sig") as f:
-            return list(csv.DictReader(f))
+        with _tx() as conn:
+            rows = list(conn.execute("SELECT row_json FROM candidates ORDER BY seq"))
+        return [json.loads(row[0]) for row in rows]
 
     @classmethod
     def find(cls, candidate_id: str) -> Optional[dict]:
-        for r in cls.load():
-            if r["candidate_id"] == candidate_id:
-                return r
-        return None
+        with _tx() as conn:
+            row = conn.execute(
+                "SELECT row_json FROM candidates WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+        return json.loads(row[0]) if row else None
 
     @classmethod
     def update_score(cls, candidate_id: str, scores: dict):
-        """更新某条候选的评分字段（原地修改CSV行）。
+        """更新某条候选的评分字段（事务内原地更新该行）。
         scores 中的旧字段名（如 monomer_plddt / layer1_pass）会自动 alias 到新名。
         """
         scores = _alias_keys(dict(scores))
-        rows = cls.load()
-        found = False
-        for r in rows:
-            if r["candidate_id"] == candidate_id:
-                found = True
-                for k, v in scores.items():
-                    if k == "metrics" and isinstance(v, dict):
-                        try:
-                            existing = json.loads(r.get("metrics_json") or "{}")
-                        except json.JSONDecodeError:
-                            existing = {}
+        with _tx() as conn:
+            record = conn.execute(
+                "SELECT row_json FROM candidates WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if record is None:
+                raise KeyError(f"candidate_id not found: {candidate_id}")
+            row = json.loads(record[0])
+            for k, v in scores.items():
+                if k == "metrics" and isinstance(v, dict):
+                    try:
+                        existing = json.loads(row.get("metrics_json") or "{}")
+                    except json.JSONDecodeError:
+                        existing = {}
 
-                        def merge(left, right):
-                            for name, value in right.items():
-                                if isinstance(value, dict) and isinstance(left.get(name), dict):
-                                    merge(left[name], value)
-                                else:
-                                    left[name] = value
-                            return left
+                    def merge(left, right):
+                        for name, value in right.items():
+                            if isinstance(value, dict) and isinstance(left.get(name), dict):
+                                merge(left[name], value)
+                            else:
+                                left[name] = value
+                        return left
 
-                        r["metrics_json"] = json.dumps(
-                            merge(existing, v), ensure_ascii=False, separators=(",", ":")
-                        )
-                        continue
-                    if k == "threshold_audit" and isinstance(v, dict):
-                        r["threshold_audit_json"] = json.dumps(
-                            v, ensure_ascii=False, separators=(",", ":")
-                        )
-                        continue
-                    if k in INDEX_COLUMNS:
-                        r[k] = str(v) if not isinstance(v, str) else v
-                r["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                break
-        if not found:
-            raise KeyError(f"candidate_id not found: {candidate_id}")
-        cls._write_rows(rows)
+                    row["metrics_json"] = json.dumps(
+                        merge(existing, v), ensure_ascii=False, separators=(",", ":")
+                    )
+                    continue
+                if k == "threshold_audit" and isinstance(v, dict):
+                    row["threshold_audit_json"] = json.dumps(
+                        v, ensure_ascii=False, separators=(",", ":")
+                    )
+                    continue
+                if k in INDEX_COLUMNS:
+                    row[k] = str(v) if not isinstance(v, str) else v
+            row["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            conn.execute(
+                "UPDATE candidates SET row_json = ? WHERE candidate_id = ?",
+                (json.dumps(row, ensure_ascii=False), candidate_id),
+            )
+            store.mark_dirty(_db_path(), "candidates")
 
     @classmethod
     def update_status(cls, candidate_id: str, status: str, notes: str = ""):
-        rows = cls.load()
-        found = False
-        for r in rows:
-            if r["candidate_id"] == candidate_id:
-                found = True
-                r["final_status"] = status
-                if notes:
-                    r["notes"] = notes
-                r["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                break
-        if not found:
-            raise KeyError(f"candidate_id not found: {candidate_id}")
-        cls._write_rows(rows)
+        with _tx() as conn:
+            record = conn.execute(
+                "SELECT row_json FROM candidates WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if record is None:
+                raise KeyError(f"candidate_id not found: {candidate_id}")
+            row = json.loads(record[0])
+            row["final_status"] = status
+            if notes:
+                row["notes"] = notes
+            row["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            conn.execute(
+                "UPDATE candidates SET row_json = ? WHERE candidate_id = ?",
+                (json.dumps(row, ensure_ascii=False), candidate_id),
+            )
+            store.mark_dirty(_db_path(), "candidates")
 
     @classmethod
     def filter_by_status(cls, status: str) -> list[dict]:
