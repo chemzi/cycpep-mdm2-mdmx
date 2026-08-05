@@ -12,6 +12,7 @@ from agents.orchestrator import initialize, status
 from agents.planner import record_approval, run as planner_run
 from execution.config import ExecutionConfig
 from execution.contracts import (
+    KNOWN_UNIMPLEMENTED_ACTIONS,
     V2_RESERVED_ACTIONS,
     ExecutionContractError,
     assert_action_executable,
@@ -180,6 +181,18 @@ class ExecutionTests(unittest.TestCase):
                 "outputs": [],
             }
             with self.assertRaisesRegex(ExecutionContractError, "reserved for v2"):
+                assert_action_executable(task)
+
+    def test_unimplemented_actions_are_rejected_before_parameter_validation(self):
+        for action in KNOWN_UNIMPLEMENTED_ACTIONS:
+            task = {
+                "action": action,
+                "parameters": {},
+                "candidate_scope": {"candidate_ids": [], "from_task_id": None},
+                "resource_request": {"proposal_count": 0, "candidate_limit": 0},
+                "outputs": [],
+            }
+            with self.assertRaisesRegex(ExecutionContractError, "no reviewed Execution v1 handler"):
                 assert_action_executable(task)
 
     def test_process_arguments_are_not_interpreted_by_a_shell(self):

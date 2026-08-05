@@ -347,8 +347,10 @@ def validate_task_parameters(task: dict) -> dict:
 
 
 def assert_action_executable(task: dict) -> dict:
+    # Fail closed on capability first: unknown, reserved and unimplemented
+    # actions must be rejected before any parameter validation runs, so an
+    # unexecutable task can never be masked by an unrelated parameter error.
     action = str((task or {}).get("action") or "").strip()
-    normalized = validate_task_parameters(task)
     try:
         spec = get_action_spec(action)
     except ValueError as exc:
@@ -373,7 +375,7 @@ def assert_action_executable(task: dict) -> dict:
             "execution_action_handler_missing",
             f"{action} is marked executable but has no registered handler",
         )
-    return normalized
+    return validate_task_parameters(task)
 
 
 def validate_dispatch_packet(packet: dict, *, expected_sha256: str | None = None) -> dict:
