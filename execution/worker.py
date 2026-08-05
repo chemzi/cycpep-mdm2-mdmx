@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import traceback
 from typing import Any, Callable, Mapping
 
 from contracts.transaction import ErrorInfo, TransactionContext, TransactionStatus
@@ -17,10 +18,13 @@ class ExecutionFailure(RuntimeError):
 
 
 @dataclass
-class ExecutionResult:
+class ExecutionActionResult:
     candidate_updates: list[Mapping[str, Any]]
     state_updates: dict[str, Any]
     artifacts: list[StagedArtifact]
+
+
+ExecutionResult = ExecutionActionResult
 
 
 class ExecutionWorker:
@@ -32,21 +36,17 @@ class ExecutionWorker:
     def run(
         self,
         context: TransactionContext,
-        handler: Callable[[TransactionContext, StagingArea], ExecutionResult | Mapping[str, Any]],
+        handler: Callable[[TransactionContext, StagingArea], ExecutionActionResult],
         *,
-        validator: Callable[[ExecutionResult], None] | None = None,
-    ) -> ExecutionResult:
+        validator: Callable[[ExecutionActionResult], None] | None = None,
+    ) -> ExecutionActionResult:
         staging = StagingArea(self.staging_root, context.transaction_id).create()
         context.transition(TransactionStatus.STAGING)
         self.store.append(self._event(context, "execution_started"))
         try:
             result = handler(context, staging)
-            if not isinstance(result, ExecutionResult):
-                result = ExecutionResult(
-                    candidate_updates=list(result.get("candidate_updates", [])),
-                    state_updates=dict(result.get("state_updates", {})),
-                    artifacts=list(result.get("artifacts", [])),
-                )
+            if not isinstance(result, ExecutionActionResult):
+                raise TypeError("execution handler must return ExecutionActionResult")
             context.transition(TransactionStatus.VALIDATING)
             if validator:
                 validator(result)
@@ -55,16 +55,23 @@ class ExecutionWorker:
                 candidate_updates=result.candidate_updates,
                 state_updates=result.state_updates,
                 artifacts=result.artifacts,
+                staging_path=staging.path,
             )
             staging.discard()
             return result
         except Exception as exc:
-            context.transition(TransactionStatus.FAILED)
+            if context.status not in {TransactionStatus.ROLLED_BACK, TransactionStatus.FAILED}:
+                context.transition(TransactionStatus.FAILED)
             retryable = isinstance(exc, (TimeoutError, ConnectionError))
             error = ErrorInfo(
                 error_code="execution_failed", component="execution.worker",
                 task_id=context.task_id, transaction_id=context.transaction_id,
                 retryable=retryable, message=str(exc),
+                workflow_id=context.workflow_id, attempt_id=context.attempt_id,
+                action_name=str(context.metadata.get("action_name", "")),
+                agent_name=str(context.metadata.get("agent_name", "execution")),
+                stack_trace=traceback.format_exc(limit=20),
+                input_hash=str(context.metadata.get("input_hash", "")),
             )
             staging.write_manifest("error.json", error.to_dict())
             staging.write_manifest("transaction.json", context.to_dict())

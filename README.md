@@ -1,4 +1,4 @@
-�r�^�f��ئ{Oly�'vî���# cycpep-mdm2-mdmx
+�r�^�f��ئ{O,y�'vî���# cycpep-mdm2-mdmx
 
 MDM2/MDMX 双靶、首尾酰胺键环肽的 in silico Agent 设计项目。当前目标是在一个月赛期内形成可追溯的 Research → Design → Prediction → Critic/Planner 闭环，并交付通过约定计算指标的候选；项目不包含 wet-lab 验证。
 
@@ -124,7 +124,7 @@ handler 不直接写正式 Store。失败会丢弃 staging、回滚正式写入�
 
 ### 存储架构（PR3）
 
-Agent 继续通过 `data_layer` 公共入口访问 State、CandidateIndex 和 Evidence，底层已建立统一 `storage` Store boundary。旧 JSON/CSV/JSONL 文件仍保留作为兼容 backend；设置 `CYCPEP_DB_PATH` 后可将运行时切换到 SQLite `project.db`。迁移工具 `storage.migrate_json_to_sqlite()` 幂等执行且不会删除源文件。
+SQLite Store backend 已引入，迁移仍在进行中。旧 JSON/CSV/JSONL backend 仍可用，部分 Agent 仍通过 `data_layer` 直接写入；设置 `CYCPEP_DB_PATH` 后可将运行时切换到 SQLite `project.db`。迁移工具 `storage.migrate_json_to_sqlite()` 幂等执行且不会删除源文件。
 
 协作上手资料：
 

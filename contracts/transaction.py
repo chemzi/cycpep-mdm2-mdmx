@@ -24,6 +24,17 @@ class TransactionStatus(str, Enum):
     FAILED = "FAILED"
 
 
+VALID_TRANSITIONS: dict[TransactionStatus, frozenset[TransactionStatus]] = {
+    TransactionStatus.CREATED: frozenset({TransactionStatus.STAGING}),
+    TransactionStatus.STAGING: frozenset({TransactionStatus.VALIDATING, TransactionStatus.FAILED}),
+    TransactionStatus.VALIDATING: frozenset({TransactionStatus.COMMITTING, TransactionStatus.FAILED}),
+    TransactionStatus.COMMITTING: frozenset({TransactionStatus.COMMITTED, TransactionStatus.ROLLED_BACK}),
+    TransactionStatus.ROLLED_BACK: frozenset({TransactionStatus.FAILED}),
+    TransactionStatus.COMMITTED: frozenset(),
+    TransactionStatus.FAILED: frozenset(),
+}
+
+
 @dataclass(frozen=True)
 class ErrorInfo:
     error_code: str
@@ -32,12 +43,18 @@ class ErrorInfo:
     transaction_id: str
     retryable: bool
     message: str
+    workflow_id: str = ""
+    attempt_id: str = ""
+    action_name: str = ""
+    agent_name: str = ""
+    stack_trace: str = ""
+    input_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-@dataclass
+@dataclass(frozen=True)
 class TransactionContext:
     transaction_id: str
     workflow_id: str
@@ -69,7 +86,13 @@ class TransactionContext:
         )
 
     def transition(self, status: TransactionStatus) -> None:
-        self.status = status
+        status = TransactionStatus(status)
+        if status == self.status:
+            return
+        allowed = VALID_TRANSITIONS[self.status]
+        if status not in allowed:
+            raise ValueError(f"invalid transaction transition: {self.status.value} -> {status.value}")
+        object.__setattr__(self, "status", status)
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)

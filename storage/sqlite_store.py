@@ -233,6 +233,11 @@ class SQLiteStore(Store):
                                (artifact_id, value.get("artifact_type"), value.get("path"), value.get("sha256"), value.get("producer_task_id"), value.get("created_at") or _now()))
         return artifact_id
 
+    def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,)).fetchone()
+        return dict(row) if row else None
+
     def commit_transaction(
         self,
         *,

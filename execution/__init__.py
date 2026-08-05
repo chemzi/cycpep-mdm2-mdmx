@@ -2,6 +2,6 @@
 
 from .commit_manager import CommitManager
 from .staging import StagingArea, StagedArtifact
-from .worker import ExecutionResult, ExecutionWorker, ExecutionFailure
+from .worker import ExecutionActionResult, ExecutionResult, ExecutionWorker, ExecutionFailure
 
-__all__ = ["CommitManager", "ExecutionFailure", "ExecutionResult", "ExecutionWorker", "StagedArtifact", "StagingArea"]
+__all__ = ["CommitManager", "ExecutionActionResult", "ExecutionFailure", "ExecutionResult", "ExecutionWorker", "StagedArtifact", "StagingArea"]
