@@ -44,7 +44,6 @@ from execution.action_registry import handler_for  # noqa: E402
 from execution.handlers import HandlerContext  # noqa: E402
 from execution.supervisor import atomic_json  # noqa: E402
 
-from contracts.transaction import ErrorInfo as TransactionErrorInfo  # noqa: E402
 from contracts.transaction import ErrorType, TransactionContext, TransactionStatus  # noqa: E402
 from execution.commit_manager import CommitManager  # noqa: E402
 from execution.results import ExecutionActionResult  # noqa: E402
@@ -55,7 +54,7 @@ from storage.base import Store  # noqa: E402
 class ExecutionFailure(RuntimeError):
     """Raised after a transaction has been failed and recorded."""
 
-    def __init__(self, error: TransactionErrorInfo):
+    def __init__(self, error: ErrorInfo):
         super().__init__(error.message)
         self.error = error
 
@@ -101,12 +100,12 @@ class ExecutionWorker:
             staging.discard()
             return result
         except Exception as exc:
+            if context.status == TransactionStatus.COMMITTED:
+                # 事务已经成功提交；后续清理失败不得再标记任务失败。
+                raise
             error = self._error_info(context, exc)
-            if context.status not in {TransactionStatus.FAILED, TransactionStatus.COMMITTED}:
-                if context.status == TransactionStatus.ROLLED_BACK:
-                    context.transition(TransactionStatus.FAILED)
-                else:
-                    context.transition(TransactionStatus.FAILED)
+            if context.status != TransactionStatus.FAILED:
+                context.transition(TransactionStatus.FAILED)
             staging.write_manifest("error.json", error.to_dict())
             staging.write_manifest("transaction.json", context.to_dict())
             self.store.record_task_failure(context=context.to_dict(), error=error.to_dict())
@@ -114,7 +113,7 @@ class ExecutionWorker:
             raise ExecutionFailure(error) from exc
 
     @staticmethod
-    def _error_info(context: TransactionContext, exc: Exception) -> TransactionErrorInfo:
+    def _error_info(context: TransactionContext, exc: Exception) -> ErrorInfo:
         if isinstance(exc, TypeError):
             error_type = ErrorType.CONTRACT_ERROR
         elif isinstance(exc, ValueError):
@@ -125,8 +124,8 @@ class ExecutionWorker:
             error_type = ErrorType.SYSTEM_ERROR
         error_code = exc.code if isinstance(exc, ExecutionContractError) else exc.__class__.__name__
         metadata = context.metadata
-        return TransactionErrorInfo(
-            error_code=error_code,
+        return ErrorInfo(
+            code=error_code,
             error_type=error_type,
             message=str(exc) or exc.__class__.__name__,
             traceback=traceback_module.format_exc(limit=30),
@@ -301,6 +300,7 @@ def execute_task(
         failure = {
             "execution_worker_version": EXECUTION_WORKER_VERSION,
             "status": TaskStatus.FAILED.value,
+            **error_info.to_dict(),
             "run_id": run_id,
             "task_id": task_id,
             "action": action,
@@ -308,7 +308,6 @@ def execute_task(
             "plan_id": trace_context.plan_id,
             "attempt": attempt,
             "attempt_id": trace_context.attempt_id,
-            **error_info.to_dict(),
             "elapsed_seconds": elapsed_seconds,
             "gpu_minutes": gpu_minutes,
         }

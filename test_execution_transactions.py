@@ -8,12 +8,14 @@ import tempfile
 import unittest
 
 from contracts.transaction import ErrorType, TransactionContext, TransactionStatus
+from contracts.task import TaskStatus
 from execution import (
     CommitManager,
     ExecutionActionResult,
     ExecutionFailure,
     ExecutionWorker,
     ExecutionResult,
+    StagingArea,
 )
 from storage import SQLiteStore
 
@@ -32,7 +34,13 @@ class ExecutionTransactionTests(unittest.TestCase):
         )
 
     def test_success_commits_candidate_artifact_and_completed_after_started(self):
-        context = self.context()
+        context = TransactionContext.create(
+            workflow_id="w1",
+            run_id="r1",
+            task_id="t1",
+            attempt_id="attempt-1",
+            action="iterate_design",
+        )
 
         def handler(ctx, staging):
             source = Path(staging.path) / "output.txt"
@@ -51,6 +59,12 @@ class ExecutionTransactionTests(unittest.TestCase):
         self.assertEqual(context.status, TransactionStatus.COMMITTED)
         self.assertEqual(self.store.get("C1")["status"], "ready")
         self.assertIsNotNone(self.store.get_artifact("a1"))
+        with self.store._connect() as connection:
+            task = connection.execute(
+                "SELECT action, status FROM tasks WHERE task_id = 't1'"
+            ).fetchone()
+        self.assertEqual(task["action"], "iterate_design")
+        self.assertEqual(task["status"], TaskStatus.SUCCEEDED.value)
         events = self.store.trace_task("t1")
         self.assertEqual(
             [event["event_type"] for event in events],
@@ -74,7 +88,7 @@ class ExecutionTransactionTests(unittest.TestCase):
             task = connection.execute(
                 "SELECT status FROM tasks WHERE task_id = 't1'"
             ).fetchone()
-        self.assertEqual(task["status"], "FAILED_FINAL")
+        self.assertEqual(task["status"], TaskStatus.FAILED.value)
         self.assertEqual(
             self.store.trace_task("t1")[-1]["event_type"], "execution_failed"
         )
@@ -151,6 +165,43 @@ class ExecutionTransactionTests(unittest.TestCase):
         with self.assertRaises(ExecutionFailure):
             worker.run(context, handler)
         self.assertFalse(list((self.root / "committed-fail").rglob("output.txt")))
+
+    def test_cleanup_failure_after_commit_does_not_mark_task_failed(self):
+        context = self.context()
+
+        def handler(ctx, staging):
+            source = Path(staging.path) / "output.txt"
+            source.write_text("result", encoding="utf-8")
+            return ExecutionResult(
+                artifacts=(
+                    staging.stage_artifact(
+                        source, artifact_id="a-cleanup", artifact_type="result"
+                    ),
+                )
+            )
+
+        original_discard = StagingArea.discard
+
+        def failing_discard(self):
+            raise OSError("simulated cleanup failure")
+
+        StagingArea.discard = failing_discard
+        try:
+            with self.assertRaises(OSError):
+                self.worker.run(context, handler)
+        finally:
+            StagingArea.discard = original_discard
+
+        self.assertEqual(context.status, TransactionStatus.COMMITTED)
+        with self.store._connect() as connection:
+            task = connection.execute(
+                "SELECT status FROM tasks WHERE task_id = 't1'"
+            ).fetchone()
+        self.assertEqual(task["status"], TaskStatus.SUCCEEDED.value)
+        self.assertEqual(
+            [event["event_type"] for event in self.store.trace_task("t1")],
+            ["execution_started", "execution_completed"],
+        )
 
     def test_recovery_removes_unregistered_files_from_pending_marker(self):
         manager = CommitManager(self.store, self.root / "committed-recovery")

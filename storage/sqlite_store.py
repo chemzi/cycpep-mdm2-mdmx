@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
+from contracts.task import TaskStatus
+
 from .base import Store
 
 
@@ -365,9 +367,10 @@ class SQLiteStore(Store):
                 "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET "
                 "status=excluded.status, updated_at=excluded.updated_at, payload_json=excluded.payload_json",
                 (
-                    task_id, context.get("workflow_id"), context.get("action"), "SUCCEEDED",
+                    task_id, context.get("workflow_id"), context.get("action"),
+                    TaskStatus.SUCCEEDED.value,
                     context.get("created_at", now), now,
-                    _json(dict(context, status="SUCCEEDED")),
+                    _json(dict(context, status=TaskStatus.SUCCEEDED.value)),
                 ),
             )
             connection.execute(
@@ -386,7 +389,7 @@ class SQLiteStore(Store):
         self, *, context: Mapping[str, Any], error: Mapping[str, Any]
     ) -> None:
         now = _now()
-        status = "FAILED_RETRYABLE" if error.get("retryable") else "FAILED_FINAL"
+        status = TaskStatus.FAILED.value
         payload = dict(context)
         payload.update({"status": status, "error": dict(error)})
         with self._connect() as connection:

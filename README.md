@@ -153,6 +153,11 @@ Evidence Ledger 用于 audit、debug、scientific provenance 和 workflow recons
 - [ ] All Agents migrated
 - [ ] Legacy data_layer removed
 
+> 交易层（`ExecutionWorker` / `CommitManager` / `StagingArea`）目前只被单元测试
+> 覆盖；真实执行入口 `execute_task` 仍走 Orchestrator claim → handler →
+> complete/fail 旧流程。将真实 handler 迁移到交易层属于后续独立 PR，未在本
+> 提交范围内。
+
 一个目标级追溯关系可以表示为：
 
 ```text

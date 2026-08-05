@@ -107,13 +107,6 @@ class CommitManager:
                 artifacts=registrations,
                 completed_event=event,
             )
-            context.transition(TransactionStatus.COMMITTED)
-            if marker:
-                manifest["status"] = "COMMITTED"
-                marker.write_text(
-                    json.dumps(manifest, indent=2), encoding="utf-8", newline="\n"
-                )
-            return event_ids
         except Exception:
             for path in temporary_paths:
                 if path.exists():
@@ -129,6 +122,18 @@ class CommitManager:
             if context.status == TransactionStatus.COMMITTING:
                 context.transition(TransactionStatus.ROLLED_BACK)
             raise
+        # 数据库已经提交，正式文件不得再被回滚。标记文件只是恢复辅助，
+        # 更新失败不影响已提交数据：恢复逻辑依据数据库注册决定文件去留。
+        context.transition(TransactionStatus.COMMITTED)
+        if marker:
+            try:
+                manifest["status"] = "COMMITTED"
+                marker.write_text(
+                    json.dumps(manifest, indent=2), encoding="utf-8", newline="\n"
+                )
+            except Exception:
+                pass
+        return event_ids
 
     def recover_pending(self, staging_root: str | Path) -> list[str]:
         return self.recovery.recover_pending(staging_root)
