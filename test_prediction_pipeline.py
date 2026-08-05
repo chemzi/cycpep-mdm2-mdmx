@@ -455,6 +455,13 @@ class StructureAndParserTests(unittest.TestCase):
 class PredictionPipelineTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="prediction-pipeline-test-"))
+        self.original_paths = (
+            data_layer.DATA_DIR,
+            data_layer.EVIDENCE_DIR,
+            data_layer.STATE_PATH,
+            data_layer.LOG_PATH,
+            data_layer.INDEX_PATH,
+        )
         data_layer.DATA_DIR = self.root / "data"
         data_layer.EVIDENCE_DIR = self.root / "evidence"
         data_layer.STATE_PATH = data_layer.DATA_DIR / "state.json"
@@ -464,11 +471,13 @@ class PredictionPipelineTests(unittest.TestCase):
         self.run_root = self.root / "runs"
 
     def tearDown(self):
-        # PR5: data_layer attributes are lazy.  Writing them above materializes
-        # them into data_layer.__dict__, which would leak into other test
-        # modules that assert no materialized global state.
-        for _name in ("DATA_DIR", "EVIDENCE_DIR", "STATE_PATH", "LOG_PATH", "INDEX_PATH"):
-            data_layer.__dict__.pop(_name, None)
+        (
+            data_layer.DATA_DIR,
+            data_layer.EVIDENCE_DIR,
+            data_layer.STATE_PATH,
+            data_layer.LOG_PATH,
+            data_layer.INDEX_PATH,
+        ) = self.original_paths
 
     def _register_candidate(self, *, legacy_sequence=SEQUENCE):
         design_dir = self.root / "design" / "C0001"

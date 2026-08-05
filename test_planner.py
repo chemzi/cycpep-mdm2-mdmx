@@ -51,11 +51,6 @@ class PlannerTests(unittest.TestCase):
             data_layer.LOG_PATH,
             data_layer.INDEX_PATH,
         ) = self.original_paths
-        # PR5: data_layer attributes are lazy.  Writing them above materializes
-        # them into data_layer.__dict__, which would leak into other test
-        # modules that assert no materialized global state.
-        for _name in ("DATA_DIR", "EVIDENCE_DIR", "STATE_PATH", "LOG_PATH", "INDEX_PATH"):
-            data_layer.__dict__.pop(_name, None)
 
     @staticmethod
     def _state(*, budget=True):

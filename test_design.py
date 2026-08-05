@@ -984,6 +984,19 @@ check('protected_pharmacophore' in route_c_src,
 
 os.unlink(target_fixture.name)
 
+# ── Restore real data_layer references inside the design package ──
+# 桩类只在本次模块级测试期间生效；不恢复会把桩类永久留在 design 包内，
+# 导致 discover 全量跑时其他测试模块（如 test_reliability_regressions）
+# 的候选注册写进内存桩、正式数据层读不到（0 条）。
+import importlib  # noqa: E402
+for _mod_name in ("route_a", "route_b", "route_c", "candidates", "cli",
+                  "manifests", "runtime", "service", "validation"):
+    _mod = importlib.import_module(f"agents.design.{_mod_name}")
+    for _name in ("CandidateIndex", "EvidenceLogger", "State", "file_hash"):
+        if hasattr(_real_data_layer, _name) and hasattr(_mod, _name):
+            setattr(_mod, _name, getattr(_real_data_layer, _name))
+
+
 # ── Summary ──
 print()
 if failures:

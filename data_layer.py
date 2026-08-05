@@ -25,7 +25,7 @@
         ...
 """
 import functools
-import json, csv, hashlib, os, statistics, sys, tempfile, uuid
+import json, csv, hashlib, os, statistics, sys, tempfile, types, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -48,13 +48,13 @@ from storage.file_store import FileStore  # noqa: E402 (PR3)
 ROOT = Path(__file__).resolve().parent
 
 # ============================================================
-# ????????Engineering Standard ?7 / Roadmap PR5?
+# 惰性项目运行时（Engineering Standard §7 / Roadmap PR5）
 # ============================================================
-# ???????????? import ???????????????? helper?
-# ??????????????ACTIVE_PROJECT_CONFIG / DATA_DIR / ...???
-# PEP 562 ``__getattr__`` ???``from data_layer import DATA_DIR`` ????
-# ?????PR3 ? ``get_storage_backend()`` / ``SQLITE_DB_PATH`` ??????
-# ????? import-time ?????
+# 项目配置与派生路径不再于 import 时解析；首次访问（模块属性或内部 helper）
+# 时才加载并缓存。模块级名字（ACTIVE_PROJECT_CONFIG / DATA_DIR / ...）通过
+# PEP 562 ``__getattr__`` 提供，``from data_layer import DATA_DIR`` 等旧用法
+# 保持不变；显式赋值重定向（测试与 mock 常用）由 _LazyPathsModule 协调，
+# 赋值/删除时同步失效路径缓存，删除后重新按环境解析，不会永久残留。
 
 
 @functools.lru_cache(maxsize=1)
@@ -99,6 +99,12 @@ def _paths() -> dict:
     return _runtime_paths
 
 
+def _reset_runtime_paths() -> None:
+    """Drop the cached path snapshot so the next access re-resolves."""
+    global _runtime_paths
+    _runtime_paths = None
+
+
 _LAZY_ATTRIBUTES = {
     "ACTIVE_PROJECT_CONFIG": _active_project_config,
     "DATA_DIR": lambda: _paths()["data_dir"],
@@ -122,6 +128,51 @@ def _module_attr(name):
     """Read a lazy module name through the module object (PEP 562 does not
     apply to bare globals inside this module)."""
     return getattr(sys.modules[__name__], name)
+
+
+class _LazyPathsModule(types.ModuleType):
+    """Coordinate explicit path redirections with the lazy accessors.
+
+    Repository code and tests follow the established pattern of redirecting
+    paths with ``data_layer.DATA_DIR = tmp``, and ``unittest.mock.patch``
+    applies/drops such attributes via ``__setattr__``/``__delattr__``.  PEP 562
+    ``__getattr__`` alone cannot serve this: a plain assignment writes a
+    permanent ``__dict__`` entry that shadows the lazy accessor for the rest
+    of the process.  Intercepting assignment/deletion keeps the contract
+    consistent:
+
+    - reads prefer an explicit ``__dict__`` value (the repo-wide redirect
+      pattern) and otherwise fall back to the ``_runtime_paths`` cache;
+    - assignments write ``__dict__`` AND invalidate the cache, so a later
+      ``del`` makes the next read re-resolve from the environment;
+    - deletions drop both, matching ``mock.patch`` ``stop`` semantics.
+    """
+
+    _PATH_KEYS = {
+        "DATA_DIR": "data_dir",
+        "EVIDENCE_DIR": "evidence_dir",
+        "STATE_PATH": "state_path",
+        "LOG_PATH": "log_path",
+        "INDEX_PATH": "index_path",
+    }
+
+    def __setattr__(self, name: str, value) -> None:
+        if name in _LazyPathsModule._PATH_KEYS:
+            _reset_runtime_paths()
+        super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in _LazyPathsModule._PATH_KEYS:
+            _reset_runtime_paths()
+        try:
+            super().__delattr__(name)
+        except AttributeError:
+            if name not in _LazyPathsModule._PATH_KEYS:
+                raise
+
+
+# Install the module-level hooks so redirects never break the lazy contract.
+sys.modules[__name__].__class__ = _LazyPathsModule
 
 
 class _LazyClassAttribute:

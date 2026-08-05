@@ -20,6 +20,8 @@ sys.path.insert(0, str(ROOT))
 from core.context import ProjectContext, ProjectPaths  # noqa: E402
 from project_config import load_project_config  # noqa: E402
 
+_MISSING = object()  # sentinel: attribute absent from module __dict__
+
 
 class ProjectContextTests(unittest.TestCase):
     def test_default_loads_environment_project(self):
@@ -87,19 +89,46 @@ class ProjectContextTests(unittest.TestCase):
 
 
 class DataLayerLazyTests(unittest.TestCase):
-    def test_import_has_no_project_globals_in_namespace(self):
+    _PATH_NAMES = ("DATA_DIR", "EVIDENCE_DIR", "STATE_PATH", "LOG_PATH", "INDEX_PATH")
+
+    def test_redirects_stay_consistent_with_lazy_accessors(self):
         import data_layer
-        self.assertNotIn("ACTIVE_PROJECT_CONFIG", data_layer.__dict__)
-        self.assertNotIn("DATA_DIR", data_layer.__dict__)
-        self.assertNotIn("INDEX_PATH", data_layer.__dict__)
+        # 显式赋值重定向（仓库与测试的既有惯例）必须立即可见，恢复后回到原值。
+        original = data_layer.DATA_DIR
+        try:
+            data_layer.DATA_DIR = TEST_ROOT / "redirected"
+            self.assertEqual(data_layer.DATA_DIR, TEST_ROOT / "redirected")
+        finally:
+            data_layer.DATA_DIR = original
+        self.assertEqual(data_layer.DATA_DIR, original)
 
     def test_lazy_access_resolves_and_uses_env(self):
         import data_layer
-        self.assertEqual(data_layer.DATA_DIR, TEST_ROOT / "data")
-        self.assertEqual(data_layer.EVIDENCE_DIR, TEST_ROOT / "evidence")
-        self.assertEqual(data_layer.STATE_PATH, TEST_ROOT / "data" / "state.json")
-        self.assertEqual(data_layer.INDEX_PATH, TEST_ROOT / "data" / "candidate_index.csv")
-        self.assertEqual(data_layer.ACTIVE_PROJECT_CONFIG["project_id"], "mdm2_mdmx_reference")
+        # 其他测试模块按仓库惯例会在 import 时显式重定向这些名字；先临时清掉
+        # 重定向，验证惰性访问器回退到环境变量解析，结束时原样恢复，保证
+        # `python -m unittest discover` 全量跑与单独跑都成立。
+        saved = {
+            name: data_layer.__dict__.get(name, _MISSING)
+            for name in self._PATH_NAMES
+        }
+        try:
+            for name in self._PATH_NAMES:
+                data_layer.__dict__.pop(name, None)
+            data_layer._reset_runtime_paths()
+            os.environ["CYCPEP_DATA_DIR"] = str(TEST_ROOT / "data")
+            os.environ["CYCPEP_EVIDENCE_DIR"] = str(TEST_ROOT / "evidence")
+            self.assertEqual(data_layer.DATA_DIR, TEST_ROOT / "data")
+            self.assertEqual(data_layer.EVIDENCE_DIR, TEST_ROOT / "evidence")
+            self.assertEqual(data_layer.STATE_PATH, TEST_ROOT / "data" / "state.json")
+            self.assertEqual(data_layer.INDEX_PATH, TEST_ROOT / "data" / "candidate_index.csv")
+            self.assertEqual(data_layer.ACTIVE_PROJECT_CONFIG["project_id"], "mdm2_mdmx_reference")
+        finally:
+            for name, value in saved.items():
+                if value is _MISSING:
+                    data_layer.__dict__.pop(name, None)
+                else:
+                    data_layer.__dict__[name] = value
+            data_layer._reset_runtime_paths()
 
     def test_state_defaults_are_project_aware(self):
         import data_layer
@@ -112,13 +141,22 @@ class DataLayerLazyTests(unittest.TestCase):
 
     def test_evidence_logger_writes_through_lazy_path(self):
         import data_layer
-        event_id = data_layer.EvidenceLogger.log(
-            "design", "test", {"probe": 1}, phase="design"
-        )
-        self.assertTrue(event_id)
-        entries = data_layer.EvidenceLogger.get_all()
-        self.assertTrue(any(e["event_id"] == event_id for e in entries))
-        self.assertTrue((TEST_ROOT / "evidence" / "evidence_log.jsonl").exists())
+        original_evidence = data_layer.EVIDENCE_DIR
+        original_log = data_layer.LOG_PATH
+        fresh = Path(tempfile.mkdtemp(prefix="cycpep-lazy-evidence-"))
+        try:
+            data_layer.EVIDENCE_DIR = fresh
+            data_layer.LOG_PATH = fresh / "evidence_log.jsonl"
+            event_id = data_layer.EvidenceLogger.log(
+                "design", "test", {"probe": 1}, phase="design"
+            )
+            self.assertTrue(event_id)
+            self.assertTrue((fresh / "evidence_log.jsonl").exists())
+            entries = data_layer.EvidenceLogger.get_all()
+            self.assertTrue(any(e["event_id"] == event_id for e in entries))
+        finally:
+            data_layer.EVIDENCE_DIR = original_evidence
+            data_layer.LOG_PATH = original_log
 
 
 class ResearchLazyTests(unittest.TestCase):
