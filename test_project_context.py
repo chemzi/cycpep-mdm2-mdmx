@@ -170,5 +170,83 @@ class DesignContextTests(unittest.TestCase):
         self.assertIs(d.project_config, design_config.ACTIVE_PROJECT_CONFIG)
 
 
+class PredictionInjectionTests(unittest.TestCase):
+    def _capture(self, captured):
+        import agents.prediction as prediction
+
+        class _FakePipeline:
+            def __init__(self, **kwargs):
+                captured["project"] = kwargs["project"]
+
+            def run(self):
+                return {"ok": True}
+
+        original = prediction.PredictionPipeline
+        prediction.PredictionPipeline = _FakePipeline
+        return original
+
+    def test_run_injects_project_config(self):
+        import agents.prediction as prediction
+        custom = {"project_id": "keap1", "targets": [{"id": "KEAP1"}]}
+        captured = {}
+        original = self._capture(captured)
+        try:
+            result = prediction.run(
+                state={
+                    "project_id": "keap1",  # must agree with the injected config
+                    "project_config": {
+                        "project_id": "planner_test",
+                        "targets": [{"id": "MDM2"}, {"id": "MDMX"}],
+                    },
+                },
+                project_config=custom,
+            )
+        finally:
+            prediction.PredictionPipeline = original
+        self.assertEqual(captured["project"]["project_id"], "keap1")
+        self.assertEqual(captured["project"]["targets"][0]["id"], "KEAP1")
+        self.assertEqual(result, {"ok": True})
+
+    def test_run_rejects_mismatched_project_config(self):
+        import agents.prediction as prediction
+        from prediction_pipeline.contracts import ContractError
+        with self.assertRaises(ContractError) as captured:
+            prediction.run(
+                state={"project_id": "planner_test", "thresholds": {}},
+                project_config={"project_id": "keap1", "targets": [{"id": "KEAP1"}]},
+            )
+        self.assertEqual(captured.exception.code, "prediction_project_mismatch")
+
+    def test_run_falls_back_to_default_when_state_has_no_config(self):
+        import agents.prediction as prediction
+        import data_layer
+        captured = {}
+        original = self._capture(captured)
+        try:
+            prediction.run(state={"project_id": "keap1", "thresholds": {}})
+        finally:
+            prediction.PredictionPipeline = original
+        self.assertEqual(
+            captured["project"]["project_id"],
+            data_layer.State._project_config["project_id"],
+        )
+
+    def test_run_uses_state_config_without_injection(self):
+        import agents.prediction as prediction
+        captured = {}
+        original = self._capture(captured)
+        try:
+            prediction.run(state={
+                "project_id": "mdm2",
+                "project_config": {
+                    "project_id": "mdm2",
+                    "targets": [{"id": "MDM2"}],
+                },
+            })
+        finally:
+            prediction.PredictionPipeline = original
+        self.assertEqual(captured["project"]["project_id"], "mdm2")
+
+
 if __name__ == "__main__":
     unittest.main()

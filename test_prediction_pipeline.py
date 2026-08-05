@@ -463,6 +463,13 @@ class PredictionPipelineTests(unittest.TestCase):
         self.artifacts_root = self.root / "artifacts"
         self.run_root = self.root / "runs"
 
+    def tearDown(self):
+        # PR5: data_layer attributes are lazy.  Writing them above materializes
+        # them into data_layer.__dict__, which would leak into other test
+        # modules that assert no materialized global state.
+        for _name in ("DATA_DIR", "EVIDENCE_DIR", "STATE_PATH", "LOG_PATH", "INDEX_PATH"):
+            data_layer.__dict__.pop(_name, None)
+
     def _register_candidate(self, *, legacy_sequence=SEQUENCE):
         design_dir = self.root / "design" / "C0001"
         design_dir.mkdir(parents=True)

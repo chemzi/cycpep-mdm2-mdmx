@@ -51,6 +51,11 @@ class PlannerTests(unittest.TestCase):
             data_layer.LOG_PATH,
             data_layer.INDEX_PATH,
         ) = self.original_paths
+        # PR5: data_layer attributes are lazy.  Writing them above materializes
+        # them into data_layer.__dict__, which would leak into other test
+        # modules that assert no materialized global state.
+        for _name in ("DATA_DIR", "EVIDENCE_DIR", "STATE_PATH", "LOG_PATH", "INDEX_PATH"):
+            data_layer.__dict__.pop(_name, None)
 
     @staticmethod
     def _state(*, budget=True):
@@ -492,6 +497,74 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(plan(state=state, candidate_rows=rows)[0]["agent"], "critic")
         state["critic"] = {"report_path": "/tmp/critic_report.json"}
         self.assertEqual(plan(state=state, candidate_rows=rows)[0]["agent"], "planner")
+
+
+    def test_build_plan_injects_project_config(self):
+        report_path = self._report([
+            self._issue("l2_interface_confidence_low", "iterate_interface_design")
+        ])
+        # Injected snapshot wins over state's project_config; the project IDs
+        # must agree (Planner enforces the same project).
+        injected = {
+            "project_id": "planner_test",
+            "targets": [{"id": "KEAP1"}],
+        }
+        result = build_plan(
+            critic_report_path=report_path,
+            state=self._state(),
+            project_config=injected,
+        )
+        design = next(
+            task for task in result["tasks"]
+            if task["action"] == "iterate_design"
+        )
+        self.assertEqual(
+            design["parameters"]["project_config_digest"],
+            object_sha256(injected),
+        )
+        self.assertNotEqual(
+            design["parameters"]["project_config_digest"],
+            object_sha256(self._state()["project_config"]),
+        )
+
+    def test_build_plan_rejects_mismatched_project_config(self):
+        report_path = self._report([
+            self._issue("l2_interface_confidence_low", "iterate_interface_design")
+        ])
+        with self.assertRaises(PlannerContractError) as captured:
+            build_plan(
+                critic_report_path=report_path,
+                state=self._state(),
+                project_config={"project_id": "keap1", "targets": [{"id": "KEAP1"}]},
+            )
+        self.assertEqual(captured.exception.code, "planner_project_mismatch")
+
+    def test_plan_injects_project_config(self):
+        state = self._state()  # approved planner_test config
+        state["project_id"] = "keap1"  # must agree with the injected config
+        keap1_unapproved = {"project_id": "keap1", "targets": [{"id": "KEAP1"}]}
+        result = plan(
+            state=state,
+            candidate_rows=[],
+            project_config=keap1_unapproved,
+        )
+        self.assertEqual(result[0]["action"], "review_and_approve_project_config")
+
+        keap1_approved = {
+            "project_id": "keap1",
+            "targets": [{"id": "KEAP1"}],
+            "review": {
+                "status": "approved",
+                "approved_digest": "a" * 64,
+                "content_digest": "a" * 64,
+            },
+        }
+        result = plan(
+            state=state,
+            candidate_rows=[],
+            project_config=keap1_approved,
+        )
+        self.assertEqual(result[0]["action"], "run")
 
 
 if __name__ == "__main__":

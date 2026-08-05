@@ -465,12 +465,34 @@ def review(
     state: dict | None = None,
     candidate_rows: list[dict] | None = None,
     config: CriticConfig | None = None,
+    project_config: dict | None = None,
 ) -> dict:
-    """Purely review one immutable Prediction handoff and its records."""
+    """Purely review one immutable Prediction handoff and its records.
+
+    ``project_config`` optionally injects an explicit approved project config
+    (PR5, Engineering Standard §7); it must agree with ``state``'s
+    ``project_id`` when present, and supplies the project identity when State
+    has none.  When omitted, behaviour is unchanged.
+    """
     config = config or CriticConfig()
     handoff_path = Path(handoff_path).expanduser().resolve()
     handoff, records = _load_records(handoff_path)
     state = dict(state if state is not None else State.load())
+    if project_config is not None:
+        state["project_config"] = project_config
+        injected_project_id = str(project_config.get("project_id") or "").strip()
+        existing_project_id = str(state.get("project_id") or "").strip()
+        if (
+            injected_project_id
+            and existing_project_id
+            and injected_project_id != existing_project_id
+        ):
+            raise CriticContractError(
+                "critic_project_mismatch",
+                "injected project config differs from State project ID",
+            )
+        if injected_project_id:
+            state["project_id"] = injected_project_id
     candidate_rows = list(
         candidate_rows if candidate_rows is not None else CandidateIndex.load()
     )
@@ -874,6 +896,7 @@ def run(
     state: dict | None = None,
     candidate_rows: list[dict] | None = None,
     config: CriticConfig | None = None,
+    project_config: dict | None = None,
 ) -> dict:
     """Review, persist the report, and idempotently update Critic state/evidence."""
     handoff_path = Path(handoff_path).expanduser().resolve()
@@ -886,6 +909,7 @@ def run(
         state=state,
         candidate_rows=candidate_rows,
         config=config,
+        project_config=project_config,
     )
     if output_path is None:
         output_path = (
