@@ -113,6 +113,10 @@ from data_layer import (
 
 详细用法见 [数据层使用手册](./数据层使用手册.md)。
 
+### 存储架构（PR3）
+
+Agent 继续通过 `data_layer` 公共入口访问 State、CandidateIndex 和 Evidence，底层已建立统一 `storage` Store boundary。旧 JSON/CSV/JSONL 文件仍保留作为兼容 backend；设置 `CYCPEP_DB_PATH` 后可将运行时切换到 SQLite `project.db`。迁移工具 `storage.migrate_json_to_sqlite()` 幂等执行且不会删除源文件。
+
 协作上手资料：
 
 - [赵嘉策上手指南：Planner / Critic / Orchestrator](./docs/赵嘉策上手指南.md)
