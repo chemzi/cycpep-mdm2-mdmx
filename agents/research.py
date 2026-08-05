@@ -1175,7 +1175,7 @@ def _run_impl(state=None, force_recompute=False, skip_pipeline=False):
     else:
         pipeline_result = _load_valid_cache(_module_attr("CACHE_PATH"), _cfg())
         if pipeline_result is not None:
-            print(f"[research] Using cache: {_module_attr("CACHE_PATH")}")
+            print(f"[research] Using cache: {_module_attr('CACHE_PATH')}")
         else:
             pipeline_result = pipeline_runner()
 
