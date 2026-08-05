@@ -19,18 +19,6 @@ from data_layer import EvidenceLogger  # noqa: E402
 from . import config  # noqa: E402
 from .config import (  # noqa: E402
     COLABDESIGN_COMMIT,
-    COLABDESIGN_DIR,
-    COLABDESIGN_PARAMS,
-    CUDA_DATA_DIR,
-    CYCPEP_PYTHON,
-    LIGANDMPNN_CHECKPOINT,
-    LIGANDMPNN_DIR,
-    LIGANDMPNN_MODEL_TYPE,
-    RFDIFF_CONDA,
-    RFDIFF_DIR,
-    RFDIFF_PYTHON,
-    RFDIFF_TIMESTEPS,
-    SE3_ROOT,
     _LOCK,
 )
 from .validation import (  # noqa: E402
@@ -51,10 +39,10 @@ def _colabdesign_smoke_script():
     """Inline ColabDesign functional smoke test run under CYCPEP_PYTHON."""
     return f"""
 import sys, numpy as np
-sys.path.insert(0, {COLABDESIGN_DIR!r})
+sys.path.insert(0, {config.COLABDESIGN_DIR!r})
 from colabdesign import mk_af_model, clear_mem
 model = None
-model = mk_af_model(protocol='hallucination', data_dir={COLABDESIGN_PARAMS!r})
+model = mk_af_model(protocol='hallucination', data_dir={config.COLABDESIGN_PARAMS!r})
 model.prep_inputs(length=8)
 model.restart(seed=0, seq='AAAAAAAA')
 try:
@@ -94,10 +82,10 @@ def _run_colabdesign_smoke_check(sig):
     with open(spath, "w") as f:
         f.write(script)
     try:
-        r = subprocess.run([CYCPEP_PYTHON, spath], capture_output=True, text=True,
+        r = subprocess.run([config.CYCPEP_PYTHON, spath], capture_output=True, text=True,
             timeout=120,
             env={**os.environ,
-                 "XLA_FLAGS": f"--xla_gpu_cuda_data_dir={CUDA_DATA_DIR}",
+                 "XLA_FLAGS": f"--xla_gpu_cuda_data_dir={config.CUDA_DATA_DIR}",
                  "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
                  "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.20"})
         if r.returncode != 0:
@@ -108,7 +96,7 @@ def _run_colabdesign_smoke_check(sig):
             EvidenceLogger.error("design", "colabdesign_offset_check_failed",
                 "functional test did not emit success marker")
             return
-        config._VERIFIED_RUNTIME_SIGNATURE = sig
+        config.set_verified_runtime_signature(sig)
     except (subprocess.SubprocessError, OSError) as exc:
         EvidenceLogger.error("design", "colabdesign_offset_check_error", str(exc))
     finally:
@@ -132,22 +120,22 @@ def _verify_colabdesign_runtime():
     """
     # Mutable runtime flags live on config so submodules share one source.
     if os.environ.get("CYCPEP_SKIP_COLABDESIGN_VERIFY") == "1":
-        if not config._SKIP_EVIDENCE_LOGGED:
+        if not config.get_skip_evidence_logged():
             EvidenceLogger.log("design", "colabdesign_verify_skipped",
                 {"reason": "CYCPEP_SKIP_COLABDESIGN_VERIFY=1 - "
                  "GPU allocation managed by orchestrator; "
                  "no pre-flight ColabDesign check will run"})
-            config._SKIP_EVIDENCE_LOGGED = True
+            config.set_skip_evidence_logged(True)
         return
-    sig = (CYCPEP_PYTHON, COLABDESIGN_DIR, COLABDESIGN_PARAMS)
-    if config._VERIFIED_RUNTIME_SIGNATURE == sig:
+    sig = (config.CYCPEP_PYTHON, config.COLABDESIGN_DIR, config.COLABDESIGN_PARAMS)
+    if config.get_verified_runtime_signature() == sig:
         return
     # Double-checked locking: only one thread may run the GPU subprocess.
     # NOTE: this only serialises within the *same* Python process.  When the
     # orchestrator launches multiple worker processes, use
     # CYCPEP_SKIP_COLABDESIGN_VERIFY=1 with a single pre-flight check instead.
     with _LOCK:
-        if config._VERIFIED_RUNTIME_SIGNATURE == sig:
+        if config.get_verified_runtime_signature() == sig:
             return
         _run_colabdesign_smoke_check(sig)
 
@@ -162,7 +150,9 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
         parameter is accepted for API consistency with the rest of the pipeline and
         is only consumed by LigandMPNN and Route C expansion.
     """
-    # Deferred log for invalid RFDIFF_TIMESTEPS (P1: no EvidenceLogger at import).
+    # Resolve timesteps first so an invalid env value sets the deferred
+    # warning flag before it is consumed below (no EvidenceLogger at import).
+    timesteps = config.RFDIFF_TIMESTEPS
     if config._RFDIFF_TIMESTEPS_INVALID is not None:
         EvidenceLogger.log("design", "invalid_RFDIFF_TIMESTEPS",
             {"value": config._RFDIFF_TIMESTEPS_INVALID, "fallback": 50})
@@ -175,14 +165,14 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
             stacklevel=2,
         )
     cmd = [
-        RFDIFF_PYTHON, f"{RFDIFF_DIR}/scripts/run_inference.py",
+        config.RFDIFF_PYTHON, f"{config.RFDIFF_DIR}/scripts/run_inference.py",
         f"inference.input_pdb={target_pdb}",
         "inference.cyclic=True",
         "inference.cyc_chains=a",
         f"inference.num_designs={n_designs}",
         f"inference.output_prefix={output_prefix}",
         f"contigmap.contigs=['{contig}']",
-        f"diffuser.T={RFDIFF_TIMESTEPS}",
+        f"diffuser.T={timesteps}",
     ]
     if hotspots:
         # 补链名前缀: "54,93,96" → "'A54','A93','A96'"（Hydra 要求每个残基加引号）
@@ -195,7 +185,7 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
         _rfdiff_timeout = 3600
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=_rfdiff_timeout,
-            cwd=RFDIFF_DIR,
+            cwd=config.RFDIFF_DIR,
             env=_rfdiff_subprocess_env())
         if r.returncode != 0:
             print(f"[RFdiff 失败] exit={r.returncode}")
@@ -238,9 +228,9 @@ def _build_ligandmpnn_command(backbone_pdb, output_dir, binder_chain,
                               fixed_residues=None):
     """Assemble the LigandMPNN ``run.py`` command line."""
     cmd = [
-        RFDIFF_PYTHON, f"{LIGANDMPNN_DIR}/run.py",
-        "--model_type", LIGANDMPNN_MODEL_TYPE,
-        f"--checkpoint_protein_mpnn={LIGANDMPNN_CHECKPOINT}",
+        config.RFDIFF_PYTHON, f"{config.LIGANDMPNN_DIR}/run.py",
+        "--model_type", config.LIGANDMPNN_MODEL_TYPE,
+        f"--checkpoint_protein_mpnn={config.LIGANDMPNN_CHECKPOINT}",
         f"--pdb_path={backbone_pdb}",
         f"--out_folder={output_dir}",
         f"--batch_size={batch_size}",
@@ -383,10 +373,10 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=None, binder_chain=None,
     if n_seq is None:
         n_seq = config.DESIGN_PROTOCOL["ligandmpnn"]["n_seq_per_backbone"]
 
-    if LIGANDMPNN_MODEL_TYPE != "protein_mpnn":
+    if config.LIGANDMPNN_MODEL_TYPE != "protein_mpnn":
         EvidenceLogger.error(
             "design", "unsupported_inverse_folding_model",
-            f"LIGANDMPNN_MODEL_TYPE={LIGANDMPNN_MODEL_TYPE!r}; "
+            f"LIGANDMPNN_MODEL_TYPE={config.LIGANDMPNN_MODEL_TYPE!r}; "
             "the validated protein-target workflow requires 'protein_mpnn'",
             recovery="use protein_mpnn or add a separately tested adapter",
         )
@@ -424,7 +414,7 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=None, binder_chain=None,
         _ligandmpnn_timeout = 600
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=_ligandmpnn_timeout,
-            cwd=LIGANDMPNN_DIR,
+            cwd=config.LIGANDMPNN_DIR,
             env=_rfdiff_subprocess_env())
         if r.returncode != 0:
             print(f"[LigandMPNN failed] exit={r.returncode} stderr={r.stderr[-300:]}")
@@ -441,15 +431,15 @@ def _rfdiff_subprocess_env():
     """Reproduce the validated rfdiffusion-design ``activate.d`` runtime."""
     env = dict(os.environ)
     python_version = os.environ.get("RFDIFF_PYTHON_VERSION", "3.10")
-    site_packages = f"{RFDIFF_CONDA}/lib/python{python_version}/site-packages"
-    python_paths = [SE3_ROOT, RFDIFF_DIR]
+    site_packages = f"{config.RFDIFF_CONDA}/lib/python{python_version}/site-packages"
+    python_paths = [config.SE3_ROOT, config.RFDIFF_DIR]
     if env.get("PYTHONPATH"):
         python_paths.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(python_paths)
     env["DGLBACKEND"] = "pytorch"
 
     library_paths = [
-        f"{RFDIFF_CONDA}/lib",
+        f"{config.RFDIFF_CONDA}/lib",
         f"{site_packages}/torch/lib",
         *(
             f"{site_packages}/nvidia/{package}/lib"
@@ -468,12 +458,12 @@ def _refold_script_prologue():
     """Generated-script preamble: env setup, commit pin, offset-wiring guard."""
     return f"""
 import sys, subprocess, numpy as np
-sys.path.insert(0, {COLABDESIGN_DIR!r})
+sys.path.insert(0, {config.COLABDESIGN_DIR!r})
 from colabdesign import mk_af_model, clear_mem
 from colabdesign.af.alphafold.model import modules as af_modules
 
 head = subprocess.run(
-    ['git', '-C', {COLABDESIGN_DIR!r}, 'rev-parse', 'HEAD'],
+    ['git', '-C', {config.COLABDESIGN_DIR!r}, 'rev-parse', 'HEAD'],
     capture_output=True, text=True, timeout=30, check=True,
 ).stdout.strip()
 if head != {COLABDESIGN_COMMIT!r}:
@@ -483,7 +473,7 @@ if head != {COLABDESIGN_COMMIT!r}:
     )
 dirty = subprocess.run(
     [
-        'git', '-C', {COLABDESIGN_DIR!r}, 'status', '--porcelain',
+        'git', '-C', {config.COLABDESIGN_DIR!r}, 'status', '--porcelain',
         '--untracked-files=no'
     ],
     capture_output=True, text=True, timeout=30, check=True,
@@ -496,7 +486,7 @@ source = open(af_modules.__file__, encoding='utf-8').read()
 # rename after an upstream refactor), the module-level functional smoke test
 # (_verify_colabdesign_runtime) serves as a fallback gate (P1-3).
 if '"offset" in batch' not in source and "'offset' in batch" not in source:
-    if not {config._VERIFIED_RUNTIME_SIGNATURE is not None}:
+    if not {config.get_verified_runtime_signature() is not None}:
         raise RuntimeError(
             'ColabDesign backend does not consume cyclic pairwise offset '
             'and module-level functional verification has not passed - '
@@ -508,7 +498,7 @@ if '"offset" in batch' not in source and "'offset' in batch" not in source:
 def _refold_script_core(sequence, L):
     """Generated-script middle: model setup and cyclic-offset injection."""
     return f"""
-model = mk_af_model(protocol='hallucination', data_dir={COLABDESIGN_PARAMS!r})
+model = mk_af_model(protocol='hallucination', data_dir={config.COLABDESIGN_PARAMS!r})
 model.prep_inputs(length={L})
 model.restart(seed=0, seq={sequence!r})
 
@@ -634,10 +624,10 @@ def _run_refold_subprocess(spath, output_pdb, plddt_file, sequence):
     except (ValueError, TypeError):
         _refold_timeout = 1200
     try:
-        r = subprocess.run([CYCPEP_PYTHON, spath], capture_output=True, text=True,
+        r = subprocess.run([config.CYCPEP_PYTHON, spath], capture_output=True, text=True,
             timeout=_refold_timeout,
             env={**os.environ,
-                 "XLA_FLAGS": f"--xla_gpu_cuda_data_dir={CUDA_DATA_DIR}",
+                 "XLA_FLAGS": f"--xla_gpu_cuda_data_dir={config.CUDA_DATA_DIR}",
                  "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
                  "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.80"})
         if r.returncode != 0:
@@ -685,7 +675,7 @@ def _run_refold(sequence, output_pdb):
     owned by the Prediction Agent's L1 layer.
     """
     # Lazily verify ColabDesign cyclic-offset wiring once per process (P1-3).
-    if config._VERIFIED_RUNTIME_SIGNATURE is None:
+    if config.get_verified_runtime_signature() is None:
         _verify_colabdesign_runtime()
     script = _build_refold_script(sequence, output_pdb)
     spath = _refold_script_path(sequence)

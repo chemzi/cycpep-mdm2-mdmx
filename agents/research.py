@@ -5,6 +5,7 @@ Research Agent - MDM2/MDMX 靶点调研管线
 每步挂 EvidenceLogger tool_trace。biotite 失败时自动回退到预置常量。
 """
 
+import functools
 import json, os, subprocess, sys, time, hashlib, tempfile
 from pathlib import Path
 from datetime import datetime, timezone
@@ -12,7 +13,8 @@ from datetime import datetime, timezone
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = ROOT / "scripts"
 
-from data_layer import State, EvidenceLogger, DATA_DIR, EVIDENCE_DIR
+from data_layer import State, EvidenceLogger
+import data_layer
 from project_config import load_project_config, required_target_ids, target_slug
 from target_bootstrap import assert_project_approved
 from threshold_contract import normalize_threshold_entry, normalize_thresholds
@@ -23,13 +25,75 @@ from threshold_calibration import (
     load_control_dataset,
 )
 
-PROJECT_CONFIG = load_project_config()
-PROJECT_TARGET_IDS = tuple(target["id"] for target in PROJECT_CONFIG["targets"])
-IS_MDM_REFERENCE = set(PROJECT_TARGET_IDS) == {"MDM2", "MDMX"}
-CACHE_PATH = (
-    DATA_DIR / "_research_cache.json" if IS_MDM_REFERENCE
-    else DATA_DIR / f"_research_cache_{target_slug(PROJECT_CONFIG['project_id'])}.json"
-)
+# ============================================================
+# 惰性项目运行时（Engineering Standard §7 / Roadmap PR5）
+# ============================================================
+# 项目配置与派生路径不再于 import 时解析。``run(project_config=...)`` 可以
+# 注入显式项目配置（仅本次调用有效），未注入时回退到环境选定的默认项目。
+
+
+@functools.lru_cache(maxsize=1)
+def _load_default_project_config() -> dict:
+    return load_project_config()
+
+
+_injected_project_config = None
+
+
+def _get_project_config() -> dict:
+    if _injected_project_config is not None:
+        return _injected_project_config
+    return _load_default_project_config()
+
+
+def _get_project_target_ids() -> tuple:
+    return tuple(target["id"] for target in _get_project_config()["targets"])
+
+
+def _get_is_mdm_reference() -> bool:
+    return set(_get_project_target_ids()) == {"MDM2", "MDMX"}
+
+
+def _get_cache_path() -> Path:
+    config = _get_project_config()
+    if _get_is_mdm_reference():
+        return _module_attr("DATA_DIR") / "_research_cache.json"
+    return _module_attr("DATA_DIR") / f"_research_cache_{target_slug(config['project_id'])}.json"
+
+
+def _get_thresholds_cache() -> Path:
+    return _module_attr("DATA_DIR") / "_thresholds_cache.json"
+
+
+_LAZY_ATTRIBUTES = {
+    "PROJECT_CONFIG": _get_project_config,
+    "PROJECT_TARGET_IDS": _get_project_target_ids,
+    "IS_MDM_REFERENCE": _get_is_mdm_reference,
+    "CACHE_PATH": _get_cache_path,
+    "THRESHOLDS_CACHE": _get_thresholds_cache,
+    "DATA_DIR": lambda: data_layer.DATA_DIR,
+    "EVIDENCE_DIR": lambda: data_layer.EVIDENCE_DIR,
+}
+
+
+def __getattr__(name):
+    """PEP 562: serve legacy module names lazily on first access (PR5)."""
+    getter = _LAZY_ATTRIBUTES.get(name)
+    if getter is not None:
+        return getter()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _module_attr(name):
+    """Read a lazy module name through the module object (PEP 562 does not
+    apply to bare globals inside this module)."""
+    return getattr(sys.modules[__name__], name)
+
+
+def _cfg() -> dict:
+    """Active approved project config (injected or environment default)."""
+    return _module_attr("PROJECT_CONFIG")
+
 
 # ===== 预置常量（biotite 失败时兜底）=====
 TARGETS = {
@@ -121,7 +185,6 @@ DEFAULT_THRESHOLDS = {
                             "quote_verified": True,
                             "evidence_grade": "paper_explicit", "calibration_status": "pending"},
 }
-THRESHOLDS_CACHE = DATA_DIR / "_thresholds_cache.json"
 
 RESEARCH_CACHE_SCHEMA_VERSION = 2
 THRESHOLD_CACHE_SCHEMA_VERSION = 2
@@ -137,8 +200,8 @@ PROTOCOL_VERSIONS = {
 
 
 def _ensure_runtime_dirs():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+    _module_attr("DATA_DIR").mkdir(parents=True, exist_ok=True)
+    _module_attr("EVIDENCE_DIR").mkdir(parents=True, exist_ok=True)
 
 
 def _atomic_write_json(path: str | Path, payload: dict):
@@ -178,7 +241,7 @@ def _control_data_path(config: dict) -> Path:
         os.environ.get("CYCPEP_CONTROL_DATA")
         or selection.get("calibration_controls_path")
     )
-    return Path(configured) if configured else DATA_DIR / "_calibration_controls.json"
+    return Path(configured) if configured else _module_attr("DATA_DIR") / "_calibration_controls.json"
 
 
 def _control_data_digest(config: dict) -> str | None:
@@ -401,7 +464,7 @@ def _write_threshold_cache(thresholds: dict, config: dict, audit: dict | None = 
         "thresholds": canonical,
         "_normalization_audit": audit or normalization,
     }
-    _atomic_write_json(THRESHOLDS_CACHE, payload)
+    _atomic_write_json(_module_attr("THRESHOLDS_CACHE"), payload)
     return payload
 
 
@@ -468,7 +531,7 @@ def _apply_control_calibration(thresholds: dict, config: dict) -> tuple[dict, di
             "source_metadata": metadata,
             "audit": summary,
         }
-        _atomic_write_json(DATA_DIR / "_threshold_calibration.json", artifact)
+        _atomic_write_json(_module_attr("DATA_DIR") / "_threshold_calibration.json", artifact)
         EvidenceLogger.log(
             "research", "threshold_calibration", summary,
             targets=list(required_target_ids(config)), phase="research",
@@ -796,7 +859,7 @@ def _run_pipeline():
 
     # ===== Step 8: 阈值文献检索 =====
     print("[research] Step 8/8: threshold literature research...")
-    thresholds = _default_thresholds(PROJECT_CONFIG)
+    thresholds = _default_thresholds(_cfg())
     try:
         tr, te2, tc, td_, th = _run_script("threshold_research.py", extra_args=["--concurrency", "4"])
         lit, threshold_normalization = normalize_thresholds(tr.get("metric_battery", {}))
@@ -829,7 +892,7 @@ def _run_pipeline():
                     "evidence_grade": info.get("evidence_grade"),
                     "quote_verified": True,
                     "calibration_status": "pending",
-                    "applicable_targets": list(required_target_ids(PROJECT_CONFIG)),
+                    "applicable_targets": list(required_target_ids(_cfg())),
                 }
         thresholds, final_normalization = normalize_thresholds(thresholds)
         EvidenceLogger.log("research", "tool_call", {
@@ -851,14 +914,14 @@ def _run_pipeline():
 
     if stage_status.get("threshold_research") != "complete":
         fallbacks.append("provisional_default_thresholds")
-    thresholds, control_calibration = _apply_control_calibration(thresholds, PROJECT_CONFIG)
-    _write_threshold_cache(thresholds, PROJECT_CONFIG, {
+    thresholds, control_calibration = _apply_control_calibration(thresholds, _cfg())
+    _write_threshold_cache(thresholds, _cfg(), {
         "literature_input": threshold_normalization if "threshold_normalization" in locals() else {},
         "final": final_normalization if "final_normalization" in locals() else {},
         "control_calibration": control_calibration,
     })
-    if not THRESHOLDS_CACHE.exists():
-        _write_threshold_cache(thresholds, PROJECT_CONFIG)
+    if not _module_attr("THRESHOLDS_CACHE").exists():
+        _write_threshold_cache(thresholds, _cfg())
 
     # ===== 组装结果 =====
     stage_error_code, error_message = _diagnostics_for_stages(stage_status, stage_context)
@@ -889,9 +952,9 @@ def _run_pipeline():
             "control_calibration": control_calibration,
             "run_status": _overall_run_status(stage_status),
         },
-        "_cache_meta": _cache_meta(PROJECT_CONFIG),
+        "_cache_meta": _cache_meta(_cfg()),
     }
-    _atomic_write_json(CACHE_PATH, result)
+    _atomic_write_json(_module_attr("CACHE_PATH"), result)
     print(f"[research] Pipeline done. pocket_source={result['_pipeline_meta']['pocket_source']}")
     return result
 
@@ -899,7 +962,7 @@ def _run_pipeline():
 def _run_generic_pipeline():
     """Target-configured research path without MDM-specific biological fallbacks."""
     _ensure_runtime_dirs()
-    target_ids = list(PROJECT_TARGET_IDS)
+    target_ids = list(_module_attr("PROJECT_TARGET_IDS"))
     stage_status = {}
     stage_context = {}
     fallbacks = []
@@ -961,7 +1024,7 @@ def _run_generic_pipeline():
         "duration_sec": round(pd, 1), "stdout_snippet": f"papers={pmr.get('n_total', 0)}",
     }, targets=target_ids, phase="research")
 
-    approved_binders = _approved_known_binders(PROJECT_CONFIG)
+    approved_binders = _approved_known_binders(_cfg())
     known_binders = list(approved_binders)
     try:
         lr, le, lc, ld, lh = _run_script("llm_extract.py", pmr, extra_args=["--concurrency", "3"])
@@ -988,7 +1051,7 @@ def _run_generic_pipeline():
         fallbacks.append("no_binder_fallback")
         EvidenceLogger.error("research", "tool_failure", str(exc), recovery="no fabricated binder fallback")
 
-    thresholds = _default_thresholds(PROJECT_CONFIG)
+    thresholds = _default_thresholds(_cfg())
     try:
         tr, te, tc, td, thash = _run_script("threshold_research.py", extra_args=["--concurrency", "4"])
         literature_thresholds, threshold_normalization = normalize_thresholds(tr.get("metric_battery", {}))
@@ -1025,21 +1088,21 @@ def _run_generic_pipeline():
 
     if stage_status.get("threshold_research") != "complete":
         fallbacks.append("provisional_default_thresholds")
-    thresholds, control_calibration = _apply_control_calibration(thresholds, PROJECT_CONFIG)
-    _write_threshold_cache(thresholds, PROJECT_CONFIG, {
+    thresholds, control_calibration = _apply_control_calibration(thresholds, _cfg())
+    _write_threshold_cache(thresholds, _cfg(), {
         "literature_input": threshold_normalization if "threshold_normalization" in locals() else {},
         "final": final_normalization if "final_normalization" in locals() else {},
         "control_calibration": control_calibration,
     })
-    if not THRESHOLDS_CACHE.exists():
-        _write_threshold_cache(thresholds, PROJECT_CONFIG)
+    if not _module_attr("THRESHOLDS_CACHE").exists():
+        _write_threshold_cache(thresholds, _cfg())
         EvidenceLogger.error("research", "tool_failure", str(exc), recovery="provisional thresholds remain non-clearable")
 
     dynamic_pdb_list = [row.get("pdb_id") for row in er.get("peptide_complexes", []) if row.get("pdb_id")]
     stage_error_code, error_message = _diagnostics_for_stages(stage_status, stage_context)
     result = {
-        "project_id": PROJECT_CONFIG["project_id"],
-        "targets": {target["id"]: target for target in PROJECT_CONFIG["targets"]},
+        "project_id": _cfg()["project_id"],
+        "targets": {target["id"]: target for target in _cfg()["targets"]},
         "pocket_differences": {
             "_source": "dynamic_interface_aggregation",
             "targets": aggregate.get("results_by_target", {}),
@@ -1076,37 +1139,55 @@ def _run_generic_pipeline():
             "control_calibration": control_calibration,
             "run_status": _overall_run_status(stage_status),
         },
-        "_cache_meta": _cache_meta(PROJECT_CONFIG),
+        "_cache_meta": _cache_meta(_cfg()),
     }
-    _atomic_write_json(CACHE_PATH, result)
+    _atomic_write_json(_module_attr("CACHE_PATH"), result)
     return result
 
 
-def run(state=None, force_recompute=False, skip_pipeline=False):
-    _ensure_runtime_dirs()
-    assert_project_approved(PROJECT_CONFIG)
-    # The newly approved config is authoritative even when state.json predates it.
-    state = State.sync_project_config(PROJECT_CONFIG)
+def run(state=None, force_recompute=False, skip_pipeline=False, project_config=None):
+    """Run the Research pipeline.
 
-    pipeline_runner = _run_pipeline if IS_MDM_REFERENCE else _run_generic_pipeline
+    ``project_config`` optionally injects an explicit approved project config
+    (PR5).  When omitted, the environment-selected default project is used.
+    The override lasts only for this call, so sequential multi-project runs
+    stay safe in one process.
+    """
+    global _injected_project_config
+    previous = _injected_project_config
+    if project_config is not None:
+        _injected_project_config = project_config
+    try:
+        return _run_impl(state=state, force_recompute=force_recompute, skip_pipeline=skip_pipeline)
+    finally:
+        _injected_project_config = previous
+
+
+def _run_impl(state=None, force_recompute=False, skip_pipeline=False):
+    _ensure_runtime_dirs()
+    assert_project_approved(_cfg())
+    # The newly approved config is authoritative even when state.json predates it.
+    state = State.sync_project_config(_cfg())
+
+    pipeline_runner = _run_pipeline if _module_attr("IS_MDM_REFERENCE") else _run_generic_pipeline
     if force_recompute:
         pipeline_result = pipeline_runner()
     else:
-        pipeline_result = _load_valid_cache(CACHE_PATH, PROJECT_CONFIG)
+        pipeline_result = _load_valid_cache(_module_attr("CACHE_PATH"), _cfg())
         if pipeline_result is not None:
-            print(f"[research] Using cache: {CACHE_PATH}")
+            print(f"[research] Using cache: {_module_attr("CACHE_PATH")}")
         else:
             pipeline_result = pipeline_runner()
 
     thresholds, threshold_normalization = normalize_thresholds(
-        pipeline_result.get("thresholds") or _default_thresholds(PROJECT_CONFIG)
+        pipeline_result.get("thresholds") or _default_thresholds(_cfg())
     )
     pipeline_result["thresholds"] = thresholds
-    threshold_cache = None if force_recompute else _load_valid_cache(THRESHOLDS_CACHE, PROJECT_CONFIG)
+    threshold_cache = None if force_recompute else _load_valid_cache(_module_attr("THRESHOLDS_CACHE"), _cfg())
     if force_recompute or threshold_cache is None:
         _write_threshold_cache(
             thresholds,
-            PROJECT_CONFIG,
+            _cfg(),
             {
                 "normalization": threshold_normalization,
                 "control_calibration": (
@@ -1117,7 +1198,7 @@ def run(state=None, force_recompute=False, skip_pipeline=False):
 
     configured_targets = {
         target["id"]: {key: value for key, value in target.items() if key != "id"}
-        for target in PROJECT_CONFIG.get("targets", [])
+        for target in _cfg().get("targets", [])
     }
     pipeline_targets = pipeline_result.get("targets", {})
     for name in list(configured_targets):
@@ -1125,7 +1206,7 @@ def run(state=None, force_recompute=False, skip_pipeline=False):
         if isinstance(info, dict):
             configured_targets[name].update({key: value for key, value in info.items() if key != "id"})
 
-    if not IS_MDM_REFERENCE:
+    if not _module_attr("IS_MDM_REFERENCE"):
         result = {
             "targets": configured_targets,
             "pocket_differences": pipeline_result.get("pocket_differences", {}),
@@ -1137,7 +1218,7 @@ def run(state=None, force_recompute=False, skip_pipeline=False):
             "research_pipeline_meta": pipeline_result.get("_pipeline_meta", {}),
         }
         State.update(result)
-        sync = State.sync_thresholds_from_cache(THRESHOLDS_CACHE)
+        sync = State.sync_thresholds_from_cache(_module_attr("THRESHOLDS_CACHE"))
         result["thresholds"] = sync["state"].get("thresholds", {})
         meta = result["research_pipeline_meta"]
         EvidenceLogger.research_complete(
@@ -1163,7 +1244,7 @@ def run(state=None, force_recompute=False, skip_pipeline=False):
         "research_pipeline_meta": pipeline_result.get("_pipeline_meta", {}),
     }
     State.update(result)
-    sync = State.sync_thresholds_from_cache(THRESHOLDS_CACHE)
+    sync = State.sync_thresholds_from_cache(_module_attr("THRESHOLDS_CACHE"))
     result["thresholds"] = sync["state"].get("thresholds", {})
 
     # 用动态数据构建 hotspot_analysis

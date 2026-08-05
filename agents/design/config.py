@@ -1,23 +1,29 @@
 """Design Agent configuration and versioned scientific constants.
 
 Single home for runtime paths, tool locations, and design protocol constants.
-Module-level values are resolved at import time for backward compatibility;
-:class:`DesignContext` replaces them without changing public behaviour.
+
+Lazy resolution contract
+------------------------
+Values that were previously resolved at import time (project config, tool
+paths, output directory) are now resolved on first attribute access via
+module ``__getattr__`` (PEP 562).  This removes import-time project global
+state and import-time I/O side effects (Engineering Standard §7) while keeping
+the legacy module-level names importable unchanged for backward compatibility.
+:class:`DesignContext` is the forward-looking dependency-injected interface.
 
 Reproducibility contract
 ------------------------
-- ????????????timesteps????????????
-  ``protocols/design_v1.json``?:data:`DESIGN_PROTOCOL`?????????
-  ``protocol_sha256`` ??????? manifest?Engineering Standard P1-4 /
-  Roadmap PR7???????????? ``DESIGN_PROTOCOL["version"]``?
-- ???????????????``/root/...``???????????????????
-  ???????``CYCPEP_CONDA`` / ``RFDIFF_CONDA`` / ``RFDIFF_DIR`` /
-  ``LIGANDMPNN_DIR`` / ``COLABDESIGN_DIR`` / ``CYCPEP_DESIGN_ROOT`` ??
-  ?????????????????????
+Scientific parameters live in ``protocols/design_v1.json``
+(:data:`DESIGN_PROTOCOL`); every manifest records ``protocol_sha256`` of that
+file so results stay reproducible (Engineering Standard §8 / Roadmap PR7).
+Tool paths default to the deployment layout under ``/root/...`` and can be
+overridden with ``CYCPEP_CONDA`` / ``RFDIFF_CONDA`` / ``RFDIFF_DIR`` /
+``LIGANDMPNN_DIR`` / ``COLABDESIGN_DIR`` / ``CYCPEP_DESIGN_ROOT``.
 """
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -32,18 +38,18 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from project_config import load_project_config  # noqa: E402
+from core.context import ProjectContext  # noqa: E402
 
 # ============================================================
-# ????????Engineering Standard P1-4 / Roadmap PR7?
+# Versioned scientific protocol (Engineering Standard §8 / Roadmap PR7)
 # ============================================================
-#
-# ??????????????timesteps?????????????? Magic
-# Numbers???????? protocols/design_v1.json???/??????
-# protocol_sha256 ????????????????????? version???
-# ? artifact ??????????????
-# DESIGN_PROTOCOL_SHA256 = ??????? SHA-256??????????
+# Scientific parameters no longer live as Magic Numbers in handlers; they are
+# read from protocols/design_v1.json.  Every plan/approval artifact binds the
+# file's SHA-256 via DESIGN_PROTOCOL_SHA256 so results are reproducible and a
+# parameter change forces a protocol version bump.
 
 DESIGN_PROTOCOL_PATH = ROOT / "protocols" / "design_v1.json"
+
 
 def _load_design_protocol():
     """Load the versioned scientific protocol from protocols/design_v1.json."""
@@ -54,36 +60,176 @@ def _load_design_protocol():
     with open(DESIGN_PROTOCOL_PATH, encoding="utf-8") as f:
         return json.load(f)
 
+
 DESIGN_PROTOCOL = _load_design_protocol()
 DESIGN_PROTOCOL_SHA256 = hashlib.sha256(DESIGN_PROTOCOL_PATH.read_bytes()).hexdigest()
 
+# ============================================================
+# Lazy runtime environment (Engineering Standard §7)
+# ============================================================
+# Project config and tool-path constants are resolved on first access (and
+# cached) instead of at import time, so importing the package performs no
+# project-config / env side effects.  Legacy module-level names are served
+# through module ``__getattr__`` (PEP 562), so ``from agents.design.config
+# import CYCPEP_PYTHON`` keeps working unchanged.
+
+# Deferred warning flag for an invalid RFDIFF_TIMESTEPS env value; consumed by
+# runtime._run_rfdiff before the first RFdiffusion invocation.
+_RFDIFF_TIMESTEPS_INVALID = None
+
+
+@functools.lru_cache(maxsize=1)
+def _get_active_project_config():
+    """Load the approved project config (cached on first access)."""
+    return load_project_config()
+
+
+@functools.lru_cache(maxsize=1)
+def _get_cycpep_conda():
+    return os.environ.get("CYCPEP_CONDA") or "/root/damodel-tmp/envs/cycpep-prediction"
+
+
+@functools.lru_cache(maxsize=1)
+def _get_cycpep_python():
+    return os.environ.get("CYCPEP_PYTHON") or f"{_get_cycpep_conda()}/bin/python"
+
+
+@functools.lru_cache(maxsize=1)
+def _get_rfdiff_conda():
+    return os.environ.get("RFDIFF_CONDA") or "/root/damodel-tmp/envs/rfdiffusion-design"
+
+
+@functools.lru_cache(maxsize=1)
+def _get_rfdiff_python():
+    return os.environ.get("RFDIFF_PYTHON") or f"{_get_rfdiff_conda()}/bin/python"
+
+
+@functools.lru_cache(maxsize=1)
+def _get_rfdiff_dir():
+    return os.environ.get("RFDIFF_DIR") or "/root/workspace/NovaPeptide/tools/RFdiffusion"
+
+
+@functools.lru_cache(maxsize=1)
+def _get_ligandmpnn_dir():
+    return os.environ.get("LIGANDMPNN_DIR") or "/root/workspace/NovaPeptide/tools/LigandMPNN"
+
+
+@functools.lru_cache(maxsize=1)
+def _get_colabdesign_dir():
+    return os.environ.get("COLABDESIGN_DIR") or "/root/workspace/NovaPeptide/tools/ColabDesign"
+
+
+@functools.lru_cache(maxsize=1)
+def _get_colabdesign_params():
+    return os.environ.get("COLABDESIGN_PARAMS") or f"{_get_colabdesign_dir()}/params"
+
+
+@functools.lru_cache(maxsize=1)
+def _get_se3_root():
+    return os.environ.get("SE3_ROOT") or f"{_get_rfdiff_dir()}/env/SE3Transformer"
+
+
+@functools.lru_cache(maxsize=1)
+def _get_cuda_data_dir():
+    return os.environ.get(
+        "CUDA_DATA_DIR"
+    ) or f"{_get_cycpep_conda()}/lib/python3.10/site-packages/nvidia/cuda_nvcc"
+
+
+@functools.lru_cache(maxsize=1)
+def _get_default_output_dir():
+    """Resolve the writable design root (cached on first access)."""
+    return _resolve_output_dir()
+
+
+@functools.lru_cache(maxsize=1)
+def _get_output_dir():
+    return str(_get_default_output_dir())
+
+
+@functools.lru_cache(maxsize=1)
+def _get_rfdiff_timesteps():
+    """RFdiffusion timesteps from env or protocol; invalid env is deferred-logged."""
+    raw = os.environ.get("RFDIFF_TIMESTEPS") or str(DESIGN_PROTOCOL["rfdiff"]["timesteps"])
+    try:
+        return max(1, int(raw))
+    except (ValueError, TypeError):
+        # Defer the warning until runtime._run_rfdiff consumes the value (no
+        # EvidenceLogger side effects at import time).
+        global _RFDIFF_TIMESTEPS_INVALID
+        _RFDIFF_TIMESTEPS_INVALID = os.environ.get("RFDIFF_TIMESTEPS")
+        return DESIGN_PROTOCOL["rfdiff"]["timesteps"]
+
+
+@functools.lru_cache(maxsize=1)
+def _get_ligandmpnn_model_type():
+    return os.environ.get("LIGANDMPNN_MODEL_TYPE") or DESIGN_PROTOCOL["ligandmpnn"]["model_type"]
+
+
+@functools.lru_cache(maxsize=1)
+def _get_ligandmpnn_checkpoint():
+    return os.environ.get(
+        "LIGANDMPNN_CHECKPOINT"
+    ) or f"{_get_ligandmpnn_dir()}/model_params/{DESIGN_PROTOCOL['ligandmpnn']['checkpoint']}"
+
+
+@functools.lru_cache(maxsize=1)
+def _get_cheap_filter_max_keep():
+    try:
+        return max(1, int(
+            os.environ.get("CHEAP_FILTER_MAX_KEEP")
+            or os.environ.get("CHEAP_FILTER_TOP_K")
+            or str(DESIGN_PROTOCOL["cheap_filter"]["max_keep_per_backbone"])))
+    except (ValueError, TypeError):
+        return DESIGN_PROTOCOL["cheap_filter"]["max_keep_per_backbone"]
+
+
+_LAZY_ATTRIBUTES = {
+    "ACTIVE_PROJECT_CONFIG": _get_active_project_config,
+    "CYCPEP_CONDA": _get_cycpep_conda,
+    "CYCPEP_PYTHON": _get_cycpep_python,
+    "RFDIFF_CONDA": _get_rfdiff_conda,
+    "RFDIFF_PYTHON": _get_rfdiff_python,
+    "RFDIFF_DIR": _get_rfdiff_dir,
+    "LIGANDMPNN_DIR": _get_ligandmpnn_dir,
+    "COLABDESIGN_DIR": _get_colabdesign_dir,
+    "COLABDESIGN_PARAMS": _get_colabdesign_params,
+    "SE3_ROOT": _get_se3_root,
+    "CUDA_DATA_DIR": _get_cuda_data_dir,
+    "DEFAULT_OUTPUT_DIR": _get_default_output_dir,
+    "OUTPUT_DIR": _get_output_dir,
+    "RFDIFF_TIMESTEPS": _get_rfdiff_timesteps,
+    "LIGANDMPNN_MODEL_TYPE": _get_ligandmpnn_model_type,
+    "LIGANDMPNN_CHECKPOINT": _get_ligandmpnn_checkpoint,
+    "CHEAP_FILTER_MAX_KEEP": _get_cheap_filter_max_keep,
+}
+
+
+def __getattr__(name):
+    """PEP 562: serve legacy config names lazily on first access."""
+    getter = _LAZY_ATTRIBUTES.get(name)
+    if getter is not None:
+        return getter()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _module_attr(name):
+    """Read a config value through the module object.
+
+    Bare global lookups inside this module do NOT trigger the PEP 562 module
+    ``__getattr__``, so lazy names must be fetched explicitly.  Reading through
+    the module object also honours runtime overrides (e.g. tests patching
+    ``agents.design.config.ACTIVE_PROJECT_CONFIG``).
+    """
+    return getattr(sys.modules[__name__], name)
 
 
 # ============================================================
-# 环境路径
+# Static deployment paths / pins (immutable literals)
 # ============================================================
-#
-# 警告：以下所有路径常量在 import 时解析。必须在 import design 之前
-# 设置 CYCPEP_CONDA / RFDIFF_DIR / CYCPEP_DESIGN_ROOT 等环境变量；
-# import 之后再修改这些变量不会生效。测试代码请参阅 test_design.py
-# 的 stub 注入模式。
 
-ACTIVE_PROJECT_CONFIG = load_project_config()
-
-# 新服务器路径可全部通过环境变量覆盖；默认值对应 damodel 部署。
-# os.environ.get(…) or default 确保空字符串不会静默损坏路径（P0-2）。
-CYCPEP_CONDA = os.environ.get("CYCPEP_CONDA") or "/root/damodel-tmp/envs/cycpep-prediction"
-CYCPEP_PYTHON = os.environ.get("CYCPEP_PYTHON") or f"{CYCPEP_CONDA}/bin/python"
-RFDIFF_CONDA = os.environ.get("RFDIFF_CONDA") or "/root/damodel-tmp/envs/rfdiffusion-design"
-RFDIFF_PYTHON = os.environ.get("RFDIFF_PYTHON") or f"{RFDIFF_CONDA}/bin/python"
-RFDIFF_DIR = os.environ.get("RFDIFF_DIR") or "/root/workspace/NovaPeptide/tools/RFdiffusion"
-LIGANDMPNN_DIR = os.environ.get("LIGANDMPNN_DIR") or "/root/workspace/NovaPeptide/tools/LigandMPNN"
-COLABDESIGN_DIR = os.environ.get("COLABDESIGN_DIR") or "/root/workspace/NovaPeptide/tools/ColabDesign"
-COLABDESIGN_PARAMS = os.environ.get("COLABDESIGN_PARAMS") or f"{COLABDESIGN_DIR}/params"
-COLABDESIGN_COMMIT = "094e2cb3603dee7d99846e0977736bd943c830c2"
-SE3_ROOT = os.environ.get("SE3_ROOT") or f"{RFDIFF_DIR}/env/SE3Transformer"
-CUDA_DATA_DIR = os.environ.get("CUDA_DATA_DIR") or f"{CYCPEP_CONDA}/lib/python3.10/site-packages/nvidia/cuda_nvcc"
 DAMODEL_DATA_ROOT = Path("/root/damodel-tmp/novapeptide")
+COLABDESIGN_COMMIT = "094e2cb3603dee7d99846e0977736bd943c830c2"
 
 
 def _resolve_output_dir(environ=None, damodel_data_root=None):
@@ -103,8 +249,8 @@ def _resolve_output_dir(environ=None, damodel_data_root=None):
             return damodel_root / "designs"
     except OSError:
         # GitHub runners and other non-root users cannot stat paths below
-        # /root.  Fall through to next candidate without logging — this
-        # function runs at import time and must not produce side effects (P2).
+        # /root.  Fall through to next candidate without logging - resolution
+        # is deferred to first access and must not produce side effects.
         pass
 
     runner_temp = env.get("RUNNER_TEMP")
@@ -113,31 +259,41 @@ def _resolve_output_dir(environ=None, damodel_data_root=None):
     return ROOT / "data" / "designs"
 
 
-DEFAULT_OUTPUT_DIR = _resolve_output_dir()
-OUTPUT_DIR = str(DEFAULT_OUTPUT_DIR)
-_raw_ts = os.environ.get("RFDIFF_TIMESTEPS") or str(DESIGN_PROTOCOL["rfdiff"]["timesteps"])
-try:
-    RFDIFF_TIMESTEPS = max(1, int(_raw_ts))
-except (ValueError, TypeError):
-    RFDIFF_TIMESTEPS = DESIGN_PROTOCOL["rfdiff"]["timesteps"]
-    # Defer log until _run_rfdiff first consumes the value (P1: no
-    # EvidenceLogger side-effects at import time).
-    _RFDIFF_TIMESTEPS_INVALID = os.environ.get("RFDIFF_TIMESTEPS")
-else:
-    _RFDIFF_TIMESTEPS_INVALID = None
-LIGANDMPNN_MODEL_TYPE = os.environ.get("LIGANDMPNN_MODEL_TYPE") or DESIGN_PROTOCOL["ligandmpnn"]["model_type"]
-LIGANDMPNN_CHECKPOINT = os.environ.get("LIGANDMPNN_CHECKPOINT") or f"{LIGANDMPNN_DIR}/model_params/{DESIGN_PROTOCOL['ligandmpnn']['checkpoint']}"
-DESIGN_PIPELINE_VERSION = "5.2.1"
+# ============================================================
+# Mutable runtime flags (shared by submodules; not project state)
+# ============================================================
+# Cached runtime state exposed through explicit accessors so importing the
+# module has no side effects.
 
-# Module-level state for _verify_colabdesign_runtime() (P3-3).
-# Only cache *success* — a transient failure (GPU OOM, env hiccup) must
-# not permanently disable the check for the lifetime of the process (P1).
-# Cached signature binds to the concrete ColabDesign environment so that
-# switching CYCPEP_PYTHON / COLABDESIGN_DIR / COLABDESIGN_PARAMS
-# mid-process triggers a re-verification (P1 reviewer feedback).
-_VERIFIED_RUNTIME_SIGNATURE = None
-_SKIP_EVIDENCE_LOGGED = False
+_RUNTIME_FLAGS = {
+    "verified_runtime_signature": None,
+    "skip_evidence_logged": False,
+}
 
+
+def get_verified_runtime_signature():
+    """Return the cached ColabDesign verification signature (None until set)."""
+    return _RUNTIME_FLAGS["verified_runtime_signature"]
+
+
+def set_verified_runtime_signature(value):
+    """Cache a successful ColabDesign environment signature (P1-3)."""
+    _RUNTIME_FLAGS["verified_runtime_signature"] = value
+
+
+def get_skip_evidence_logged():
+    """Return whether the skip-verification evidence log already fired."""
+    return _RUNTIME_FLAGS["skip_evidence_logged"]
+
+
+def set_skip_evidence_logged(value):
+    """Set whether the skip-verification evidence log already fired."""
+    _RUNTIME_FLAGS["skip_evidence_logged"] = value
+
+
+# ============================================================
+# Static design constants (immutable literals; not project state)
+# ============================================================
 
 # Geometry gates are deliberately labelled as compatibility checks.  A model
 # whose terminal atoms are close enough for a covalent bond is suitable for
@@ -147,7 +303,7 @@ CLOSURE_GEOMETRY = {
     "head-to-tail_amide": {
         "atom_1": "last:C",
         "atom_2": "first:N",
-        # The wwPDB validation range for a peptide C-N bond is 1.30-1.45 Å.
+        # The wwPDB validation range for a peptide C-N bond is 1.30-1.45 A.
         # Design uses a wider pre-relax screen and records ideal-range status.
         "screen_range_angstrom": (1.15, 2.00),
         "ideal_range_angstrom": (1.30, 1.45),
@@ -155,71 +311,78 @@ CLOSURE_GEOMETRY = {
     "Cys-Cys_disulfide": {
         "atom_1": "first:SG",
         "atom_2": "last:SG",
-        # Typical protein disulfides are close to 2.03 Å.  The wider screen
+        # Typical protein disulfides are close to 2.03 A.  The wider screen
         # tolerates an unrelaxed predictor output without accepting CA proxies.
         "screen_range_angstrom": (1.80, 2.30),
         "ideal_range_angstrom": (1.90, 2.15),
     },
 }
 
-
-# ============================================================
-# 设计常量（Research 产出可覆盖）
-# ============================================================
-
-# 所有设计常量从 Research State 读取（_load_target_spec）。
+# All design constants are read from Research State (via _load_target_spec).
 _LOCK = threading.Lock()
 CYCLIZATION_PAIRS = [("C", "C"), ("", "")]
 LINKER_MATRIX = ["GGGGS", "GGGS", "GGS", "GS", ""]
 SCAFFOLD_MUTABLE_AA = "ACDEFGHIKLMNPQRSTVWY"
 
-# 便宜预筛参数
-#
-# Route A 已改为全局两阶段收集→排序→取 top K 条（Pass1: 收集所有 backbone
-# 序列，Pass2: 全局 cheap filter）以避免 backbone 顺序偏差。Route B 同理。
-# CHEAP_FILTER_MAX_KEEP 控制每个 backbone 内部预筛保留的序列数上限，不再约束
-# 最终候选数。
-try:
-    CHEAP_FILTER_MAX_KEEP = max(1, int(
-        os.environ.get("CHEAP_FILTER_MAX_KEEP")
-        or os.environ.get("CHEAP_FILTER_TOP_K")
-        or str(DESIGN_PROTOCOL["cheap_filter"]["max_keep_per_backbone"])))
-except (ValueError, TypeError):
-    CHEAP_FILTER_MAX_KEEP = DESIGN_PROTOCOL["cheap_filter"]["max_keep_per_backbone"]
+# Cheap-prefilter cap: controls the number of sequences kept per backbone
+# during the global prefilter; does not limit the final candidate count.
+# (Route A/B use a global two-phase collect-sort-top-K design.)
 HYDROPHOBIC = set("AILMFWV")
 POS_CHARGED = set("KR")
 NEG_CHARGED = set("DE")
+DESIGN_PIPELINE_VERSION = "5.2.1"
 
 
 # ============================================================
-# ??????Engineering Standard P1-1?
+# DesignContext (Engineering Standard §7 / P1-1)
 # ============================================================
-#
-# ??????? Design(context) ????????????? import-time
-# ??? ACTIVE_PROJECT_CONFIG????????????????????
+# Design(context) is the dependency-injected entry point; legacy import-time
+# globals (ACTIVE_PROJECT_CONFIG / DEFAULT_OUTPUT_DIR) are now resolved lazily
+# by this module on first access.
 
 @dataclass(frozen=True)
 class DesignContext:
     """Per-project context injected into :class:`~agents.design.agent.Design`.
 
-    ``project_config`` ????? target ?????``output_dir`` ?????
-    ?????????????CYCPEP_PYTHON / RFDIFF_DIR / ...??????
-    ??????????????????????
+    ``project_config`` is the approved target/project config and ``output_dir``
+    is where design artifacts are written.  Runtime tool paths
+    (CYCPEP_PYTHON / RFDIFF_DIR / ...) are resolved lazily by this module on
+    first access; the legacy module-level names remain importable unchanged.
 
     Examples
     --------
     >>> DesignContext(project_config=approved_config, output_dir="/tmp/x")
-    >>> DesignContext.default()  # ?????????? ACTIVE_PROJECT_CONFIG
+    >>> DesignContext.default()  # legacy defaults from ACTIVE_PROJECT_CONFIG
+    >>> DesignContext.from_project_context(ProjectContext.default())
     """
 
     project_config: dict
     output_dir: str = ""
 
     def __post_init__(self):
-        # frozen dataclass ??? __post_init__ ??? setattr?
-        object.__setattr__(self, "output_dir", self.output_dir or str(DEFAULT_OUTPUT_DIR))
+        # frozen dataclass forbids normal attribute writes in __post_init__.
+        # Lazy module names must be read through the module object (PEP 562
+        # __getattr__ does not apply to bare globals inside this module).
+        object.__setattr__(
+            self, "output_dir",
+            self.output_dir or str(_module_attr("DEFAULT_OUTPUT_DIR")),
+        )
 
     @classmethod
     def default(cls) -> "DesignContext":
-        """Build the legacy default context from module-level state."""
-        return cls(project_config=ACTIVE_PROJECT_CONFIG, output_dir=str(DEFAULT_OUTPUT_DIR))
+        """Build the legacy default context from the lazy module state."""
+        return cls(
+            project_config=_module_attr("ACTIVE_PROJECT_CONFIG"),
+            output_dir=str(_module_attr("DEFAULT_OUTPUT_DIR")),
+        )
+
+    @classmethod
+    def from_project_context(
+        cls, project_context: ProjectContext, output_dir: str = ""
+    ) -> "DesignContext":
+        """Build a Design view over the unified :class:`ProjectContext`.
+
+        ``output_dir`` defaults to the design output root when empty; pass an
+        explicit value to isolate artifacts per project.
+        """
+        return cls(project_config=project_context.config, output_dir=output_dir)

@@ -218,8 +218,9 @@ python -m unittest -v test_critic.py test_prediction_pipeline.py test_target_boo
 - 不要未经批准直接改变 scientific thresholds；参数应进入版本化 protocol/config。
 - 按模块 ownership 和 PR scope 修改代码。`contracts/`、data layer、execution boundary 属于共享基础设施，不适用按个人目录隔离修改的旧规则。
 - 所有人工开发和 Codex 修改都必须遵守 [ENGINEERING_STANDARD.md](./ENGINEERING_STANDARD.md)。当前仓库未提供额外的根目录 `AGENTS.md`。
+- 项目上下文通过 [`core/context.py`](./core/context.py) 的 `ProjectContext` 显式注入（PR5）；`data_layer` 与 `agents.research` 的 import-time 项目全局已去除，`Design` 可直接接受 `ProjectContext`。
 
-当前已知的文档化技术债包括 State/CandidateIndex 的并发与事务边界、execution transaction boundary、ProjectContext，以及大型 agent 模块的拆分；这些不是本 README 的实现承诺。
+当前已知的文档化技术债包括 State/CandidateIndex 的并发与事务边界、execution transaction boundary、大型 agent 模块的拆分；这些不是本 README 的实现承诺。
 
 ## 13. Documentation Index
 

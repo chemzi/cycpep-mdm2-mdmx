@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from core.context import ProjectContext
 from .config import DesignContext
 
 
@@ -12,8 +13,11 @@ class Design:
     multiple projects without import-time project globals::
 
         from agents.design import Design, DesignContext
+        from core.context import ProjectContext
 
         design = Design(DesignContext(project_config=approved_config))
+        # or the unified PR5 context:
+        design = Design(ProjectContext.load(raw=approved_config))
         candidates = design.design_atsp_derived(design_config={"n": 10})
 
     The module-level route functions remain available as compatibility
@@ -21,6 +25,8 @@ class Design:
     """
 
     def __init__(self, context=None):
+        if isinstance(context, ProjectContext):
+            context = DesignContext.from_project_context(context)
         self.context = context if context is not None else DesignContext.default()
 
     # ---- context access (public contract, Engineering Standard 4) ----
