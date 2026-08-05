@@ -1,8 +1,8 @@
-"""Unit tests for design.py pure functions (no GPU/external tools needed)"""
-import sys, os, json, tempfile, hashlib
+"""Unit tests for the agents.design package pure functions (no GPU/external tools)."""
+import sys, os, json, tempfile, hashlib, subprocess, types
 from pathlib import Path
 
-# ── Stubs for data_layer ──
+# ── Stubs for data_layer injected before importing the package ──
 class EvidenceLogger:
     @staticmethod
     def log(*a, **kw): pass
@@ -43,16 +43,50 @@ def file_hash(path):
             return hashlib.sha256(f.read()).hexdigest()[:16]
     return ''
 
-# ── Load design.py with stubs ──
-import __main__
-src = open('agents/design.py', encoding='utf-8').read()
-src = src.replace(
-    'from data_layer import EvidenceLogger, CandidateIndex, State, file_hash',
-    '# data_layer stubs injected by test_design.py'
+# ── Import the package with the data_layer stub in place ──
+import data_layer as _real_data_layer  # noqa: E402  (restored after package import)
+
+_stub = types.ModuleType("data_layer")
+_stub.EvidenceLogger = EvidenceLogger
+_stub.CandidateIndex = CandidateIndex
+_stub.State = State
+_stub.file_hash = file_hash
+sys.modules["data_layer"] = _stub
+
+from agents.design import config as design_config  # noqa: E402
+from agents.design import (  # noqa: E402
+    manifests, route_a, route_b, route_c, runtime, service, validation,
 )
-# Prevent CLI execution
-src = src.replace('if __name__ == "__main__":', 'if False and __name__ == "__main__":')
-exec(src)
+
+# Restore the real module for functions that import data_layer lazily
+# (e.g. service.pareto_front -> data_layer.compute_pareto_front).
+sys.modules["data_layer"] = _real_data_layer
+
+# Flat namespace matching the names the old single-file exec() exposed.
+from project_config import load_project_config  # noqa: E402
+from agents.design.config import (  # noqa: E402
+    DESIGN_PIPELINE_VERSION, RFDIFF_CONDA, RFDIFF_DIR, SE3_ROOT, _resolve_output_dir,
+)
+from agents.design.manifests import _candidate_from_manifest, _write_manifest  # noqa: E402
+from agents.design.route_b import design_motif_guided  # noqa: E402
+from agents.design.route_c import (  # noqa: E402
+    _route_c_base_combos, _route_c_cyclization_pairs, _route_c_design_references,
+    design_atsp_derived,
+)
+from agents.design.runtime import (  # noqa: E402
+    _build_refold_script, _rfdiff_subprocess_env, _run_rfdiff,
+)
+from agents.design.service import (  # noqa: E402
+    _load_target_spec, _merge_config, _next_candidate_id, pareto_front, threshold_filter,
+)
+from agents.design.validation import (  # noqa: E402
+    _binder_first_contig, _cheap_filter_sequences, _describe_cyclize,
+    _extract_ligandmpnn_binder_sequence, _hotspot_fixed_residues,
+    _hotspot_positions, _infer_binder_chain, _parse_binder_residues,
+    _pdb_chain_residue_layout, _pdb_chain_sequences, _pdb_residue_range,
+    _ring_closure_check, _sequence_quality_score, _synthesizability_violations,
+    _validate_sequence, _verify_fixed_sequence_pdb,
+)
 
 # ── Approved target fixture used by Design v5 config integration ──
 from target_bootstrap import ReviewRequiredError, config_digest
@@ -97,6 +131,9 @@ ACTIVE_PROJECT_CONFIG['review'] = {
     'status': 'approved',
     'approved_digest': config_digest(ACTIVE_PROJECT_CONFIG),
 }
+
+# Point the design package at this fixture instead of the repo default config.
+design_config.ACTIVE_PROJECT_CONFIG = ACTIVE_PROJECT_CONFIG
 
 failures = []
 
@@ -641,8 +678,8 @@ with tempfile.TemporaryDirectory() as route_c_root:
             )
         return True
 
-    original_run_rfdiff = _run_rfdiff
-    _run_rfdiff = _fake_route_c_rfdiff
+    original_run_rfdiff = route_c._run_rfdiff
+    route_c._run_rfdiff = _fake_route_c_rfdiff
     try:
         route_c_references = _route_c_design_references(
             {
@@ -659,7 +696,7 @@ with tempfile.TemporaryDirectory() as route_c_root:
             ],
         )
     finally:
-        _run_rfdiff = original_run_rfdiff
+        route_c._run_rfdiff = original_run_rfdiff
     check(set(route_c_references) == {0, 1, 2},
           'Route C obtains one validated L7 reference per sequence')
     check(len(set(route_c_references.values())) == 3,
@@ -809,7 +846,7 @@ print('Test 20: Route C empty base_combos guard')
 # The guard added after base_combos construction should return [] before random.choice
 # We verify the guard exists by checking the source directly
 guard_pattern = 'if not base_combos:'
-with open('agents/design.py', encoding='utf-8') as f:
+with open('agents/design/route_c.py', encoding='utf-8') as f:
     design_source = f.read()
 check(guard_pattern in design_source,
       'empty base_combos guard is present in design_atsp_derived')
@@ -849,7 +886,116 @@ check_raises(ValueError,
 cfg_zero = _merge_config({'target_name': '3DAB', 'chain': 'B'}, {'seed': 0})
 check(cfg_zero['seed'] == 0, f'seed=0 preserved, got {cfg_zero["seed"]}')
 
+# ── Test 22: DesignContext / Design(context) dependency injection (P1-1) ──
+print('Test 22: DesignContext and Design(context) dependency injection')
+from agents.design import Design, DesignContext
+
+default_ctx = DesignContext.default()
+check(default_ctx.project_config is design_config.ACTIVE_PROJECT_CONFIG,
+      'DesignContext.default() uses the module-level approved project config')
+check(str(default_ctx.output_dir), 'DesignContext.default() resolves a writable output dir')
+
+custom_cfg = dict(ACTIVE_PROJECT_CONFIG)
+custom_cfg['project_id'] = 'custom_injected_project'
+custom_cfg['review'] = {
+    'status': 'approved',
+    'approved_digest': config_digest(custom_cfg),
+}
+custom_ctx = DesignContext(
+    project_config=custom_cfg,
+    output_dir=str(Path(tempfile.mkdtemp(prefix='design-ctx-test-')) / 'designs'),
+)
+design = Design(context=custom_ctx)
+check(design.context is custom_ctx, 'Design(context) stores the injected context')
+check(str(custom_ctx.output_dir).endswith('designs'),
+      'DesignContext stores the injected output_dir')
+
+design_default = Design()
+check(design_default.context.project_config is design_config.ACTIVE_PROJECT_CONFIG,
+      'Design() without context uses the module-level approved project config')
+
+# Route methods must forward the injected context to the route implementation.
+captured = {}
+def _fake_route_c(target_spec=None, design_config=None, context=None):
+    captured['context'] = context
+    return ['candidate-from-context']
+route_c.design_atsp_derived = _fake_route_c
+result = design.design_atsp_derived(design_config={'n': 5})
+check(result == ['candidate-from-context'], 'Design.design_atsp_derived returns the route result')
+check(captured['context'] is custom_ctx,
+      'Design.design_atsp_derived forwards the injected context')
+
+# _merge_config honours an explicit project_config (context-based path).
+merged = _merge_config({'target_name': 'MDM2'}, {'seed': 7}, project_config=custom_cfg)
+check(merged['project_id'] == 'custom_injected_project',
+      '_merge_config honours project_config injected via context')
+check(merged['seed'] == 7, 'seed merged from design_config via context path')
+
+# ── Test 23: versioned scientific protocol binding (P1-4) ──
+print('Test 23: versioned scientific protocol binding')
+from agents.design.config import (
+    DESIGN_PROTOCOL, DESIGN_PROTOCOL_PATH, DESIGN_PROTOCOL_SHA256,
+)
+
+check(DESIGN_PROTOCOL_PATH.is_file(),
+      f'protocol file exists: {DESIGN_PROTOCOL_PATH}')
+check(DESIGN_PROTOCOL['version'] == 'design_v1',
+      f'protocol version present: {DESIGN_PROTOCOL["version"]}')
+check(DESIGN_PROTOCOL['ligandmpnn']['n_seq_per_backbone'] == 8,
+      'LigandMPNN sampling count is protocol-managed')
+check(DESIGN_PROTOCOL['mutation']['attempts_factor'] == 10,
+      'Route C mutation attempts factor is protocol-managed')
+check(DESIGN_PROTOCOL['mutation']['protected_pharmacophore'] == 'FWL',
+      'pharmacophore protection residues are protocol-managed')
+check(
+    json.loads(DESIGN_PROTOCOL_PATH.read_text(encoding='utf-8')) == DESIGN_PROTOCOL,
+    'DESIGN_PROTOCOL is loaded from protocols/design_v1.json',
+)
+check(len(DESIGN_PROTOCOL_SHA256) == 64, 'protocol sha256 is a hex digest')
+check(
+    DESIGN_PROTOCOL_SHA256 == hashlib.sha256(
+        DESIGN_PROTOCOL_PATH.read_bytes()
+    ).hexdigest(),
+    'protocol sha256 is the SHA-256 of the protocol file bytes',
+)
+
+# Manifest binds the protocol so artifacts can be traced to a concrete protocol.
+tmp_pdb23 = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+tmp_pdb23.write(monomer_pdb('ACDEFGHI', nc_distance=1.33))
+tmp_pdb23.close()
+cfg23 = {'target_name': '1YCR', 'target_pdb': '/tmp/test.pdb', 'seed': 42}
+m23 = _write_manifest('C9001', 'ACDEFGHI', 'route_C_test', 'batch_proto',
+                      tmp_pdb23.name, cfg23)
+check(m23['protocol_version'] == DESIGN_PROTOCOL['version'],
+      'manifest records protocol_version')
+check(m23['protocol_sha256'] == DESIGN_PROTOCOL_SHA256,
+      'manifest records protocol_sha256')
+os.unlink(tmp_pdb23.name)
+
+# Route sources read the protocol instead of hard-coded magic numbers.
+route_a_src = Path('agents/design/route_a.py').read_text(encoding='utf-8')
+route_c_src = Path('agents/design/route_c.py').read_text(encoding='utf-8')
+check('n_seq_per_backbone' in route_a_src,
+      'Route A LigandMPNN n_seq reads the protocol')
+check('attempts_factor' in route_c_src,
+      'Route C mutation budget reads the protocol')
+check('protected_pharmacophore' in route_c_src,
+      'Route C pharmacophore residues read the protocol')
+
 os.unlink(target_fixture.name)
+
+# ── Restore real data_layer references inside the design package ──
+# 桩类只在本次模块级测试期间生效；不恢复会把桩类永久留在 design 包内，
+# 导致 discover 全量跑时其他测试模块（如 test_reliability_regressions）
+# 的候选注册写进内存桩、正式数据层读不到（0 条）。
+import importlib  # noqa: E402
+for _mod_name in ("route_a", "route_b", "route_c", "candidates", "cli",
+                  "manifests", "runtime", "service", "validation"):
+    _mod = importlib.import_module(f"agents.design.{_mod_name}")
+    for _name in ("CandidateIndex", "EvidenceLogger", "State", "file_hash"):
+        if hasattr(_real_data_layer, _name) and hasattr(_mod, _name):
+            setattr(_mod, _name, getattr(_real_data_layer, _name))
+
 
 # ── Summary ──
 print()
@@ -859,4 +1005,4 @@ if failures:
         print(f'  - {f}')
     sys.exit(1)
 else:
-    print('ALL 21 TEST GROUPS PASSED')
+    print('ALL 23 TEST GROUPS PASSED')

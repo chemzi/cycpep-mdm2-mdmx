@@ -444,5 +444,45 @@ class CriticTests(unittest.TestCase):
         self.assertEqual(events[0]["report_id"], first["report"]["report_id"])
 
 
+    def test_review_injected_project_config_overrides_state_mismatch(self):
+        record = self._record(
+            "C0001", "ACDEFGHI", "finalized", battery=complete_battery()
+        )
+        handoff = self._handoff(
+            [("finalized", "C0001", record)], project_id="planner_test"
+        )
+        with self.assertRaises(CriticContractError) as captured:
+            review(
+                handoff_path=handoff,
+                state={"project_id": "planner_test", "thresholds": {}},
+                candidate_rows=self._rows(("C0001", "ACDEFGHI", "route_A")),
+                project_config={"project_id": "keap1", "targets": [{"id": "KEAP1"}]},
+            )
+        self.assertEqual(captured.exception.code, "critic_project_mismatch")
+
+    def test_review_injected_project_config_can_make_handoff_pass(self):
+        inputs = (
+            ("C0001", "ACDEFGHI", "route_A"),
+            ("C0002", "KLMNPQRS", "route_B"),
+            ("C0003", "TVWYACDE", "route_C"),
+        )
+        entries = []
+        for candidate_id, sequence, _ in inputs:
+            path = self._record(
+                candidate_id, sequence, "finalized", battery=complete_battery()
+            )
+            entries.append(("finalized", candidate_id, path))
+        # State has no project identity; injection supplies keap1, so the
+        # keap1 handoff passes the mismatch check.
+        report = review(
+            handoff_path=self._handoff(entries, project_id="keap1"),
+            state={"thresholds": {}},
+            candidate_rows=self._rows(*inputs),
+            project_config={"project_id": "keap1", "targets": [{"id": "KEAP1"}]},
+        )
+        self.assertEqual(report["verdict"], "clear")
+        self.assertTrue(report["passed"])
+
+
 if __name__ == "__main__":
     unittest.main()

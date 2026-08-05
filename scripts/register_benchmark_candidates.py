@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agents import design
+from agents.design import Design
 from data_layer import CandidateIndex, EvidenceLogger
 from peptide_contract import is_supported_cyclic_sequence
 from prediction_pipeline.contracts import file_sha256
@@ -26,18 +26,19 @@ def _resolve(base: Path, raw: str) -> Path:
 
 
 def register(manifest_path: Path, *, batch_id: str, requested: set[str]) -> list[dict]:
+    design = Design()
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if payload.get("project_id") != design.ACTIVE_PROJECT_CONFIG.get("project_id"):
+    if payload.get("project_id") != design.project_config.get("project_id"):
         raise ValueError(
             "benchmark/project mismatch: "
             f"{payload.get('project_id')!r} != "
-            f"{design.ACTIVE_PROJECT_CONFIG.get('project_id')!r}"
+            f"{design.project_config.get('project_id')!r}"
         )
-    config = design._merge_config(
+    config = design.merge_config(
         {"target_id": payload["target_id"]},
         {"n": max(1, len(payload.get("candidates") or [])), "seed": 0},
     )
-    output_root = Path(design.OUTPUT_DIR) / "benchmark_reference_replay" / batch_id
+    output_root = Path(design.output_dir) / "benchmark_reference_replay" / batch_id
     existing = {
         (row.get("source_batch"), row.get("sequence")): row
         for row in CandidateIndex.load()
@@ -69,14 +70,14 @@ def register(manifest_path: Path, *, batch_id: str, requested: set[str]) -> list
         if exact_sequence_chain(ligand, sequence) != entry["reference_binder_chain"]:
             raise ValueError(f"{benchmark_id} reference sequence/chain mismatch")
 
-        candidate_id = design._next_candidate_id()
+        candidate_id = design.next_candidate_id()
         candidate_dir = output_root / "candidates" / candidate_id
         candidate_dir.mkdir(parents=True, exist_ok=True)
         refold_pdb = candidate_dir / "refold.pdb"
-        plddt = design._run_refold(sequence, str(refold_pdb))
+        plddt = design.run_refold(sequence, str(refold_pdb))
         if plddt is None or not refold_pdb.is_file():
             raise RuntimeError(f"{benchmark_id} fixed-sequence refold failed")
-        closure = design._ring_closure_check(
+        closure = design.ring_closure_check(
             str(refold_pdb), "head-to-tail_amide", sequence=sequence
         )
         if not closure.get("pass"):
@@ -84,7 +85,7 @@ def register(manifest_path: Path, *, batch_id: str, requested: set[str]) -> list
                 f"{benchmark_id} refold failed closure contract: {closure}"
             )
 
-        manifest = design._write_manifest(
+        manifest = design.write_manifest(
             candidate_id,
             sequence,
             "benchmark_reference_replay",
@@ -106,7 +107,7 @@ def register(manifest_path: Path, *, batch_id: str, requested: set[str]) -> list
                 "labels_withheld": bool(payload.get("labels_withheld")),
             },
         )
-        candidate = design._candidate_from_manifest(
+        candidate = design.candidate_from_manifest(
             manifest,
             plddt,
             notes={"benchmark_id": benchmark_id, "labels_withheld": True},

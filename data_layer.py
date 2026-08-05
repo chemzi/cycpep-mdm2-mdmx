@@ -24,7 +24,8 @@
         # 准入下一阶段
         ...
 """
-import json, csv, hashlib, os, statistics, tempfile, uuid
+import functools
+import json, csv, hashlib, os, statistics, sys, tempfile, types, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -40,26 +41,153 @@ from project_config import (
 from threshold_contract import merge_thresholds, normalize_thresholds
 from contracts.event import EvidenceEvent
 from contracts.trace import TraceContext
-from storage import SQLiteStore
-from storage.file_store import FileStore
+from core.context import ProjectPaths  # noqa: E402
+from storage import SQLiteStore  # noqa: E402 (PR3)
+from storage.file_store import FileStore  # noqa: E402 (PR3)
 
 ROOT = Path(__file__).resolve().parent
-ACTIVE_PROJECT_CONFIG = load_project_config()
-_IS_REFERENCE_PROJECT = ACTIVE_PROJECT_CONFIG["project_id"] == "mdm2_mdmx_reference"
-_DEFAULT_DATA_DIR = (
-    ROOT / "data" if _IS_REFERENCE_PROJECT
-    else ROOT / "data" / "projects" / target_slug(ACTIVE_PROJECT_CONFIG["project_id"])
-)
-_DEFAULT_EVIDENCE_DIR = (
-    ROOT / "evidence" if _IS_REFERENCE_PROJECT
-    else ROOT / "evidence" / "projects" / target_slug(ACTIVE_PROJECT_CONFIG["project_id"])
-)
-DATA_DIR = Path(os.environ.get("CYCPEP_DATA_DIR", _DEFAULT_DATA_DIR))
-EVIDENCE_DIR = Path(os.environ.get("CYCPEP_EVIDENCE_DIR", _DEFAULT_EVIDENCE_DIR))
-STATE_PATH = DATA_DIR / "state.json"
-LOG_PATH   = EVIDENCE_DIR / "evidence_log.jsonl"
-INDEX_PATH = DATA_DIR / "candidate_index.csv"
-SQLITE_DB_PATH = Path(os.environ["CYCPEP_DB_PATH"]) if os.environ.get("CYCPEP_DB_PATH") else None
+
+# ============================================================
+# 惰性项目运行时（Engineering Standard §7 / Roadmap PR5）
+# ============================================================
+# 项目配置与派生路径不再于 import 时解析；首次访问（模块属性或内部 helper）
+# 时才加载并缓存。模块级名字（ACTIVE_PROJECT_CONFIG / DATA_DIR / ...）通过
+# PEP 562 ``__getattr__`` 提供，``from data_layer import DATA_DIR`` 等旧用法
+# 保持不变；显式赋值重定向（测试与 mock 常用）由 _LazyPathsModule 协调，
+# 赋值/删除时同步失效路径缓存，删除后重新按环境解析，不会永久残留。
+
+
+@functools.lru_cache(maxsize=1)
+def _active_project_config() -> dict:
+    """Approved project config, resolved once on first access (PR5)."""
+    return load_project_config()
+
+
+def _sqlite_db_path() -> Path | None:
+    """Configured SQLite DB path (PR3), resolved lazily on first access (PR5)."""
+    raw = os.environ.get("CYCPEP_DB_PATH")
+    return Path(raw) if raw else None
+
+
+def _project_data_dir(config: dict) -> Path:
+    """Project-scoped data dir (single source: core.context.ProjectPaths)."""
+    return ProjectPaths().resolve(config["project_id"], root=ROOT).data_dir
+
+
+def _project_evidence_dir(config: dict) -> Path:
+    """Project-scoped evidence dir (single source: core.context.ProjectPaths)."""
+    return ProjectPaths().resolve(config["project_id"], root=ROOT).evidence_dir
+
+
+_runtime_paths: dict | None = None
+
+
+def _paths() -> dict:
+    """Resolve project data/evidence paths once; honour env overrides."""
+    global _runtime_paths
+    if _runtime_paths is None:
+        config = _active_project_config()
+        data_dir = Path(os.environ.get("CYCPEP_DATA_DIR", _project_data_dir(config)))
+        evidence_dir = Path(os.environ.get("CYCPEP_EVIDENCE_DIR", _project_evidence_dir(config)))
+        _runtime_paths = {
+            "data_dir": data_dir,
+            "evidence_dir": evidence_dir,
+            "state_path": data_dir / "state.json",
+            "log_path": evidence_dir / "evidence_log.jsonl",
+            "index_path": data_dir / "candidate_index.csv",
+        }
+    return _runtime_paths
+
+
+def _reset_runtime_paths() -> None:
+    """Drop the cached path snapshot so the next access re-resolves."""
+    global _runtime_paths
+    _runtime_paths = None
+
+
+_LAZY_ATTRIBUTES = {
+    "ACTIVE_PROJECT_CONFIG": _active_project_config,
+    "DATA_DIR": lambda: _paths()["data_dir"],
+    "EVIDENCE_DIR": lambda: _paths()["evidence_dir"],
+    "STATE_PATH": lambda: _paths()["state_path"],
+    "LOG_PATH": lambda: _paths()["log_path"],
+    "INDEX_PATH": lambda: _paths()["index_path"],
+    "SQLITE_DB_PATH": _sqlite_db_path,
+}
+
+
+def __getattr__(name):
+    """PEP 562: serve legacy data-layer names lazily on first access."""
+    getter = _LAZY_ATTRIBUTES.get(name)
+    if getter is not None:
+        return getter()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _module_attr(name):
+    """Read a lazy module name through the module object (PEP 562 does not
+    apply to bare globals inside this module)."""
+    return getattr(sys.modules[__name__], name)
+
+
+class _LazyPathsModule(types.ModuleType):
+    """Coordinate explicit path redirections with the lazy accessors.
+
+    Repository code and tests follow the established pattern of redirecting
+    paths with ``data_layer.DATA_DIR = tmp``, and ``unittest.mock.patch``
+    applies/drops such attributes via ``__setattr__``/``__delattr__``.  PEP 562
+    ``__getattr__`` alone cannot serve this: a plain assignment writes a
+    permanent ``__dict__`` entry that shadows the lazy accessor for the rest
+    of the process.  Intercepting assignment/deletion keeps the contract
+    consistent:
+
+    - reads prefer an explicit ``__dict__`` value (the repo-wide redirect
+      pattern) and otherwise fall back to the ``_runtime_paths`` cache;
+    - assignments write ``__dict__`` AND invalidate the cache, so a later
+      ``del`` makes the next read re-resolve from the environment;
+    - deletions drop both, matching ``mock.patch`` ``stop`` semantics.
+    """
+
+    _PATH_KEYS = {
+        "DATA_DIR": "data_dir",
+        "EVIDENCE_DIR": "evidence_dir",
+        "STATE_PATH": "state_path",
+        "LOG_PATH": "log_path",
+        "INDEX_PATH": "index_path",
+    }
+
+    def __setattr__(self, name: str, value) -> None:
+        if name in _LazyPathsModule._PATH_KEYS:
+            _reset_runtime_paths()
+        super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in _LazyPathsModule._PATH_KEYS:
+            _reset_runtime_paths()
+        try:
+            super().__delattr__(name)
+        except AttributeError:
+            if name not in _LazyPathsModule._PATH_KEYS:
+                raise
+
+
+# Install the module-level hooks so redirects never break the lazy contract.
+sys.modules[__name__].__class__ = _LazyPathsModule
+
+
+class _LazyClassAttribute:
+    """Descriptor that resolves a class attribute once on first access (PR5)."""
+
+    _MISSING = object()
+
+    def __init__(self, getter):
+        self._getter = getter
+        self._value = self._MISSING
+
+    def __get__(self, obj, owner=None):
+        if self._value is self._MISSING:
+            self._value = self._getter()
+        return self._value
 
 
 def get_storage_backend():
@@ -68,9 +196,12 @@ def get_storage_backend():
     The legacy file backend remains the default for backwards compatibility.
     Set ``CYCPEP_DB_PATH`` to opt a runtime into SQLite during migration.
     """
-    if SQLITE_DB_PATH:
-        return SQLiteStore(SQLITE_DB_PATH, project_id=ACTIVE_PROJECT_CONFIG["project_id"])
-    return FileStore(DATA_DIR, EVIDENCE_DIR)
+    db_path = _module_attr("SQLITE_DB_PATH")
+    if db_path:
+        return SQLiteStore(db_path, project_id=_module_attr("ACTIVE_PROJECT_CONFIG")["project_id"])
+    return FileStore(_module_attr("DATA_DIR"), _module_attr("EVIDENCE_DIR"))
+
+
 
 
 class EvidenceTraceQueryError(ValueError):
@@ -96,6 +227,27 @@ def _default_design_budget(config: dict) -> dict[str, int]:
     }
     budget.update({"route_B": 400, "route_C": 200})
     return budget
+
+
+def _default_state(config: dict) -> dict:
+    """Default State projection for the given project config (PR5, lazy)."""
+    return {
+        "project": config.get("name", config["project_id"]),
+        "project_id": config["project_id"],
+        "project_config": config,
+        "targets": {
+            target["id"]: {key: value for key, value in target.items() if key != "id"}
+            for target in config["targets"]
+        },
+        "phase": "research",
+        "round": 1,
+        "pocket_differences": {},
+        "known_dual_binders": [],
+        "design_budget": _default_design_budget(config),
+        "candidate_count": 0,
+        "iteration_history": [],
+        "thresholds": {},
+    }
 
 
 def _write_json_atomic(path: str | Path, payload: dict):
@@ -183,36 +335,19 @@ def _alias_keys(row: dict) -> dict:
 class State:
     """读/写 state.json —— 所有Agent共享的'白板'"""
     
-    _project_config = ACTIVE_PROJECT_CONFIG
-    _default = {
-        "project": _project_config.get("name", _project_config["project_id"]),
-        "project_id": _project_config["project_id"],
-        "project_config": _project_config,
-        # Legacy mapping retained for older agents. New code reads project_config.
-        "targets": {
-            target["id"]: {key: value for key, value in target.items() if key != "id"}
-            for target in _project_config["targets"]
-        },
-        "phase": "research",
-        "round": 1,
-        "pocket_differences": {},
-        "known_dual_binders": [],
-        "design_budget": _default_design_budget(_project_config),
-        "candidate_count": 0,
-        "iteration_history": [],
-        # v5: 七层指标电池阈值（来自 data_layer.DEFAULT_THRESHOLDS，最终由正对照标定）
-        "thresholds": {},
-    }
+    _project_config = _LazyClassAttribute(_active_project_config)
+    _default = _LazyClassAttribute(lambda: _default_state(_active_project_config()))
     
     @classmethod
     def load(cls) -> dict:
-        if STATE_PATH.exists():
-            return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        state_path = _module_attr("STATE_PATH")
+        if state_path.exists():
+            return json.loads(state_path.read_text(encoding="utf-8"))
         return json.loads(json.dumps(cls._default))
     
     @classmethod
     def save(cls, data: dict):
-        _write_json_atomic(STATE_PATH, data)
+        _write_json_atomic(_module_attr("STATE_PATH"), data)
     
     @classmethod
     def update(cls, patches: dict):
@@ -335,8 +470,9 @@ class EvidenceLogger:
         # Every new write passes through the same event contract.  Existing
         # JSONL rows remain untouched and are still readable by get_all().
         EvidenceEvent.from_dict(entry)
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(LOG_PATH, "a", encoding="utf-8") as f:
+        log_path = _module_attr("LOG_PATH")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     
     @classmethod
@@ -526,9 +662,10 @@ class EvidenceLogger:
 
     @classmethod
     def get_all(cls) -> list:
-        if not LOG_PATH.exists():
+        log_path = _module_attr("LOG_PATH")
+        if not log_path.exists():
             return []
-        return [json.loads(line) for line in LOG_PATH.read_text(encoding="utf-8").strip().split("\n") if line]
+        return [json.loads(line) for line in log_path.read_text(encoding="utf-8").strip().split("\n") if line]
 
     @classmethod
     def filter(cls, agent: str = None, event_type: str = None, candidate_id: str = None) -> list:
@@ -636,14 +773,15 @@ class CandidateIndex:
 
     @classmethod
     def _ensure_exists(cls):
-        if not INDEX_PATH.exists():
-            INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with open(INDEX_PATH, "w", newline="", encoding="utf-8-sig") as f:
+        index_path = _module_attr("INDEX_PATH")
+        if not index_path.exists():
+            index_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(index_path, "w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.writer(f)
                 writer.writerow(INDEX_COLUMNS)
             return
 
-        with open(INDEX_PATH, "r", encoding="utf-8-sig", newline="") as f:
+        with open(index_path, "r", encoding="utf-8-sig", newline="") as f:
             header = next(csv.reader(f), [])
         if header != INDEX_COLUMNS:
             cls._migrate_schema(header)
@@ -651,12 +789,13 @@ class CandidateIndex:
     @classmethod
     def _migrate_schema(cls, old_header: list[str]):
         """把旧 CSV 显式迁移到当前 schema，并在同目录保留原始备份。"""
-        with open(INDEX_PATH, "r", encoding="utf-8-sig", newline="") as f:
+        index_path = _module_attr("INDEX_PATH")
+        with open(index_path, "r", encoding="utf-8-sig", newline="") as f:
             old_rows = list(csv.DictReader(f))
 
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup = INDEX_PATH.with_name(f"{INDEX_PATH.stem}.pre_v5_{stamp}.csv")
-        backup.write_bytes(INDEX_PATH.read_bytes())
+        backup = index_path.with_name(f"{index_path.stem}.pre_v5_{stamp}.csv")
+        backup.write_bytes(index_path.read_bytes())
 
         migrated = []
         for old_row in old_rows:
@@ -680,8 +819,9 @@ class CandidateIndex:
     @classmethod
     def _write_rows(cls, rows: list[dict]):
         """同目录临时文件写完后原子替换，避免中断时留下半张 CSV。"""
-        INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = INDEX_PATH.with_name(f".{INDEX_PATH.name}.{uuid.uuid4().hex}.tmp")
+        index_path = _module_attr("INDEX_PATH")
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = index_path.with_name(f".{index_path.name}.{uuid.uuid4().hex}.tmp")
         try:
             with open(temp_path, "w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.DictWriter(f, fieldnames=INDEX_COLUMNS, extrasaction="ignore")
@@ -690,7 +830,7 @@ class CandidateIndex:
                     {col: row.get(col, "") for col in INDEX_COLUMNS}
                     for row in rows
                 )
-            os.replace(temp_path, INDEX_PATH)
+            os.replace(temp_path, index_path)
         finally:
             if temp_path.exists():
                 temp_path.unlink()
@@ -732,7 +872,7 @@ class CandidateIndex:
         ordered = cls._prepare_row(row)
         if cls.find(ordered["candidate_id"]):
             raise ValueError(f"duplicate candidate_id: {ordered['candidate_id']}")
-        with open(INDEX_PATH, "a", newline="", encoding="utf-8-sig") as f:
+        with open(_module_attr("INDEX_PATH"), "a", newline="", encoding="utf-8-sig") as f:
             csv.DictWriter(f, fieldnames=INDEX_COLUMNS, extrasaction="ignore").writerow(ordered)
 
     @classmethod
@@ -745,14 +885,14 @@ class CandidateIndex:
         duplicates.update(cid for cid in new_ids if new_ids.count(cid) > 1)
         if duplicates:
             raise ValueError(f"duplicate candidate_id(s): {sorted(duplicates)}")
-        with open(INDEX_PATH, "a", newline="", encoding="utf-8-sig") as f:
+        with open(_module_attr("INDEX_PATH"), "a", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=INDEX_COLUMNS, extrasaction="ignore")
             writer.writerows(prepared)
 
     @classmethod
     def load(cls) -> list[dict]:
         cls._ensure_exists()
-        with open(INDEX_PATH, "r", encoding="utf-8-sig") as f:
+        with open(_module_attr("INDEX_PATH"), "r", encoding="utf-8-sig") as f:
             return list(csv.DictReader(f))
 
     @classmethod
