@@ -132,6 +132,10 @@ claim
 
 ## 8. Data Layer and Traceability
 
+### 存储架构（PR3）
+
+Agent 继续通过 `data_layer` 公共入口访问 State、CandidateIndex 和 Evidence，底层已建立统一 `storage` Store boundary。旧 JSON/CSV/JSONL 文件仍保留作为兼容 backend；设置 `CYCPEP_DB_PATH` 后可将运行时切换到 SQLite `project.db`。迁移工具 `storage.migrate_json_to_sqlite()` 幂等执行且不会删除源文件。
+
 三类数据职责不同：
 
 ```text

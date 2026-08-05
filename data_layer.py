@@ -42,22 +42,31 @@ from threshold_contract import merge_thresholds, normalize_thresholds
 from contracts.event import EvidenceEvent
 from contracts.trace import TraceContext
 from core.context import ProjectPaths  # noqa: E402
+from storage import SQLiteStore  # noqa: E402 (PR3)
+from storage.file_store import FileStore  # noqa: E402 (PR3)
 
 ROOT = Path(__file__).resolve().parent
 
 # ============================================================
-# 惰性项目运行时（Engineering Standard §7 / Roadmap PR5）
+# ????????Engineering Standard ?7 / Roadmap PR5?
 # ============================================================
-# 项目配置与派生路径不再于 import 时解析；首次访问（模块属性或内部 helper）
-# 时才加载并缓存。模块级名字（ACTIVE_PROJECT_CONFIG / DATA_DIR / ...）通过
-# PEP 562 ``__getattr__`` 提供，``from data_layer import DATA_DIR`` 等旧用法
-# 保持不变。
+# ???????????? import ???????????????? helper?
+# ??????????????ACTIVE_PROJECT_CONFIG / DATA_DIR / ...???
+# PEP 562 ``__getattr__`` ???``from data_layer import DATA_DIR`` ????
+# ?????PR3 ? ``get_storage_backend()`` / ``SQLITE_DB_PATH`` ??????
+# ????? import-time ?????
 
 
 @functools.lru_cache(maxsize=1)
 def _active_project_config() -> dict:
     """Approved project config, resolved once on first access (PR5)."""
     return load_project_config()
+
+
+def _sqlite_db_path() -> Path | None:
+    """Configured SQLite DB path (PR3), resolved lazily on first access (PR5)."""
+    raw = os.environ.get("CYCPEP_DB_PATH")
+    return Path(raw) if raw else None
 
 
 def _project_data_dir(config: dict) -> Path:
@@ -97,6 +106,7 @@ _LAZY_ATTRIBUTES = {
     "STATE_PATH": lambda: _paths()["state_path"],
     "LOG_PATH": lambda: _paths()["log_path"],
     "INDEX_PATH": lambda: _paths()["index_path"],
+    "SQLITE_DB_PATH": _sqlite_db_path,
 }
 
 
@@ -127,6 +137,19 @@ class _LazyClassAttribute:
         if self._value is self._MISSING:
             self._value = self._getter()
         return self._value
+
+
+def get_storage_backend():
+    """Return the configured backend without exposing backend details to Agents.
+
+    The legacy file backend remains the default for backwards compatibility.
+    Set ``CYCPEP_DB_PATH`` to opt a runtime into SQLite during migration.
+    """
+    db_path = _module_attr("SQLITE_DB_PATH")
+    if db_path:
+        return SQLiteStore(db_path, project_id=_module_attr("ACTIVE_PROJECT_CONFIG")["project_id"])
+    return FileStore(_module_attr("DATA_DIR"), _module_attr("EVIDENCE_DIR"))
+
 
 
 
