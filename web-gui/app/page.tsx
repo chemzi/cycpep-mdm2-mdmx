@@ -16,7 +16,10 @@ type MolViewer = { addModel(data: string, format: string): void; setStyle(select
 
 declare global { interface Window { $3Dmol?: { createViewer(element: HTMLElement, options: object): MolViewer; SurfaceType: { VDW: unknown } } } }
 
-const DEFAULT_SETTINGS: Settings = { apiBase: "/api/v1", polling: 5, autoRefresh: true };
+// The UI is served by Vinext, while the CycPep JSON adapter is a separate
+// local process. Keep the adapter URL explicit so `/api/v1` is not mistaken
+// for a route on the frontend dev server (which returns HTML).
+const DEFAULT_SETTINGS: Settings = { apiBase: "http://127.0.0.1:8765/api/v1", polling: 5, autoRefresh: true };
 const join = (base: string, path: string) => `${base.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
 const formatTimestamp = (value?: string) => value ? new Date(value).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : "—";
 const AGENTS = [
