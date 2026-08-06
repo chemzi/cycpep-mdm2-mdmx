@@ -114,7 +114,7 @@ ACTIVE_PROJECT_CONFIG = load_project_config(raw={
                 'chain': 'A',
                 'coordinate_path': target_fixture.name,
                 'coordinate_sha256': hashlib.sha256(
-                    open(target_fixture.name, 'rb').read()
+                    Path(target_fixture.name).read_bytes()
                 ).hexdigest(),
             },
             'binding_site': {'residues': [54, 93, 96], 'status': 'user_reviewed'},
@@ -127,7 +127,7 @@ ACTIVE_PROJECT_CONFIG = load_project_config(raw={
                 'chain': 'B',
                 'coordinate_path': target_fixture.name,
                 'coordinate_sha256': hashlib.sha256(
-                    open(target_fixture.name, 'rb').read()
+                    Path(target_fixture.name).read_bytes()
                 ).hexdigest(),
             },
             'binding_site': {'residues': [53, 92, 95], 'status': 'user_reviewed'},

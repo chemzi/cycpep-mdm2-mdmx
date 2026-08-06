@@ -26,35 +26,12 @@ def _candidate_ids(reason_codes: list[str], issues_by_code: dict[str, dict]) -> 
         if str(candidate_id).strip()
     })
 
-def _materialize_design_jobs(
-    *,
-    state: dict,
+def _allocate_design_capacity(
+    requested: int,
     required_targets: list[str],
     budgets: dict[str, int],
-    requested: int,
-    seed_material: str,
-) -> list[dict]:
-    """Build deterministic Route A jobs from approved target configuration.
-
-    Target-specific Route A budgets are preferred.  The legacy shared
-    ``route_A`` key remains supported for old State fixtures.  Route B/C are
-    used only when no Route A capacity exists, because their motif provenance
-    is less generally transferable across targets.
-    """
-    if requested < 1 or not required_targets:
-        return []
-    project = state.get("project_config") or {}
-    target_values = {
-        str(item.get("id")): item
-        for item in project.get("targets", [])
-        if isinstance(item, dict) and item.get("id")
-    }
-    seed_base = int(object_sha256({
-        "material": seed_material,
-        "targets": required_targets,
-        "round": int(state.get("round") or 1),
-    })[:8], 16) % (2**31)
-
+) -> tuple[dict[str, int], str]:
+    """Allocate per-target proposal counts from Route A/B/C budgets."""
     specific = []
     for target_id in required_targets:
         key = f"route_A_{target_slug(target_id)}"
@@ -91,7 +68,39 @@ def _materialize_design_jobs(
             route = fallback_route
             capacity = budgets[f"route_{fallback_route}"]
             allocations[required_targets[0]] = min(requested, capacity)
+    return allocations, route
 
+
+def _materialize_design_jobs(
+    *,
+    state: dict,
+    required_targets: list[str],
+    budgets: dict[str, int],
+    requested: int,
+    seed_material: str,
+) -> list[dict]:
+    """Build deterministic Route A jobs from approved target configuration.
+
+    Target-specific Route A budgets are preferred.  The legacy shared
+    ``route_A`` key remains supported for old State fixtures.  Route B/C are
+    used only when no Route A capacity exists, because their motif provenance
+    is less generally transferable across targets.
+    """
+    if requested < 1 or not required_targets:
+        return []
+    project = state.get("project_config") or {}
+    target_values = {
+        str(item.get("id")): item
+        for item in project.get("targets", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    seed_base = int(object_sha256({
+        "material": seed_material,
+        "targets": required_targets,
+        "round": int(state.get("round") or 1),
+    })[:8], 16) % (2**31)
+
+    allocations, route = _allocate_design_capacity(requested, required_targets, budgets)
     jobs = []
     for index, target_id in enumerate(required_targets):
         count = allocations[target_id]
@@ -112,6 +121,42 @@ def _materialize_design_jobs(
             "seed": (seed_base + index) % (2**31),
         })
     return jobs
+
+def _require_executable_handler(action_spec) -> str:
+    """Reject Planner actions with no executable registry handler."""
+    if action_spec.executable:
+        from execution.action_registry import handler_for
+
+        if handler_for(action_spec.action) is None:
+            raise PlannerContractError(
+                "planner_action_handler_missing",
+                f"Planner task action {action_spec.action!r} has no executable registry handler",
+            )
+    return action_spec.resource_class
+
+
+def _resolve_block_reasons(action_spec, block_reasons: list[str] | None) -> list[str]:
+    """Non-executable actions are always blocked as unimplemented."""
+    effective_block_reasons = list(block_reasons or [])
+    if not action_spec.executable and "blocked_unimplemented" not in effective_block_reasons:
+        effective_block_reasons.append("blocked_unimplemented")
+    return effective_block_reasons
+
+
+def _resource_request(action_spec, proposal_count: int, candidate_limit: int) -> dict:
+    """Build the immutable resource request for one task."""
+    resource_class = action_spec.resource_class
+    return {
+        "class": resource_class,
+        "gpu_job_slots": 1 if resource_class == "gpu" else 0,
+        "proposal_count": int(proposal_count),
+        "candidate_limit": int(candidate_limit),
+        "estimated_gpu_minutes": None,
+        "estimate_status": (
+            "benchmark_required" if resource_class == "gpu" else "not_applicable"
+        ),
+    }
+
 
 def _task(
     tasks: list[dict],
@@ -140,18 +185,8 @@ def _task(
         raise PlannerContractError(
             "planner_action_unknown", f"Planner task has unknown action {action!r}"
         ) from exc
-    resource_class = action_spec.resource_class
-    if action_spec.executable:
-        from execution.action_registry import handler_for
-
-        if handler_for(action_spec.action) is None:
-            raise PlannerContractError(
-                "planner_action_handler_missing",
-                f"Planner task action {action!r} has no executable registry handler",
-            )
-    effective_block_reasons = list(block_reasons or [])
-    if not action_spec.executable and "blocked_unimplemented" not in effective_block_reasons:
-        effective_block_reasons.append("blocked_unimplemented")
+    resource_class = _require_executable_handler(action_spec)
+    effective_block_reasons = _resolve_block_reasons(action_spec, block_reasons)
     value = {
         "task_id": task_id,
         "agent": agent,
@@ -165,16 +200,9 @@ def _task(
             "from_task_id": from_task_id,
         },
         "parameters": dict(parameters or {}),
-        "resource_request": {
-            "class": resource_class,
-            "gpu_job_slots": 1 if resource_class == "gpu" else 0,
-            "proposal_count": int(proposal_count),
-            "candidate_limit": int(candidate_limit),
-            "estimated_gpu_minutes": None,
-            "estimate_status": (
-                "benchmark_required" if resource_class == "gpu" else "not_applicable"
-            ),
-        },
+        "resource_request": _resource_request(
+            action_spec, proposal_count, candidate_limit
+        ),
         "approval": approval or _approval(
             action=action, critic_approval_required=False
         ),

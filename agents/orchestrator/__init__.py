@@ -20,7 +20,8 @@ from .config import (  # noqa: E402
     RUN_SCHEMA_VERSION,
 )
 from .service import initialize, status  # noqa: E402
-from .state_machine import authorize, claim, fail, recover, retry, skip  # noqa: E402
+from .claim import claim  # noqa: E402
+from .state_machine import authorize, fail, recover, retry, skip  # noqa: E402
 from .completion import complete  # noqa: E402
 from .cli import build_parser, main  # noqa: E402
 

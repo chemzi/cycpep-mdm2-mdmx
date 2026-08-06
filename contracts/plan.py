@@ -144,6 +144,8 @@ def _validate_plan_source(
         "plan Critic report SHA-256",
         error_cls=error_cls,
     )
+    if not critic_path.is_file():
+        raise error_cls("plan_source_missing", f"Critic report missing: {critic_path}")
     if file_sha256(critic_path) != declared_critic_sha:
         raise error_cls(
             "plan_source_hash_mismatch", "Critic report changed after planning"

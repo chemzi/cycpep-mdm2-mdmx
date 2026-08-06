@@ -7,7 +7,8 @@ from agents.planner import PlannerContractError
 from .completion import complete
 from .errors import OrchestratorContractError
 from .service import initialize, status
-from .state_machine import authorize, claim, fail, recover, skip
+from .claim import claim
+from .state_machine import authorize, fail, recover, skip
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)

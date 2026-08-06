@@ -9,6 +9,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+# Import-time sys.path bootstrap shared by all agent packages: legacy single-file
+# entrypoints may import the package before the repository root is on sys.path.
+# It registers the root only and performs no project/IO side effects.
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

@@ -152,6 +152,21 @@ def _persist_approval(
     return approval, file_sha256(output_path), output_path
 
 
+def _load_approvable_plan(plan_path: str | Path) -> tuple[dict, str, str]:
+    """Load a plan whose ID is bound to its immutable input digest."""
+    plan_path = Path(plan_path).expanduser().resolve()
+    plan = _read_json(plan_path, "planner_plan")
+    plan = validate_plan_for_approval(plan, plan_path, error_cls=PlannerContractError)
+    plan_id = str(plan.get("plan_id") or "")
+    input_digest = validate_sha256(
+        plan.get("input_digest"), "plan_input_digest_invalid", "plan input_digest",
+        error_cls=PlannerContractError,
+    )
+    if not PLAN_ID_RE.fullmatch(plan_id) or plan_id != f"planner_{input_digest[:12]}":
+        raise PlannerContractError("plan_id_invalid", "plan ID is not bound to input_digest")
+    return plan, plan_id, file_sha256(plan_path)
+
+
 def record_approval(
     *,
     plan_path: str | Path,
@@ -166,16 +181,7 @@ def record_approval(
 ) -> dict:
     """Record explicit human approval bound to one immutable plan digest."""
     plan_path = Path(plan_path).expanduser().resolve()
-    plan = _read_json(plan_path, "planner_plan")
-    plan = validate_plan_for_approval(plan, plan_path, error_cls=PlannerContractError)
-    plan_id = str(plan.get("plan_id") or "")
-    input_digest = validate_sha256(
-        plan.get("input_digest"), "plan_input_digest_invalid", "plan input_digest",
-        error_cls=PlannerContractError,
-    )
-    if not PLAN_ID_RE.fullmatch(plan_id) or plan_id != f"planner_{input_digest[:12]}":
-        raise PlannerContractError("plan_id_invalid", "plan ID is not bound to input_digest")
-    plan_sha = file_sha256(plan_path)
+    plan, plan_id, plan_sha = _load_approvable_plan(plan_path)
     approver = str(approver or "").strip()
     justification = str(justification or "").strip()
     if not approver or not justification:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from contracts.plan import validate_sha256
 from .config import (
     MANDATORY_POLICY_CONSTRAINTS,
