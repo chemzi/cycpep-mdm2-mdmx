@@ -450,7 +450,7 @@ def import_staged_run(staging_data_dir: str | Path) -> dict:
     """Merge one validated staging run into the formal store, atomically.
 
     A staged subprocess writes candidates, evidence and its ID sequence into
-    an isolated _module_attr("DATA_DIR").  Everything merges in a single transaction; any ID
+    an isolated DATA_DIR.  Everything merges in a single transaction; any ID
     collision or failure rolls all of it back, so a rejected run leaves the
     formal CandidateIndex/State/Evidence untouched (P0-3).
     """
