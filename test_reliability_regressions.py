@@ -17,6 +17,11 @@ os.environ["CYCPEP_DESIGN_ROOT"] = str(TEST_ROOT / "designs")
 
 import agents.design as design_module
 import data_layer
+data_layer.DATA_DIR = TEST_ROOT / "data"
+data_layer.EVIDENCE_DIR = TEST_ROOT / "evidence"
+data_layer.STATE_PATH = data_layer.DATA_DIR / "state.json"
+data_layer.LOG_PATH = data_layer.EVIDENCE_DIR / "evidence_log.jsonl"
+data_layer.INDEX_PATH = data_layer.DATA_DIR / "candidate_index.csv"
 from agents.design import design_atsp_cyclize, design_motif_graft
 from agents.research import _build_dynamic_pockets
 from data_layer import CandidateIndex, State
