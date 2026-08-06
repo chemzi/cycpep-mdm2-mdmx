@@ -377,6 +377,160 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(child["round"], 2)
         self.assertEqual(int(State.load()["round"]), child["round"])
 
+    def test_deep_backtrack_climbs_to_ancestor_sibling_without_rerun(self):
+        """
+        Review P1-A: when a grandchild fails and its parent has no untried
+        strategy, backtracking must climb to the grandparent and spawn a sibling
+        THERE, in the same call — never hand a still-evaluated ancestor back to
+        the main loop to re-run its full plan->predict->critic pipeline.
+        """
+        State.update({
+            "research_pipeline_meta": {"run_status": "complete"},
+            "candidate_count": 0,
+        })
+        tree = SearchTree(path=DATA_DIR / "search_tree.json", beam_width=2, max_nodes=6)
+        root = tree.init_root()
+        strat_a = planner_agent.propose_children(root, max_proposals=1)[0]
+        node_a = tree.add_child(root["node_id"], strat_a)
+        strat_b = planner_agent.propose_children(node_a, max_proposals=1)[0]
+        node_b = tree.add_child(node_a["node_id"], strat_b)
+        self.assertEqual(tree.active_id, node_b["node_id"])
+
+        def fake_propose(parent, critic_report=None, exclude=None, max_proposals=3):
+            # Parent A is exhausted; the grandparent (root) still has a sibling.
+            if parent["node_id"] == node_a["node_id"]:
+                return []
+            return [{
+                "route_mix": {"route_C": 777},
+                "lengths": [11],
+                "constraints": {"branch_label": "root_uncle"},
+            }]
+
+        with patch.object(
+            run_pipeline, "mock_design",
+            return_value={"status": "ok", "candidate_ids": []},
+        ), patch.object(planner_agent, "propose_children", side_effect=fake_propose):
+            result = run_pipeline.run_once_node(tree, dry_run=True)
+
+        self.assertEqual(result["status"], "backtracked_and_rebranched")
+        self.assertEqual(result["ancestor_node_id"], root["node_id"])
+
+        # B and A are both retired; the new sibling hangs off the ROOT.
+        self.assertEqual(tree.get(node_b["node_id"])["status"], "dead_end")
+        self.assertEqual(tree.get(node_b["node_id"])["termination_reason"], "design_no_output")
+        a_dead = tree.get(node_a["node_id"])
+        self.assertEqual(a_dead["status"], "dead_end")
+        # A closed for branch-space exhaustion: no faked Critic verdict.
+        self.assertIsNone(a_dead.get("critic_verdict"))
+        self.assertEqual(a_dead["termination_reason"], "child_strategy_space_exhausted")
+        self.assertEqual(a_dead["failure_source"], "orchestrator")
+
+        sibling_id = result["adjust"]["child_node_id"]
+        self.assertEqual(tree.get(sibling_id)["parent_id"], root["node_id"])
+        self.assertEqual(tree.active_id, sibling_id)
+
+        # No Critic ever ran (synthetic Design failures only), so no ancestor was
+        # re-reviewed on the way up.
+        self.assertEqual(_critic_reviews(), [])
+
+    def test_advance_syncs_state_round_onto_child(self):
+        """
+        Review P1/P2-B: a Critic 'advance' deepens to a new child and the global
+        State.round must follow that child, not stay on a drifted counter.
+        """
+        State.update({
+            "research_pipeline_meta": {"run_status": "complete"},
+            "candidate_count": 1,
+            "round": 9,  # drifted global counter
+        })
+        CandidateIndex.add({
+            "candidate_id": "C2001",
+            "sequence": "GFEWALAAKCFG",
+            "source_batch": "N0001/route_A_mdm2/L12",
+            "manifest_path": "m.json",
+            "plddt": "0.9",  # already scored → Planner routes straight to Critic
+        })
+        tree = SearchTree(path=DATA_DIR / "search_tree.json", beam_width=2, max_nodes=6)
+        root = tree.init_root(round_num=1)
+
+        advance_report = {
+            "verdict": "advance",
+            "event_id": "evt-advance",
+            "issues": [],
+            "summary": "partial clearance",
+            "recommendation": "deepen",
+            "status": "needs_attention",
+            "metrics": {},
+        }
+        with patch.object(run_pipeline.critic_agent, "review", return_value=advance_report):
+            result = run_pipeline.run_once_node(tree, dry_run=True)
+
+        self.assertEqual(result["status"], "advanced")
+        child_id = tree.active_id
+        child = tree.get(child_id)
+        self.assertEqual(child["parent_id"], root["node_id"])
+        self.assertEqual(child["round"], 2)
+        self.assertEqual(int(State.load()["round"]), 2)
+
+    def test_prediction_block_persisted_and_reopened_on_resume(self):
+        """Review P2-D: a Prediction block is written to the tree node (status,
+        blocked_by, retryable), and a retryable block reopens on --resume."""
+        root_id = "N0001"
+        State.update({
+            "research_pipeline_meta": {"run_status": "complete"},
+            "candidate_count": 1,
+            "thresholds": {},
+        })
+        CandidateIndex.add({
+            "candidate_id": "C3001",
+            "sequence": "GFEWALAAKCFG",
+            "source_batch": f"{root_id}/route_A_mdm2/L12",
+            "manifest_path": "m.json",
+        })
+        tree = SearchTree(path=DATA_DIR / "search_tree.json", beam_width=2, max_nodes=6)
+        root = tree.init_root()
+
+        with patch.object(
+            run_pipeline, "mock_predict", return_value={"status": "ok", "scored": []},
+        ):
+            result = run_pipeline.run_once_node(tree, dry_run=True)
+        self.assertEqual(result["status"], "blocked")
+
+        node = tree.get(root_id)
+        self.assertEqual(node["status"], "blocked")
+        self.assertEqual(node["blocked_by"], "prediction")
+        self.assertTrue(node["retryable"])
+        self.assertEqual(node["termination_reason"], "prediction_no_progress")
+
+        # Persisted to disk, then a retryable block reopens on reload.
+        tree.persist()
+        reloaded = SearchTree.load(DATA_DIR / "search_tree.json")
+        self.assertEqual(reloaded.get(root_id)["status"], "blocked")
+        reopened = reloaded.reopen_blocked(retryable_only=True)
+        self.assertEqual(reopened, [root_id])
+        self.assertEqual(reloaded.get(root_id)["status"], "open")
+
+    def test_research_block_persisted_and_not_reopened_on_resume(self):
+        """A Research dependency block is non-retryable: it persists and stays
+        blocked through a retryable-only resume."""
+        tree = SearchTree(path=DATA_DIR / "search_tree.json", beam_width=2, max_nodes=6)
+        root = tree.init_root()
+
+        with patch.object(run_pipeline, "mock_research", return_value={"status": "ok"}):
+            result = run_pipeline.run_once_node(tree, dry_run=True)
+        self.assertEqual(result["status"], "blocked")
+
+        node = tree.get(root["node_id"])
+        self.assertEqual(node["status"], "blocked")
+        self.assertEqual(node["blocked_by"], "research")
+        self.assertFalse(node["retryable"])
+
+        tree.persist()
+        reloaded = SearchTree.load(DATA_DIR / "search_tree.json")
+        reopened = reloaded.reopen_blocked(retryable_only=True)
+        self.assertEqual(reopened, [])
+        self.assertEqual(reloaded.get(root["node_id"])["status"], "blocked")
+
     def test_resume_terminal_dead_end_not_reexecuted(self):
         """After a synthetic dead-end child is persisted, a reloaded tree must not
         re-execute that terminal node."""

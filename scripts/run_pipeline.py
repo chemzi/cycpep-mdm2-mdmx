@@ -346,6 +346,29 @@ TERMINAL_STATUSES = {
 }
 
 
+def _project_state_round(tree: SearchTree, node_id=None):
+    """
+    Project State.round onto the round of the given (or current active) node.
+
+    The tree node round is the single source of truth. State.round only exists
+    for legacy agents / UI that read the global whiteboard, so it must follow the
+    active node across every switch: Critic advance, deep backtrack to an
+    ancestor, beam sibling selection, and --resume. planner.adjust() already
+    projects for the child it spawns; this helper covers the other paths.
+    """
+    nid = node_id if node_id is not None else tree.active_id
+    if not nid:
+        return
+    node = tree.get(nid)
+    if not node:
+        return
+    target = int(node.get("round") or 1)
+    s = State.load()
+    if int(s.get("round") or 0) != target:
+        s["round"] = target
+        State.save(s)
+
+
 def _checkpoint_scope(tree: SearchTree, node: dict, thresholds_ref=None):
     scope = planner_agent.scope_candidates(node, CandidateIndex.load())
     tree.update_checkpoint(
@@ -416,37 +439,69 @@ def _backtrack_failed_node(tree: SearchTree, node: dict, report: dict) -> dict:
         tree.persist()
         return {"status": "root_dead_end", "node_id": node["node_id"], "report": report}
 
-    adj = planner_agent.adjust(report=report, tree=tree, parent=parent, max_proposals=1)
-    print(
-        f"  backtrack → parent {parent['node_id']}; "
-        f"adjust status={adj.get('status')} child={adj.get('child_node_id')}"
-    )
-    if adj.get("status") == "adjusted":
-        tree.persist()
-        return {
-            "status": "backtracked_and_rebranched",
-            "node_id": node["node_id"],
-            "report": report,
-            "adjust": adj,
-        }
-
-    # Parent has no untried branch left. Retire it and, if a live ancestor still
-    # exists, expose it so a higher level may branch on the next step.
-    tree.mark_dead_end(parent["node_id"], verdict="dead_end")
-    grandparent_id = parent.get("parent_id")
-    if grandparent_id and tree.get(grandparent_id):
-        grandparent = tree.get(grandparent_id)
-        if grandparent["status"] not in ("dead_end", "pruned", "passed"):
-            tree.active_id = grandparent_id
-            if grandparent_id not in tree.frontier:
-                tree.frontier.insert(0, grandparent_id)
+    # Deep backtracking: walk UP the ancestor chain trying to spawn an untried
+    # sibling at each level, using the *original* failing report. We never hand a
+    # still-live ancestor back to the main loop as an executable node (that would
+    # re-run its whole plan→predict→critic pipeline and duplicate its Critic
+    # review); each ancestor either spawns a fresh sibling here or is retired.
+    ancestor = parent
+    while ancestor is not None:
+        adj = planner_agent.adjust(report=report, tree=tree, parent=ancestor, max_proposals=1)
+        print(
+            f"  backtrack → ancestor {ancestor['node_id']}; "
+            f"adjust status={adj.get('status')} child={adj.get('child_node_id')}"
+        )
+        if adj.get("status") == "adjusted":
             tree.persist()
             return {
-                "status": "backtracked_to_ancestor",
+                "status": "backtracked_and_rebranched",
                 "node_id": node["node_id"],
+                "ancestor_node_id": ancestor["node_id"],
                 "report": report,
                 "adjust": adj,
             }
+        if adj.get("status") == "budget_exhausted":
+            # Global node budget hit — walking further up cannot help.
+            tree.persist()
+            return {
+                "status": "search_budget_exhausted",
+                "node_id": node["node_id"],
+                "ancestor_node_id": ancestor["node_id"],
+                "report": report,
+                "adjust": adj,
+            }
+
+        # This ancestor has no untried strategy of its own. If it still has a live
+        # child (e.g. a beam sibling of the failed branch), the search is not over:
+        # step off this evaluated ancestor and let the main loop pick that child.
+        if tree.has_live_children(ancestor["node_id"]):
+            if ancestor["node_id"] in tree.frontier:
+                tree.frontier = [n for n in tree.frontier if n != ancestor["node_id"]]
+            if tree.active_id == ancestor["node_id"]:
+                tree.active_id = None
+            tree.persist()
+            return {
+                "status": "backtracked_branch_exhausted",
+                "node_id": node["node_id"],
+                "ancestor_node_id": ancestor["node_id"],
+                "report": report,
+                "adjust": adj,
+            }
+
+        # No live descendants and no untried strategy → this whole subtree is
+        # explored. Retire the ancestor for branch-space exhaustion (an
+        # orchestrator decision), preserving its real Critic verdict, and climb.
+        tree.mark_dead_end(
+            ancestor["node_id"],
+            preserve_verdict=True,
+            termination_reason="child_strategy_space_exhausted",
+            failure_source="orchestrator",
+        )
+        parent_id = ancestor.get("parent_id")
+        ancestor = tree.get(parent_id) if parent_id else None
+        if ancestor is not None and ancestor["status"] in ("open", "expanding", "evaluated"):
+            tree.active_id = ancestor["node_id"]
+
     tree.persist()
     return {
         "status": _EXHAUSTED_STATUS.get(adj.get("status"), "search_exhausted"),
@@ -513,16 +568,25 @@ def _handle_stall(tree: SearchTree, node: dict, last_sig) -> dict:
         return _backtrack_failed_node(tree, node, report)
 
     # research / prediction: do NOT mutate the Design strategy and do NOT spawn a
-    # sibling. Leave the node live (non-terminal) so a later --resume can retry
-    # once the upstream service recovers, and stop this run.
+    # sibling. Persist the block on the node itself so search_tree.json — not just
+    # this run's in-memory history — records why the search stopped. A transient
+    # Prediction failure is retryable (a later --resume re-opens it); a Research
+    # dependency block is not, and stays blocked until an explicit retry.
     retryable = failed_agent == "prediction"
+    reason = f"{failed_agent}_no_progress"
+    tree.mark_blocked(
+        node["node_id"],
+        blocked_by=failed_agent,
+        retryable=retryable,
+        termination_reason=reason,
+    )
     print(f"  {failed_agent} no progress → blocking search (retryable={retryable})")
     tree.persist()
     return {
         "status": "blocked",
         "node_id": node["node_id"],
         "failed_agent": failed_agent,
-        "termination_reason": f"{failed_agent}_no_progress",
+        "termination_reason": reason,
         "retryable": retryable,
         "event_id": event_id,
     }
@@ -533,6 +597,12 @@ def run_once_node(tree: SearchTree, dry_run: bool = True) -> dict:
     node = tree.select_active()
     if node is None:
         return {"status": "stopped", "reason": "no live node"}
+
+    # Project the global round onto whatever node we are about to work on. This
+    # single point covers every active switch that landed us here — beam sibling
+    # selection, deep backtrack to an ancestor, and --resume — so State.round
+    # never drifts from the active tree node.
+    _project_state_round(tree, node["node_id"])
 
     tree.mark_expanding(node["node_id"])
     print(f"\n[node {node['node_id']}] depth={node['depth']} round={node['round']} status=expanding")
@@ -599,18 +669,29 @@ def run_once_node(tree: SearchTree, dry_run: bool = True) -> dict:
                 reason=report.get("recommendation") or "advance",
                 round_num=child.get("round"),
             )
+            # Deepening switched the active node to the child; keep State.round
+            # aligned (the backtrack path relies on planner.adjust for this, but
+            # advance spawns the child directly here).
+            _project_state_round(tree, child["node_id"])
             print(f"  advance → child {child['node_id']}")
             tree.persist()
             return {"status": "advanced", "node_id": node["node_id"], "report": report}
-        # Cannot deepen (budget spent / nothing new): keep this node as a lead but
-        # take it off the frontier so it is not re-reviewed on the next tick.
+        # Cannot deepen. Distinguish *why*, mirroring the backtrack path's honest
+        # statuses, and record it on the node. The node stays a lead but leaves
+        # the frontier so it is not re-reviewed on the next tick.
+        exhausted = "advance_budget_exhausted" if tree.budget_exhausted() else "advance_search_exhausted"
+        reason = ("node budget reached; cannot deepen"
+                  if tree.budget_exhausted() else
+                  "no untried refinement strategy to deepen with")
+        tree.mark_evaluated(node["node_id"], critic_verdict=verdict)
+        node["termination_reason"] = reason
         if node["node_id"] in tree.frontier:
             tree.frontier = [n for n in tree.frontier if n != node["node_id"]]
         if tree.active_id == node["node_id"]:
             tree.active_id = None
-        print("  advance requested but cannot expand (budget); node kept as lead")
+        print(f"  advance requested but cannot expand ({exhausted}); node kept as lead")
         tree.persist()
-        return {"status": "advance_blocked", "node_id": node["node_id"], "report": report}
+        return {"status": exhausted, "node_id": node["node_id"], "report": report}
 
     return _backtrack_failed_node(tree, node, report)
 
@@ -626,6 +707,13 @@ def run_pipeline(
     if resume and tree_path.exists():
         tree = SearchTree.load(tree_path)
         tree.set_config(beam_width=beam_width, max_nodes=max_nodes)
+        # Retryable blocks (e.g. a transient Prediction/GPU failure) come back
+        # live for another attempt; non-retryable blocks (a Research dependency)
+        # stay blocked until explicitly retried.
+        reopened = tree.reopen_blocked(retryable_only=True)
+        if reopened:
+            print(f"[orchestrator] reopened {len(reopened)} retryable blocked node(s): {reopened}")
+        _project_state_round(tree)
         print(f"[orchestrator] resumed tree from {tree_path} "
               f"(nodes={tree.node_count()} active={tree.active_id})")
     else:

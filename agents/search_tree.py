@@ -22,9 +22,13 @@ NODE_STATUSES = (
     "passed",
     "dead_end",
     "pruned",
+    "blocked",
 )
 
 CRITIC_VERDICTS = ("advance", "backtrack", "dead_end", "done", None)
+
+# A node the orchestrator may still work on (or that keeps a subtree alive).
+LIVE_STATUSES = ("open", "expanding", "evaluated")
 
 # Sentinel so callers can pass critic_verdict=None explicitly (a synthetic
 # orchestrator failure that had no Critic review) versus not passing it at all.
@@ -157,6 +161,21 @@ class SearchTree:
     def node_count(self) -> int:
         return len(self.nodes)
 
+    def has_live_children(self, node_id: str) -> bool:
+        """True if any direct child is still open/expanding/evaluated.
+
+        Used by deep backtracking: an ancestor with a live child (e.g. a beam
+        sibling of the branch that just failed) still has work under it, so it
+        must not be retired — the search should return to that live child.
+        """
+        node = self.nodes.get(node_id)
+        if not node:
+            return False
+        return any(
+            self.nodes.get(cid, {}).get("status") in LIVE_STATUSES
+            for cid in node.get("children", [])
+        )
+
     def budget_exhausted(self) -> bool:
         return self.node_count() >= self.config["max_nodes"]
 
@@ -221,13 +240,19 @@ class SearchTree:
         critic_verdict=_UNSET,
         termination_reason: Optional[str] = None,
         failure_source: Optional[str] = None,
+        preserve_verdict: bool = False,
     ) -> dict:
         node = self._require(node_id or self.active_id)
         node["status"] = "dead_end"
         # Only record a Critic verdict when the failure actually came from the
         # Critic. Synthetic orchestrator failures (e.g. zero-output Design) pass
         # critic_verdict=None so we never claim a Critic review that never ran.
-        if critic_verdict is _UNSET:
+        # preserve_verdict keeps whatever verdict the node already had — used when
+        # an ancestor is retired for *branch-space exhaustion* (an orchestrator
+        # search decision), which must not overwrite its real Critic verdict.
+        if preserve_verdict:
+            pass
+        elif critic_verdict is _UNSET:
             node["critic_verdict"] = verdict if verdict in ("backtrack", "dead_end") else "dead_end"
         else:
             node["critic_verdict"] = critic_verdict
@@ -252,6 +277,51 @@ class SearchTree:
         if self.active_id == node_id:
             self.active_id = None
         return node
+
+    def mark_blocked(
+        self,
+        node_id: Optional[str] = None,
+        blocked_by: Optional[str] = None,
+        retryable: bool = False,
+        termination_reason: Optional[str] = None,
+    ) -> dict:
+        """
+        Persist a non-terminal stop: an upstream agent (Prediction / Research)
+        produced no progress, which a different Design strategy cannot fix. The
+        node leaves the frontier so the search halts, but keeps enough metadata
+        for the UI and for --resume to decide whether to retry it.
+        """
+        node = self._require(node_id or self.active_id)
+        node["status"] = "blocked"
+        node["blocked_by"] = blocked_by
+        node["retryable"] = bool(retryable)
+        if termination_reason is not None:
+            node["termination_reason"] = termination_reason
+        if node["node_id"] in self.frontier:
+            self.frontier = [n for n in self.frontier if n != node["node_id"]]
+        if self.active_id == node["node_id"]:
+            self.active_id = None
+        return node
+
+    def reopen_blocked(self, retryable_only: bool = True) -> list[str]:
+        """
+        Re-open blocked nodes for another attempt (used on --resume). Retryable
+        blocks (e.g. transient Prediction failure) come back live; non-retryable
+        ones (e.g. a Research dependency) stay blocked until explicitly retried.
+        """
+        reopened: list[str] = []
+        for nid, node in self.nodes.items():
+            if node.get("status") != "blocked":
+                continue
+            if retryable_only and not node.get("retryable"):
+                continue
+            node["status"] = "open"
+            if nid not in self.frontier:
+                self.frontier.append(nid)
+            reopened.append(nid)
+        if reopened and not self.active_id:
+            self.active_id = reopened[0]
+        return reopened
 
     def update_checkpoint(self, node_id: Optional[str] = None, **fields) -> dict:
         node = self._require(node_id or self.active_id)

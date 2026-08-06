@@ -266,6 +266,74 @@ class SearchTreeTests(unittest.TestCase):
         # Nothing live remains, so select_active returns None (search finished).
         self.assertIsNone(tree.select_active())
 
+    def test_mark_dead_end_preserve_verdict_keeps_real_critic_verdict(self):
+        """
+        Review P2-C: retiring a node for branch-space exhaustion (an orchestrator
+        search decision) must NOT overwrite a real Critic verdict with a faked
+        'dead_end'. preserve_verdict keeps the existing verdict and only records
+        the search-level termination metadata.
+        """
+        tree = self._tree()
+        root = tree.init_root()
+        child = tree.advance({
+            "route_mix": {"route_A_mdm2": 1}, "lengths": [10], "constraints": {},
+        })
+        # Simulate a node the Critic really judged as 'advance'.
+        tree.mark_evaluated(child["node_id"], critic_verdict="advance")
+        self.assertEqual(tree.get(child["node_id"])["critic_verdict"], "advance")
+
+        tree.mark_dead_end(
+            child["node_id"],
+            preserve_verdict=True,
+            termination_reason="child_strategy_space_exhausted",
+            failure_source="orchestrator",
+        )
+        node = tree.get(child["node_id"])
+        self.assertEqual(node["status"], "dead_end")
+        # Real verdict preserved, not clobbered to a fake dead_end.
+        self.assertEqual(node["critic_verdict"], "advance")
+        self.assertEqual(node["termination_reason"], "child_strategy_space_exhausted")
+        self.assertEqual(node["failure_source"], "orchestrator")
+
+    def test_has_live_children(self):
+        """Deep backtracking relies on has_live_children to decide whether an
+        ancestor still has work under it (a live beam sibling) or is exhausted."""
+        tree = self._tree(beam_width=5, max_nodes=10)
+        root = tree.init_root()
+        a = tree.add_child(root["node_id"], {
+            "route_mix": {"route_A_mdm2": 1}, "lengths": [10], "constraints": {"i": 1},
+        }, activate=False)
+        b = tree.add_child(root["node_id"], {
+            "route_mix": {"route_A_mdm2": 2}, "lengths": [12], "constraints": {"i": 2},
+        }, activate=False)
+        self.assertTrue(tree.has_live_children(root["node_id"]))
+        tree.mark_dead_end(a["node_id"])
+        self.assertTrue(tree.has_live_children(root["node_id"]))  # b still live
+        tree.mark_dead_end(b["node_id"])
+        self.assertFalse(tree.has_live_children(root["node_id"]))  # both dead
+
+    def test_reopen_blocked_respects_retryable(self):
+        """Review P2-D: retryable blocked nodes reopen (used on --resume);
+        non-retryable ones stay blocked until an explicit retry."""
+        tree = self._tree(beam_width=3, max_nodes=10)
+        root = tree.init_root()
+        retry = tree.add_child(root["node_id"], {
+            "route_mix": {"route_B": 1}, "lengths": [10], "constraints": {"i": 1},
+        }, activate=False)
+        hard = tree.add_child(root["node_id"], {
+            "route_mix": {"route_C": 1}, "lengths": [12], "constraints": {"i": 2},
+        }, activate=False)
+        tree.mark_blocked(retry["node_id"], blocked_by="prediction", retryable=True,
+                          termination_reason="prediction_no_progress")
+        tree.mark_blocked(hard["node_id"], blocked_by="research", retryable=False,
+                          termination_reason="research_no_progress")
+
+        reopened = tree.reopen_blocked(retryable_only=True)
+        self.assertEqual(reopened, [retry["node_id"]])
+        self.assertEqual(tree.get(retry["node_id"])["status"], "open")
+        self.assertIn(retry["node_id"], tree.frontier)
+        self.assertEqual(tree.get(hard["node_id"])["status"], "blocked")
+
 
 if __name__ == "__main__":
     unittest.main()
