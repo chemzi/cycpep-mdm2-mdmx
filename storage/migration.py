@@ -25,7 +25,7 @@ def migrate_json_to_sqlite(*, db_path: str | Path, state_path: str | Path | None
         with Path(candidate_path).open(encoding="utf-8-sig", newline="") as stream:
             for row in csv.DictReader(stream):
                 if row.get("candidate_id") and row.get("sequence"):
-                    store.upsert(row)
+                    store.upsert(row, duplicate_policy="insert_only")
                     stats["candidates"] += 1
     if evidence_path and Path(evidence_path).exists():
         with Path(evidence_path).open(encoding="utf-8") as stream:

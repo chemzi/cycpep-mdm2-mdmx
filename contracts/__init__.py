@@ -30,6 +30,12 @@ from .task import (
     TaskStatus,
 )
 from .trace import TraceContext, derive_workflow_id
+from .transaction import TransactionContext, TransactionStatus
+from .candidate_update import (
+    CANDIDATE_UPDATE_SCHEMA_VERSION,
+    CandidateUpdate,
+    CandidateUpdateBatch,
+)
 
 __all__ = [
     "ACTION_CATALOG",
@@ -56,4 +62,9 @@ __all__ = [
     "TaskStatus",
     "TraceContext",
     "derive_workflow_id",
+    "TransactionContext",
+    "TransactionStatus",
+    "CANDIDATE_UPDATE_SCHEMA_VERSION",
+    "CandidateUpdate",
+    "CandidateUpdateBatch",
 ]

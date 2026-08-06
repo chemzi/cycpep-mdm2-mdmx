@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -185,7 +186,7 @@ class ExecutionTests(unittest.TestCase):
     def test_process_arguments_are_not_interpreted_by_a_shell(self):
         marker = self.root / "must_not_exist"
         result = run_process(
-            ["/bin/echo", f"safe; touch {marker}"],
+            [sys.executable, "-c", "import sys; print(sys.argv[1])", f"safe; touch {marker}"],
             cwd=self.root,
             logs_dir=self.root / "logs",
             timeout_seconds=10,

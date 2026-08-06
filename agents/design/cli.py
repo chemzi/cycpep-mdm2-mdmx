@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+import uuid
 
 from data_layer import CandidateIndex  # noqa: E402
 
 from .agent import Design  # noqa: E402
 from .config import DESIGN_PIPELINE_VERSION  # noqa: E402
+from .candidates import configure_candidate_updates, flush_candidate_updates  # noqa: E402
 
 
 def main(argv=None) -> int:
@@ -31,7 +33,10 @@ def main(argv=None) -> int:
         help="must match the approved target chain when provided",
     )
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--candidate-updates-path", default=None)
+    parser.add_argument("--candidate-update-job-id", default=None)
     args = parser.parse_args(argv)
+    configure_candidate_updates(args.candidate_updates_path)
 
     lengths = [int(value) for value in args.lengths.split(",")]
     target_spec = {}
@@ -70,8 +75,10 @@ def main(argv=None) -> int:
         all_candidates.extend(result)
         print(f"[Route C] 完成: {len(result)} candidates")
 
+    flush_candidate_updates(args.candidate_update_job_id or f"design-{uuid.uuid4().hex}")
     print(f"\nDone: {len(all_candidates)} candidates")
-    print(CandidateIndex.stats())
+    if not args.candidate_updates_path:
+        print(CandidateIndex.stats())
     return 0
 
 

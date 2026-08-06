@@ -44,6 +44,9 @@ def file_hash(path):
     return ''
 
 # ── Import the package with the data_layer stub in place ──
+DESIGN_TEST_ROOT = Path(tempfile.mkdtemp(prefix="cycpep-design-test-"))
+os.environ["CYCPEP_DATA_DIR"] = str(DESIGN_TEST_ROOT / "data")
+os.environ["CYCPEP_EVIDENCE_DIR"] = str(DESIGN_TEST_ROOT / "evidence")
 import data_layer as _real_data_layer  # noqa: E402  (restored after package import)
 
 _stub = types.ModuleType("data_layer")
@@ -245,11 +248,11 @@ c2 = _next_candidate_id()
 check(c1 == 'C0001', f'c1={c1}')
 check(c2 == 'C0002', f'c2={c2}')
 
-print('Test 3b: _next_candidate_id reconciles a stale state counter')
+print('Test 3b: _next_candidate_id ignores stale file projections')
 State._data['candidate_count'] = 2
 CandidateIndex._entries = [{'candidate_id': 'C0505'}]
 c3 = _next_candidate_id()
-check(c3 == 'C0506', f'c3={c3}')
+check(c3 == 'C0003', f'c3={c3}')
 
 # ── Test 4: _load_target_spec ──
 print('Test 4: _load_target_spec')

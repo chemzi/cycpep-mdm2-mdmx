@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import math
 import os
-import re
 from pathlib import Path
 
-from data_layer import CandidateIndex, EvidenceLogger, State  # noqa: E402
+from data_layer import (  # noqa: E402
+    CandidateIndex,
+    EvidenceLogger,
+    State,
+)
 
 from . import config  # noqa: E402
-from .config import _LOCK  # noqa: E402
 from .validation import _parse_hotspot_residues  # noqa: E402
 from project_config import (  # noqa: E402
     required_target_ids,
@@ -219,21 +221,10 @@ def pareto_front(candidates, obj_x=None, obj_y=None, project_config=None):
     return [c for c in candidates if c.get("candidate_id") in front_ids]
 
 def _next_candidate_id():
-    """Return the next C**** candidate ID (thread-safe within a single process).
+    """Reserve the next C**** ID from the formal database sequence."""
+    from data_layer import allocate_candidate_id
 
-    Assumes single-process execution.  Multi-process orchestration must use an
-    external lock (fcntl.flock / Redis / DB sequence) to avoid ID collisions.
-    """
-    with _LOCK:
-        s = State.load()
-        existing_max = 0
-        for row in CandidateIndex.load():
-            candidate_id = str(row.get("candidate_id") or "").strip()
-            if re.fullmatch(r"C\d{4,}", candidate_id):
-                existing_max = max(existing_max, int(candidate_id[1:]))
-        s["candidate_count"] = max(int(s.get("candidate_count", 0)), existing_max) + 1
-        State.save(s)
-        return f"C{s['candidate_count']:04d}"
+    return allocate_candidate_id()
 
 def _load_target_spec():
     """
