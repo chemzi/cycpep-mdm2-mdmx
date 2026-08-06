@@ -600,10 +600,30 @@ def build_plan(
     critic_report_path: str | Path,
     state: dict | None = None,
     config: PlannerConfig | None = None,
+    project_config: dict | None = None,
 ) -> dict:
-    """Purely convert one frozen Critic report into an execution plan."""
+    """Purely convert one frozen Critic report into an execution plan.
+
+    ``project_config`` optionally injects an explicit approved project config
+    (PR5, Engineering Standard §7); it takes precedence over the project entry
+    carried in ``state`` and must agree with ``state``'s ``project_id``.
+    When omitted, behaviour is unchanged.
+
+    The injected config must also be injected into Execution (or carried in
+    State), which re-verifies the digest and fails closed with
+    ``project_config_drift`` on mismatch.
+    """
     config = config or PlannerConfig()
     state = dict(state if state is not None else State.load())
+    if project_config is not None:
+        state["project_config"] = project_config
+        injected_project_id = str(project_config.get("project_id") or "").strip()
+        state_project_id = str(state.get("project_id") or "").strip()
+        if injected_project_id and state_project_id and injected_project_id != state_project_id:
+            raise PlannerContractError(
+                "planner_project_mismatch",
+                "injected project config differs from State project ID",
+            )
     report_path = Path(critic_report_path).expanduser().resolve()
     report = _read_json(report_path, "critic_report")
     report_sha = file_sha256(report_path)
@@ -996,6 +1016,7 @@ def run(
     output_path: str | Path | None = None,
     state: dict | None = None,
     config: PlannerConfig | None = None,
+    project_config: dict | None = None,
 ) -> dict:
     """Build, persist, and idempotently register a Planner execution plan."""
     state = dict(state if state is not None else State.load())
@@ -1003,6 +1024,7 @@ def run(
         critic_report_path=critic_report_path,
         state=state,
         config=config,
+        project_config=project_config,
     )
     report_path = Path(critic_report_path).expanduser().resolve()
     if output_path is None:
@@ -1415,9 +1437,19 @@ def plan(
     phase: str | None = None,
     state: dict | None = None,
     candidate_rows: list[dict] | None = None,
+    project_config: dict | None = None,
 ) -> list[dict]:
     """Compatibility bootstrap planner for runs that have no Critic report yet."""
     state = dict(state if state is not None else State.load())
+    if project_config is not None:
+        state["project_config"] = project_config
+        injected_project_id = str(project_config.get("project_id") or "").strip()
+        state_project_id = str(state.get("project_id") or "").strip()
+        if injected_project_id and state_project_id and injected_project_id != state_project_id:
+            raise PlannerContractError(
+                "planner_project_mismatch",
+                "injected project config differs from State project ID",
+            )
     candidate_rows = list(
         candidate_rows if candidate_rows is not None else CandidateIndex.load()
     )
@@ -1485,9 +1517,17 @@ def plan(
     }]
 
 
-def adjust(report: str | Path, state: dict | None = None) -> dict:
+def adjust(
+    report: str | Path,
+    state: dict | None = None,
+    project_config: dict | None = None,
+) -> dict:
     """Backward-compatible name for pure Critic-driven planning."""
-    return build_plan(critic_report_path=report, state=state)
+    return build_plan(
+        critic_report_path=report,
+        state=state,
+        project_config=project_config,
+    )
 
 
 def _config_from_args(args: argparse.Namespace) -> PlannerConfig:

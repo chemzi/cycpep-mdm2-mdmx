@@ -63,15 +63,31 @@ def run(
     candidate_ids: list[str] | None = None,
     run_id: str | None = None,
     resume: bool = False,
+    project_config: dict | None = None,
 ) -> dict:
     """Run Prediction for existing Design candidates.
 
     ``state`` remains accepted for compatibility with the agent scheduler.  A
     supplied state object is read-only here; authoritative mutations still go
     through ``State``/``CandidateIndex`` atomic helpers.
+
+    ``project_config`` optionally injects an explicit approved project config
+    (PR5, Engineering Standard §7) and must agree with ``state``'s
+    ``project_id``.  When omitted, the project is resolved from ``state`` or
+    the lazy environment default.  The override lasts only for this call.
     """
     current_state = state if state is not None else State.load()
-    project = current_state.get("project_config") or State._project_config
+    if project_config is None:
+        project = current_state.get("project_config") or State._project_config
+    else:
+        state_project_id = str(current_state.get("project_id") or "").strip()
+        injected_project_id = str(project_config.get("project_id") or "").strip()
+        if state_project_id and injected_project_id and state_project_id != injected_project_id:
+            raise ContractError(
+                "prediction_project_mismatch",
+                "injected project config differs from State project ID",
+            )
+        project = project_config
     thresholds = current_state.get("thresholds") or {}
     pipeline = PredictionPipeline(
         candidate_rows=CandidateIndex.load(),

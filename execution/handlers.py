@@ -34,6 +34,7 @@ class HandlerContext:
     packet: dict
     config: ExecutionConfig
     task_dir: Path
+    project_config: dict | None = None
 
     @property
     def task(self) -> dict:
@@ -84,10 +85,20 @@ def _json_object(path: Path, label: str) -> dict:
     return value
 
 
-def _project_digest() -> str:
-    state = State.load()
-    project = state.get("project_config") or State._project_config
-    return object_sha256(project)
+def _resolve_project(context: HandlerContext, state: dict) -> dict:
+    """Return the approved project config, honouring an explicit injection.
+
+    An injected config is copied so handlers never share a mutable reference
+    with the caller.  Planner and Execution must be injected consistently;
+    ``iterate_design`` fails closed with ``project_config_drift`` otherwise.
+    """
+    if context.project_config is not None:
+        return dict(context.project_config)
+    return state.get("project_config") or State._project_config
+
+
+def _project_digest(context: HandlerContext) -> str:
+    return object_sha256(_resolve_project(context, State.load()))
 
 
 def _resolve_manifest(raw: str, repo_root: Path) -> Path:
@@ -98,7 +109,7 @@ def _resolve_manifest(raw: str, repo_root: Path) -> Path:
 def iterate_design(context: HandlerContext) -> HandlerOutcome:
     params = context.parameters
     state = State.load()
-    project = state.get("project_config") or State._project_config
+    project = _resolve_project(context, state)
     if object_sha256(project) != params["project_config_digest"]:
         raise ExecutionContractError(
             "project_config_drift", "approved project config changed after planning"
@@ -302,7 +313,7 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
     params = context.parameters
     candidate_ids = _prediction_candidate_ids(context)
     state = State.load()
-    project = state.get("project_config") or State._project_config
+    project = _resolve_project(context, state)
     required_targets = [
         str(item["id"]) for item in project.get("targets", []) if item.get("required", True)
     ]
@@ -452,7 +463,7 @@ def review_prediction_handoff(context: HandlerContext) -> HandlerOutcome:
 def propose_threshold_calibration(context: HandlerContext) -> HandlerOutcome:
     params = context.parameters
     state = State.load()
-    project = state.get("project_config") or State._project_config
+    project = _resolve_project(context, state)
     thresholds = state.get("thresholds") or {}
     requested = params["threshold_keys"]
     snapshot = {

@@ -455,6 +455,13 @@ class StructureAndParserTests(unittest.TestCase):
 class PredictionPipelineTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="prediction-pipeline-test-"))
+        self.original_paths = (
+            data_layer.DATA_DIR,
+            data_layer.EVIDENCE_DIR,
+            data_layer.STATE_PATH,
+            data_layer.LOG_PATH,
+            data_layer.INDEX_PATH,
+        )
         data_layer.DATA_DIR = self.root / "data"
         data_layer.EVIDENCE_DIR = self.root / "evidence"
         data_layer.STATE_PATH = data_layer.DATA_DIR / "state.json"
@@ -462,6 +469,15 @@ class PredictionPipelineTests(unittest.TestCase):
         data_layer.INDEX_PATH = data_layer.DATA_DIR / "candidate_index.csv"
         self.artifacts_root = self.root / "artifacts"
         self.run_root = self.root / "runs"
+
+    def tearDown(self):
+        (
+            data_layer.DATA_DIR,
+            data_layer.EVIDENCE_DIR,
+            data_layer.STATE_PATH,
+            data_layer.LOG_PATH,
+            data_layer.INDEX_PATH,
+        ) = self.original_paths
 
     def _register_candidate(self, *, legacy_sequence=SEQUENCE):
         design_dir = self.root / "design" / "C0001"

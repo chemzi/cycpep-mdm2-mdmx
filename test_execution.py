@@ -264,5 +264,26 @@ class ExecutionTests(unittest.TestCase):
         self.assertFalse((data_layer.DATA_DIR / "orchestrator" / "gpu_lease.json").exists())
 
 
+    def test_handler_context_injects_project_config(self):
+        from execution.handlers import HandlerContext, propose_threshold_calibration
+        plan_result = planner_run(critic_report_path=self._report(calibration=True))
+        task = plan_result["plan"]["tasks"][0]
+        injected = {"project_id": "keap1", "targets": [{"id": "KEAP1"}]}
+        task_dir = self.root / "injected_task"
+        task_dir.mkdir(parents=True)
+        outcome = propose_threshold_calibration(HandlerContext(
+            packet={"task": task},
+            config=self._config(),
+            task_dir=task_dir,
+            project_config=injected,
+        ))
+        proposal = json.loads(
+            Path(outcome.outputs[0][1]).read_text(encoding="utf-8")
+        )
+        self.assertEqual(proposal["project_id"], "keap1")
+        # State is untouched by the injection.
+        self.assertEqual(data_layer.State.load()["project_id"], "execution_test")
+
+
 if __name__ == "__main__":
     unittest.main()
