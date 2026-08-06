@@ -3,7 +3,7 @@
 Both Design and Prediction read their scientific parameters from versioned
 JSON files under ``protocols/``.  This module is the single loader and
 validator for that pattern: one place for the missing-file / malformed-JSON /
-version contract, so the two sides cannot drift apart.
+version / required-section contract, so the two sides cannot drift apart.
 
 Every protocol returns ``(data, sha256)`` where ``sha256`` is the digest of
 the raw file bytes; artifacts that bind the digest stay reproducible across a
@@ -21,13 +21,19 @@ class ProtocolError(ValueError):
     """A versioned protocol file is missing, malformed, or lacks a version."""
 
 
-def load_protocol(path: str | Path) -> tuple[dict, str]:
+def load_protocol(
+    path: str | Path,
+    *,
+    required_sections: dict[str, type] | None = None,
+) -> tuple[dict, str]:
     """Load a versioned protocol JSON and return ``(data, sha256)``.
 
     Validates the common contract shared by all protocol files: the file
     exists, decodes as a UTF-8 JSON object, and declares a non-empty
-    ``version`` string.  Protocol-specific fields are validated by each
-    consumer.
+    ``version`` string.  ``required_sections`` optionally pins the sections a
+    consumer actually reads (name -> expected type), so a typo or a deleted
+    section fails at import time with a clear message instead of a bare
+    KeyError surfacing later inside a subprocess.
     """
     protocol_path = Path(path)
     if not protocol_path.is_file():
@@ -48,4 +54,11 @@ def load_protocol(path: str | Path) -> tuple[dict, str]:
         raise ProtocolError(
             f"versioned protocol must declare a non-empty 'version': {protocol_path}"
         )
+    for section, expected in (required_sections or {}).items():
+        value = data.get(section)
+        if not isinstance(value, expected):
+            raise ProtocolError(
+                f"versioned protocol section {section!r} must be "
+                f"{expected.__name__}, got {type(value).__name__}: {protocol_path}"
+            )
     return data, hashlib.sha256(raw).hexdigest()

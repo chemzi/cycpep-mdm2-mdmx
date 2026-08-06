@@ -19,6 +19,7 @@ from .contracts import (
     file_sha256,
     object_sha256,
 )
+from .protocol import protocol_binding
 from .metrics import parse_prodigy_output, parse_rosetta_interface_output
 
 
@@ -346,11 +347,10 @@ def load_artifact_bundle(
                 "artifact_protocol_incomplete",
                 f"artifacts.json protocol must contain {missing}",
             )
-        digest = str(protocol_raw["sha256"] or "")
-        if len(digest) != 64:
+        if protocol_raw != protocol_binding():
             raise ContractError(
-                "artifact_protocol_sha_invalid",
-                "artifacts.json protocol sha256 must be a 64-hex digest",
+                "artifact_protocol_mismatch",
+                "artifacts.json protocol does not match the current prediction protocol",
             )
     base = path.parent
     global_raw = raw.get("global") or {}

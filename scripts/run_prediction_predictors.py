@@ -36,8 +36,7 @@ from prediction_pipeline.contracts import (  # noqa: E402
 from target_bootstrap import assert_project_approved  # noqa: E402
 from prediction_pipeline.protocol import (  # noqa: E402
     PREDICTION_PROTOCOL,
-    PREDICTION_PROTOCOL_SHA256,
-    PREDICTOR_PROTOCOL,
+    protocol_binding,
 )
 
 
@@ -332,11 +331,7 @@ def run(args) -> dict:
             "schema_version": 1,
             "candidate_id": candidate.candidate_id,
             "sequence": candidate.sequence,
-            "protocol": {
-                "name": PREDICTOR_PROTOCOL,
-                "version": PREDICTION_PROTOCOL["version"],
-                "sha256": PREDICTION_PROTOCOL_SHA256,
-            },
+            "protocol": protocol_binding(),
             "global": global_artifacts,
             "targets": target_artifacts,
         }

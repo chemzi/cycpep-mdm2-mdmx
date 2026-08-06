@@ -21,8 +21,8 @@ if str(ROOT) not in sys.path:
 from data_layer import CandidateIndex, State  # noqa: E402
 from prediction_pipeline.protocol import (  # noqa: E402
     PREDICTION_PROTOCOL,
-    PREDICTION_PROTOCOL_SHA256,
-    PREDICTOR_PROTOCOL,
+    ProtocolError,
+    reconcile_bundle_protocol,
 )
 from prediction_pipeline.adapters import (  # noqa: E402
     load_artifact_bundle,
@@ -324,11 +324,10 @@ def run(args) -> dict:
                 ))
             target_values["rosetta_outputs"] = rosetta_outputs
 
-    bundle["protocol"] = {
-        "name": PREDICTOR_PROTOCOL,
-        "version": PREDICTION_PROTOCOL["version"],
-        "sha256": PREDICTION_PROTOCOL_SHA256,
-    }
+    try:
+        reconcile_bundle_protocol(bundle)
+    except ProtocolError as exc:
+        raise ContractError("bundle_protocol_mismatch", str(exc)) from exc
     output_bundle = candidate_dir / "artifacts.json"
     output_bundle.write_text(
         json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8"

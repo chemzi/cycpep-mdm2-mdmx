@@ -27,8 +27,10 @@ from .results import ExecutionActionResult
 from contracts.candidate_update import CandidateUpdateBatch
 
 
-# Versioned scientific parameters (Engineering Standard section 8): all
-# prediction magic numbers are read from protocols/prediction_v1.json.
+# Versioned scientific protocol parameters (Engineering Standard section 8):
+# seeds / model numbers / recycles and enrichment seed bases are read from
+# protocols/prediction_v1.json.  Operational timeouts and tool paths stay in
+# ExecutionConfig.
 _AF2_PRODIGY_PROTOCOL = PREDICTION_PROTOCOL["af2_prodigy"]
 _ENRICHMENT_PROTOCOL = PREDICTION_PROTOCOL["enrichment"]
 

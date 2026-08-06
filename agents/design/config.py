@@ -48,7 +48,16 @@ from core.protocol import load_protocol  # noqa: E402
 # parameter change forces a protocol version bump.
 
 DESIGN_PROTOCOL_PATH = ROOT / "protocols" / "design_v1.json"
-DESIGN_PROTOCOL, DESIGN_PROTOCOL_SHA256 = load_protocol(DESIGN_PROTOCOL_PATH)
+DESIGN_PROTOCOL, DESIGN_PROTOCOL_SHA256 = load_protocol(
+    DESIGN_PROTOCOL_PATH,
+    required_sections={
+        "cheap_filter": dict,
+        "ligandmpnn": dict,
+        "mutation": dict,
+        "rfdiff": dict,
+        "refold": dict,
+    },
+)
 
 # ============================================================
 # Lazy runtime environment (Engineering Standard §7)
