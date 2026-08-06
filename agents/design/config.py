@@ -24,8 +24,6 @@ overridden with ``CYCPEP_CONDA`` / ``RFDIFF_CONDA`` / ``RFDIFF_DIR`` /
 from __future__ import annotations
 
 import functools
-import hashlib
-import json
 import os
 import sys
 import threading
@@ -39,6 +37,7 @@ if str(ROOT) not in sys.path:
 
 from project_config import load_project_config  # noqa: E402
 from core.context import ProjectContext  # noqa: E402
+from core.protocol import load_protocol  # noqa: E402
 
 # ============================================================
 # Versioned scientific protocol (Engineering Standard §8 / Roadmap PR7)
@@ -49,20 +48,7 @@ from core.context import ProjectContext  # noqa: E402
 # parameter change forces a protocol version bump.
 
 DESIGN_PROTOCOL_PATH = ROOT / "protocols" / "design_v1.json"
-
-
-def _load_design_protocol():
-    """Load the versioned scientific protocol from protocols/design_v1.json."""
-    if not DESIGN_PROTOCOL_PATH.is_file():
-        raise FileNotFoundError(
-            f"versioned design protocol missing: {DESIGN_PROTOCOL_PATH}"
-        )
-    with open(DESIGN_PROTOCOL_PATH, encoding="utf-8") as f:
-        return json.load(f)
-
-
-DESIGN_PROTOCOL = _load_design_protocol()
-DESIGN_PROTOCOL_SHA256 = hashlib.sha256(DESIGN_PROTOCOL_PATH.read_bytes()).hexdigest()
+DESIGN_PROTOCOL, DESIGN_PROTOCOL_SHA256 = load_protocol(DESIGN_PROTOCOL_PATH)
 
 # ============================================================
 # Lazy runtime environment (Engineering Standard §7)
