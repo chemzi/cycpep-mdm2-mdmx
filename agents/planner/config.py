@@ -70,7 +70,7 @@ for _recommendation in DESIGN_ITERATION_ACTIONS:
         _recommendation, "iterate_design", "design", "design", "design"
     )
 
-@dataclass
+@dataclass(frozen=True)
 class PlannerConfig:
     """Planning policy; values request capacity but never grant execution."""
 
