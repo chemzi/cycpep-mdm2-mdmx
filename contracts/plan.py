@@ -81,11 +81,8 @@ def _canonicalize_plan(plan: dict, *, error_cls: type = PlanContractError) -> di
     return plan
 
 
-def validate_plan_for_approval(
-    plan: dict, plan_path: Path, *, error_cls: type = PlanContractError
-) -> dict:
-    """Recheck security invariants before an approval artifact can be issued."""
-    plan = _canonicalize_plan(plan, error_cls=error_cls)
+def _validate_plan_policy(plan: dict, *, error_cls: type = PlanContractError) -> None:
+    """The plan must be current and prohibit automatic dispatch."""
     if plan.get("planner_version") != PLANNER_VERSION:
         raise error_cls(
             "plan_version_unsupported", "approval requires the current Planner version"
@@ -107,6 +104,11 @@ def validate_plan_for_approval(
             "plan_execution_policy_invalid", "plan must require Orchestrator validation"
         )
 
+
+def _validate_plan_source(
+    plan: dict, plan_path: Path, *, error_cls: type = PlanContractError
+) -> None:
+    """The plan must bind to an unchanged Critic report and stable workflow."""
     source = plan.get("source")
     if not isinstance(source, dict):
         raise error_cls("plan_source_invalid", "plan source must be an object")
@@ -147,6 +149,11 @@ def validate_plan_for_approval(
             "plan_source_hash_mismatch", "Critic report changed after planning"
         )
 
+
+def _validate_plan_tasks(
+    plan: dict, *, error_cls: type = PlanContractError
+) -> dict[str, dict]:
+    """Every task must carry a valid contract and executable action."""
     tasks = plan.get("tasks")
     if not isinstance(tasks, list):
         raise error_cls("plan_tasks_invalid", "plan tasks must be an array")
@@ -201,6 +208,13 @@ def validate_plan_for_approval(
                 getattr(exc, "code", "plan_execution_contract_invalid"), str(exc)
             ) from exc
         tasks_by_id[task_id] = task
+    return tasks_by_id
+
+
+def _validate_plan_dependencies(
+    tasks_by_id: dict[str, dict], *, error_cls: type = PlanContractError
+) -> None:
+    """Task dependencies must resolve without unknown or cyclic edges."""
     for task_id, task in tasks_by_id.items():
         dependencies = task.get("depends_on")
         if not isinstance(dependencies, list) or task_id in dependencies:
@@ -230,4 +244,16 @@ def validate_plan_for_approval(
 
     for task_id in tasks_by_id:
         visit(task_id)
+
+
+def validate_plan_for_approval(
+    plan: dict, plan_path: Path, *, error_cls: type = PlanContractError
+) -> dict:
+    """Recheck security invariants before an approval artifact can be issued."""
+    plan = _canonicalize_plan(plan, error_cls=error_cls)
+    _validate_plan_policy(plan, error_cls=error_cls)
+    _validate_plan_source(plan, plan_path, error_cls=error_cls)
+    tasks_by_id = _validate_plan_tasks(plan, error_cls=error_cls)
+    _validate_plan_dependencies(tasks_by_id, error_cls=error_cls)
     return plan
+

@@ -143,43 +143,28 @@ def _route_summary(records: list[dict], rows_by_id: dict[str, dict]) -> dict:
         }
     return values
 
-def review(
-    *,
-    handoff_path: str | Path,
-    state: dict | None = None,
-    candidate_rows: list[dict] | None = None,
-    config: CriticConfig | None = None,
-    project_config: dict | None = None,
-) -> dict:
-    """Purely review one immutable Prediction handoff and its records.
+def _inject_project_config(state: dict, project_config: dict | None) -> None:
+    """Bind an explicitly approved project config into the review inputs."""
+    if project_config is None:
+        return
+    state["project_config"] = project_config
+    injected_project_id = str(project_config.get("project_id") or "").strip()
+    existing_project_id = str(state.get("project_id") or "").strip()
+    if (
+        injected_project_id
+        and existing_project_id
+        and injected_project_id != existing_project_id
+    ):
+        raise CriticContractError(
+            "critic_project_mismatch",
+            "injected project config differs from State project ID",
+        )
+    if injected_project_id:
+        state["project_id"] = injected_project_id
 
-    ``project_config`` optionally injects an explicit approved project config
-    (PR5, Engineering Standard §7); it must agree with ``state``'s
-    ``project_id`` when present, and supplies the project identity when State
-    has none.  When omitted, behaviour is unchanged.
-    """
-    config = config or CriticConfig()
-    handoff_path = Path(handoff_path).expanduser().resolve()
-    handoff, records = _load_records(handoff_path)
-    state = dict(state if state is not None else State.load())
-    if project_config is not None:
-        state["project_config"] = project_config
-        injected_project_id = str(project_config.get("project_id") or "").strip()
-        existing_project_id = str(state.get("project_id") or "").strip()
-        if (
-            injected_project_id
-            and existing_project_id
-            and injected_project_id != existing_project_id
-        ):
-            raise CriticContractError(
-                "critic_project_mismatch",
-                "injected project config differs from State project ID",
-            )
-        if injected_project_id:
-            state["project_id"] = injected_project_id
-    candidate_rows = list(
-        candidate_rows if candidate_rows is not None else CandidateIndex.load()
-    )
+
+def _validate_handoff_project(state: dict, handoff: dict) -> None:
+    """State and handoff project IDs must agree when both are present."""
     if state.get("project_id") and handoff.get("project_id") and (
         state["project_id"] != handoff["project_id"]
     ):
@@ -187,6 +172,9 @@ def review(
             "critic_project_mismatch", "State and Prediction handoff project IDs differ"
         )
 
+
+def _index_candidate_rows(candidate_rows: list[dict]) -> dict[str, dict]:
+    """Index CandidateIndex rows by candidate ID, rejecting duplicates."""
     rows_by_id: dict[str, dict] = {}
     for row in candidate_rows:
         candidate_id = str(row.get("candidate_id") or "").strip()
@@ -196,203 +184,244 @@ def review(
             )
         if candidate_id:
             rows_by_id[candidate_id] = row
+    return rows_by_id
 
-    issues: dict[str, dict] = {}
-    layer_counts = {key: {"pass": 0, "fail": 0, "missing": 0} for key in LAYER_KEYS}
-    unjustified_thresholds: set[str] = set()
-    unjustified_candidates: set[str] = set()
-    for item in records:
-        candidate_id = item["candidate_id"]
-        status = item["status"]
-        record = item["record"]
-        if candidate_id not in rows_by_id:
-            _issue(
-                issues,
-                code="candidate_index_entry_missing",
-                severity="blocker",
-                category="operational",
-                message="A Prediction record has no matching CandidateIndex row.",
-                candidate_ids=[candidate_id],
-                evidence={"record_path": str(item["path"])},
-                recommended_action="repair_candidate_index",
-                owner_hint="design/data",
-                blocks_finalization=True,
-            )
-        record_sequence = str(
-            (record.get("candidate") or {}).get("sequence") or ""
-        ).strip().upper()
-        if not record_sequence:
-            raise CriticContractError(
-                "record_sequence_missing", f"{candidate_id} record has no sequence"
-            )
-        row_sequence = str(
-            (rows_by_id.get(candidate_id) or {}).get("sequence") or ""
-        ).strip().upper()
-        if row_sequence and row_sequence != record_sequence:
-            _issue(
-                issues,
-                code="candidate_index_sequence_mismatch",
-                severity="blocker",
-                category="operational",
-                message="CandidateIndex sequence differs from the immutable Prediction record.",
-                candidate_ids=[candidate_id],
-                evidence={
-                    "record_sequence": record_sequence,
-                    "candidate_index_sequence": row_sequence,
-                },
-                recommended_action="repair_candidate_index",
-                owner_hint="design/data",
-                blocks_finalization=True,
-            )
-        battery = record.get("battery")
-        if status == "invalid":
-            _issue(
-                issues,
-                code="invalid_prediction_artifact",
-                severity="blocker",
-                category="operational",
-                message="Prediction rejected input, provenance, sequence, hash, or geometry.",
-                candidate_ids=[candidate_id],
-                evidence={"issues": record.get("issues") or []},
-                recommended_action="regenerate_invalid_artifact",
-                owner_hint="prediction/design",
-                blocks_finalization=True,
-            )
-            for key in LAYER_KEYS:
-                layer_counts[key]["missing"] += 1
-            continue
-        if not isinstance(battery, dict):
-            raise CriticContractError(
-                "record_battery_missing", f"{candidate_id} has no metric battery"
-            )
-        if status in {"finalized", "awaiting_threshold_calibration"} and (
-            battery.get("all_layers_pass") is not True
-        ):
-            raise CriticContractError(
-                "record_status_inconsistent",
-                f"{candidate_id} status requires all_layers_pass=true",
-            )
-        if status == "needs_optimization" and battery.get("all_layers_pass") is True:
-            raise CriticContractError(
-                "record_status_inconsistent",
-                f"{candidate_id} needs_optimization conflicts with all_layers_pass=true",
-            )
-        for key in LAYER_KEYS:
-            value = battery.get(key)
-            if value is True:
-                layer_counts[key]["pass"] += 1
-            elif value is False:
-                layer_counts[key]["fail"] += 1
-            else:
-                layer_counts[key]["missing"] += 1
 
-        operationally_incomplete = False
-        if status == "prediction_pending":
-            prediction_issues = list(record.get("issues") or [])
-            issue_codes = {
-                str(item.get("code") or "")
-                for item in prediction_issues if isinstance(item, dict)
-            }
-            missing_evidence = list(battery.get("missing_evidence") or [])
-            if "l7_reference_missing" in issue_codes:
-                _issue(
-                    issues,
-                    code="design_reference_missing",
-                    severity="high",
-                    category="design_contract",
-                    message=(
-                        "Design did not provide an independent L7 reference backbone; "
-                        "the candidate must be regenerated in Design before Prediction."
-                    ),
-                    candidate_ids=[candidate_id],
-                    evidence={
-                        "missing_evidence": [
-                            value for value in missing_evidence
-                            if value in {"scrmsd", "l7_reference_missing"}
-                        ],
-                        "issues": [
-                            item for item in prediction_issues
-                            if isinstance(item, dict)
-                            and item.get("code") == "l7_reference_missing"
-                        ],
-                    },
-                    recommended_action="regenerate_design_reference",
-                    owner_hint="design",
-                    blocks_finalization=True,
-                )
-            remaining_missing = [
-                value for value in missing_evidence
-                if value not in {"scrmsd", "l7_reference_missing"}
-            ]
-            remaining_issues = [
-                item for item in prediction_issues
-                if not isinstance(item, dict)
-                or item.get("code") != "l7_reference_missing"
-            ]
-            operationally_incomplete = bool(remaining_missing or remaining_issues)
-            if remaining_missing or remaining_issues:
-                _issue(
-                    issues,
-                    code="prediction_evidence_incomplete",
-                    severity="high",
-                    category="operational",
-                    message="Required Prediction evidence is missing or invalid.",
-                    candidate_ids=[candidate_id],
-                    evidence={
-                        "missing_evidence": remaining_missing,
-                        "issues": remaining_issues,
-                    },
-                    recommended_action="complete_prediction_evidence",
-                    owner_hint="prediction",
-                    blocks_finalization=True,
-                )
-
-        failed_layers = battery.get("failed_layers") or []
-        if status == "needs_optimization" and not failed_layers:
-            raise CriticContractError(
-                "record_status_inconsistent",
-                f"{candidate_id} needs optimization but has no failed layer",
-            )
-        # A null threshold makes the overall Prediction status pending, but it
-        # must not hide failures in other layers whose model evidence and gate
-        # values are already present.  The layer that owns the null threshold
-        # remains a calibration question until that gate is materialized.
-        metric_failures_are_reviewable = (
-            status == "needs_optimization"
-            or (status == "prediction_pending" and not operationally_incomplete)
+def _prediction_pending_review(
+    issues: dict[str, dict],
+    candidate_id: str,
+    record: dict,
+    battery: dict,
+) -> bool:
+    """Emit evidence-gap issues for a pending prediction; report completeness."""
+    prediction_issues = list(record.get("issues") or [])
+    issue_codes = {
+        str(item.get("code") or "")
+        for item in prediction_issues if isinstance(item, dict)
+    }
+    missing_evidence = list(battery.get("missing_evidence") or [])
+    if "l7_reference_missing" in issue_codes:
+        _issue(
+            issues,
+            code="design_reference_missing",
+            severity="high",
+            category="design_contract",
+            message=(
+                "Design did not provide an independent L7 reference backbone; "
+                "the candidate must be regenerated in Design before Prediction."
+            ),
+            candidate_ids=[candidate_id],
+            evidence={
+                "missing_evidence": [
+                    value for value in missing_evidence
+                    if value in {"scrmsd", "l7_reference_missing"}
+                ],
+                "issues": [
+                    item for item in prediction_issues
+                    if isinstance(item, dict)
+                    and item.get("code") == "l7_reference_missing"
+                ],
+            },
+            recommended_action="regenerate_design_reference",
+            owner_hint="design",
+            blocks_finalization=True,
         )
-        missing_thresholds = list(battery.get("missing_thresholds") or [])
-        reviewable_failed_layers = [
-            layer_key for layer_key in failed_layers
-            if not _layer_has_missing_threshold(layer_key, missing_thresholds)
-        ] if metric_failures_are_reviewable else []
-        for layer_key in reviewable_failed_layers:
-            if layer_key not in LAYER_ISSUES:
-                raise CriticContractError(
-                    "record_layer_unknown", f"{candidate_id} has {layer_key!r}"
-                )
-            code, message, action, owner = LAYER_ISSUES[layer_key]
-            _issue(
-                issues,
-                code=code,
-                severity="high",
-                category="scientific_metric",
-                message=message,
-                candidate_ids=[candidate_id],
-                evidence={
-                    "candidate_id": candidate_id,
-                    "metrics": _metric_evidence(record, layer_key),
-                },
-                recommended_action=action,
-                owner_hint=owner,
-                blocks_finalization=True,
+    remaining_missing = [
+        value for value in missing_evidence
+        if value not in {"scrmsd", "l7_reference_missing"}
+    ]
+    remaining_issues = [
+        item for item in prediction_issues
+        if not isinstance(item, dict)
+        or item.get("code") != "l7_reference_missing"
+    ]
+    if remaining_missing or remaining_issues:
+        _issue(
+            issues,
+            code="prediction_evidence_incomplete",
+            severity="high",
+            category="operational",
+            message="Required Prediction evidence is missing or invalid.",
+            candidate_ids=[candidate_id],
+            evidence={
+                "missing_evidence": remaining_missing,
+                "issues": remaining_issues,
+            },
+            recommended_action="complete_prediction_evidence",
+            owner_hint="prediction",
+            blocks_finalization=True,
+        )
+    return bool(remaining_missing or remaining_issues)
+
+
+def _failed_layer_review(
+    issues: dict[str, dict],
+    candidate_id: str,
+    status: str,
+    battery: dict,
+    record: dict,
+    operationally_incomplete: bool,
+) -> None:
+    """Emit scientific metric issues for reviewable failed layers."""
+    failed_layers = battery.get("failed_layers") or []
+    if status == "needs_optimization" and not failed_layers:
+        raise CriticContractError(
+            "record_status_inconsistent",
+            f"{candidate_id} needs optimization but has no failed layer",
+        )
+    # A null threshold makes the overall Prediction status pending, but it
+    # must not hide failures in other layers whose model evidence and gate
+    # values are already present.  The layer that owns the null threshold
+    # remains a calibration question until that gate is materialized.
+    metric_failures_are_reviewable = (
+        status == "needs_optimization"
+        or (status == "prediction_pending" and not operationally_incomplete)
+    )
+    missing_thresholds = list(battery.get("missing_thresholds") or [])
+    reviewable_failed_layers = [
+        layer_key for layer_key in failed_layers
+        if not _layer_has_missing_threshold(layer_key, missing_thresholds)
+    ] if metric_failures_are_reviewable else []
+    for layer_key in reviewable_failed_layers:
+        if layer_key not in LAYER_ISSUES:
+            raise CriticContractError(
+                "record_layer_unknown", f"{candidate_id} has {layer_key!r}"
             )
+        code, message, action, owner = LAYER_ISSUES[layer_key]
+        _issue(
+            issues,
+            code=code,
+            severity="high",
+            category="scientific_metric",
+            message=message,
+            candidate_ids=[candidate_id],
+            evidence={
+                "candidate_id": candidate_id,
+                "metrics": _metric_evidence(record, layer_key),
+            },
+            recommended_action=action,
+            owner_hint=owner,
+            blocks_finalization=True,
+        )
 
-        for threshold_key, audit in (battery.get("threshold_audit") or {}).items():
-            if isinstance(audit, dict) and audit.get("justified") is False:
-                unjustified_thresholds.add(str(threshold_key))
-                unjustified_candidates.add(candidate_id)
 
+def _review_record(
+    item: dict,
+    rows_by_id: dict[str, dict],
+    issues: dict[str, dict],
+    layer_counts: dict[str, dict[str, int]],
+    unjustified_thresholds: set[str],
+    unjustified_candidates: set[str],
+) -> None:
+    """Review one Prediction record against its CandidateIndex row."""
+    candidate_id = item["candidate_id"]
+    status = item["status"]
+    record = item["record"]
+    if candidate_id not in rows_by_id:
+        _issue(
+            issues,
+            code="candidate_index_entry_missing",
+            severity="blocker",
+            category="operational",
+            message="A Prediction record has no matching CandidateIndex row.",
+            candidate_ids=[candidate_id],
+            evidence={"record_path": str(item["path"])},
+            recommended_action="repair_candidate_index",
+            owner_hint="design/data",
+            blocks_finalization=True,
+        )
+    record_sequence = str(
+        (record.get("candidate") or {}).get("sequence") or ""
+    ).strip().upper()
+    if not record_sequence:
+        raise CriticContractError(
+            "record_sequence_missing", f"{candidate_id} record has no sequence"
+        )
+    row_sequence = str(
+        (rows_by_id.get(candidate_id) or {}).get("sequence") or ""
+    ).strip().upper()
+    if row_sequence and row_sequence != record_sequence:
+        _issue(
+            issues,
+            code="candidate_index_sequence_mismatch",
+            severity="blocker",
+            category="operational",
+            message="CandidateIndex sequence differs from the immutable Prediction record.",
+            candidate_ids=[candidate_id],
+            evidence={
+                "record_sequence": record_sequence,
+                "candidate_index_sequence": row_sequence,
+            },
+            recommended_action="repair_candidate_index",
+            owner_hint="design/data",
+            blocks_finalization=True,
+        )
+    battery = record.get("battery")
+    if status == "invalid":
+        _issue(
+            issues,
+            code="invalid_prediction_artifact",
+            severity="blocker",
+            category="operational",
+            message="Prediction rejected input, provenance, sequence, hash, or geometry.",
+            candidate_ids=[candidate_id],
+            evidence={"issues": record.get("issues") or []},
+            recommended_action="regenerate_invalid_artifact",
+            owner_hint="prediction/design",
+            blocks_finalization=True,
+        )
+        for key in LAYER_KEYS:
+            layer_counts[key]["missing"] += 1
+        return
+    if not isinstance(battery, dict):
+        raise CriticContractError(
+            "record_battery_missing", f"{candidate_id} has no metric battery"
+        )
+    if status in {"finalized", "awaiting_threshold_calibration"} and (
+        battery.get("all_layers_pass") is not True
+    ):
+        raise CriticContractError(
+            "record_status_inconsistent",
+            f"{candidate_id} status requires all_layers_pass=true",
+        )
+    if status == "needs_optimization" and battery.get("all_layers_pass") is True:
+        raise CriticContractError(
+            "record_status_inconsistent",
+            f"{candidate_id} needs_optimization conflicts with all_layers_pass=true",
+        )
+    for key in LAYER_KEYS:
+        value = battery.get(key)
+        if value is True:
+            layer_counts[key]["pass"] += 1
+        elif value is False:
+            layer_counts[key]["fail"] += 1
+        else:
+            layer_counts[key]["missing"] += 1
+
+    operationally_incomplete = (
+        _prediction_pending_review(issues, candidate_id, record, battery)
+        if status == "prediction_pending"
+        else False
+    )
+    _failed_layer_review(
+        issues, candidate_id, status, battery, record, operationally_incomplete
+    )
+
+    for threshold_key, audit in (battery.get("threshold_audit") or {}).items():
+        if isinstance(audit, dict) and audit.get("justified") is False:
+            unjustified_thresholds.add(str(threshold_key))
+            unjustified_candidates.add(candidate_id)
+
+
+def _cohort_review_issues(
+    records: list[dict],
+    issues: dict[str, dict],
+    config: CriticConfig,
+    diversity: dict,
+    unjustified_thresholds: set[str],
+    unjustified_candidates: set[str],
+) -> None:
+    """Emit calibration, duplication, and cohort-level review issues."""
     if unjustified_thresholds:
         _issue(
             issues,
@@ -406,8 +435,6 @@ def review(
             owner_hint="research",
             blocks_finalization=True,
         )
-
-    diversity = _diversity_summary(records)
     if diversity["duplicate_sequences"]:
         _issue(
             issues,
@@ -463,8 +490,9 @@ def review(
             blocks_finalization=False,
         )
 
-    finalized_issues = _finalize_issues(issues, config)
-    statuses = Counter(item["status"] for item in records)
+
+def _derive_verdict(finalized_issues: list[dict]) -> tuple[str, bool]:
+    """Map finalized issue severities onto the Critic verdict."""
     if any(issue["severity"] == "blocker" for issue in finalized_issues):
         verdict = "blocked"
     elif any(
@@ -479,16 +507,12 @@ def review(
         verdict = "review"
     else:
         verdict = "clear"
-    passed = verdict == "clear"
-    issue_counts = dict(sorted(Counter(
-        issue["severity"] for issue in finalized_issues
-    ).items()))
-    summary = (
-        f"Critic reviewed {len(records)} candidate(s): verdict={verdict}; "
-        f"statuses={dict(sorted(statuses.items()))}; issues={issue_counts}."
-    )
+    return verdict, verdict == "clear"
 
-    row_snapshot = [
+
+def _row_snapshot(records: list[dict], rows_by_id: dict[str, dict]) -> list[dict]:
+    """Snapshot the CandidateIndex row each record was reviewed against."""
+    return [
         {
             "candidate_id": item["candidate_id"],
             "record_sequence": (
@@ -504,6 +528,68 @@ def review(
         }
         for item in sorted(records, key=lambda value: value["candidate_id"])
     ]
+
+
+def review(
+    *,
+    handoff_path: str | Path,
+    state: dict | None = None,
+    candidate_rows: list[dict] | None = None,
+    config: CriticConfig | None = None,
+    project_config: dict | None = None,
+) -> dict:
+    """Purely review one immutable Prediction handoff and its records.
+
+    ``project_config`` optionally injects an explicit approved project config
+    (PR5, Engineering Standard §7); it must agree with ``state``'s
+    ``project_id`` when present, and supplies the project identity when State
+    has none.  When omitted, behaviour is unchanged.
+    """
+    config = config or CriticConfig()
+    handoff_path = Path(handoff_path).expanduser().resolve()
+    handoff, records = _load_records(handoff_path)
+    state = dict(state if state is not None else State.load())
+    _inject_project_config(state, project_config)
+    _validate_handoff_project(state, handoff)
+    rows_by_id = _index_candidate_rows(list(
+        candidate_rows if candidate_rows is not None else CandidateIndex.load()
+    ))
+
+    issues: dict[str, dict] = {}
+    layer_counts = {key: {"pass": 0, "fail": 0, "missing": 0} for key in LAYER_KEYS}
+    unjustified_thresholds: set[str] = set()
+    unjustified_candidates: set[str] = set()
+    for item in records:
+        _review_record(
+            item,
+            rows_by_id,
+            issues,
+            layer_counts,
+            unjustified_thresholds,
+            unjustified_candidates,
+        )
+
+    diversity = _diversity_summary(records)
+    _cohort_review_issues(
+        records,
+        issues,
+        config,
+        diversity,
+        unjustified_thresholds,
+        unjustified_candidates,
+    )
+    finalized_issues = _finalize_issues(issues, config)
+    statuses = Counter(item["status"] for item in records)
+    verdict, passed = _derive_verdict(finalized_issues)
+    issue_counts = dict(sorted(Counter(
+        issue["severity"] for issue in finalized_issues
+    ).items()))
+    summary = (
+        f"Critic reviewed {len(records)} candidate(s): verdict={verdict}; "
+        f"statuses={dict(sorted(statuses.items()))}; issues={issue_counts}."
+    )
+
+    row_snapshot = _row_snapshot(records, rows_by_id)
     input_digest = object_sha256({
         "prediction_handoff_path": str(handoff_path),
         "handoff_sha256": file_sha256(handoff_path),
@@ -557,7 +643,6 @@ def review(
             ],
         },
     }
-
 def run(
     *,
     handoff_path: str | Path,

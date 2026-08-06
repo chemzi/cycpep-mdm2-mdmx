@@ -71,6 +71,58 @@ def _inventory_outputs(
         })
     return inventory
 
+def _validate_output_contract(
+    run: dict,
+    task: dict,
+    task_id: str,
+    inventory: list[dict],
+) -> None:
+    """The task's output inventory must satisfy its execution contract."""
+    try:
+        from execution.contracts import validate_output_inventory
+
+        dependency_outputs = {
+            dependency: run["tasks"][dependency]["outputs"]
+            for dependency in task["depends_on"]
+        }
+        validate_output_inventory(
+            task, inventory, dependency_outputs=dependency_outputs
+        )
+    except Exception as exc:
+        if isinstance(exc, OrchestratorContractError):
+            raise
+        raise OrchestratorContractError(
+            getattr(exc, "code", "task_output_contract_invalid"), str(exc)
+        ) from exc
+
+
+def _complete_gpu_cleanup(
+    run: dict,
+    task: dict,
+    task_id: str,
+    claim_token: str,
+    gpu_minutes: float | None,
+) -> tuple[dict[str, Any], bool]:
+    """Consume GPU usage and clear the run's GPU lease for a completed task."""
+    usage: dict[str, Any] = {}
+    if task["resource_request"]["class"] == "gpu":
+        usage = _consume_gpu_usage(
+            run, task_id, gpu_minutes, enforce_limit=True
+        )
+        lease = run["resources"].get("gpu_lease")
+        if not lease or lease.get("claim_token") != claim_token:
+            raise OrchestratorContractError(
+                "gpu_lease_mismatch", "GPU task no longer owns the single-GPU lease"
+            )
+        run["resources"]["gpu_lease"] = None
+        return usage, True
+    if gpu_minutes is not None:
+        raise OrchestratorContractError(
+            "gpu_minutes_unexpected", "CPU task cannot report GPU minutes"
+        )
+    return usage, False
+
+
 def complete(
     *,
     run_path: str | Path,
@@ -99,38 +151,10 @@ def complete(
                 task_id, int(state.get("attempts") or 0)
             ),
         )
-        try:
-            from execution.contracts import validate_output_inventory
-
-            dependency_outputs = {
-                dependency: run["tasks"][dependency]["outputs"]
-                for dependency in task["depends_on"]
-            }
-            validate_output_inventory(
-                task, inventory, dependency_outputs=dependency_outputs
-            )
-        except Exception as exc:
-            if isinstance(exc, OrchestratorContractError):
-                raise
-            raise OrchestratorContractError(
-                getattr(exc, "code", "task_output_contract_invalid"), str(exc)
-            ) from exc
-        usage: dict[str, Any] = {}
-        if task["resource_request"]["class"] == "gpu":
-            usage = _consume_gpu_usage(
-                run, task_id, gpu_minutes, enforce_limit=True
-            )
-            lease = run["resources"].get("gpu_lease")
-            if not lease or lease.get("claim_token") != claim_token:
-                raise OrchestratorContractError(
-                    "gpu_lease_mismatch", "GPU task no longer owns the single-GPU lease"
-                )
-            run["resources"]["gpu_lease"] = None
-            release_global_gpu = True
-        elif gpu_minutes is not None:
-            raise OrchestratorContractError(
-                "gpu_minutes_unexpected", "CPU task cannot report GPU minutes"
-            )
+        _validate_output_contract(run, task, task_id, inventory)
+        usage, release_global_gpu = _complete_gpu_cleanup(
+            run, task, task_id, claim_token, gpu_minutes
+        )
         state.update({
             "status": TaskStatus.SUCCEEDED.value,
             "claim": None,
@@ -164,3 +188,4 @@ def complete(
         run, task_id=task_id, attempt=int(state.get("attempts") or 0)
     ))
     return {"run": run, "run_path": str(run_path), "task_id": task_id}
+

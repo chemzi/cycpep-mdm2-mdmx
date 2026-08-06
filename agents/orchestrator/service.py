@@ -124,16 +124,14 @@ def _approval_semantic(approval: dict) -> dict:
         "budget_limits": limits,
     }
 
-def _validate_approval(
-    approval_path: str | Path,
-    *,
+def _validate_approval_binding(
+    approval: dict,
+    semantic: dict,
     plan_path: Path,
     plan: dict,
     plan_sha256: str,
-) -> dict:
-    path = Path(approval_path).expanduser().resolve()
-    approval = _read_json(path, "planner_approval")
-    semantic = _approval_semantic(approval)
+) -> None:
+    """Approval content must bind to the exact plan it approves."""
     if semantic["schema_version"] != APPROVAL_SCHEMA_VERSION:
         raise OrchestratorContractError(
             "approval_schema_unsupported", "unsupported approval schema"
@@ -166,12 +164,9 @@ def _validate_approval(
             "approval_identity_missing", "approval lacks approver or justification"
         )
 
-    task_ids = semantic.get("approved_task_ids")
-    if not isinstance(task_ids, list) or not task_ids or len(task_ids) != len(set(task_ids)):
-        raise OrchestratorContractError(
-            "approval_scope_invalid", "approval task IDs must be a non-empty unique array"
-        )
-    tasks = _task_map(plan)
+
+def _validate_approval_scope(task_ids: list[str], tasks: dict[str, dict]) -> None:
+    """Approved tasks must exist, be unblocked, and have requested approval."""
     unknown = sorted(set(task_ids) - set(tasks))
     if unknown:
         raise OrchestratorContractError(
@@ -194,59 +189,83 @@ def _validate_approval(
             "approval_task_not_required", f"tasks did not request approval: {nonrequested}"
         )
 
+
+def _validate_gpu_limits(gpu_tasks: list[dict], limits: dict) -> None:
+    """Approval budget limits must cover the GPU tasks' resource requests."""
+    slots = limits["max_gpu_job_slots"]
+    minutes = limits["max_gpu_minutes"]
+    required_concurrent_slots = max(
+        task["resource_request"]["gpu_job_slots"] for task in gpu_tasks
+    )
+    if (
+        not isinstance(slots, int)
+        or isinstance(slots, bool)
+        or slots < required_concurrent_slots
+    ):
+        raise OrchestratorContractError(
+            "approval_gpu_slots_insufficient", "approval GPU slots are insufficient"
+        )
+    try:
+        minute_limit = float(minutes)
+    except (TypeError, ValueError) as exc:
+        raise OrchestratorContractError(
+            "approval_gpu_minutes_invalid", "approval lacks GPU minute ceiling"
+        ) from exc
+    if not math.isfinite(minute_limit) or minute_limit <= 0:
+        raise OrchestratorContractError(
+            "approval_gpu_minutes_invalid", "approval GPU minute ceiling must be positive"
+        )
+    proposals = sum(task["resource_request"]["proposal_count"] for task in gpu_tasks)
+    proposal_limit = limits["max_design_proposals"]
+    if proposals and (
+        not isinstance(proposal_limit, int)
+        or isinstance(proposal_limit, bool)
+        or proposal_limit < proposals
+    ):
+        raise OrchestratorContractError(
+            "approval_design_limit_insufficient", "approval proposal limit is insufficient"
+        )
+    predictions = sum(
+        task["resource_request"]["candidate_limit"] for task in gpu_tasks
+        if task["agent"] in {"prediction", "prediction/design", "design/prediction"}
+    )
+    prediction_limit = limits["max_prediction_candidates"]
+    if predictions and (
+        not isinstance(prediction_limit, int)
+        or isinstance(prediction_limit, bool)
+        or prediction_limit < predictions
+    ):
+        raise OrchestratorContractError(
+            "approval_prediction_limit_insufficient",
+            "approval Prediction candidate limit is insufficient",
+        )
+
+
+def _validate_approval(
+    approval_path: str | Path,
+    *,
+    plan_path: Path,
+    plan: dict,
+    plan_sha256: str,
+) -> dict:
+    path = Path(approval_path).expanduser().resolve()
+    approval = _read_json(path, "planner_approval")
+    semantic = _approval_semantic(approval)
+    _validate_approval_binding(approval, semantic, plan_path, plan, plan_sha256)
+    task_ids = semantic.get("approved_task_ids")
+    if not isinstance(task_ids, list) or not task_ids or len(task_ids) != len(set(task_ids)):
+        raise OrchestratorContractError(
+            "approval_scope_invalid", "approval task IDs must be a non-empty unique array"
+        )
+    tasks = _task_map(plan)
+    _validate_approval_scope(task_ids, tasks)
     gpu_tasks = [
         tasks[task_id] for task_id in task_ids
         if tasks[task_id]["resource_request"]["class"] == "gpu"
     ]
     limits = semantic["budget_limits"]
     if gpu_tasks:
-        slots = limits["max_gpu_job_slots"]
-        minutes = limits["max_gpu_minutes"]
-        required_concurrent_slots = max(
-            task["resource_request"]["gpu_job_slots"] for task in gpu_tasks
-        )
-        if (
-            not isinstance(slots, int)
-            or isinstance(slots, bool)
-            or slots < required_concurrent_slots
-        ):
-            raise OrchestratorContractError(
-                "approval_gpu_slots_insufficient", "approval GPU slots are insufficient"
-            )
-        try:
-            minute_limit = float(minutes)
-        except (TypeError, ValueError) as exc:
-            raise OrchestratorContractError(
-                "approval_gpu_minutes_invalid", "approval lacks GPU minute ceiling"
-            ) from exc
-        if not math.isfinite(minute_limit) or minute_limit <= 0:
-            raise OrchestratorContractError(
-                "approval_gpu_minutes_invalid", "approval GPU minute ceiling must be positive"
-            )
-        proposals = sum(task["resource_request"]["proposal_count"] for task in gpu_tasks)
-        proposal_limit = limits["max_design_proposals"]
-        if proposals and (
-            not isinstance(proposal_limit, int)
-            or isinstance(proposal_limit, bool)
-            or proposal_limit < proposals
-        ):
-            raise OrchestratorContractError(
-                "approval_design_limit_insufficient", "approval proposal limit is insufficient"
-            )
-        predictions = sum(
-            task["resource_request"]["candidate_limit"] for task in gpu_tasks
-            if task["agent"] in {"prediction", "prediction/design", "design/prediction"}
-        )
-        prediction_limit = limits["max_prediction_candidates"]
-        if predictions and (
-            not isinstance(prediction_limit, int)
-            or isinstance(prediction_limit, bool)
-            or prediction_limit < predictions
-        ):
-            raise OrchestratorContractError(
-                "approval_prediction_limit_insufficient",
-                "approval Prediction candidate limit is insufficient",
-            )
+        _validate_gpu_limits(gpu_tasks, limits)
     return {
         "approval_id": approval["approval_id"],
         "approval_path": str(path),
@@ -494,14 +513,8 @@ def _add_approval_in_memory(
     run["approvals"].sort(key=lambda item: item["approval_id"])
     return value, True
 
-def initialize(
-    *,
-    plan_path: str | Path,
-    approval_paths: Iterable[str | Path] = (),
-    output_path: str | Path | None = None,
-) -> dict:
-    """Create or idempotently reopen an Orchestrator run."""
-    resolved_plan_path, plan, plan_sha = _load_plan(plan_path)
+def _resolve_plan_identity(plan: dict, plan_sha: str) -> tuple[str, str]:
+    """Validate State/plan project agreement and derive run identity."""
     state_project = str(State.load().get("project_id") or "")
     plan_project = str((plan.get("source") or {}).get("project_id") or "")
     if state_project and plan_project and state_project != plan_project:
@@ -521,72 +534,119 @@ def initialize(
             "active_run_conflict",
             f"active Orchestrator run {active['run_id']} must finish before a new plan",
         )
+    return run_id, workflow_id
+
+
+def _load_or_create_run(
+    run_path: Path,
+    resolved_plan_path: Path,
+    plan: dict,
+    plan_sha: str,
+    plan_project: str,
+    workflow_id: str,
+    run_id: str,
+) -> tuple[dict, dict]:
+    """Reopen an existing bound run or materialize a fresh one."""
+    if run_path.exists():
+        run = _read_json(run_path, "orchestrator_run")
+        bound_plan_path, bound_plan, bound_sha = _validate_run_binding(run, run_path)
+        if bound_sha != plan_sha or bound_plan_path != resolved_plan_path:
+            raise OrchestratorContractError(
+                "run_output_conflict", "run path is already bound to another plan"
+            )
+        return run, bound_plan
+    now = _utcnow()
+    run = {
+        "schema_version": RUN_SCHEMA_VERSION,
+        "orchestrator_version": ORCHESTRATOR_VERSION,
+        "run_id": run_id,
+        "workflow_id": workflow_id,
+        "run_path": str(run_path),
+        "plan": {
+            "plan_id": plan["plan_id"],
+            "plan_path": str(resolved_plan_path),
+            "plan_sha256": plan_sha,
+            "project_id": plan_project or None,
+            "workflow_id": workflow_id,
+        },
+        "status": "pending",
+        "created_at": now,
+        "updated_at": now,
+        "approvals": [],
+        "tasks": {
+            task["task_id"]: {
+                "status": TaskStatus.PENDING_DEPENDENCY.value,
+                "attempts": 0,
+                "claim": None,
+                "outputs": [],
+                "resource_usage": {},
+                "last_error": None,
+                "completed_at": None,
+                "attempt_history": [],
+            }
+            for task in plan["tasks"]
+        },
+        "resources": {
+            "gpu_lease": None,
+            "gpu_minutes_consumed": 0.0,
+            "gpu_minutes_by_approval": {},
+        },
+    }
+    return run, plan
+
+
+def _load_approvals(
+    run: dict,
+    plan: dict,
+    resolved_plan_path: Path,
+    plan_sha: str,
+    approval_paths: Iterable[str | Path],
+) -> list[dict]:
+    """Bind each approval file into the run; return the newly added ones."""
+    added_approvals = []
+    for approval_path in approval_paths:
+        approval, added = _add_approval_in_memory(
+            run,
+            approval_path,
+            plan_path=resolved_plan_path,
+            plan=plan,
+            plan_sha256=plan_sha,
+        )
+        if added:
+            added_approvals.append(approval)
+    return added_approvals
+
+
+def initialize(
+    *,
+    plan_path: str | Path,
+    approval_paths: Iterable[str | Path] = (),
+    output_path: str | Path | None = None,
+) -> dict:
+    """Create or idempotently reopen an Orchestrator run."""
+    resolved_plan_path, plan, plan_sha = _load_plan(plan_path)
+    run_id, workflow_id = _resolve_plan_identity(plan, plan_sha)
     if output_path is None:
         output_path = resolved_plan_path.parent / "orchestrator" / run_id / "orchestrator_run.json"
     run_path = Path(output_path).expanduser().resolve()
     with _run_lock(run_path):
-        if run_path.exists():
-            run = _read_json(run_path, "orchestrator_run")
-            bound_plan_path, bound_plan, bound_sha = _validate_run_binding(run, run_path)
-            if bound_sha != plan_sha or bound_plan_path != resolved_plan_path:
-                raise OrchestratorContractError(
-                    "run_output_conflict", "run path is already bound to another plan"
-                )
-            plan = bound_plan
-        else:
-            now = _utcnow()
-            run = {
-                "schema_version": RUN_SCHEMA_VERSION,
-                "orchestrator_version": ORCHESTRATOR_VERSION,
-                "run_id": run_id,
-                "workflow_id": workflow_id,
-                "run_path": str(run_path),
-                "plan": {
-                    "plan_id": plan["plan_id"],
-                    "plan_path": str(resolved_plan_path),
-                    "plan_sha256": plan_sha,
-                    "project_id": plan_project or None,
-                    "workflow_id": workflow_id,
-                },
-                "status": "pending",
-                "created_at": now,
-                "updated_at": now,
-                "approvals": [],
-                "tasks": {
-                    task["task_id"]: {
-                        "status": TaskStatus.PENDING_DEPENDENCY.value,
-                        "attempts": 0,
-                        "claim": None,
-                        "outputs": [],
-                        "resource_usage": {},
-                        "last_error": None,
-                        "completed_at": None,
-                        "attempt_history": [],
-                    }
-                    for task in plan["tasks"]
-                },
-                "resources": {
-                    "gpu_lease": None,
-                    "gpu_minutes_consumed": 0.0,
-                    "gpu_minutes_by_approval": {},
-                },
-            }
+        run, plan = _load_or_create_run(
+            run_path,
+            resolved_plan_path,
+            plan,
+            plan_sha,
+            str((plan.get("source") or {}).get("project_id") or ""),
+            workflow_id,
+            run_id,
+        )
         # Legacy plans/runs may not carry workflow_id yet.  Derive the adapter
         # once at this boundary and persist it so Worker never invents a new
         # trace identity.
         run.setdefault("workflow_id", workflow_id)
         run.setdefault("plan", {}).setdefault("workflow_id", workflow_id)
-        added_approvals = []
-        for approval_path in approval_paths:
-            approval, added = _add_approval_in_memory(
-                run,
-                approval_path,
-                plan_path=resolved_plan_path,
-                plan=plan,
-                plan_sha256=plan_sha,
-            )
-            if added:
-                added_approvals.append(approval)
+        added_approvals = _load_approvals(
+            run, plan, resolved_plan_path, plan_sha, approval_paths
+        )
         _refresh(run, plan)
         _atomic_json(run_path, run)
 

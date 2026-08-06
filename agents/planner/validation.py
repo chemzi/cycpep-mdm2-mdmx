@@ -15,7 +15,8 @@ from .config import (
 from .errors import PlannerContractError
 
 
-def _validate_critic_report(report: dict, state: dict, report_sha256: str) -> None:
+def _validate_critic_identity(report: dict) -> str:
+    """Critic identity must be schema v1 and bound to its input digest."""
     if report.get("schema_version") != 1:
         raise PlannerContractError(
             "critic_schema_unsupported", "Planner requires Critic report schema v1"
@@ -31,7 +32,6 @@ def _validate_critic_report(report: dict, state: dict, report_sha256: str) -> No
         raise PlannerContractError(
             "critic_report_id_mismatch", "Critic report ID is not bound to input_digest"
         )
-
     verdict = report.get("verdict")
     if verdict not in {"blocked", "iterate", "review", "clear"}:
         raise PlannerContractError("critic_verdict_invalid", "unknown Critic verdict")
@@ -39,7 +39,13 @@ def _validate_critic_report(report: dict, state: dict, report_sha256: str) -> No
         raise PlannerContractError(
             "critic_verdict_inconsistent", "Critic passed flag conflicts with verdict"
         )
+    return report_id
 
+
+def _validate_critic_source(
+    report: dict, state: dict, report_sha256: str, report_id: str
+) -> None:
+    """Critic source and State must agree on project and report identity."""
     source = report.get("source")
     if not isinstance(source, dict):
         raise PlannerContractError("critic_source_invalid", "Critic source must be an object")
@@ -49,7 +55,6 @@ def _validate_critic_report(report: dict, state: dict, report_sha256: str) -> No
         raise PlannerContractError(
             "planner_project_mismatch", "State and Critic report project IDs differ"
         )
-
     state_critic = state.get("critic") or {}
     if isinstance(state_critic, dict) and state_critic.get("report_id"):
         if state_critic["report_id"] != report_id:
@@ -62,22 +67,9 @@ def _validate_critic_report(report: dict, state: dict, report_sha256: str) -> No
                 "state_critic_hash_mismatch", "State Critic report SHA-256 differs"
             )
 
-    issues = report.get("issues")
-    recommendations = report.get("recommendations")
-    handoff = report.get("planner_handoff")
-    if not isinstance(issues, list) or not isinstance(recommendations, list):
-        raise PlannerContractError(
-            "critic_feedback_invalid", "Critic issues and recommendations must be arrays"
-        )
-    if not isinstance(handoff, dict):
-        raise PlannerContractError(
-            "critic_planner_handoff_invalid", "Critic planner_handoff must be an object"
-        )
-    if handoff.get("critic_report_id") != report_id:
-        raise PlannerContractError(
-            "critic_planner_handoff_mismatch", "planner_handoff report ID differs"
-        )
 
+def _validate_critic_issues(issues: list) -> dict[str, dict]:
+    """Every Critic issue must be unique, severe, and safely actionable."""
     issues_by_code: dict[str, dict] = {}
     for issue in issues:
         if not isinstance(issue, dict):
@@ -102,7 +94,13 @@ def _validate_critic_report(report: dict, state: dict, report_sha256: str) -> No
                 "critic_issue_candidates_invalid", f"candidate_ids for {code} must be an array"
             )
         issues_by_code[code] = issue
+    return issues_by_code
 
+
+def _validate_critic_recommendations(
+    recommendations: list, issues_by_code: dict[str, dict]
+) -> list[str]:
+    """Recommendations must be unique, mapped, and consistent with their issues."""
     recommendation_actions: list[str] = []
     covered_codes: set[str] = set()
     for recommendation in recommendations:
@@ -137,11 +135,35 @@ def _validate_critic_report(report: dict, state: dict, report_sha256: str) -> No
                 )
             covered_codes.add(code)
         recommendation_actions.append(action)
-
     if covered_codes != set(issues_by_code):
         raise PlannerContractError(
             "critic_recommendation_incomplete", "not every Critic issue is mapped"
         )
+    return recommendation_actions
+
+
+def _validate_critic_report(report: dict, state: dict, report_sha256: str) -> None:
+    report_id = _validate_critic_identity(report)
+    _validate_critic_source(report, state, report_sha256, report_id)
+    issues = report.get("issues")
+    recommendations = report.get("recommendations")
+    handoff = report.get("planner_handoff")
+    if not isinstance(issues, list) or not isinstance(recommendations, list):
+        raise PlannerContractError(
+            "critic_feedback_invalid", "Critic issues and recommendations must be arrays"
+        )
+    if not isinstance(handoff, dict):
+        raise PlannerContractError(
+            "critic_planner_handoff_invalid", "Critic planner_handoff must be an object"
+        )
+    if handoff.get("critic_report_id") != report_id:
+        raise PlannerContractError(
+            "critic_planner_handoff_mismatch", "planner_handoff report ID differs"
+        )
+    issues_by_code = _validate_critic_issues(issues)
+    recommendation_actions = _validate_critic_recommendations(
+        recommendations, issues_by_code
+    )
     if handoff.get("issue_codes") != [issue["code"] for issue in issues]:
         raise PlannerContractError(
             "critic_handoff_issues_mismatch", "planner_handoff issue codes differ"
@@ -157,3 +179,4 @@ def _validate_critic_report(report: dict, state: dict, report_sha256: str) -> No
             "critic_policy_constraint_missing",
             f"Critic handoff lacks mandatory constraints: {missing_constraints}",
         )
+
