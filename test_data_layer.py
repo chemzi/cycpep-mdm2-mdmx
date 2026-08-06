@@ -439,14 +439,16 @@ legacy_index.write_text(
     encoding="utf-8-sig",
 )
 data_layer.INDEX_PATH = legacy_index
-CandidateIndex._ensure_exists()
-migrated = CandidateIndex.load()[0]
-check("旧 CSV 自动迁移为当前完整表头", list(migrated) == INDEX_COLUMNS)
+data_layer.migrate_legacy_data(candidate_path=legacy_index)
+migrated = CandidateIndex.find("C9001")
+check("旧 CSV 显式迁移为当前完整表头", list(migrated) == INDEX_COLUMNS)
 check("语义一致的 monomer_plddt 迁移到 plddt", migrated["plddt"] == "0.91")
 check("HADDOCK score 保存在 legacy 列", migrated["legacy_haddock_mdm2"] == "-88.4")
 check("旧 self_rmsd 保存在 legacy 列", migrated["legacy_self_rmsd"] == "1.2")
 check("旧 layer2_3_pass 不冒充新版 L2", migrated["l2_pass"] == "")
-check("迁移前 CSV 备份已生成", len(list(migration_dir.glob("candidate_index.pre_v5_*.csv"))) == 1)
+check("迁移前 CSV 备份已生成", len(list(migration_dir.glob("candidate_index.pre_store_*.csv"))) == 1)
+legacy_index.write_text("candidate_id,sequence\nC9999,EDITED\n", encoding="utf-8-sig")
+check("手改 projection 不会自动回灌", CandidateIndex.find("C9999") is None)
 data_layer.INDEX_PATH = original_index_path
 
 # ============================================================

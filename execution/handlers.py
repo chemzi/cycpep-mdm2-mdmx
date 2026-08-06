@@ -22,6 +22,8 @@ from .contracts import (
     validate_task_parameters,
 )
 from .supervisor import atomic_json, run_process
+from .results import ExecutionActionResult
+from contracts.candidate_update import CandidateUpdateBatch
 
 
 def _utcnow() -> str:
@@ -44,14 +46,7 @@ class HandlerContext:
         return validate_task_parameters(self.task)
 
 
-@dataclass(frozen=True)
-class HandlerOutcome:
-    outputs: tuple[tuple[str, Path], ...]
-    processes: tuple[dict, ...] = ()
-
-    @property
-    def elapsed_seconds(self) -> float:
-        return sum(float(item.get("elapsed_seconds") or 0.0) for item in self.processes)
+HandlerOutcome = ExecutionActionResult
 
 
 def _dependency_output(context: HandlerContext, role: str) -> Path:
@@ -105,7 +100,7 @@ def _resolve_manifest(raw: str, repo_root: Path) -> Path:
     return path.resolve() if path.is_absolute() else (repo_root / path).resolve()
 
 
-def iterate_design(context: HandlerContext) -> HandlerOutcome:
+def iterate_design(context: HandlerContext) -> ExecutionActionResult:
     params = context.parameters
     state = State.load()
     project = _resolve_project(context, state)
@@ -123,7 +118,9 @@ def iterate_design(context: HandlerContext) -> HandlerOutcome:
         encoding="utf-8",
     )
     processes = []
+    candidate_updates = []
     for index, job in enumerate(params["design_jobs"], start=1):
+        updates_path = context.task_dir / "candidate_updates" / f"job_{index:02d}.json"
         argv = [
             context.config.design_python,
             context.config.repo_root / "agents" / "design.py",
@@ -132,6 +129,8 @@ def iterate_design(context: HandlerContext) -> HandlerOutcome:
             "--n", str(job["proposal_count"]),
             "--lengths", ",".join(str(value) for value in job["lengths"]),
             "--seed", str(job["seed"]),
+            "--candidate-updates-path", str(updates_path),
+            "--candidate-update-job-id", f"{context.task['task_id']}-job-{index:02d}",
         ]
         processes.append(run_process(
             argv,
@@ -140,8 +139,27 @@ def iterate_design(context: HandlerContext) -> HandlerOutcome:
             timeout_seconds=context.config.design_timeout_seconds,
             label=f"iterate_design[{index}]",
         ))
+        if not updates_path.is_file():
+            raise ExecutionContractError(
+                "design_candidate_updates_missing",
+                f"Design job {index} did not emit its CandidateUpdate batch",
+            )
+        batch = CandidateUpdateBatch.from_dict(
+            json.loads(updates_path.read_text(encoding="utf-8"))
+        )
+        candidate_updates.extend(item.to_dict() for item in batch.candidate_updates)
 
-    after_rows = CandidateIndex.load()
+    update_ids = [str(item["candidate_id"]) for item in candidate_updates]
+    if len(update_ids) != len(set(update_ids)):
+        raise ExecutionContractError(
+            "design_candidate_update_duplicate",
+            "Design jobs emitted duplicate candidate IDs",
+        )
+    prepared_updates = [CandidateIndex._prepare_row(item) for item in candidate_updates]
+    after_rows = sorted(
+        [*before_rows, *prepared_updates],
+        key=lambda item: str(item.get("candidate_id") or ""),
+    )
     after_by_id = {str(row.get("candidate_id")): row for row in after_rows}
     changed = sorted(
         candidate_id for candidate_id, row in before_by_id.items()
@@ -152,7 +170,7 @@ def iterate_design(context: HandlerContext) -> HandlerOutcome:
             "candidate_index_existing_row_changed",
             f"Design modified existing candidate rows: {changed}",
         )
-    new_ids = sorted(set(after_by_id) - set(before_by_id))
+    new_ids = sorted(update_ids)
     limit = int(context.task["resource_request"]["candidate_limit"])
     if len(new_ids) > limit:
         raise ExecutionContractError(
@@ -206,7 +224,8 @@ def iterate_design(context: HandlerContext) -> HandlerOutcome:
         "existing_rows_unchanged": True,
         "completed_at": _utcnow(),
     })
-    return HandlerOutcome(
+    return ExecutionActionResult(
+        candidate_updates=tuple(prepared_updates),
         outputs=(("design_result", result_path),),
         processes=tuple(processes),
     )

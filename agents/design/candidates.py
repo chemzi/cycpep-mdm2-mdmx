@@ -8,10 +8,17 @@ index/manifest/closure logic from drifting between routes.
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from data_layer import CandidateIndex, EvidenceLogger  # noqa: E402
+from contracts.candidate_update import (  # noqa: E402
+    CANDIDATE_UPDATE_SCHEMA_VERSION,
+    CandidateUpdate,
+    CandidateUpdateBatch,
+)
 
 from .manifests import _candidate_from_manifest, _write_manifest  # noqa: E402
 from .runtime import _run_refold  # noqa: E402
@@ -27,6 +34,46 @@ class CandidateRegistration:
     plddt: Optional[float]
     ring_closure: dict
     cyclization_type: str
+
+
+_CANDIDATE_UPDATES_PATH: Path | None = None
+_PENDING_CANDIDATE_UPDATES: list[CandidateUpdate] = []
+
+
+def configure_candidate_updates(path: str | None) -> None:
+    global _CANDIDATE_UPDATES_PATH
+    _CANDIDATE_UPDATES_PATH = Path(path) if path else None
+    _PENDING_CANDIDATE_UPDATES.clear()
+
+
+def flush_candidate_updates(job_id: str) -> None:
+    if _CANDIDATE_UPDATES_PATH is None:
+        return
+    batch = CandidateUpdateBatch(
+        schema_version=CANDIDATE_UPDATE_SCHEMA_VERSION,
+        emitter="design",
+        job_id=job_id,
+        candidate_updates=tuple(_PENDING_CANDIDATE_UPDATES),
+    )
+    _CANDIDATE_UPDATES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _CANDIDATE_UPDATES_PATH.write_text(
+        json.dumps(batch.to_dict(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _publish_candidate(candidate: dict, target_id: str) -> None:
+    if _CANDIDATE_UPDATES_PATH is not None:
+        _PENDING_CANDIDATE_UPDATES.append(CandidateUpdate(candidate))
+        return
+    CandidateIndex.add(candidate)
+    EvidenceLogger.log(
+        "design",
+        "candidate_registered",
+        {"candidate": candidate},
+        targets=[target_id],
+        phase="design",
+    )
 
 
 def _register_refolded_candidate(
@@ -84,10 +131,7 @@ def _register_refolded_candidate(
         )
 
     candidate = _candidate_from_manifest(manifest, plddt, notes=notes or {})
-    CandidateIndex.add(candidate)
-    EvidenceLogger.log("design", "candidate_registered",
-        {"candidate": candidate},
-        targets=[config["target_id"]], phase="design")
+    _publish_candidate(candidate, config["target_id"])
     return CandidateRegistration(
         candidate=candidate, refold_pdb=refold_pdb, plddt=plddt,
         ring_closure=rc, cyclization_type=cyclization_type,

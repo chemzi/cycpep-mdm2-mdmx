@@ -26,6 +26,7 @@
 """
 import functools
 import json, csv, hashlib, os, statistics, sys, tempfile, types, uuid
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -42,8 +43,12 @@ from threshold_contract import merge_thresholds, normalize_thresholds
 from contracts.event import EvidenceEvent
 from contracts.trace import TraceContext
 from core.context import ProjectPaths  # noqa: E402
-from storage import SQLiteStore  # noqa: E402 (PR3)
-from storage.file_store import FileStore  # noqa: E402 (PR3)
+from storage import (  # noqa: E402
+    SQLiteStore,
+    write_csv_projection,
+    write_json_projection,
+    write_jsonl_projection,
+)
 
 ROOT = Path(__file__).resolve().parent
 
@@ -63,10 +68,14 @@ def _active_project_config() -> dict:
     return load_project_config()
 
 
-def _sqlite_db_path() -> Path | None:
-    """Configured SQLite DB path (PR3), resolved lazily on first access (PR5)."""
+def _sqlite_db_path() -> Path:
+    """Formal project database path, resolved lazily with ProjectContext paths."""
     raw = os.environ.get("CYCPEP_DB_PATH")
-    return Path(raw) if raw else None
+    if raw:
+        return Path(raw)
+    explicit_data_dir = sys.modules[__name__].__dict__.get("DATA_DIR")
+    data_dir = Path(explicit_data_dir) if explicit_data_dir is not None else _paths()["data_dir"]
+    return data_dir / "store.db"
 
 
 def _project_data_dir(config: dict) -> Path:
@@ -191,15 +200,95 @@ class _LazyClassAttribute:
 
 
 def get_storage_backend():
-    """Return the configured backend without exposing backend details to Agents.
-
-    The legacy file backend remains the default for backwards compatibility.
-    Set ``CYCPEP_DB_PATH`` to opt a runtime into SQLite during migration.
-    """
+    """Return the sole formal backend; files are one-way projections only."""
     db_path = _module_attr("SQLITE_DB_PATH")
-    if db_path:
-        return SQLiteStore(db_path, project_id=_module_attr("ACTIVE_PROJECT_CONFIG")["project_id"])
-    return FileStore(_module_attr("DATA_DIR"), _module_attr("EVIDENCE_DIR"))
+    return SQLiteStore(
+        db_path,
+        project_id=_module_attr("ACTIVE_PROJECT_CONFIG")["project_id"],
+    )
+
+
+def _project_id() -> str:
+    return str(_module_attr("ACTIVE_PROJECT_CONFIG")["project_id"])
+
+
+def _project_state(store=None) -> dict:
+    backend = store or get_storage_backend()
+    return backend.initialize_state(_project_id(), State._default)
+
+
+def _project_state_file(store=None) -> None:
+    backend = store or get_storage_backend()
+    write_json_projection(_module_attr("STATE_PATH"), backend.get_state(_project_id()))
+
+
+def _project_candidates(store=None) -> None:
+    backend = store or get_storage_backend()
+    write_csv_projection(_module_attr("INDEX_PATH"), backend.list(), INDEX_COLUMNS)
+
+
+def _project_evidence(store=None) -> None:
+    backend = store or get_storage_backend()
+    write_jsonl_projection(_module_attr("LOG_PATH"), backend.query())
+
+
+def allocate_candidate_id() -> str:
+    """Reserve one collision-free candidate ID inside a database transaction."""
+    backend = get_storage_backend()
+    _project_state(backend)
+    candidate_id = backend.reserve_candidate_ids(1)[0]
+    _project_state_file(backend)
+    return candidate_id
+
+
+def refresh_projections() -> None:
+    """Rebuild all compatibility files from the formal database."""
+    backend = get_storage_backend()
+    _project_state(backend)
+    _project_state_file(backend)
+    _project_candidates(backend)
+    _project_evidence(backend)
+
+
+def migrate_legacy_data(
+    *,
+    state_path: str | Path | None = None,
+    candidate_path: str | Path | None = None,
+    evidence_path: str | Path | None = None,
+) -> dict[str, int]:
+    """Explicitly import legacy files once, then rebuild projections from SQLite."""
+    backend = get_storage_backend()
+    stats = {"states": 0, "candidates": 0, "events": 0}
+    if state_path and Path(state_path).is_file():
+        backend.replace_state(
+            _project_id(), json.loads(Path(state_path).read_text(encoding="utf-8"))
+        )
+        stats["states"] = 1
+    if candidate_path and Path(candidate_path).is_file():
+        source = Path(candidate_path)
+        if source.resolve() == _module_attr("INDEX_PATH").resolve():
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup = source.with_name(f"{source.stem}.pre_store_{stamp}.csv")
+            backup.write_bytes(source.read_bytes())
+        with source.open("r", encoding="utf-8-sig", newline="") as stream:
+            for raw in csv.DictReader(stream):
+                backend.upsert(
+                    CandidateIndex._prepare_row(raw),
+                    duplicate_policy="insert_only",
+                )
+                stats["candidates"] += 1
+    if evidence_path and Path(evidence_path).is_file():
+        for line in Path(evidence_path).read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                backend.append(json.loads(line))
+                stats["events"] += 1
+            except sqlite3.IntegrityError as exc:
+                if "evidence_events.event_id" not in str(exc):
+                    raise
+    refresh_projections()
+    return stats
 
 
 
@@ -333,35 +422,37 @@ def _alias_keys(row: dict) -> dict:
 # 全局状态
 # ============================================================
 class State:
-    """读/写 state.json —— 所有Agent共享的'白板'"""
+    """Shared project state backed by SQLite; state.json is a projection."""
     
     _project_config = _LazyClassAttribute(_active_project_config)
     _default = _LazyClassAttribute(lambda: _default_state(_active_project_config()))
     
     @classmethod
     def load(cls) -> dict:
-        state_path = _module_attr("STATE_PATH")
-        if state_path.exists():
-            return json.loads(state_path.read_text(encoding="utf-8"))
-        return json.loads(json.dumps(cls._default))
+        backend = get_storage_backend()
+        return _project_state(backend)
     
     @classmethod
     def save(cls, data: dict):
-        _write_json_atomic(_module_attr("STATE_PATH"), data)
+        backend = get_storage_backend()
+        backend.replace_state(_project_id(), data)
+        _project_state_file(backend)
     
     @classmethod
     def update(cls, patches: dict):
         """合并更新，不覆盖已有字段"""
-        s = cls.load()
-        s.update(patches)
-        cls.save(s)
-        return s
+        backend = get_storage_backend()
+        _project_state(backend)
+        state = backend.update_state(_project_id(), patches)
+        _project_state_file(backend)
+        return state
     
     @classmethod
     def append_history(cls, entry: dict):
-        s = cls.load()
-        s.setdefault("iteration_history", []).append(entry)
-        cls.save(s)
+        backend = get_storage_backend()
+        _project_state(backend)
+        backend.append_state_item(_project_id(), "iteration_history", entry)
+        _project_state_file(backend)
 
     @classmethod
     def sync_project_config(cls, config: dict) -> dict:
@@ -463,17 +554,16 @@ class State:
 # 证据日志
 # ============================================================
 class EvidenceLogger:
-    """所有操作的 JSONL 记录——每个Agent调工具前后记一笔"""
+    """Append-only evidence backed by SQLite; JSONL is a projection."""
     
     @classmethod
     def _write(cls, entry: dict):
         # Every new write passes through the same event contract.  Existing
         # JSONL rows remain untouched and are still readable by get_all().
         EvidenceEvent.from_dict(entry)
-        log_path = _module_attr("LOG_PATH")
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        backend = get_storage_backend()
+        backend.append(entry)
+        _project_evidence(backend)
     
     @classmethod
     def log(cls, agent: str, event_type: str, payload: dict,
@@ -662,10 +752,7 @@ class EvidenceLogger:
 
     @classmethod
     def get_all(cls) -> list:
-        log_path = _module_attr("LOG_PATH")
-        if not log_path.exists():
-            return []
-        return [json.loads(line) for line in log_path.read_text(encoding="utf-8").strip().split("\n") if line]
+        return get_storage_backend().query()
 
     @classmethod
     def filter(cls, agent: str = None, event_type: str = None, candidate_id: str = None) -> list:
@@ -769,22 +856,12 @@ class EvidenceLogger:
 # 候选索引表
 # ============================================================
 class CandidateIndex:
-    """所有环肽候选的主索引——CSV格式，可在Excel/GoogleSheets/WPS中打开"""
+    """Candidate compatibility API backed by SQLite with a CSV projection."""
 
     @classmethod
     def _ensure_exists(cls):
-        index_path = _module_attr("INDEX_PATH")
-        if not index_path.exists():
-            index_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(index_path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.writer(f)
-                writer.writerow(INDEX_COLUMNS)
-            return
-
-        with open(index_path, "r", encoding="utf-8-sig", newline="") as f:
-            header = next(csv.reader(f), [])
-        if header != INDEX_COLUMNS:
-            cls._migrate_schema(header)
+        if not _module_attr("INDEX_PATH").exists():
+            _project_candidates()
 
     @classmethod
     def _migrate_schema(cls, old_header: list[str]):
@@ -818,22 +895,8 @@ class CandidateIndex:
 
     @classmethod
     def _write_rows(cls, rows: list[dict]):
-        """同目录临时文件写完后原子替换，避免中断时留下半张 CSV。"""
-        index_path = _module_attr("INDEX_PATH")
-        index_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = index_path.with_name(f".{index_path.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            with open(temp_path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.DictWriter(f, fieldnames=INDEX_COLUMNS, extrasaction="ignore")
-                writer.writeheader()
-                writer.writerows(
-                    {col: row.get(col, "") for col in INDEX_COLUMNS}
-                    for row in rows
-                )
-            os.replace(temp_path, index_path)
-        finally:
-            if temp_path.exists():
-                temp_path.unlink()
+        """Write the compatibility projection; formal writes use Store methods."""
+        write_csv_projection(_module_attr("INDEX_PATH"), rows, INDEX_COLUMNS)
 
     @classmethod
     def _prepare_row(cls, row: dict) -> dict:
@@ -868,98 +931,64 @@ class CandidateIndex:
     @classmethod
     def add(cls, row: dict):
         """添加一条新候选。必须包含 candidate_id 和 sequence。"""
-        cls._ensure_exists()
         ordered = cls._prepare_row(row)
-        if cls.find(ordered["candidate_id"]):
-            raise ValueError(f"duplicate candidate_id: {ordered['candidate_id']}")
-        with open(_module_attr("INDEX_PATH"), "a", newline="", encoding="utf-8-sig") as f:
-            csv.DictWriter(f, fieldnames=INDEX_COLUMNS, extrasaction="ignore").writerow(ordered)
+        backend = get_storage_backend()
+        backend.upsert(ordered, duplicate_policy="raise_duplicate")
+        _project_candidates(backend)
 
     @classmethod
     def add_batch(cls, rows: list[dict]):
-        cls._ensure_exists()
         prepared = [cls._prepare_row(row) for row in rows]
-        existing_ids = {row["candidate_id"] for row in cls.load()}
-        new_ids = [row["candidate_id"] for row in prepared]
-        duplicates = existing_ids.intersection(new_ids)
-        duplicates.update(cid for cid in new_ids if new_ids.count(cid) > 1)
-        if duplicates:
-            raise ValueError(f"duplicate candidate_id(s): {sorted(duplicates)}")
-        with open(_module_attr("INDEX_PATH"), "a", newline="", encoding="utf-8-sig") as f:
-            writer = csv.DictWriter(f, fieldnames=INDEX_COLUMNS, extrasaction="ignore")
-            writer.writerows(prepared)
+        backend = get_storage_backend()
+        backend.add_candidates(prepared)
+        _project_candidates(backend)
 
     @classmethod
     def load(cls) -> list[dict]:
-        cls._ensure_exists()
-        with open(_module_attr("INDEX_PATH"), "r", encoding="utf-8-sig") as f:
-            return list(csv.DictReader(f))
+        return [
+            {column: row.get(column, "") for column in INDEX_COLUMNS}
+            for row in get_storage_backend().list()
+        ]
 
     @classmethod
     def find(cls, candidate_id: str) -> Optional[dict]:
-        for r in cls.load():
-            if r["candidate_id"] == candidate_id:
-                return r
-        return None
+        row = get_storage_backend().get(candidate_id)
+        if row is None:
+            return None
+        return {column: row.get(column, "") for column in INDEX_COLUMNS}
 
     @classmethod
     def update_score(cls, candidate_id: str, scores: dict):
-        """更新某条候选的评分字段（原地修改CSV行）。
+        """Atomically update one candidate's score fields in SQLite.
         scores 中的旧字段名（如 monomer_plddt / layer1_pass）会自动 alias 到新名。
         """
         scores = _alias_keys(dict(scores))
-        rows = cls.load()
-        found = False
-        for r in rows:
-            if r["candidate_id"] == candidate_id:
-                found = True
-                for k, v in scores.items():
-                    if k == "metrics" and isinstance(v, dict):
-                        try:
-                            existing = json.loads(r.get("metrics_json") or "{}")
-                        except json.JSONDecodeError:
-                            existing = {}
-
-                        def merge(left, right):
-                            for name, value in right.items():
-                                if isinstance(value, dict) and isinstance(left.get(name), dict):
-                                    merge(left[name], value)
-                                else:
-                                    left[name] = value
-                            return left
-
-                        r["metrics_json"] = json.dumps(
-                            merge(existing, v), ensure_ascii=False, separators=(",", ":")
-                        )
-                        continue
-                    if k == "threshold_audit" and isinstance(v, dict):
-                        r["threshold_audit_json"] = json.dumps(
-                            v, ensure_ascii=False, separators=(",", ":")
-                        )
-                        continue
-                    if k in INDEX_COLUMNS:
-                        r[k] = str(v) if not isinstance(v, str) else v
-                r["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                break
-        if not found:
-            raise KeyError(f"candidate_id not found: {candidate_id}")
-        cls._write_rows(rows)
+        patches = {}
+        for key, value in scores.items():
+            if key == "metrics" and isinstance(value, dict):
+                patches[key] = value
+            elif key == "threshold_audit" and isinstance(value, dict):
+                patches["threshold_audit_json"] = json.dumps(
+                    value, ensure_ascii=False, separators=(",", ":")
+                )
+            elif key in INDEX_COLUMNS:
+                patches[key] = str(value) if not isinstance(value, str) else value
+        patches["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        backend = get_storage_backend()
+        backend.update_candidate(candidate_id, patches)
+        _project_candidates(backend)
 
     @classmethod
     def update_status(cls, candidate_id: str, status: str, notes: str = ""):
-        rows = cls.load()
-        found = False
-        for r in rows:
-            if r["candidate_id"] == candidate_id:
-                found = True
-                r["final_status"] = status
-                if notes:
-                    r["notes"] = notes
-                r["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                break
-        if not found:
-            raise KeyError(f"candidate_id not found: {candidate_id}")
-        cls._write_rows(rows)
+        patches = {
+            "final_status": status,
+            "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        if notes:
+            patches["notes"] = notes
+        backend = get_storage_backend()
+        backend.update_candidate(candidate_id, patches)
+        _project_candidates(backend)
 
     @classmethod
     def filter_by_status(cls, status: str) -> list[dict]:

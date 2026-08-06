@@ -353,7 +353,6 @@ def assert_action_executable(task: dict) -> dict:
             "execution_action_reserved_v2",
             f"{action} is reserved for v2 and has no executable handler",
         )
-    normalized = validate_task_parameters(task)
     try:
         spec = get_action_spec(action)
     except ValueError as exc:
@@ -364,6 +363,7 @@ def assert_action_executable(task: dict) -> dict:
         raise ExecutionContractError(
             "execution_action_unimplemented", f"{action} has no reviewed Execution v1 handler"
         )
+    normalized = validate_task_parameters(task)
     # Import lazily: action_registry binds the legacy HANDLERS map and imports
     # this module for the output contracts.
     from execution.action_registry import handler_for

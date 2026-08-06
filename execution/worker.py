@@ -12,6 +12,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,11 +26,16 @@ from agents.orchestrator import (  # noqa: E402
     fail,
     status,
 )
-from data_layer import EvidenceLogger  # noqa: E402
+from data_layer import (  # noqa: E402
+    EvidenceLogger,
+    get_storage_backend,
+    refresh_projections,
+)
 from prediction_pipeline.contracts import file_sha256  # noqa: E402
 from contracts.errors import ErrorInfo  # noqa: E402
 from contracts.task import TaskStatus  # noqa: E402
 from contracts.trace import TraceContext  # noqa: E402
+from contracts.transaction import TransactionContext, TransactionStatus  # noqa: E402
 
 from execution.config import ExecutionConfig  # noqa: E402
 from execution.contracts import (  # noqa: E402
@@ -39,8 +45,86 @@ from execution.contracts import (  # noqa: E402
     validate_dispatch_packet,
 )
 from execution.action_registry import handler_for  # noqa: E402
-from execution.handlers import HandlerContext  # noqa: E402
+from execution.adapters import adapter_for  # noqa: E402
+from execution.commit_manager import CommitManager  # noqa: E402
+from execution.results import ExecutionActionResult  # noqa: E402
+from execution.staging import StagingArea  # noqa: E402
+from storage.base import Store  # noqa: E402
 from execution.supervisor import atomic_json  # noqa: E402
+
+
+class ExecutionFailure(RuntimeError):
+    pass
+
+
+class ExecutionWorker:
+    """Run one action through isolated staging and atomic formal commit."""
+
+    def __init__(self, store: Store, staging_root: Path, artifact_root: Path):
+        self.store = store
+        self.staging_root = staging_root
+        self.commit_manager = CommitManager(store, artifact_root)
+        self._staging: dict[str, StagingArea] = {}
+
+    def run(
+        self,
+        context: TransactionContext,
+        handler: Callable[[TransactionContext, StagingArea], ExecutionActionResult],
+        *,
+        validator: Callable[[ExecutionActionResult], None],
+    ) -> ExecutionActionResult:
+        staging = StagingArea(self.staging_root, context.transaction_id).create()
+        self._staging[context.transaction_id] = staging
+        context.transition(TransactionStatus.STAGING)
+        try:
+            result = handler(context, staging)
+            if not isinstance(result, ExecutionActionResult):
+                raise TypeError(
+                    f"execution handler returned {type(result).__name__}, expected ExecutionActionResult"
+                )
+            context.transition(TransactionStatus.VALIDATING)
+            validator(result)
+            self.commit_manager.commit(
+                context,
+                candidate_updates=result.candidate_updates,
+                state_updates=result.state_updates,
+                artifacts=result.artifacts,
+                staging_path=staging.path,
+            )
+            return result
+        except BaseException as exc:
+            if context.status == TransactionStatus.ROLLED_BACK:
+                context.transition(TransactionStatus.FAILED)
+            elif context.status in {TransactionStatus.STAGING, TransactionStatus.VALIDATING}:
+                context.transition(TransactionStatus.FAILED)
+            self.store.record_task_failure(
+                context=context.to_dict(),
+                error=ErrorInfo.from_exception(exc, component="execution.worker").to_dict(),
+            )
+            staging.discard()
+            self._staging.pop(context.transaction_id, None)
+            raise
+
+    def rollback(self, context: TransactionContext) -> None:
+        staging = self._staging[context.transaction_id]
+        self.commit_manager.rollback_committed(context, staging.path)
+        refresh_projections()
+
+    def finalize(self, context: TransactionContext) -> None:
+        staging = self._staging.pop(context.transaction_id, None)
+        if staging is not None:
+            staging.discard()
+
+
+def _validate_action_result(result: ExecutionActionResult) -> None:
+    roles = [role for role, _ in result.outputs]
+    if len(roles) != len(set(roles)):
+        raise ExecutionContractError("task_output_contract_invalid", "output roles must be unique")
+    for role, path in result.outputs:
+        if not role or not Path(path).is_file():
+            raise ExecutionContractError(
+                "task_output_contract_invalid", f"output is missing: {role}={path}"
+            )
 
 
 def _read_packet(path: Path, expected_sha256: str) -> dict:
@@ -75,6 +159,9 @@ def execute_task(
     packet = None
     task = None
     action = "unknown"
+    transaction_context = None
+    transaction_worker = None
+    orchestrator_closed = False
     trace_context = TraceContext(
         project_id=str((claimed["run"].get("plan") or {}).get("project_id") or "unknown_project"),
         workflow_id=str(
@@ -103,6 +190,21 @@ def execute_task(
                 "execution_handler_missing", f"no handler registered for {action}"
             )
         task_dir.mkdir(parents=True, exist_ok=False)
+        transaction_context = TransactionContext.create(
+            workflow_id=trace_context.workflow_id,
+            run_id=packet["run_id"],
+            task_id=task_id,
+            attempt_id=trace_context.attempt_id,
+            action=action,
+        )
+        transaction_worker = ExecutionWorker(
+            get_storage_backend(),
+            config.execution_root / ".staging",
+            config.execution_root / "artifacts",
+        )
+        transaction_worker.commit_manager.recover_pending(
+            config.execution_root / ".staging"
+        )
         atomic_json(task_dir / "dispatch_snapshot.json", packet)
         atomic_json(task_dir / "execution_started.json", {
             "execution_worker_version": EXECUTION_WORKER_VERSION,
@@ -113,6 +215,7 @@ def execute_task(
             "workflow_id": trace_context.workflow_id,
             "plan_id": trace_context.plan_id,
             "attempt_id": trace_context.attempt_id,
+            "transaction_id": transaction_context.transaction_id,
             "normalized_parameters": parameters,
             "started_monotonic_recorded": True,
         })
@@ -124,7 +227,20 @@ def execute_task(
             "task_dir": str(task_dir),
             "attempt": attempt,
         }, phase=task["phase"], trace_context=trace_context)
-        outcome = handler(HandlerContext(packet=packet, config=config, task_dir=task_dir))
+        adapter = adapter_for(
+            action,
+            handler,
+            packet,
+            config,
+            task_dir,
+            None,
+        )
+        outcome = transaction_worker.run(
+            transaction_context,
+            adapter,
+            validator=_validate_action_result,
+        )
+        refresh_projections()
         elapsed_seconds = max(0.0, time.monotonic() - started)
         output_values = [f"{role}={path}" for role, path in outcome.outputs]
         gpu_minutes = (
@@ -138,6 +254,7 @@ def execute_task(
             output_paths=output_values,
             gpu_minutes=gpu_minutes,
         )
+        orchestrator_closed = True
         receipt = {
             "execution_worker_version": EXECUTION_WORKER_VERSION,
             "status": TaskStatus.SUCCEEDED.value,
@@ -148,6 +265,7 @@ def execute_task(
             "plan_id": trace_context.plan_id,
             "attempt": attempt,
             "attempt_id": trace_context.attempt_id,
+            "transaction_id": transaction_context.transaction_id,
             "elapsed_seconds": elapsed_seconds,
             "gpu_minutes": gpu_minutes,
             "outputs": result["run"]["tasks"][task_id].get("outputs") or [
@@ -162,6 +280,7 @@ def execute_task(
             "execution", "execution_task_completed", receipt,
             phase=task["phase"], trace_context=trace_context,
         )
+        transaction_worker.finalize(transaction_context)
         return receipt
     except BaseException as exc:
         elapsed_seconds = max(0.0, time.monotonic() - started)
@@ -189,26 +308,37 @@ def execute_task(
             "plan_id": trace_context.plan_id,
             "attempt": attempt,
             "attempt_id": trace_context.attempt_id,
+            "transaction_id": (
+                transaction_context.transaction_id if transaction_context else ""
+            ),
             **error_info.to_dict(),
             "elapsed_seconds": elapsed_seconds,
             "gpu_minutes": gpu_minutes,
         }
+        if (
+            transaction_worker is not None
+            and transaction_context is not None
+            and transaction_context.status == TransactionStatus.COMMITTED
+            and not orchestrator_closed
+        ):
+            transaction_worker.rollback(transaction_context)
         atomic_json(task_dir / "execution_failure.json", failure)
-        try:
-            fail(
-                run_path=run_path,
-                task_id=task_id,
-                claim_token=token,
-                reason=f"{failure['code']}: {failure['message']}",
-                error_info=error_info,
-                gpu_minutes=gpu_minutes,
-            )
-        except Exception as close_exc:
-            failure["orchestrator_close_error"] = {
-                "code": getattr(close_exc, "code", close_exc.__class__.__name__),
-                "message": str(close_exc),
-            }
-            atomic_json(task_dir / "execution_failure.json", failure)
+        if not orchestrator_closed:
+            try:
+                fail(
+                    run_path=run_path,
+                    task_id=task_id,
+                    claim_token=token,
+                    reason=f"{failure['code']}: {failure['message']}",
+                    error_info=error_info,
+                    gpu_minutes=gpu_minutes,
+                )
+            except Exception as close_exc:
+                failure["orchestrator_close_error"] = {
+                    "code": getattr(close_exc, "code", close_exc.__class__.__name__),
+                    "message": str(close_exc),
+                }
+                atomic_json(task_dir / "execution_failure.json", failure)
         EvidenceLogger.log(
             "execution", "execution_task_failed", failure,
             phase=task["phase"] if task else "iterate",
