@@ -66,8 +66,16 @@ class SQLiteStore(Store):
         finally:
             connection.close()
 
+    @contextmanager
+    def _read(self):
+        connection = self._connect()
+        try:
+            yield connection
+        finally:
+            connection.close()
+
     def initialize(self) -> None:
-        with self._connect() as connection:
+        with self._read() as connection:
             ensure_schema(connection)
         with self._write() as connection:
             self._ensure_project(connection)
@@ -108,7 +116,7 @@ class SQLiteStore(Store):
 
     def get_state(self, project_id: str | None = None) -> dict[str, Any]:
         project_id = project_id or self.project_id
-        with self._connect() as connection:
+        with self._read() as connection:
             row = connection.execute(
                 "SELECT payload_json FROM states WHERE project_id = ?", (project_id,)
             ).fetchone()
@@ -201,7 +209,7 @@ class SQLiteStore(Store):
         return [f"C{value:04d}" for value in range(start, end + 1)]
 
     def get(self, candidate_id: str) -> dict[str, Any] | None:
-        with self._connect() as connection:
+        with self._read() as connection:
             row = connection.execute(
                 "SELECT payload_json FROM candidates WHERE project_id = ? AND candidate_id = ?",
                 (self.project_id, candidate_id),
@@ -330,7 +338,7 @@ class SQLiteStore(Store):
             query += " AND (status = ? OR json_extract(payload_json, '$.final_status') = ?)"
             params.extend([status, status])
         query += " ORDER BY candidate_id"
-        with self._connect() as connection:
+        with self._read() as connection:
             rows = connection.execute(query, params).fetchall()
         return [json.loads(row["payload_json"]) for row in rows]
 
@@ -377,7 +385,7 @@ class SQLiteStore(Store):
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY timestamp, rowid"
-        with self._connect() as connection:
+        with self._read() as connection:
             rows = connection.execute(sql, params).fetchall()
         events = []
         for row in rows:
@@ -421,7 +429,7 @@ class SQLiteStore(Store):
         return artifact_id
 
     def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
-        with self._connect() as connection:
+        with self._read() as connection:
             row = connection.execute(
                 "SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,)
             ).fetchone()

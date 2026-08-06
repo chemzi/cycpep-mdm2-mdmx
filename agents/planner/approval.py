@@ -10,7 +10,7 @@ from pathlib import Path
 from prediction_pipeline.contracts import file_sha256, object_sha256
 from .errors import PlannerContractError
 from .io import _atomic_json, _read_json
-from .validation import _validate_plan_for_approval, _validate_sha256
+from contracts.plan import validate_plan_for_approval, validate_sha256
 
 from .config import APPROVAL_SCHEMA_VERSION, PLAN_ID_RE
 
@@ -49,10 +49,11 @@ def record_approval(
     """Record explicit human approval bound to one immutable plan digest."""
     plan_path = Path(plan_path).expanduser().resolve()
     plan = _read_json(plan_path, "planner_plan")
-    plan = _validate_plan_for_approval(plan, plan_path)
+    plan = validate_plan_for_approval(plan, plan_path, error_cls=PlannerContractError)
     plan_id = str(plan.get("plan_id") or "")
-    input_digest = _validate_sha256(
-        plan.get("input_digest"), "plan_input_digest_invalid", "plan input_digest"
+    input_digest = validate_sha256(
+        plan.get("input_digest"), "plan_input_digest_invalid", "plan input_digest",
+        error_cls=PlannerContractError,
     )
     if not PLAN_ID_RE.fullmatch(plan_id) or plan_id != f"planner_{input_digest[:12]}":
         raise PlannerContractError("plan_id_invalid", "plan ID is not bound to input_digest")

@@ -25,6 +25,7 @@ from contracts import (
     get_action_spec,
 )
 from contracts.event import VALID_AGENTS, VALID_EVENT_TYPES
+from contracts.plan import PlanContractError, validate_plan_for_approval
 from execution.action_registry import ACTION_REGISTRY, handler_for, validate_registry
 from execution.config import ExecutionConfig
 from execution.contracts import ExecutionContractError, validate_dispatch_packet
@@ -191,8 +192,8 @@ class ContractMigrationTests(unittest.TestCase):
         self.assertEqual(task["resource_request"]["class"], spec.resource_class)
         tampered = copy.deepcopy(plan_result["plan"])
         tampered["tasks"][0]["resource_request"]["class"] = "cpu"
-        with self.assertRaises(planner.PlannerContractError) as raised:
-            planner._validate_plan_for_approval(tampered, Path(plan_result["plan_path"]))
+        with self.assertRaises(PlanContractError) as raised:
+            validate_plan_for_approval(tampered, Path(plan_result["plan_path"]))
         self.assertEqual(raised.exception.code, "execution_resource_class_mismatch")
 
     def test_v2_schemas_require_workflow_and_legacy_plan_adapts(self):

@@ -6,22 +6,18 @@ import re
 from dataclasses import dataclass
 
 from contracts.action import RecommendationMapping
+from contracts.plan import (
+    LEGACY_PLAN_SCHEMA_VERSION,
+    MANDATORY_POLICY_CONSTRAINTS,
+    PLANNER_VERSION,
+    PLAN_SCHEMA_VERSION,
+)
 
 from .errors import PlannerContractError
 
-PLANNER_VERSION = "1.2.1"
-PLAN_SCHEMA_VERSION = 2
-LEGACY_PLAN_SCHEMA_VERSION = 1
 APPROVAL_SCHEMA_VERSION = 1
 REPORT_ID_RE = re.compile(r"^critic_[0-9a-f]{12}$")
 PLAN_ID_RE = re.compile(r"^planner_[0-9a-f]{12}$")
-
-MANDATORY_POLICY_CONSTRAINTS = frozenset({
-    "do_not_change_thresholds_automatically",
-    "do_not_delete_candidates_automatically",
-    "do_not_start_gpu_jobs_without_planner_budget_and_execution_approval",
-    "reuse_complete_prediction_evidence",
-})
 
 SEVERITY_RANK = {"blocker": 0, "high": 1, "medium": 2, "info": 3}
 PRIORITY_RANK = {"P0": 0, "P1": 1, "P2": 2}

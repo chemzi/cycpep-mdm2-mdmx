@@ -29,7 +29,7 @@ from .config import (  # noqa: E402
 )
 from .service import adjust, build_plan, plan, run  # noqa: E402
 from .approval import record_approval  # noqa: E402
-from .validation import _validate_plan_for_approval, _validate_sha256  # noqa: E402
+from contracts.plan import validate_plan_for_approval, validate_sha256  # noqa: E402
 from .cli import build_parser, main  # noqa: E402
 
 __all__ = [
@@ -51,8 +51,8 @@ __all__ = [
     "plan",
     "adjust",
     "record_approval",
-    "_validate_plan_for_approval",
-    "_validate_sha256",
+    "validate_plan_for_approval",
+    "validate_sha256",
     "build_parser",
     "main",
 ]

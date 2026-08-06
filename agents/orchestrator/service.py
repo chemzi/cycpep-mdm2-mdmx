@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json, math, re
-from agents.planner import APPROVAL_SCHEMA_VERSION, PlannerContractError, _validate_plan_for_approval
+from agents.planner import APPROVAL_SCHEMA_VERSION
+from contracts.plan import PlanContractError, validate_plan_for_approval
 from contracts.task import SUCCESS_TASK_STATUSES, TERMINAL_TASK_STATUSES, TaskStatus
 from contracts.trace import TraceContext, derive_workflow_id
 from data_layer import EvidenceLogger, State
@@ -23,8 +24,8 @@ def _load_plan(plan_path: str | Path) -> tuple[Path, dict, str]:
     path = Path(plan_path).expanduser().resolve()
     plan = _read_json(path, "planner_plan")
     try:
-        plan = _validate_plan_for_approval(plan, path)
-    except (PlannerContractError, OSError) as exc:
+        plan = validate_plan_for_approval(plan, path)
+    except (PlanContractError, OSError) as exc:
         raise OrchestratorContractError(
             getattr(exc, "code", "planner_plan_invalid"), str(exc)
         ) from exc

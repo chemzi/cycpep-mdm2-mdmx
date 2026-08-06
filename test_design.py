@@ -48,6 +48,11 @@ DESIGN_TEST_ROOT = Path(tempfile.mkdtemp(prefix="cycpep-design-test-"))
 os.environ["CYCPEP_DATA_DIR"] = str(DESIGN_TEST_ROOT / "data")
 os.environ["CYCPEP_EVIDENCE_DIR"] = str(DESIGN_TEST_ROOT / "evidence")
 import data_layer as _real_data_layer  # noqa: E402  (restored after package import)
+_real_data_layer.DATA_DIR = DESIGN_TEST_ROOT / "data"
+_real_data_layer.EVIDENCE_DIR = DESIGN_TEST_ROOT / "evidence"
+_real_data_layer.STATE_PATH = _real_data_layer.DATA_DIR / "state.json"
+_real_data_layer.LOG_PATH = _real_data_layer.EVIDENCE_DIR / "evidence_log.jsonl"
+_real_data_layer.INDEX_PATH = _real_data_layer.DATA_DIR / "candidate_index.csv"
 
 _stub = types.ModuleType("data_layer")
 _stub.EvidenceLogger = EvidenceLogger
