@@ -12,6 +12,14 @@
     "attempts_factor": 10,
     "protected_pharmacophore": "FWL"
   },
+  "refold": {
+    "seed": 0,
+    "models": [
+      0
+    ],
+    "num_models": 1,
+    "num_recycles": 3
+  },
   "rfdiff": {
     "timesteps": 50
   },

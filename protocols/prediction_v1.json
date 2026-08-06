@@ -1,0 +1,15 @@
+{
+  "version": "prediction_v1",
+  "protocol_name": "af2_boltz2_prodigy_rosetta_postrelax_v1",
+  "description": "ColabDesign (AF2) fixed-sequence prediction + PRODIGY binding energy + Boltz-2 cross-check + Rosetta cyclic-monomer post-relax enrichment.",
+  "af2_prodigy": {
+    "seeds": [0, 1, 2],
+    "model_numbers": [0, 1, 2],
+    "num_recycles": 3
+  },
+  "enrichment": {
+    "seed_base": 101,
+    "post_relax_seed_base": 20260802,
+    "post_relax_repeats": 3
+  }
+}

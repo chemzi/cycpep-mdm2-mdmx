@@ -13,6 +13,7 @@ from typing import Callable
 import data_layer
 from data_layer import CandidateIndex, State
 from prediction_pipeline.contracts import file_sha256, object_sha256
+from prediction_pipeline.protocol import PREDICTION_PROTOCOL
 
 from .config import ExecutionConfig
 from .contracts import (
@@ -24,6 +25,12 @@ from .contracts import (
 from .supervisor import atomic_json, run_process
 from .results import ExecutionActionResult
 from contracts.candidate_update import CandidateUpdateBatch
+
+
+# Versioned scientific parameters (Engineering Standard section 8): all
+# prediction magic numbers are read from protocols/prediction_v1.json.
+_AF2_PRODIGY_PROTOCOL = PREDICTION_PROTOCOL["af2_prodigy"]
+_ENRICHMENT_PROTOCOL = PREDICTION_PROTOCOL["enrichment"]
 
 
 def _utcnow() -> str:
@@ -345,9 +352,9 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
             "--data-dir", context.config.colabdesign_params,
             "--colabdesign-dir", context.config.colabdesign_dir,
             "--cuda-data-dir", context.config.cuda_data_dir,
-            "--seeds", "0,1,2",
-            "--model-numbers", "0,1,2",
-            "--num-recycles", "3",
+            "--seeds", ",".join(str(v) for v in _AF2_PRODIGY_PROTOCOL["seeds"]),
+            "--model-numbers", ",".join(str(v) for v in _AF2_PRODIGY_PROTOCOL["model_numbers"]),
+            "--num-recycles", str(_AF2_PRODIGY_PROTOCOL["num_recycles"]),
             "--timeout", str(context.config.prediction_timeout_seconds),
             "--prodigy", context.config.prodigy_executable,
         ]
@@ -376,9 +383,10 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
                 "--prodigy", context.config.prodigy_executable,
                 "--pyrosetta-python", context.config.pyrosetta_python,
                 "--post-relax-python", context.config.pyrosetta_python,
-                "--seed", str(101 + offset),
-                "--post-relax-seed", str(20260802 + offset),
-                "--post-relax-repeats", "3",
+                "--seed", str(_ENRICHMENT_PROTOCOL["seed_base"] + offset),
+                "--post-relax-seed",
+                str(_ENRICHMENT_PROTOCOL["post_relax_seed_base"] + offset),
+                "--post-relax-repeats", str(_ENRICHMENT_PROTOCOL["post_relax_repeats"]),
                 "--timeout", str(context.config.prediction_timeout_seconds),
                 "--rosetta-timeout", str(context.config.rosetta_timeout_seconds),
                 "--post-relax-timeout", str(context.config.post_relax_timeout_seconds),

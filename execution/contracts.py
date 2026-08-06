@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from prediction_pipeline.contracts import file_sha256, object_sha256
+from prediction_pipeline.protocol import PREDICTOR_PROTOCOLS
 from contracts.action import (
     ACTION_CATALOG,
     ALL_ACTION_TYPES,
@@ -249,7 +250,7 @@ def validate_task_parameters(task: dict) -> dict:
                 "prediction_evidence_mode_invalid", f"unsupported mode {evidence_mode!r}"
             )
         protocol = str(parameters.get("predictor_protocol") or "")
-        if protocol != "af2_boltz2_prodigy_rosetta_postrelax_v1":
+        if protocol not in PREDICTOR_PROTOCOLS:
             raise ExecutionContractError(
                 "prediction_protocol_invalid", f"unsupported protocol {protocol!r}"
             )

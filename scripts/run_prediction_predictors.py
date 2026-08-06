@@ -34,6 +34,7 @@ from prediction_pipeline.contracts import (  # noqa: E402
     validate_project,
 )
 from target_bootstrap import assert_project_approved  # noqa: E402
+from prediction_pipeline.protocol import PREDICTION_PROTOCOL  # noqa: E402
 
 
 DEFAULT_PYTHON = os.environ.get(
@@ -350,7 +351,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", default=DEFAULT_PARAMS)
     parser.add_argument("--colabdesign-dir", default=DEFAULT_COLABDESIGN)
     parser.add_argument("--cuda-data-dir", default=DEFAULT_CUDA)
-    parser.add_argument("--seeds", default="0,1,2")
+    parser.add_argument(
+        "--seeds",
+        default=",".join(str(v) for v in PREDICTION_PROTOCOL["af2_prodigy"]["seeds"]),
+    )
     parser.add_argument(
         "--model-numbers",
         help="comma-separated AF2 models paired with --seeds; default 0,1,2,...",
@@ -360,7 +364,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="legacy single-model option; valid only when exactly one seed is used",
     )
-    parser.add_argument("--num-recycles", type=int, default=3)
+    parser.add_argument(
+        "--num-recycles",
+        type=int,
+        default=PREDICTION_PROTOCOL["af2_prodigy"]["num_recycles"],
+    )
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--prodigy", help="path/name of the PRODIGY executable")
     parser.add_argument("--resume", action="store_true")

@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data_layer import CandidateIndex, State  # noqa: E402
+from prediction_pipeline.protocol import PREDICTION_PROTOCOL  # noqa: E402
 from prediction_pipeline.adapters import (  # noqa: E402
     load_artifact_bundle,
     run_command,
@@ -361,9 +362,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--post-relax-python",
         help="Pinned PyRosetta Python used only for cyclic monomer post-relax",
     )
-    parser.add_argument("--seed", type=int, default=101)
-    parser.add_argument("--post-relax-seed", type=int, default=20260802)
-    parser.add_argument("--post-relax-repeats", type=int, default=3)
+    parser.add_argument(
+        "--seed", type=int, default=PREDICTION_PROTOCOL["enrichment"]["seed_base"]
+    )
+    parser.add_argument(
+        "--post-relax-seed",
+        type=int,
+        default=PREDICTION_PROTOCOL["enrichment"]["post_relax_seed_base"],
+    )
+    parser.add_argument(
+        "--post-relax-repeats",
+        type=int,
+        default=PREDICTION_PROTOCOL["enrichment"]["post_relax_repeats"],
+    )
     parser.add_argument("--post-relax-coordinate-stdev", type=float, default=0.5)
     parser.add_argument("--post-relax-timeout", type=int, default=3600)
     parser.add_argument("--binder-chain", default="B")

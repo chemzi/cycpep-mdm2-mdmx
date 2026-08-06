@@ -497,10 +497,11 @@ if '"offset" in batch' not in source and "'offset' in batch" not in source:
 
 def _refold_script_core(sequence, L):
     """Generated-script middle: model setup and cyclic-offset injection."""
+    seed = int(config.DESIGN_PROTOCOL["refold"]["seed"])
     return f"""
 model = mk_af_model(protocol='hallucination', data_dir={config.COLABDESIGN_PARAMS!r})
 model.prep_inputs(length={L})
-model.restart(seed=0, seq={sequence!r})
+model.restart(seed={seed}, seq={sequence!r})
 
 i = np.arange({L})
 ij = np.stack([i, i+{L}], -1)
@@ -526,9 +527,15 @@ model._inputs['offset'] = off
 
 def _refold_script_epilogue(sequence, output_pdb):
     """Generated-script tail: predict, verify drift, persist PDB and pLDDT."""
+    refold = config.DESIGN_PROTOCOL["refold"]
+    seed = int(refold["seed"])
+    models = list(refold["models"])
+    num_models = int(refold["num_models"])
+    num_recycles = int(refold["num_recycles"])
     return f"""
 aux = model.predict(
-    seq={sequence!r}, seed=0, models=[0], num_models=1, num_recycles=3,
+    seq={sequence!r}, seed={seed}, models={models!r}, num_models={num_models},
+    num_recycles={num_recycles},
     sample_models=False, dropout=False, hard=True, soft=False,
     verbose=False, return_aux=True,
 )
