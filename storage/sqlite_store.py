@@ -442,12 +442,14 @@ class SQLiteStore(Store):
         candidate_updates: Iterable[Mapping[str, Any]],
         state_updates: Mapping[str, Any],
         artifacts: Iterable[Mapping[str, Any]],
+        evidence_events: Iterable[Mapping[str, Any]] = (),
     ) -> list[str]:
         """Atomically publish one execution transaction and post-commit evidence."""
         context_value = _mapping(context)
         transaction_id = str(context_value["transaction_id"])
         candidate_updates = list(candidate_updates)
         artifacts = list(artifacts)
+        evidence_events = list(evidence_events)
         now = _now()
         event_ids: list[str] = []
         with self._write() as connection:
@@ -496,6 +498,16 @@ class SQLiteStore(Store):
                     "attempt_id": context_value.get("attempt_id"),
                     "candidate": candidate,
                 }))
+            for event in evidence_events:
+                formal_event = dict(_mapping(event))
+                formal_event.update({
+                    "workflow_id": context_value.get("workflow_id"),
+                    "run_id": context_value.get("run_id"),
+                    "task_id": context_value.get("task_id"),
+                    "attempt_id": context_value.get("attempt_id"),
+                    "transaction_id": transaction_id,
+                })
+                event_ids.append(self._append_event(connection, formal_event))
             event_ids.append(self._append_event(connection, {
                 "workflow_id": context_value.get("workflow_id"),
                 "run_id": context_value.get("run_id"),

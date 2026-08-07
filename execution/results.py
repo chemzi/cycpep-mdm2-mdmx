@@ -14,6 +14,7 @@ class ExecutionActionResult:
     candidate_updates: tuple[Mapping[str, Any], ...] = ()
     state_updates: Mapping[str, Any] | None = None
     artifacts: tuple[StagedArtifact, ...] = ()
+    evidence_events: tuple[Mapping[str, Any], ...] = ()
     outputs: tuple[tuple[str, Path], ...] = ()
     processes: tuple[Mapping[str, Any], ...] = ()
 
@@ -21,6 +22,9 @@ class ExecutionActionResult:
         object.__setattr__(self, "candidate_updates", tuple(self.candidate_updates))
         object.__setattr__(self, "state_updates", dict(self.state_updates or {}))
         object.__setattr__(self, "artifacts", tuple(self.artifacts))
+        object.__setattr__(
+            self, "evidence_events", tuple(dict(item) for item in self.evidence_events)
+        )
         object.__setattr__(self, "outputs", tuple(self.outputs))
         object.__setattr__(self, "processes", tuple(self.processes))
 

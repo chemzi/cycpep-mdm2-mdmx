@@ -53,6 +53,7 @@ class TransactionStore(ABC):
         candidate_updates: Iterable[Mapping[str, Any]],
         state_updates: Mapping[str, Any],
         artifacts: Iterable[Mapping[str, Any]],
+        evidence_events: Iterable[Mapping[str, Any]] = (),
     ) -> list[str]: ...
 
     @abstractmethod

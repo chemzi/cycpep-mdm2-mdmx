@@ -33,6 +33,7 @@ from data_layer import (  # noqa: E402
 )
 from prediction_pipeline.contracts import file_sha256  # noqa: E402
 from contracts.errors import ErrorInfo  # noqa: E402
+from contracts.event import VALID_AGENTS, VALID_EVENT_TYPES, VALID_PHASES  # noqa: E402
 from contracts.task import TaskStatus  # noqa: E402
 from contracts.trace import TraceContext  # noqa: E402
 from contracts.transaction import TransactionContext, TransactionStatus  # noqa: E402
@@ -89,6 +90,7 @@ class ExecutionWorker:
                 candidate_updates=result.candidate_updates,
                 state_updates=result.state_updates,
                 artifacts=result.artifacts,
+                evidence_events=result.evidence_events,
                 staging_path=staging.path,
             )
             return result
@@ -124,6 +126,19 @@ def _validate_action_result(result: ExecutionActionResult) -> None:
         if not role or not Path(path).is_file():
             raise ExecutionContractError(
                 "task_output_contract_invalid", f"output is missing: {role}={path}"
+            )
+    for event in result.evidence_events:
+        if event.get("agent") not in VALID_AGENTS:
+            raise ExecutionContractError(
+                "task_evidence_contract_invalid", "evidence event has an unknown agent"
+            )
+        if event.get("event_type") not in VALID_EVENT_TYPES:
+            raise ExecutionContractError(
+                "task_evidence_contract_invalid", "evidence event has an unknown type"
+            )
+        if event.get("phase") not in VALID_PHASES:
+            raise ExecutionContractError(
+                "task_evidence_contract_invalid", "evidence event has an unknown phase"
             )
 
 

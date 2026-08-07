@@ -40,6 +40,7 @@ class CommitManager:
         candidate_updates: Iterable[Mapping[str, object]] = (),
         state_updates: Mapping[str, object] | None = None,
         artifacts: Iterable[StagedArtifact] = (),
+        evidence_events: Iterable[Mapping[str, object]] = (),
         staging_path: str | Path,
     ) -> list[str]:
         staged = self.validate(artifacts)
@@ -98,6 +99,7 @@ class CommitManager:
                 ],
                 state_updates=dict(state_updates or {}),
                 artifacts=registrations,
+                evidence_events=evidence_events,
             )
         except BaseException:
             for path in temporary_paths:
