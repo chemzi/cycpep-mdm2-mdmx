@@ -17,6 +17,7 @@ class TransactionStatus(str, Enum):
     COMMITTED = "COMMITTED"
     FAILED = "FAILED"
     ROLLED_BACK = "ROLLED_BACK"
+    COMPENSATION_CONFLICT = "COMPENSATION_CONFLICT"
 
 
 _TRANSITIONS = {
@@ -24,8 +25,12 @@ _TRANSITIONS = {
     TransactionStatus.STAGING: {TransactionStatus.VALIDATING, TransactionStatus.FAILED},
     TransactionStatus.VALIDATING: {TransactionStatus.COMMITTING, TransactionStatus.FAILED},
     TransactionStatus.COMMITTING: {TransactionStatus.COMMITTED, TransactionStatus.ROLLED_BACK},
-    TransactionStatus.ROLLED_BACK: {TransactionStatus.FAILED},
-    TransactionStatus.COMMITTED: {TransactionStatus.ROLLED_BACK},
+    TransactionStatus.ROLLED_BACK: set(),
+    TransactionStatus.COMMITTED: {
+        TransactionStatus.ROLLED_BACK,
+        TransactionStatus.COMPENSATION_CONFLICT,
+    },
+    TransactionStatus.COMPENSATION_CONFLICT: {TransactionStatus.ROLLED_BACK},
     TransactionStatus.FAILED: set(),
 }
 
@@ -52,6 +57,7 @@ class TransactionContext:
         attempt_id: str,
         action: str,
         transaction_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> "TransactionContext":
         if not action:
             raise ValueError("transaction action is required")
@@ -63,6 +69,7 @@ class TransactionContext:
             attempt_id=attempt_id,
             action=action,
             created_at=datetime.now(timezone.utc).isoformat(),
+            metadata=dict(metadata or {}),
         )
 
     def transition(self, next_status: TransactionStatus) -> None:

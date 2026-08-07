@@ -343,6 +343,21 @@ class State:
         _project_state_file(backend)
 
     @classmethod
+    def append_history_if_absent(
+        cls, entry: dict, *, identity_path: tuple[str, ...], identity_value: object
+    ):
+        backend = get_storage_backend()
+        _project_state(backend)
+        backend.append_state_item_if_absent(
+            _project_id(),
+            "iteration_history",
+            entry,
+            identity_path=identity_path,
+            identity_value=identity_value,
+        )
+        _project_state_file(backend)
+
+    @classmethod
     def sync_project_config(cls, config: dict) -> dict:
         """Make the approved config authoritative for target identity in state."""
         state = cls.load()

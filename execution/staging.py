@@ -8,6 +8,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from prediction_pipeline.contracts import file_sha256
+
 
 @dataclass(frozen=True)
 class StagedArtifact:
@@ -15,6 +17,7 @@ class StagedArtifact:
     artifact_type: str
     staged_path: str
     size_bytes: int
+    sha256: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -53,6 +56,7 @@ class StagingArea:
             artifact_type=artifact_type,
             staged_path=str(destination),
             size_bytes=destination.stat().st_size,
+            sha256=file_sha256(destination),
         )
 
     def write_manifest(self, name: str, payload: Mapping[str, Any]) -> Path:
