@@ -80,6 +80,73 @@ def run_post_relax(
     timeout: int = 3600,
 ) -> dict:
     """Relax one cyclic monomer and return artifact entries for L4."""
+    pyrosetta_python, monomer_pdb, destination, seed, repeats, coordinate_stdev_angstrom = (
+        _validate_post_relax_inputs(
+            pyrosetta_python, monomer_pdb, output_dir, cyclization_type,
+            seed, repeats, coordinate_stdev_angstrom,
+        )
+    )
+    input_structure, input_chain, residues, pre_distance = _validate_post_relax_input_structure(
+        monomer_pdb, sequence
+    )
+    xml_path, output_pdb, runtime_path, command, result = _run_pyrosetta_relax(
+        pyrosetta_python, monomer_pdb, sequence, residues, destination,
+        seed, repeats, coordinate_stdev_angstrom, timeout,
+    )
+    (destination / "stdout.log").write_text(result.stdout, encoding="utf-8")
+    (destination / "stderr.log").write_text(result.stderr, encoding="utf-8")
+    if result.exit_code:
+        raise ContractError(
+            "post_relax_failed",
+            f"PyRosetta exited {result.exit_code}; see {destination / 'stderr.log'}",
+        )
+    if not output_pdb.is_file():
+        raise ContractError("post_relax_output_missing", f"missing {output_pdb}")
+
+    runtime, virtual_removed = _validate_relax_runtime(
+        runtime_path, sequence, coordinate_stdev_angstrom
+    )
+    output_chain, post_distance, drift = _validate_relax_outputs(
+        output_pdb, sequence, input_chain, input_structure
+    )
+    (pre_score, post_score, pre_constrained_score, post_constrained_score,
+     runtime_constraints, expected_constraint_weights) = _extract_relax_scores(
+        runtime, coordinate_stdev_angstrom
+    )
+    return _build_relax_result(
+        runtime=runtime,
+        virtual_removed=virtual_removed,
+        monomer_pdb=monomer_pdb,
+        output_pdb=output_pdb,
+        xml_path=xml_path,
+        runtime_path=runtime_path,
+        command=command,
+        sequence=sequence,
+        input_chain=input_chain,
+        output_chain=output_chain,
+        pre_distance=pre_distance,
+        post_distance=post_distance,
+        drift=drift,
+        pre_score=pre_score,
+        post_score=post_score,
+        pre_constrained_score=pre_constrained_score,
+        post_constrained_score=post_constrained_score,
+        runtime_constraints=runtime_constraints,
+        expected_constraint_weights=expected_constraint_weights,
+        seed=seed,
+        repeats=repeats,
+    )
+
+
+def _validate_post_relax_inputs(
+    pyrosetta_python: str | Path,
+    monomer_pdb: str | Path,
+    output_dir: str | Path,
+    cyclization_type: str,
+    seed: int,
+    repeats: int,
+    coordinate_stdev_angstrom: float,
+) -> tuple[Path, Path, Path, int, int, float]:
     pyrosetta_python = Path(pyrosetta_python).expanduser().resolve()
     monomer_pdb = Path(monomer_pdb).expanduser().resolve()
     destination = Path(output_dir).expanduser().resolve()
@@ -105,7 +172,12 @@ def run_post_relax(
             "predictor_output_exists", f"post-relax directory is not empty: {destination}"
         )
     destination.mkdir(parents=True, exist_ok=True)
+    return pyrosetta_python, monomer_pdb, destination, seed, repeats, coordinate_stdev_angstrom
 
+
+def _validate_post_relax_input_structure(
+    monomer_pdb: Path, sequence: str
+) -> tuple[object, str, object, float]:
     input_structure = parse_pdb(monomer_pdb)
     input_chain = exact_sequence_chain(input_structure, sequence.upper())
     if len(input_structure.chains) != 1:
@@ -120,7 +192,20 @@ def run_post_relax(
             "post_relax_cyclic_bond_open",
             f"input terminal C--N distance is {pre_distance:.3f} A",
         )
+    return input_structure, input_chain, residues, pre_distance
 
+
+def _run_pyrosetta_relax(
+    pyrosetta_python: Path,
+    monomer_pdb: Path,
+    sequence: str,
+    residues,
+    destination: Path,
+    seed: int,
+    repeats: int,
+    coordinate_stdev_angstrom: float,
+    timeout: int,
+) -> tuple[Path, Path, Path, list[str], object]:
     version_result = run_command(
         [
             str(pyrosetta_python), "-c",
@@ -159,16 +244,12 @@ def run_post_relax(
         "--coordinate-stdev", str(float(coordinate_stdev_angstrom)),
     ]
     result = run_command(command, timeout=timeout, cwd=destination)
-    (destination / "stdout.log").write_text(result.stdout, encoding="utf-8")
-    (destination / "stderr.log").write_text(result.stderr, encoding="utf-8")
-    if result.exit_code:
-        raise ContractError(
-            "post_relax_failed",
-            f"PyRosetta exited {result.exit_code}; see {destination / 'stderr.log'}",
-        )
-    if not output_pdb.is_file():
-        raise ContractError("post_relax_output_missing", f"missing {output_pdb}")
+    return xml_path, output_pdb, runtime_path, command, result
 
+
+def _validate_relax_runtime(
+    runtime_path: Path, sequence: str, coordinate_stdev_angstrom: float
+) -> tuple[dict, int]:
     runtime = _read_json_object(runtime_path, "post_relax_runtime_invalid")
     if runtime.get("pyrosetta_package_version") != PYROSETTA_VERSION:
         raise ContractError("pyrosetta_version_mismatch", str(runtime_path))
@@ -189,7 +270,15 @@ def run_post_relax(
         raise ContractError(
             "post_relax_runtime_invalid", "invalid virtual-residue cleanup count"
         )
+    return runtime, virtual_removed
 
+
+def _validate_relax_outputs(
+    output_pdb: Path,
+    sequence: str,
+    input_chain: str,
+    input_structure,
+) -> tuple[str, float, float]:
     output_structure = parse_pdb(output_pdb)
     output_chain = exact_sequence_chain(output_structure, sequence.upper())
     if output_chain != input_chain or len(output_structure.chains) != 1:
@@ -209,7 +298,12 @@ def run_post_relax(
             "post_relax_backbone_drift",
             f"post-relax backbone RMSD is {drift:.3f} A",
         )
+    return output_chain, post_distance, drift
 
+
+def _extract_relax_scores(
+    runtime: dict, coordinate_stdev_angstrom: float
+) -> tuple[float, float, float, float, dict, dict]:
     pre_score = _finite_runtime_number(runtime, "pre_total_score_ref2015")
     post_score = _finite_runtime_number(runtime, "post_total_score_ref2015")
     pre_constrained_score = _finite_runtime_number(
@@ -239,7 +333,36 @@ def run_post_relax(
         raise ContractError(
             "post_relax_constraint_invalid", "runtime score weights differ"
         )
+    return (
+        pre_score, post_score, pre_constrained_score, post_constrained_score,
+        runtime_constraints, expected_constraint_weights,
+    )
 
+
+def _build_relax_result(
+    *,
+    runtime: dict,
+    virtual_removed: int,
+    monomer_pdb: Path,
+    output_pdb: Path,
+    xml_path: Path,
+    runtime_path: Path,
+    command: list[str],
+    sequence: str,
+    input_chain: str,
+    output_chain: str,
+    pre_distance: float,
+    post_distance: float,
+    drift: float,
+    pre_score: float,
+    post_score: float,
+    pre_constrained_score: float,
+    post_constrained_score: float,
+    runtime_constraints: dict,
+    expected_constraint_weights: dict,
+    seed: int,
+    repeats: int,
+) -> dict:
     metadata = {
         "tool": POST_RELAX_TOOL,
         "tool_version": PYROSETTA_VERSION,
@@ -278,7 +401,7 @@ def run_post_relax(
         "runtime_metadata_sha256": file_sha256(runtime_path),
         "command": command,
     }
-    metadata_path = destination / "post_relax_metadata.json"
+    metadata_path = runtime_path.parent / "post_relax_metadata.json"
     metadata_path.write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -295,3 +418,4 @@ def run_post_relax(
             "post_total_score_ref2015": post_score,
         },
     }
+

@@ -29,28 +29,10 @@
         "lines": 184
       },
       {
-        "file": "prediction_pipeline/boltz_worker.py",
-        "function": "run_boltz_prediction",
-        "line": 107,
-        "lines": 203
-      },
-      {
         "file": "prediction_pipeline/pipeline.py",
         "function": "_collect_metrics",
         "line": 368,
         "lines": 525
-      },
-      {
-        "file": "prediction_pipeline/relax_worker.py",
-        "function": "run_post_relax",
-        "line": 70,
-        "lines": 228
-      },
-      {
-        "file": "prediction_pipeline/rosetta_worker.py",
-        "function": "run_rosetta_interface",
-        "line": 53,
-        "lines": 191
       }
     ],
     "action_handlers": [],

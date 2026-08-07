@@ -65,6 +65,60 @@ def run_rosetta_interface(
     timeout: int = 1800,
 ) -> dict:
     """Run InterfaceAnalyzer once and bind the result to one prediction PDB."""
+    executable_path, pyrosetta_path, complex_pdb, destination = _validate_rosetta_inputs(
+        executable, pyrosetta_python, complex_pdb, output_dir
+    )
+    closure_distance, binder_positions = _validate_rosetta_structure(
+        complex_pdb, binder_sequence, binder_chain, target_chain
+    )
+    xml_path, score_path, runtime_metadata_path, command, engine, version_text = (
+        _prepare_rosetta_engine(
+            executable_path, pyrosetta_path, complex_pdb, destination,
+            target_chain, binder_chain, binder_positions, predictor, model_id, seed,
+        )
+    )
+    result = run_command(command, timeout=timeout, cwd=destination)
+    (destination / "stdout.log").write_text(result.stdout, encoding="utf-8")
+    (destination / "stderr.log").write_text(result.stderr, encoding="utf-8")
+    if result.exit_code:
+        raise ContractError(
+            "rosetta_failed",
+            f"Rosetta exited {result.exit_code}; see {destination / 'stderr.log'}",
+        )
+    if not score_path.is_file():
+        raise ContractError("rosetta_output_missing", f"missing {score_path}")
+    parsed, runtime_metadata, scripts_version_text = _parse_rosetta_outputs(
+        score_path, runtime_metadata_path, executable_path, pyrosetta_path
+    )
+    if not pyrosetta_path:
+        version_text = scripts_version_text
+    return _build_rosetta_metadata_and_result(
+        engine=engine,
+        version_text=version_text,
+        runtime_metadata=runtime_metadata,
+        predictor=predictor,
+        model_id=model_id,
+        seed=seed,
+        complex_pdb=complex_pdb,
+        target_chain=target_chain,
+        binder_chain=binder_chain,
+        binder_sequence=binder_sequence,
+        closure_distance=closure_distance,
+        binder_positions=binder_positions,
+        parsed=parsed,
+        xml_path=xml_path,
+        score_path=score_path,
+        command=command,
+        destination=destination,
+    )
+
+
+def _validate_rosetta_inputs(
+    executable: str | Path | None,
+    pyrosetta_python: str | Path | None,
+    complex_pdb: str | Path,
+    output_dir: str | Path,
+) -> tuple[Path | None, Path | None, Path, Path]:
     if bool(executable) == bool(pyrosetta_python):
         raise ContractError(
             "rosetta_engine_invalid",
@@ -88,7 +142,15 @@ def run_rosetta_interface(
             "predictor_output_exists", f"Rosetta output directory is not empty: {destination}"
         )
     destination.mkdir(parents=True, exist_ok=True)
+    return executable_path, pyrosetta_path, complex_pdb, destination
 
+
+def _validate_rosetta_structure(
+    complex_pdb: Path,
+    binder_sequence: str,
+    binder_chain: str,
+    target_chain: str,
+) -> tuple[float, list[int]]:
     structure = parse_pdb(complex_pdb)
     observed_chain = exact_sequence_chain(structure, binder_sequence)
     if observed_chain != binder_chain:
@@ -115,6 +177,21 @@ def run_rosetta_interface(
             "rosetta_binder_length_mismatch",
             "PDB binder residue count differs from requested sequence",
         )
+    return closure_distance, binder_positions
+
+
+def _prepare_rosetta_engine(
+    executable_path: Path | None,
+    pyrosetta_path: Path | None,
+    complex_pdb: Path,
+    destination: Path,
+    target_chain: str,
+    binder_chain: str,
+    binder_positions: list[int],
+    predictor: str,
+    model_id: str,
+    seed: int,
+) -> tuple[Path, Path, Path, list[str], str, str]:
     xml_path = destination / "cyclic_interface.xml"
     xml_path.write_text(
         interface_xml(
@@ -168,20 +245,20 @@ def run_rosetta_interface(
         ]
         engine = "RosettaScripts"
         version_text = ""
-    result = run_command(command, timeout=timeout, cwd=destination)
-    (destination / "stdout.log").write_text(result.stdout, encoding="utf-8")
-    (destination / "stderr.log").write_text(result.stderr, encoding="utf-8")
-    if result.exit_code:
-        raise ContractError(
-            "rosetta_failed",
-            f"Rosetta exited {result.exit_code}; see {destination / 'stderr.log'}",
-        )
-    if not score_path.is_file():
-        raise ContractError("rosetta_output_missing", f"missing {score_path}")
+    return xml_path, score_path, runtime_metadata_path, command, engine, version_text
+
+
+def _parse_rosetta_outputs(
+    score_path: Path,
+    runtime_metadata_path: Path,
+    executable_path: Path | None,
+    pyrosetta_path: Path | None,
+) -> tuple[dict, dict | None, str]:
     parsed = parse_rosetta_interface_output(
         score_path.read_text(encoding="utf-8", errors="replace")
     )
     runtime_metadata = None
+    version_text = ""
     if pyrosetta_path:
         if not runtime_metadata_path.is_file():
             raise ContractError(
@@ -202,6 +279,29 @@ def run_rosetta_interface(
     else:
         version_result = run_command([str(executable_path), "-version"], timeout=60)
         version_text = (version_result.stdout or version_result.stderr).strip()
+    return parsed, runtime_metadata, version_text
+
+
+def _build_rosetta_metadata_and_result(
+    *,
+    engine: str,
+    version_text: str,
+    runtime_metadata: dict | None,
+    predictor: str,
+    model_id: str,
+    seed: int,
+    complex_pdb: Path,
+    target_chain: str,
+    binder_chain: str,
+    binder_sequence: str,
+    closure_distance: float,
+    binder_positions: list[int],
+    parsed: dict,
+    xml_path: Path,
+    score_path: Path,
+    command: list[str],
+    destination: Path,
+) -> dict:
     metadata = {
         "tool": f"{engine} InterfaceAnalyzerMover",
         "tool_version_output": version_text[-2000:],
@@ -241,3 +341,4 @@ def run_rosetta_interface(
         "metadata": str(metadata_path),
         "metadata_sha256": file_sha256(metadata_path),
     }
+
