@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+from contracts.critic import resolve_critic_report_path
 from contracts.trace import TraceContext
-from data_layer import CandidateIndex, EvidenceLogger, State
+from data_layer import (
+    CandidateIndex,
+    EvidenceLogger,
+    State,
+    get_storage_backend,
+)
 from pathlib import Path
 from prediction_pipeline.contracts import file_sha256
 from .config import PLANNER_VERSION, PlannerConfig
@@ -156,7 +162,8 @@ def _plan_progress_step(
             "approval_required": "execution_budget",
         }]
     critic = state.get("critic") or {}
-    if not critic.get("report_path"):
+    critic_report_path = resolve_critic_report_path(critic, get_storage_backend())
+    if not critic_report_path:
         return [{
             "agent": "critic",
             "action": "review_prediction_handoff",
@@ -171,7 +178,7 @@ def _plan_progress_step(
         "phase": phase or "iterate",
         "reason": "Critic report is ready for deterministic planning",
         "execution_allowed": True,
-        "critic_report_path": critic["report_path"],
+        "critic_report_path": critic_report_path,
     }]
 
 def adjust(

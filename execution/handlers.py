@@ -51,6 +51,20 @@ class HandlerContext:
     task_dir: Path
     project_config: dict | None = None
     transaction_managed: bool = False
+    transaction_id: str | None = None
+
+    def artifact_id_for(self, role: str) -> str:
+        """Predict the committed artifact id for one output role.
+
+        Must stay in sync with the adapter's staging naming so handlers can
+        reference formal artifact identity in state updates before commit.
+        """
+        if not self.transaction_id:
+            raise ExecutionContractError(
+                "transaction_context_required",
+                "artifact identity requires a transaction-managed context",
+            )
+        return f"{self.transaction_id}-{role}"
 
     @property
     def task(self) -> dict:
@@ -485,9 +499,9 @@ def review_prediction_handoff(context: HandlerContext) -> HandlerOutcome:
         atomic_json(output, report)
         state_updates, evidence = critic_persistence_effects(
             report=report,
-            report_path=output,
             report_digest=file_sha256(output),
             state=state,
+            report_artifact_id=context.artifact_id_for("critic_report"),
         )
         return HandlerOutcome(
             state_updates=state_updates,

@@ -274,6 +274,37 @@ class DataIntegrityTransactionTests(unittest.TestCase):
         row = store.get_artifact("with-digest")
         self.assertEqual(row["sha256"], file_sha256(source))
 
+    def test_artifact_content_changed_during_copy_is_rejected(self):
+        """TOCTOU: content swapped between validate and copy must not register."""
+        store = SQLiteStore(self.root / "copy-window.db", project_id="p1")
+        worker = ExecutionWorker(store, self.root / "staging", self.root / "artifacts")
+        source = self.root / "copy-source.txt"
+        source.write_text("original", encoding="utf-8")
+
+        def handler(_context, staging):
+            artifact = staging.stage_artifact(
+                source, artifact_id="copy-window", artifact_type="text"
+            )
+            return ExecutionActionResult(artifacts=(artifact,))
+
+        import execution.commit_manager as commit_manager
+
+        real_copyfile = commit_manager.shutil.copyfile
+
+        def tampering_copyfile(src, dst):
+            # Simulate a content swap landing only in the commit copy window:
+            # the temporary formal copy differs from the staged digest.
+            real_copyfile(src, dst)
+            if str(dst).endswith(".tmp"):
+                Path(dst).write_text("tampered-content", encoding="utf-8")
+
+        with patch.object(
+            commit_manager.shutil, "copyfile", side_effect=tampering_copyfile
+        ), self.assertRaisesRegex(ValueError, "changed during commit"):
+            worker.run(self._transaction(), handler, validator=_validate_action_result)
+        self.assertIsNone(store.get_artifact("copy-window"))
+        self.assertFalse(any((self.root / "artifacts").rglob("*.txt")))
+
     def test_recovery_reports_unresolved_compensation_conflict(self):
         store = SQLiteStore(self.root / "recovery-conflict.db", project_id="p1")
         store.replace_state("p1", {"candidate_count": 0})
@@ -313,7 +344,7 @@ class DataIntegrityTransactionTests(unittest.TestCase):
         marker.write_text(json.dumps(payload), encoding="utf-8")
 
         recovery = RecoveryManager(store)
-        self.assertEqual(recovery.recover_pending(self.root / "staging"), [])
+        self.assertEqual(list(recovery.recover_pending(self.root / "staging").recovered), [])
         self.assertEqual(recovery.unresolved_transactions, [context.transaction_id])
         self.assertEqual(store.get_state("p1")["shared"], "from-b")
         self.assertIsNotNone(store.get("C0001"))
@@ -350,15 +381,17 @@ class DataIntegrityTransactionTests(unittest.TestCase):
         )
         payload = json.loads(marker.read_text(encoding="utf-8"))
         payload["status"] = "PREPARED"
+        # Simulate a crashed owner: no live heartbeat signal.
+        payload.pop("heartbeat_monotonic", None)
         marker.write_text(json.dumps(payload), encoding="utf-8")
 
         restarted = ExecutionWorker(
             store, self.root / "staging", self.root / "artifacts"
         )
-        recovered = restarted.commit_manager.recover_pending(
-            self.root / "staging", orchestrator_closed=lambda _: False
+        result = restarted.commit_manager.recover_pending(
+            self.root / "staging", orchestrator_state=lambda _: "open"
         )
-        self.assertEqual(recovered, [context.transaction_id])
+        self.assertEqual(list(result.recovered), [context.transaction_id])
         self.assertEqual(store.get_transaction_status(context.transaction_id), "ROLLED_BACK")
         self.assertEqual(store.list(), [])
         self.assertEqual(store.query(task_id="T001"), [])
@@ -388,18 +421,130 @@ class DataIntegrityTransactionTests(unittest.TestCase):
         )
         payload = json.loads(marker.read_text(encoding="utf-8"))
         payload["status"] = "PREPARED"
+        payload.pop("heartbeat_monotonic", None)
         marker.write_text(json.dumps(payload), encoding="utf-8")
 
         recovery = RecoveryManager(store)
-        recovered = recovery.recover_pending(
-            self.root / "staging", orchestrator_closed=lambda _: True
+        result = recovery.recover_pending(
+            self.root / "staging", orchestrator_state=lambda _: "closed"
         )
-        self.assertEqual(recovered, [context.transaction_id])
+        self.assertEqual(list(result.recovered), [context.transaction_id])
         self.assertTrue(store.get_state("p1")["formal"])
         self.assertEqual(
             json.loads(marker.read_text(encoding="utf-8"))["status"],
             "ORCHESTRATOR_CLOSED",
         )
+
+    def test_recovery_skips_transaction_with_live_owner_heartbeat(self):
+        """A COMMITTED transaction whose owner heartbeats fresh is never rolled back."""
+        store = SQLiteStore(self.root / "live-owner.db", project_id="p1")
+        store.replace_state("p1", {"candidate_count": 0})
+        worker = ExecutionWorker(store, self.root / "staging", self.root / "artifacts")
+        context = self._transaction()
+        source = self.root / "live-artifact.txt"
+        source.write_text("live", encoding="utf-8")
+
+        def handler(_context, staging):
+            artifact = staging.stage_artifact(
+                source, artifact_id="live-artifact", artifact_type="text"
+            )
+            return ExecutionActionResult(
+                candidate_updates=({"candidate_id": "C0001", "sequence": "AAAA"},),
+                state_updates={"phase": "critic"},
+                artifacts=(artifact,),
+            )
+
+        worker.run(context, handler, validator=_validate_action_result)
+        committed_file = Path(store.get_artifact("live-artifact")["path"])
+        marker = (
+            self.root / "staging" / context.transaction_id / "metadata" / "commit.json"
+        )
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        # Owner is still in the commit->closure window: fresh heartbeat present.
+        self.assertIn("heartbeat_monotonic", payload)
+
+        # Another worker starts and scans while owner A is still alive.
+        other = RecoveryManager(store)
+        result = other.recover_pending(
+            self.root / "staging", orchestrator_state=lambda _: "open"
+        )
+        self.assertEqual(list(result.skipped_active), [context.transaction_id])
+        self.assertEqual(list(result.recovered), [])
+        # Nothing was rolled back.
+        self.assertEqual(
+            store.get_transaction_status(context.transaction_id), "COMMITTED"
+        )
+        self.assertIsNotNone(store.get("C0001"))
+        self.assertTrue(committed_file.exists())
+        self.assertEqual(store.get_state("p1")["phase"], "critic")
+
+    def test_recovery_unknown_orchestrator_state_never_compensates(self):
+        """UNKNOWN closure verdict must surface as unresolved, never compensate."""
+        store = SQLiteStore(self.root / "unknown-state.db", project_id="p1")
+        store.replace_state("p1", {"candidate_count": 0})
+        worker = ExecutionWorker(store, self.root / "staging", self.root / "artifacts")
+        context = self._transaction()
+        worker.run(
+            context,
+            lambda *_: ExecutionActionResult(state_updates={"formal": True}),
+            validator=_validate_action_result,
+        )
+        marker = (
+            self.root / "staging" / context.transaction_id / "metadata" / "commit.json"
+        )
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        payload["status"] = "PREPARED"
+        payload.pop("heartbeat_monotonic", None)
+        marker.write_text(json.dumps(payload), encoding="utf-8")
+
+        recovery = RecoveryManager(store)
+        result = recovery.recover_pending(
+            self.root / "staging", orchestrator_state=lambda _: "unknown"
+        )
+        self.assertEqual(list(result.recovered), [])
+        self.assertEqual(list(result.unresolved), [context.transaction_id])
+        self.assertFalse(result.clean)
+        # Formal state untouched.
+        self.assertTrue(store.get_state("p1")["formal"])
+        self.assertEqual(
+            store.get_transaction_status(context.transaction_id), "COMMITTED"
+        )
+        self.assertEqual(
+            json.loads(marker.read_text(encoding="utf-8"))["status"],
+            "RECOVERY_UNRESOLVED",
+        )
+
+    def test_execute_task_refuses_to_start_on_unresolved_recovery(self):
+        """fail-closed: a new task must not start over unresolved recovery state."""
+        from execution.worker import RecoveryError
+
+        store = SQLiteStore(self.root / "fail-closed.db", project_id="p1")
+        store.replace_state("p1", {"candidate_count": 0})
+        # Seed an unresolved marker: compensation conflict left over.
+        worker = ExecutionWorker(store, self.root / "staging", self.root / "artifacts")
+        context = self._transaction()
+        worker.run(
+            context,
+            lambda *_: ExecutionActionResult(state_updates={"shared": "from-a"}),
+            validator=_validate_action_result,
+        )
+        store.update_state("p1", {"shared": "from-b"})
+        marker = (
+            self.root / "staging" / context.transaction_id / "metadata" / "commit.json"
+        )
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        payload["status"] = "COMPENSATION_FAILED"
+        marker.write_text(json.dumps(payload), encoding="utf-8")
+
+        # Directly exercise the fail-closed gate used by execute_task().
+        from execution.worker import _assert_recovery_clean
+
+        gate_worker = ExecutionWorker(store, self.root / "staging", self.root / "artifacts")
+        result = gate_worker.commit_manager.recover_pending(self.root / "staging")
+        self.assertFalse(result.clean)
+        with self.assertRaises(RecoveryError) as raised:
+            _assert_recovery_clean(result)
+        self.assertIn(context.transaction_id, raised.exception.unresolved)
 
     def test_database_commit_failure_rolls_back_artifacts_and_evidence(self):
         store = data_layer.get_storage_backend()
@@ -450,10 +595,11 @@ class DataIntegrityTransactionTests(unittest.TestCase):
         malformed.parent.mkdir(parents=True)
         malformed.write_text('{"transaction_id":', encoding="utf-8")
         recovery = RecoveryManager(store)
-        recovered = recovery.recover_pending(self.root / "staging")
-        self.assertEqual(recovered, ["tx-recovery"])
+        result = recovery.recover_pending(self.root / "staging")
+        self.assertEqual(list(result.recovered), ["tx-recovery"])
         self.assertEqual(len(recovery.marker_errors), 1)
         self.assertEqual(recovery.marker_errors[0]["code"], "JSONDecodeError")
+        self.assertFalse(result.clean)
         self.assertFalse(destination.exists())
         self.assertFalse(temporary.exists())
 

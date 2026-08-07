@@ -22,7 +22,7 @@ from execution.contracts import (
 )
 from execution.handlers import _artifact_bundle_complete
 from execution.supervisor import run_process
-from execution.worker import _orchestrator_closed_for_transaction, execute_task
+from execution.worker import _orchestrator_state_for_transaction, execute_task
 from execution.results import ExecutionActionResult
 from prediction_pipeline.contracts import object_sha256
 from storage import SQLiteStore
@@ -347,6 +347,95 @@ class ExecutionTests(unittest.TestCase):
             json.loads(failure_path.read_text(encoding="utf-8")),
         )
 
+    def test_post_commit_bookkeeping_failure_is_not_a_task_failure(self):
+        """complete() succeeded => receipt/evidence/cleanup failure must not retry."""
+        config = self._config()
+        store = SQLiteStore(self.root / "post-commit.db", project_id="execution_test")
+        task = {
+            "task_id": "T001",
+            "action": "propose_threshold_calibration",
+            "phase": "iterate",
+            "parameters": {"threshold_keys": []},
+            "candidate_scope": {"candidate_ids": [], "from_task_id": None},
+            "resource_request": {
+                "class": "network_cpu", "proposal_count": 0, "candidate_limit": 0
+            },
+            "outputs": ["threshold_calibration_proposal.json"],
+        }
+        claimed = {
+            "claim_token": "claim-post",
+            "dispatch_packet_path": str(self.root / "dispatch.json"),
+            "dispatch_packet_sha256": "unused",
+            "run": {
+                "run_id": "run-post",
+                "workflow_id": "workflow-post",
+                "plan": {"project_id": "execution_test", "plan_id": "plan-post"},
+                "tasks": {"T001": {"attempts": 1}},
+                "resources": {},
+            },
+        }
+        packet = {"run_id": "run-post", "task": task}
+
+        def adapter(_context, _staging):
+            return ExecutionActionResult(state_updates={"committed": True})
+
+        completed_run = {
+            "run": {
+                "status": "running",
+                "tasks": {"T001": {"status": "succeeded", "outputs": []}},
+            }
+        }
+        fail_mock = Mock(return_value={})
+        real_atomic_json = __import__(
+            "execution.supervisor", fromlist=["atomic_json"]
+        ).atomic_json
+
+        def flaky_atomic_json(path, value):
+            if Path(path).name == "execution_receipt.json":
+                raise OSError("disk full on receipt")
+            return real_atomic_json(path, value)
+
+        def flaky_evidence_log(agent, event_type, *args, **kwargs):
+            if event_type == "execution_task_completed":
+                raise RuntimeError("evidence backend down")
+            return Mock()
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("execution.worker.claim", return_value=claimed))
+            stack.enter_context(patch("execution.worker._read_packet", return_value=packet))
+            stack.enter_context(patch("execution.worker.handler_for", return_value=Mock()))
+            stack.enter_context(patch("execution.worker.adapter_for", return_value=adapter))
+            stack.enter_context(patch(
+                "execution.worker.complete", return_value=completed_run
+            ))
+            stack.enter_context(patch("execution.worker.fail", fail_mock))
+            stack.enter_context(patch(
+                "execution.worker.get_storage_backend", return_value=store
+            ))
+            stack.enter_context(patch("execution.worker.refresh_projections"))
+            stack.enter_context(patch(
+                "execution.worker.EvidenceLogger.log", side_effect=flaky_evidence_log
+            ))
+            stack.enter_context(patch(
+                "execution.worker.atomic_json", side_effect=flaky_atomic_json
+            ))
+            receipt = execute_task(
+                run_path=self.root / "run.json",
+                task_id="T001",
+                worker_id="execution-test",
+                config=config,
+            )
+        # Caller sees a committed success, not a retryable failure.
+        self.assertEqual(receipt["status"], "succeeded")
+        warning_steps = {w["step"] for w in receipt["post_commit_warnings"]}
+        self.assertIn("execution_receipt", warning_steps)
+        self.assertIn("completion_evidence", warning_steps)
+        # Formal data is intact and the task was never marked failed.
+        self.assertTrue(store.get_state("execution_test")["committed"])
+        fail_mock.assert_not_called()
+        task_dir = config.task_dir("run-post", "T001", 1)
+        self.assertFalse((task_dir / "execution_failure.json").exists())
+
     def test_complete_failure_compensates_then_closes_orchestrator(self):
         store, fail_mock, evidence_mock, failure = self._complete_failure_case()
         self.assertNotIn("committed_then_closed", store.get_state("execution_test"))
@@ -378,11 +467,28 @@ class ExecutionTests(unittest.TestCase):
                 }
             }
         }
-        with patch("execution.worker.status", return_value=snapshot):
-            self.assertTrue(_orchestrator_closed_for_transaction(context))
+        with patch("agents.orchestrator.status", return_value=snapshot):
+            self.assertEqual(_orchestrator_state_for_transaction(context), "closed")
         snapshot["run"]["tasks"]["T001"]["attempts"] = 2
-        with patch("execution.worker.status", return_value=snapshot):
-            self.assertFalse(_orchestrator_closed_for_transaction(context))
+        with patch("agents.orchestrator.status", return_value=snapshot):
+            self.assertEqual(_orchestrator_state_for_transaction(context), "open")
+
+    def test_orchestrator_probe_unknown_on_unreadable_snapshot(self):
+        context = {
+            "task_id": "T001",
+            "attempt_id": "T001-A01",
+            "metadata": {"orchestrator_run_path": str(self.root / "missing.json")},
+        }
+        with patch(
+            "agents.orchestrator.status",
+            side_effect=OSError("transient read failure"),
+        ):
+            self.assertEqual(_orchestrator_state_for_transaction(context), "unknown")
+        # No run path at all is also UNKNOWN, never "open".
+        self.assertEqual(
+            _orchestrator_state_for_transaction({"task_id": "T001", "metadata": {}}),
+            "unknown",
+        )
 
 
 class ArtifactBundleCompletenessTests(unittest.TestCase):

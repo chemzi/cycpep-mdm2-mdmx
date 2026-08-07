@@ -11,7 +11,9 @@ import argparse
 import json
 import sys
 import time
-from dataclasses import replace
+import uuid
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -34,7 +36,12 @@ from data_layer import (  # noqa: E402
 )
 from prediction_pipeline.contracts import file_sha256  # noqa: E402
 from contracts.errors import ErrorInfo  # noqa: E402
-from contracts.event import VALID_AGENTS, VALID_EVENT_TYPES, VALID_PHASES  # noqa: E402
+from contracts.event import (  # noqa: E402
+    EvidenceEvent,
+    VALID_AGENTS,
+    VALID_EVENT_TYPES,
+    VALID_PHASES,
+)
 from contracts.task import TaskStatus  # noqa: E402
 from contracts.trace import TraceContext  # noqa: E402
 from contracts.transaction import TransactionContext, TransactionStatus  # noqa: E402
@@ -49,6 +56,7 @@ from execution.contracts import (  # noqa: E402
 from execution.action_registry import handler_for  # noqa: E402
 from execution.adapters import adapter_for  # noqa: E402
 from execution.commit_manager import CommitManager  # noqa: E402
+from execution.recovery import probe_orchestrator_state  # noqa: E402
 from execution.results import ExecutionActionResult  # noqa: E402
 from execution.staging import StagingArea  # noqa: E402
 from storage.base import Store  # noqa: E402
@@ -57,6 +65,28 @@ from execution.supervisor import atomic_json  # noqa: E402
 
 class ExecutionFailure(RuntimeError):
     pass
+
+
+class RecoveryError(ExecutionFailure):
+    """Recovery left the store in an unresolved state; refuse to start new work."""
+
+    def __init__(self, message: str, *, unresolved=(), marker_errors=()):
+        super().__init__(message)
+        self.code = "transaction_recovery_unresolved"
+        self.unresolved = tuple(unresolved)
+        self.marker_errors = tuple(marker_errors)
+
+
+def _assert_recovery_clean(recovery) -> None:
+    """Fail closed when a recovery pass left anything unresolved."""
+    if not recovery.clean:
+        raise RecoveryError(
+            "unresolved transaction recovery state; refusing to start a new "
+            f"transaction (unresolved={list(recovery.unresolved)}, "
+            f"marker_errors={list(recovery.marker_errors)})",
+            unresolved=recovery.unresolved,
+            marker_errors=recovery.marker_errors,
+        )
 
 
 class ExecutionWorker:
@@ -74,6 +104,7 @@ class ExecutionWorker:
         handler: Callable[[TransactionContext, StagingArea], ExecutionActionResult],
         *,
         validator: Callable[[ExecutionActionResult], None],
+        trace_context: TraceContext | None = None,
     ) -> ExecutionActionResult:
         staging = StagingArea(self.staging_root, context.transaction_id).create()
         self._staging[context.transaction_id] = staging
@@ -86,13 +117,14 @@ class ExecutionWorker:
                 )
             context.transition(TransactionStatus.VALIDATING)
             validator(result)
+            formal_events = self._formal_events(context, result, trace_context)
             commit_result = self.commit_manager.commit(
                 context,
                 candidate_updates=result.candidate_updates,
                 state_updates=result.state_updates,
                 state_appends=result.state_appends,
                 artifacts=result.artifacts,
-                evidence_events=result.evidence_events,
+                evidence_events=formal_events,
                 staging_path=staging.path,
             )
             committed_by_role = {
@@ -115,6 +147,24 @@ class ExecutionWorker:
             staging.discard()
             self._staging.pop(context.transaction_id, None)
             raise
+
+    @staticmethod
+    def _formal_events(
+        context: TransactionContext,
+        result: ExecutionActionResult,
+        trace_context: TraceContext | None,
+    ) -> tuple[dict, ...]:
+        if not result.evidence_events:
+            return ()
+        trace = trace_context or TraceContext(
+            project_id=str((context.metadata or {}).get("project_id") or "unknown_project"),
+            workflow_id=context.workflow_id,
+            run_id=context.run_id,
+            plan_id=(context.metadata or {}).get("plan_id"),
+            task_id=context.task_id,
+            attempt_id=context.attempt_id,
+        )
+        return _formalize_evidence_events(tuple(result.evidence_events), trace)
 
     def rollback(self, context: TransactionContext) -> None:
         staging = self._staging[context.transaction_id]
@@ -165,22 +215,202 @@ def _read_packet(path: Path, expected_sha256: str) -> dict:
     return validate_dispatch_packet(value)
 
 
-def _orchestrator_closed_for_transaction(context: Mapping[str, object]) -> bool:
-    metadata = context.get("metadata") or {}
-    run_path = metadata.get("orchestrator_run_path") if isinstance(metadata, dict) else None
-    if not run_path:
-        return False
+def _orchestrator_state_for_transaction(context: Mapping[str, object]) -> str:
+    """Three-state closure probe: CLOSED / OPEN / UNKNOWN.
+
+    UNKNOWN (unreadable run snapshot, parse error, missing run path) must never
+    be treated as "not closed" -- an unreadable snapshot is not evidence that
+    the owner is dead, so recovery must refuse to compensate on it.
+    """
+    return probe_orchestrator_state(context)
+
+
+def _formalize_evidence_events(
+    events: tuple[Mapping[str, object], ...],
+    trace_context: TraceContext,
+) -> tuple[dict, ...]:
+    """Promote transactional evidence dicts to the full EvidenceEvent contract.
+
+    The transaction path used to bypass ``EvidenceEvent`` validation entirely
+    (only agent/event_type/phase were checked).  Every committed event now goes
+    through the same contract as ``EvidenceLogger`` so the ledger has a single
+    write standard.
+    """
+    formalized = []
+    for event in events:
+        value = dict(event)
+        value.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+        value.setdefault("event_id", uuid.uuid4().hex[:12])
+        if "phase" not in value or value.get("phase") is None:
+            value.pop("phase", None)
+        merged = {**value, **trace_context.to_dict()}
+        # Raises ValueError on any contract violation; commit must not proceed.
+        EvidenceEvent.from_dict(merged)
+        formalized.append(merged)
+    return tuple(formalized)
+
+
+def _post_commit_finalize(
+    *,
+    task_dir: Path,
+    receipt: dict,
+    task: Mapping[str, object],
+    trace_context: TraceContext,
+    transaction_worker: "ExecutionWorker",
+    transaction_context: TransactionContext,
+) -> None:
+    """Post-commit bookkeeping: receipt, completion evidence, staging cleanup.
+
+    Runs strictly AFTER the irreversible success boundary (Orchestrator
+    ``complete()``).  Any failure here is recorded on the receipt as a
+    ``post_commit_warning`` and never raised, so an already-committed task is
+    never reported to the caller as a retryable execution failure.
+    """
+    warnings: list[dict[str, str]] = []
+
+    def _note(step: str, exc: BaseException) -> None:
+        warnings.append({
+            "step": step,
+            "code": getattr(exc, "code", exc.__class__.__name__),
+            "message": str(exc),
+        })
+
     try:
-        snapshot = status(run_path=run_path)["run"]
-        task_state = snapshot["tasks"][str(context["task_id"])]
-        attempt = int(task_state.get("attempts") or 0)
-    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, OrchestratorContractError):
-        return False
-    return (
-        task_state.get("status") == TaskStatus.SUCCEEDED.value
-        and context.get("attempt_id")
-        == TraceContext.attempt_id_for(str(context["task_id"]), attempt)
+        atomic_json(task_dir / "execution_receipt.json", receipt)
+    except BaseException as exc:  # receipt is diagnostic; never fatal post-commit
+        _note("execution_receipt", exc)
+    try:
+        EvidenceLogger.log(
+            "execution", "execution_task_completed", receipt,
+            phase=task["phase"], trace_context=trace_context,
+        )
+    except BaseException as exc:
+        _note("completion_evidence", exc)
+    try:
+        transaction_worker.finalize(transaction_context)
+    except BaseException as exc:
+        _note("staging_cleanup", exc)
+    if warnings:
+        receipt["post_commit_warnings"] = warnings
+        try:
+            atomic_json(task_dir / "execution_receipt.json", receipt)
+        except BaseException:
+            pass
+
+
+def _finalize_failure(
+    *,
+    exc: BaseException,
+    started: float,
+    claimed: Mapping[str, object],
+    run_path: str | Path,
+    task_id: str,
+    task: Mapping[str, object] | None,
+    action: str,
+    task_dir: Path,
+    trace_context: TraceContext,
+    transaction_context: TransactionContext | None,
+    transaction_worker: "ExecutionWorker | None",
+    orchestrator_closed: bool,
+) -> None:
+    """Failure teardown: compensate (only if still possible), close, record.
+
+    Compensation runs ONLY when the transaction committed but the Orchestrator
+    was never closed -- after ``complete()`` the task is a formal success and
+    this path is unreachable by construction.
+    """
+    run_id = claimed["run"]["run_id"]
+    attempt = int(claimed["run"]["tasks"][task_id]["attempts"])
+    token = claimed["claim_token"]
+    elapsed_seconds = max(0.0, time.monotonic() - started)
+    has_gpu_lease = bool(
+        (claimed["run"].get("resources") or {}).get("gpu_lease")
     )
+    gpu_minutes = (
+        elapsed_seconds / 60.0
+        if (task and task["resource_request"]["class"] == "gpu") or has_gpu_lease
+        else None
+    )
+    task_dir.mkdir(parents=True, exist_ok=True)
+    error_info = ErrorInfo.from_exception(
+        exc,
+        component="execution.worker",
+        code=str(getattr(exc, "code", exc.__class__.__name__)),
+    )
+    failure = {
+        "execution_worker_version": EXECUTION_WORKER_VERSION,
+        "status": TaskStatus.FAILED.value,
+        "run_id": run_id,
+        "task_id": task_id,
+        "action": action,
+        "workflow_id": trace_context.workflow_id,
+        "plan_id": trace_context.plan_id,
+        "attempt": attempt,
+        "attempt_id": trace_context.attempt_id,
+        "transaction_id": (
+            transaction_context.transaction_id if transaction_context else ""
+        ),
+        **error_info.to_dict(),
+        "elapsed_seconds": elapsed_seconds,
+        "gpu_minutes": gpu_minutes,
+    }
+    if (
+        transaction_worker is not None
+        and transaction_context is not None
+        and transaction_context.status == TransactionStatus.COMMITTED
+        and not orchestrator_closed
+    ):
+        try:
+            transaction_worker.rollback(transaction_context)
+        except BaseException as rollback_exc:
+            failure["compensation_error"] = {
+                "code": getattr(
+                    rollback_exc, "code", rollback_exc.__class__.__name__
+                ),
+                "message": str(rollback_exc),
+            }
+    atomic_json(task_dir / "execution_failure.json", failure)
+    if not orchestrator_closed:
+        try:
+            fail(
+                run_path=run_path,
+                task_id=task_id,
+                claim_token=token,
+                reason=f"{failure['code']}: {failure['message']}",
+                error_info=error_info,
+                gpu_minutes=gpu_minutes,
+            )
+        except Exception as close_exc:
+            failure["orchestrator_close_error"] = {
+                "code": getattr(close_exc, "code", close_exc.__class__.__name__),
+                "message": str(close_exc),
+            }
+            atomic_json(task_dir / "execution_failure.json", failure)
+    try:
+        EvidenceLogger.log(
+            "execution", "execution_task_failed", failure,
+            phase=task["phase"] if task else "iterate",
+            trace_context=trace_context,
+        )
+    except BaseException as evidence_exc:
+        failure["failure_evidence_error"] = {
+            "code": getattr(evidence_exc, "code", evidence_exc.__class__.__name__),
+            "message": str(evidence_exc),
+        }
+        atomic_json(task_dir / "execution_failure.json", failure)
+
+
+@dataclass
+class _TaskExecution:
+    """Mutable per-task execution state shared across phase helpers."""
+
+    packet: dict | None = None
+    task: dict | None = None
+    action: str = "unknown"
+    transaction_context: TransactionContext | None = None
+    transaction_worker: "ExecutionWorker | None" = None
+    orchestrator_closed: bool = False
+    trace_context: TraceContext | None = None
 
 
 def execute_task(
@@ -194,17 +424,10 @@ def execute_task(
     config = config or ExecutionConfig.from_environment()
     started = time.monotonic()
     claimed = claim(run_path=run_path, task_id=task_id, worker=worker_id)
-    token = claimed["claim_token"]
     run_id = claimed["run"]["run_id"]
     attempt = int(claimed["run"]["tasks"][task_id]["attempts"])
     task_dir = config.task_dir(run_id, task_id, attempt)
-    packet = None
-    task = None
-    action = "unknown"
-    transaction_context = None
-    transaction_worker = None
-    orchestrator_closed = False
-    trace_context = TraceContext(
+    execution = _TaskExecution(trace_context=TraceContext(
         project_id=str((claimed["run"].get("plan") or {}).get("project_id") or "unknown_project"),
         workflow_id=str(
             claimed["run"].get("workflow_id")
@@ -215,195 +438,199 @@ def execute_task(
         plan_id=(claimed["run"].get("plan") or {}).get("plan_id"),
         task_id=task_id,
         attempt_id=TraceContext.attempt_id_for(task_id, attempt),
-    )
+    ))
     try:
-        packet = _read_packet(
-            Path(claimed["dispatch_packet_path"]),
-            claimed["dispatch_packet_sha256"],
-        )
-        if packet.get("trace_context") is not None:
-            trace_context = TraceContext.from_dict(packet["trace_context"])
-        task = packet["task"]
-        parameters = assert_action_executable(task)
-        action = task["action"]
-        handler = handler_for(action)
-        if handler is None:
-            raise ExecutionContractError(
-                "execution_handler_missing", f"no handler registered for {action}"
-            )
-        task_dir.mkdir(parents=True, exist_ok=False)
-        transaction_context = TransactionContext.create(
-            workflow_id=trace_context.workflow_id,
-            run_id=packet["run_id"],
-            task_id=task_id,
-            attempt_id=trace_context.attempt_id,
-            action=action,
-            metadata={"orchestrator_run_path": str(Path(run_path).resolve())},
-        )
-        transaction_worker = ExecutionWorker(
-            get_storage_backend(),
-            config.execution_root / ".staging",
-            config.execution_root / "artifacts",
-        )
-        transaction_worker.commit_manager.recover_pending(
-            config.execution_root / ".staging",
-            orchestrator_closed=_orchestrator_closed_for_transaction,
-        )
-        atomic_json(task_dir / "dispatch_snapshot.json", packet)
-        atomic_json(task_dir / "execution_started.json", {
-            "execution_worker_version": EXECUTION_WORKER_VERSION,
-            "worker_id": worker_id,
-            "run_id": packet["run_id"],
-            "task_id": task_id,
-            "action": action,
-            "workflow_id": trace_context.workflow_id,
-            "plan_id": trace_context.plan_id,
-            "attempt_id": trace_context.attempt_id,
-            "transaction_id": transaction_context.transaction_id,
-            "normalized_parameters": parameters,
-            "started_monotonic_recorded": True,
-        })
-        EvidenceLogger.log("execution", "execution_task_started", {
-            "run_id": packet["run_id"],
-            "task_id": task_id,
-            "action": action,
-            "worker": worker_id,
-            "task_dir": str(task_dir),
-            "attempt": attempt,
-        }, phase=task["phase"], trace_context=trace_context)
-        adapter = adapter_for(
-            action,
-            handler,
-            packet,
-            config,
-            task_dir,
-            None,
-        )
-        outcome = transaction_worker.run(
-            transaction_context,
-            adapter,
-            validator=_validate_action_result,
-        )
-        refresh_projections()
-        elapsed_seconds = max(0.0, time.monotonic() - started)
-        output_values = [f"{role}={path}" for role, path in outcome.outputs]
-        gpu_minutes = (
-            elapsed_seconds / 60.0
-            if task["resource_request"]["class"] == "gpu" else None
-        )
-        result = complete(
+        return _run_claimed_task(
+            execution,
+            claimed=claimed,
             run_path=run_path,
             task_id=task_id,
-            claim_token=token,
-            output_paths=output_values,
-            gpu_minutes=gpu_minutes,
+            worker_id=worker_id,
+            config=config,
+            task_dir=task_dir,
+            started=started,
         )
-        orchestrator_closed = True
-        receipt = {
-            "execution_worker_version": EXECUTION_WORKER_VERSION,
-            "status": TaskStatus.SUCCEEDED.value,
-            "run_id": packet["run_id"],
-            "task_id": task_id,
-            "action": action,
-            "workflow_id": trace_context.workflow_id,
-            "plan_id": trace_context.plan_id,
-            "attempt": attempt,
-            "attempt_id": trace_context.attempt_id,
-            "transaction_id": transaction_context.transaction_id,
-            "elapsed_seconds": elapsed_seconds,
-            "gpu_minutes": gpu_minutes,
-            "outputs": result["run"]["tasks"][task_id].get("outputs") or [
-                {"role": role, "path": str(path), "sha256": file_sha256(path)}
-                for role, path in outcome.outputs
-            ],
-            "processes": list(outcome.processes),
-            "orchestrator_status": result["run"]["status"],
-        }
-        atomic_json(task_dir / "execution_receipt.json", receipt)
-        EvidenceLogger.log(
-            "execution", "execution_task_completed", receipt,
-            phase=task["phase"], trace_context=trace_context,
-        )
-        transaction_worker.finalize(transaction_context)
-        return receipt
     except BaseException as exc:
-        elapsed_seconds = max(0.0, time.monotonic() - started)
-        has_gpu_lease = bool(
-            (claimed["run"].get("resources") or {}).get("gpu_lease")
+        _finalize_failure(
+            exc=exc,
+            started=started,
+            claimed=claimed,
+            run_path=run_path,
+            task_id=task_id,
+            task=execution.task,
+            action=execution.action,
+            task_dir=task_dir,
+            trace_context=execution.trace_context,
+            transaction_context=execution.transaction_context,
+            transaction_worker=execution.transaction_worker,
+            orchestrator_closed=execution.orchestrator_closed,
         )
-        gpu_minutes = (
-            elapsed_seconds / 60.0
-            if (task and task["resource_request"]["class"] == "gpu") or has_gpu_lease
-            else None
-        )
-        task_dir.mkdir(parents=True, exist_ok=True)
-        error_info = ErrorInfo.from_exception(
-            exc,
-            component="execution.worker",
-            code=str(getattr(exc, "code", exc.__class__.__name__)),
-        )
-        failure = {
-            "execution_worker_version": EXECUTION_WORKER_VERSION,
-            "status": TaskStatus.FAILED.value,
-            "run_id": run_id,
-            "task_id": task_id,
-            "action": action,
-            "workflow_id": trace_context.workflow_id,
-            "plan_id": trace_context.plan_id,
-            "attempt": attempt,
-            "attempt_id": trace_context.attempt_id,
-            "transaction_id": (
-                transaction_context.transaction_id if transaction_context else ""
-            ),
-            **error_info.to_dict(),
-            "elapsed_seconds": elapsed_seconds,
-            "gpu_minutes": gpu_minutes,
-        }
-        if (
-            transaction_worker is not None
-            and transaction_context is not None
-            and transaction_context.status == TransactionStatus.COMMITTED
-            and not orchestrator_closed
-        ):
-            try:
-                transaction_worker.rollback(transaction_context)
-            except BaseException as rollback_exc:
-                failure["compensation_error"] = {
-                    "code": getattr(
-                        rollback_exc, "code", rollback_exc.__class__.__name__
-                    ),
-                    "message": str(rollback_exc),
-                }
-        atomic_json(task_dir / "execution_failure.json", failure)
-        if not orchestrator_closed:
-            try:
-                fail(
-                    run_path=run_path,
-                    task_id=task_id,
-                    claim_token=token,
-                    reason=f"{failure['code']}: {failure['message']}",
-                    error_info=error_info,
-                    gpu_minutes=gpu_minutes,
-                )
-            except Exception as close_exc:
-                failure["orchestrator_close_error"] = {
-                    "code": getattr(close_exc, "code", close_exc.__class__.__name__),
-                    "message": str(close_exc),
-                }
-                atomic_json(task_dir / "execution_failure.json", failure)
-        try:
-            EvidenceLogger.log(
-                "execution", "execution_task_failed", failure,
-                phase=task["phase"] if task else "iterate",
-                trace_context=trace_context,
-            )
-        except BaseException as evidence_exc:
-            failure["failure_evidence_error"] = {
-                "code": getattr(evidence_exc, "code", evidence_exc.__class__.__name__),
-                "message": str(evidence_exc),
-            }
-            atomic_json(task_dir / "execution_failure.json", failure)
         raise
+
+
+def _run_claimed_task(
+    execution: _TaskExecution,
+    *,
+    claimed: Mapping[str, object],
+    run_path: str | Path,
+    task_id: str,
+    worker_id: str,
+    config: ExecutionConfig,
+    task_dir: Path,
+    started: float,
+) -> dict:
+    """Prepare, recover, execute+commit, and close one claimed task."""
+    packet = _read_packet(
+        Path(claimed["dispatch_packet_path"]),
+        claimed["dispatch_packet_sha256"],
+    )
+    execution.packet = packet
+    if packet.get("trace_context") is not None:
+        execution.trace_context = TraceContext.from_dict(packet["trace_context"])
+    trace_context = execution.trace_context
+    task = packet["task"]
+    execution.task = task
+    parameters = assert_action_executable(task)
+    action = task["action"]
+    execution.action = action
+    handler = handler_for(action)
+    if handler is None:
+        raise ExecutionContractError(
+            "execution_handler_missing", f"no handler registered for {action}"
+        )
+    task_dir.mkdir(parents=True, exist_ok=False)
+    transaction_context = TransactionContext.create(
+        workflow_id=trace_context.workflow_id,
+        run_id=packet["run_id"],
+        task_id=task_id,
+        attempt_id=trace_context.attempt_id,
+        action=action,
+        metadata={
+            "orchestrator_run_path": str(Path(run_path).resolve()),
+            "worker_id": worker_id,
+            "project_id": trace_context.project_id,
+            "plan_id": trace_context.plan_id,
+        },
+    )
+    execution.transaction_context = transaction_context
+    transaction_worker = ExecutionWorker(
+        get_storage_backend(),
+        config.execution_root / ".staging",
+        config.execution_root / "artifacts",
+    )
+    execution.transaction_worker = transaction_worker
+    recovery = transaction_worker.commit_manager.recover_pending(
+        config.execution_root / ".staging",
+        orchestrator_state=_orchestrator_state_for_transaction,
+    )
+    _assert_recovery_clean(recovery)
+    atomic_json(task_dir / "dispatch_snapshot.json", packet)
+    atomic_json(task_dir / "execution_started.json", {
+        "execution_worker_version": EXECUTION_WORKER_VERSION,
+        "worker_id": worker_id,
+        "run_id": packet["run_id"],
+        "task_id": task_id,
+        "action": action,
+        "workflow_id": trace_context.workflow_id,
+        "plan_id": trace_context.plan_id,
+        "attempt_id": trace_context.attempt_id,
+        "transaction_id": transaction_context.transaction_id,
+        "normalized_parameters": parameters,
+        "started_monotonic_recorded": True,
+    })
+    EvidenceLogger.log("execution", "execution_task_started", {
+        "run_id": packet["run_id"],
+        "task_id": task_id,
+        "action": action,
+        "worker": worker_id,
+        "task_dir": str(task_dir),
+        "attempt": int(claimed["run"]["tasks"][task_id]["attempts"]),
+    }, phase=task["phase"], trace_context=trace_context)
+    adapter = adapter_for(
+        action,
+        handler,
+        packet,
+        config,
+        task_dir,
+        None,
+    )
+    outcome = transaction_worker.run(
+        transaction_context,
+        adapter,
+        validator=_validate_action_result,
+        trace_context=trace_context,
+    )
+    refresh_projections()
+    receipt = _close_orchestrator(
+        execution,
+        outcome,
+        claimed=claimed,
+        run_path=run_path,
+        task_id=task_id,
+        started=started,
+    )
+    _post_commit_finalize(
+        task_dir=task_dir,
+        receipt=receipt,
+        task=task,
+        trace_context=trace_context,
+        transaction_worker=transaction_worker,
+        transaction_context=transaction_context,
+    )
+    return receipt
+
+
+def _close_orchestrator(
+    execution: _TaskExecution,
+    outcome: ExecutionActionResult,
+    *,
+    claimed: Mapping[str, object],
+    run_path: str | Path,
+    task_id: str,
+    started: float,
+) -> dict:
+    """Close the Orchestrator task and build the success receipt.
+
+    ``complete()`` is the irreversible success boundary; once it returns, the
+    task must never again be reported as an execution failure.
+    """
+    packet = execution.packet
+    task = execution.task
+    trace_context = execution.trace_context
+    elapsed_seconds = max(0.0, time.monotonic() - started)
+    output_values = [f"{role}={path}" for role, path in outcome.outputs]
+    gpu_minutes = (
+        elapsed_seconds / 60.0
+        if task["resource_request"]["class"] == "gpu" else None
+    )
+    result = complete(
+        run_path=run_path,
+        task_id=task_id,
+        claim_token=claimed["claim_token"],
+        output_paths=output_values,
+        gpu_minutes=gpu_minutes,
+    )
+    execution.orchestrator_closed = True
+    return {
+        "execution_worker_version": EXECUTION_WORKER_VERSION,
+        "status": TaskStatus.SUCCEEDED.value,
+        "run_id": packet["run_id"],
+        "task_id": task_id,
+        "action": execution.action,
+        "workflow_id": trace_context.workflow_id,
+        "plan_id": trace_context.plan_id,
+        "attempt": int(claimed["run"]["tasks"][task_id]["attempts"]),
+        "attempt_id": trace_context.attempt_id,
+        "transaction_id": execution.transaction_context.transaction_id,
+        "elapsed_seconds": elapsed_seconds,
+        "gpu_minutes": gpu_minutes,
+        "outputs": result["run"]["tasks"][task_id].get("outputs") or [
+            {"role": role, "path": str(path), "sha256": file_sha256(path)}
+            for role, path in outcome.outputs
+        ],
+        "processes": list(outcome.processes),
+        "orchestrator_status": result["run"]["status"],
+    }
 
 
 def drain_run(

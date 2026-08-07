@@ -5,15 +5,16 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Mapping
+from typing import Iterable, Mapping
 
 from contracts.transaction import TransactionContext, TransactionStatus
 from storage.base import Store
 from prediction_pipeline.contracts import file_sha256
 
-from .recovery import RecoveryManager
+from .recovery import OrchestratorProbe, RecoveryManager, RecoveryResult
 from .staging import StagedArtifact
 from .supervisor import durable_atomic_json
 
@@ -67,6 +68,8 @@ class CommitManager:
             "context": context.to_dict(),
             "status": "PREPARED",
             "artifacts": [],
+            "owner_worker_id": (context.metadata or {}).get("worker_id"),
+            "heartbeat_monotonic": time.monotonic(),
         }
         try:
             manifest_artifacts, registrations, temporary_paths = self._prepare_artifacts(
@@ -134,6 +137,12 @@ class CommitManager:
                 with temporary.open("rb+") as stream:
                     stream.flush()
                     os.fsync(stream.fileno())
+                # Re-hash after copy+fsync so a staged file modified in the
+                # validate->copy window cannot be registered under a stale digest.
+                if file_sha256(temporary) != artifact.sha256:
+                    raise ValueError(
+                        f"artifact content changed during commit: {artifact.artifact_id}"
+                    )
                 registration = {
                     "artifact_id": artifact.artifact_id,
                     "artifact_type": artifact.artifact_type,
@@ -159,11 +168,30 @@ class CommitManager:
         self,
         staging_root: str | Path,
         *,
-        orchestrator_closed: Callable[[Mapping[str, object]], bool] | None = None,
-    ) -> list[str]:
+        orchestrator_state: OrchestratorProbe | None = None,
+    ) -> RecoveryResult:
         return self.recovery.recover_pending(
-            staging_root, orchestrator_closed=orchestrator_closed
+            staging_root, orchestrator_state=orchestrator_state
         )
+
+    def refresh_heartbeat(self, context: TransactionContext, staging_path: str | Path) -> None:
+        """Best-effort liveness beat for a transaction still being committed.
+
+        Recovery treats a marker whose heartbeat is younger than the stall
+        threshold as possibly-live and will not roll it back.
+        """
+        marker = Path(staging_path) / "metadata" / "commit.json"
+        if not marker.is_file():
+            return
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        payload["heartbeat_monotonic"] = time.monotonic()
+        try:
+            durable_atomic_json(marker, payload)
+        except OSError:
+            pass
 
     def rollback_committed(
         self, context: TransactionContext, staging_path: str | Path

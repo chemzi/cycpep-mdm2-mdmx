@@ -46,6 +46,7 @@ def make_transactional_output_adapter(
             task_dir=task_dir,
             project_config=project_config,
             transaction_managed=True,
+            transaction_id=context.transaction_id,
         ))
         if not isinstance(result, ExecutionActionResult):
             raise TypeError(

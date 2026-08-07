@@ -328,6 +328,96 @@ class TransactionalHandlerTests(unittest.TestCase):
                 self.assertEqual(context.status, TransactionStatus.COMMITTED)
                 self.assertIsNotNone(store.get_artifact(result.artifacts[0].artifact_id))
 
+    def test_critic_state_binds_committed_artifact_not_task_path(self):
+        """State.critic must reference the committed artifact, never task_dir."""
+        from contracts.critic import resolve_critic_report_path
+        from execution.handlers import review_prediction_handoff
+        from test_critic import complete_battery, metrics
+
+        state = {
+            "project_id": "typed-test",
+            "phase": "iterate",
+            "thresholds": {},
+            "iteration_history": [],
+            "project_config": {
+                "project_id": "typed-test",
+                "targets": [{"id": "MDM2"}, {"id": "MDMX"}],
+            },
+        }
+        with patch("execution.handlers.State.load", return_value=state), patch(
+            "execution.handlers.CandidateIndex.load",
+            return_value=[{
+                "candidate_id": "C0001",
+                "sequence": "ACDEFGHI",
+                "source_route": "route_A",
+            }],
+        ):
+            root = self.root / "critic-binding"
+            root.mkdir()
+            packet, _, _ = self._case("review_prediction_handoff", root)
+            record = root / "record.json"
+            record.write_text(json.dumps({
+                "schema_version": 2,
+                "pipeline_version": "1.5.0",
+                "run_id": "prediction-run",
+                "candidate": {"candidate_id": "C0001", "sequence": "ACDEFGHI"},
+                "status": "finalized",
+                "metrics": metrics(),
+                "battery": complete_battery(),
+                "issues": [],
+                "provenance": [],
+                "artifact_inventory": [],
+            }), encoding="utf-8")
+            handoff = root / "prediction_handoff.json"
+            handoff.write_text(json.dumps({
+                "schema_version": 2,
+                "pipeline_version": "1.5.0",
+                "run_id": "prediction-run",
+                "project_id": "typed-test",
+                "required_targets": ["MDM2", "MDMX"],
+                "categories": {"finalized": [{
+                    "candidate_id": "C0001",
+                    "record_path": str(record),
+                    "record_sha256": file_sha256(record),
+                    "issues": [],
+                }]},
+                "downstream": {"authoritative_record_field": "record_path"},
+            }), encoding="utf-8")
+            packet["dependency_outputs"]["T000"][0].update({
+                "path": str(handoff),
+                "sha256": file_sha256(handoff),
+            })
+            store = SQLiteStore(root / "store.db", project_id="typed-test")
+            store.replace_state("typed-test", state)
+            context = TransactionContext.create(
+                workflow_id="workflow-typed", run_id="run-typed", task_id="T001",
+                attempt_id="T001-A01", action="review_prediction_handoff",
+            )
+            worker = ExecutionWorker(store, root / "staging", root / "artifacts")
+            task_dir = root / "task"
+            adapter = adapter_for(
+                "review_prediction_handoff", review_prediction_handoff,
+                packet, self._config(root), task_dir, None,
+            )
+            worker.run(context, adapter, validator=_validate_action_result)
+
+            critic_state = store.get_state("typed-test")["critic"]
+            # State carries artifact identity, not a mutable task-local path.
+            self.assertIn("report_artifact_id", critic_state)
+            self.assertNotIn("report_path", critic_state)
+            artifact = store.get_artifact(critic_state["report_artifact_id"])
+            self.assertIsNotNone(artifact)
+            self.assertNotIn(str(task_dir), str(artifact["path"]))
+            self.assertIn(str(root / "artifacts"), str(artifact["path"]))
+            # Registry-resolved path matches the recorded digest.
+            self.assertEqual(
+                file_sha256(artifact["path"]), critic_state["report_sha256"]
+            )
+            # The public resolver returns the committed path.
+            self.assertEqual(
+                resolve_critic_report_path(critic_state, store), str(artifact["path"])
+            )
+
     def test_legacy_adapter_contract_remains_available(self):
         root = self.root / "legacy"
         root.mkdir()
@@ -343,6 +433,64 @@ class TransactionalHandlerTests(unittest.TestCase):
         )
         result = adapter(context, Mock())
         self.assertIsInstance(result, ExecutionActionResult)
+
+    def test_transactional_evidence_satisfies_full_event_contract(self):
+        """Committed evidence must pass the same EvidenceEvent contract as the logger."""
+        root = self.root / "evidence-contract"
+        root.mkdir()
+        store, _, context, _ = self._run("review_prediction_handoff", root)
+        events = store.query(task_id="T001")
+        self.assertTrue(events)
+        from contracts.event import EvidenceEvent
+
+        for event in events:
+            # Raises on any contract violation: envelope, trace, timestamp...
+            EvidenceEvent.from_dict(event)
+        committed = [
+            event for event in events
+            if event["event_type"] == "critic_review"
+        ]
+        self.assertEqual(len(committed), 1)
+        self.assertEqual(committed[0]["workflow_id"], "workflow-typed")
+        self.assertEqual(committed[0]["attempt_id"], "T001-A01")
+
+    def test_transactional_evidence_contract_violation_blocks_commit(self):
+        """An event that violates the EvidenceEvent contract must abort commit."""
+        root = self.root / "evidence-violation"
+        root.mkdir()
+        packet, role, _ = self._case("review_prediction_handoff", root)
+        payload = self._valid_payload("review_prediction_handoff", packet["task"], _)
+
+        def bad_evidence_handler(context: HandlerContext) -> ExecutionActionResult:
+            path = context.task_dir / "outputs" / f"{role}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            return ExecutionActionResult(
+                evidence_events=({
+                    # failure-typed event without the required error payload
+                    "agent": "critic",
+                    "event_type": "execution_task_failed",
+                    "phase": "critic",
+                },),
+                outputs=((role, path),),
+            )
+
+        store = SQLiteStore(root / "store.db", project_id="typed-test")
+        store.replace_state("typed-test", {"phase": "iterate"})
+        context = TransactionContext.create(
+            workflow_id="workflow-typed", run_id="run-typed", task_id="T001",
+            attempt_id="T001-A01", action="review_prediction_handoff",
+        )
+        worker = ExecutionWorker(store, root / "staging", root / "artifacts")
+        adapter = adapter_for(
+            "review_prediction_handoff", bad_evidence_handler,
+            packet, self._config(root), root / "task", None,
+        )
+        with self.assertRaises(ValueError):
+            worker.run(context, adapter, validator=_validate_action_result)
+        # Nothing formal was committed.
+        self.assertEqual(store.get_state("typed-test"), {"phase": "iterate"})
+        self.assertEqual(store.query(event_type="critic_review"), [])
 
     def test_calibration_rejects_threshold_key_mismatch(self):
         packet, role, _ = self._case("propose_threshold_calibration", self.root)
