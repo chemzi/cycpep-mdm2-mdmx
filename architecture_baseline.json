@@ -8,7 +8,7 @@
       },
       {
         "file": "data_layer.py",
-        "lines": 1487
+        "lines": 1551
       },
       {
         "file": "prediction_pipeline/pipeline.py",
@@ -27,12 +27,6 @@
         "function": "_run_generic_pipeline",
         "line": 962,
         "lines": 184
-      },
-      {
-        "file": "data_layer.py",
-        "function": "evaluate_battery",
-        "line": 1137,
-        "lines": 246
       },
       {
         "file": "execution/worker.py",

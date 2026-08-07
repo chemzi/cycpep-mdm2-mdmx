@@ -1156,123 +1156,16 @@ def evaluate_battery(
        failed_layers: list[str],
        layer_values: dict,  # 每层主值 }
     """
-    c = _alias_keys(dict(c))  # 旧名兜底
-    th = thresholds or {}
-    if required_targets is None:
-        candidate_targets = c.get("required_targets")
-        if candidate_targets:
-            required_targets = tuple(candidate_targets)
-        else:
-            state = State.load()
-            config = state.get("project_config") or State._project_config
-            required_targets = required_target_ids(config)
-    targets = tuple(str(target).strip() for target in required_targets if str(target).strip())
-    if not targets:
-        raise ValueError("required_targets must contain at least one target id")
-    if len(set(target.casefold() for target in targets)) != len(targets):
-        raise ValueError("required_targets contains duplicate target ids")
 
-    def th_has(key): return _threshold_has_value(th.get(key) or {})
+    c, th, targets = _normalize_battery_context(c, thresholds, required_targets)
 
-    # L1 环肽质量：pLDDT
-    l1 = _cmp(_f(global_value(c, "plddt")), th.get("L1_plddt", {}).get("operator", ">"),
-              th.get("L1_plddt", {}).get("value", 0.8)) if th_has("L1_plddt") else False
-
-    # L2 界面置信度：每个 required target 都必须有 ipSAE 并通过。
-    t2_by_target = {
-        target: threshold_for_target(th, "L2_ipsae", target) for target in targets
-    }
-    l2_by_target = {
-        target: _cmp(
-            _f(target_value(c, target, "ipsae")),
-            t2_by_target[target].get("operator", ">"),
-            t2_by_target[target].get("value"),
-        )
-        for target in targets
-    }
-    l2 = all(_threshold_has_value(t2_by_target[target]) for target in targets) and all(l2_by_target.values())
-
-    # L3 界面物理：两个靶标分别通过同一套 dG、SC、dSASA 定义。
-    l3_by_target = {}
-    for target in targets:
-        tdg = threshold_for_target(th, "L3_dg", target)
-        tsc = threshold_for_target(th, "L3_sc", target)
-        tdsasa = threshold_for_target(th, "L3_dsasa", target)
-        l3_by_target[target] = all([
-            _cmp(_f(target_value(c, target, "dg")), tdg.get("operator", "<"), tdg.get("value")),
-            _cmp(_f(target_value(c, target, "sc")), tsc.get("operator", ">"), tsc.get("value")),
-            _cmp(_f(target_value(c, target, "dsasa")), tdsasa.get("operator", ">"), tdsasa.get("value")),
-        ])
-    required_dg_method = th.get("L3_dg", {}).get("method")
-    method_ok = (
-        not required_dg_method
-        or str(c.get("dg_method", "")).strip().casefold()
-        == str(required_dg_method).strip().casefold()
-    )
-    l3 = (
-        all(
-            _threshold_has_value(threshold_for_target(th, key, target))
-            for key in ("L3_dg", "L3_sc", "L3_dsasa")
-            for target in targets
-        )
-        and method_ok
-        and all(l3_by_target.values())
-    )
-
-    # L4 环化几何 QC：使用可审计的 N-C 数值，布尔字段只保留作显示。
-    pre = c.get("ring_closure_pre", "")
-    post = c.get("ring_closure_post", "")
-    nc_pre = _f(global_value(c, "nc_distance_pre"))
-    nc_post = _f(global_value(c, "nc_distance_post"))
-    t4 = th.get("L4_nc_term_dist", {})
-    l4 = (
-        th_has("L4_nc_term_dist")
-        and _cmp(nc_pre, t4.get("operator", "<"), t4.get("value"))
-        and _cmp(nc_post, t4.get("operator", "<"), t4.get("value"))
-    )
-
-    # L5 设计意图：每个 required target 分别验证热点覆盖与位点一致性。
-    l5_by_target = {}
-    for target in targets:
-        t5 = threshold_for_target(th, "L5_hotspot_coverage", target)
-        specific_site = target_value(c, target, "site_consistency")
-        if specific_site in (None, "") and len(targets) == 1:
-            specific_site = c.get("site_consistency")
-        l5_by_target[target] = (
-            _cmp(_f(target_value(c, target, "hotspot_cov")), t5.get("operator", ">="), t5.get("value"))
-            and _truthy(specific_site)
-        )
-    l5 = all(
-        _threshold_has_value(threshold_for_target(th, "L5_hotspot_coverage", target))
-        for target in targets
-    ) and all(l5_by_target.values())
-
-    # L6 鲁棒性：每个 required target 分别检查多预测器 pose 和 seed 收敛。
-    l6_by_target = {}
-    for target in targets:
-        t6 = threshold_for_target(th, "L6_pose_rmsd", target)
-        min_seed_fraction = t6.get("min_seed_fraction", 0.67)
-        pose = target_value(c, target, "pose_rmsd")
-        seed = target_value(c, target, "seed_convergence")
-        if len(targets) == 1:
-            pose = pose if pose not in (None, "") else c.get("pose_rmsd")
-            seed = seed if seed not in (None, "") else c.get("seed_convergence")
-        l6_by_target[target] = (
-            _cmp(_f(pose), t6.get("operator", "<"), t6.get("value"))
-            and _f(seed) is not None
-            and _f(seed) >= float(min_seed_fraction)
-        )
-    l6 = all(
-        _threshold_has_value(threshold_for_target(th, "L6_pose_rmsd", target))
-        for target in targets
-    ) and all(l6_by_target.values())
-
-    # L7 可设计性：scRMSD
-    t7 = th.get("L7_scrmsd", {})
-    l7 = (
-        _cmp(_f(global_value(c, "scrmsd")), t7.get("operator", "<"), t7.get("value"))
-        if th_has("L7_scrmsd") else False
-    )
+    l1 = _battery_l1(c, th)
+    l2, l2_by_target = _battery_l2(c, th, targets)
+    l3, l3_by_target, method_ok = _battery_l3(c, th, targets)
+    l4, nc_pre, nc_post = _battery_l4(c, th)
+    l5, l5_by_target = _battery_l5(c, th, targets)
+    l6, l6_by_target = _battery_l6(c, th, targets)
+    l7 = _battery_l7(c, th)
 
     layer_pass = {
         "l1_pass": bool(l1), "l2_pass": bool(l2),
@@ -1282,37 +1175,19 @@ def evaluate_battery(
     }
     failed = [k for k, v in layer_pass.items() if not v]
 
-    threshold_audit = {}
-    for key in ("L1_plddt", "L4_nc_term_dist", "L7_scrmsd"):
-        ok, reason = _threshold_is_justified(th.get(key) or {})
-        threshold_audit[key] = {"justified": ok, "reason": reason}
-    for key in ("L2_ipsae", "L3_dg", "L3_sc", "L3_dsasa", "L5_hotspot_coverage", "L6_pose_rmsd"):
-        for target in targets:
-            ok, reason = _threshold_is_justified(threshold_for_target(th, key, target))
-            threshold_audit[f"{key}:{target}"] = {"justified": ok, "reason": reason}
-    all_thresholds_justified = all(item["justified"] for item in threshold_audit.values())
-
-    missing_evidence = []
-    global_required = {
-        "plddt": global_value(c, "plddt"), "nc_distance_pre": global_value(c, "nc_distance_pre"),
-        "nc_distance_post": global_value(c, "nc_distance_post"), "scrmsd": global_value(c, "scrmsd"),
-    }
-    missing_evidence.extend(name for name, value in global_required.items() if value in (None, ""))
-    for target in targets:
-        for metric in (
-            "ipsae", "dg", "sc", "dsasa", "hotspot_cov",
-            "site_consistency", "pose_rmsd", "seed_convergence",
-        ):
-            value = target_value(c, target, metric)
-            if value in (None, "") and not (
-                len(targets) == 1 and metric in {"site_consistency", "pose_rmsd", "seed_convergence"}
-                and c.get(metric) not in (None, "")
-            ):
-                missing_evidence.append(f"{target}:{metric}")
-    missing_thresholds = [name for name, item in threshold_audit.items() if item["reason"] == "missing_value"]
+    threshold_audit, all_thresholds_justified = _battery_threshold_audit(th, targets)
+    missing_evidence = _battery_missing_evidence(c, targets)
+    missing_thresholds = [
+        name for name, item in threshold_audit.items() if item["reason"] == "missing_value"
+    ]
 
     hard_failures = []
-    if nc_pre is not None and nc_post is not None and th_has("L4_nc_term_dist") and not l4:
+    if (
+        nc_pre is not None
+        and nc_post is not None
+        and _threshold_has_value(th.get("L4_nc_term_dist") or {})
+        and not l4
+    ):
         hard_failures.append("ring_closure_geometry")
     if hard_failures:
         triage_status = "invalid"
@@ -1381,6 +1256,195 @@ def evaluate_battery(
         },
     }
 
+
+def _normalize_battery_context(
+    c: dict,
+    thresholds: dict | None,
+    required_targets: tuple[str, ...] | None,
+) -> tuple[dict, dict, tuple[str, ...]]:
+    c = _alias_keys(dict(c))  # 旧名兜底
+    th = thresholds or {}
+    if required_targets is None:
+        candidate_targets = c.get("required_targets")
+        if candidate_targets:
+            required_targets = tuple(candidate_targets)
+        else:
+            state = State.load()
+            config = state.get("project_config") or State._project_config
+            required_targets = required_target_ids(config)
+    targets = tuple(str(target).strip() for target in required_targets if str(target).strip())
+    if not targets:
+        raise ValueError("required_targets must contain at least one target id")
+    if len(set(target.casefold() for target in targets)) != len(targets):
+        raise ValueError("required_targets contains duplicate target ids")
+    return c, th, targets
+
+
+def _battery_l1(c: dict, th: dict) -> bool:
+    return (
+        _cmp(
+            _f(global_value(c, "plddt")),
+            th.get("L1_plddt", {}).get("operator", ">"),
+            th.get("L1_plddt", {}).get("value", 0.8),
+        )
+        if _threshold_has_value(th.get("L1_plddt") or {})
+        else False
+    )
+
+
+def _battery_l2(c: dict, th: dict, targets: tuple[str, ...]) -> tuple[bool, dict]:
+    t2_by_target = {
+        target: threshold_for_target(th, "L2_ipsae", target) for target in targets
+    }
+    l2_by_target = {
+        target: _cmp(
+            _f(target_value(c, target, "ipsae")),
+            t2_by_target[target].get("operator", ">"),
+            t2_by_target[target].get("value"),
+        )
+        for target in targets
+    }
+    l2 = (
+        all(_threshold_has_value(t2_by_target[target]) for target in targets)
+        and all(l2_by_target.values())
+    )
+    return l2, l2_by_target
+
+
+def _battery_l3(c: dict, th: dict, targets: tuple[str, ...]) -> tuple[bool, dict, bool]:
+    l3_by_target = {}
+    for target in targets:
+        tdg = threshold_for_target(th, "L3_dg", target)
+        tsc = threshold_for_target(th, "L3_sc", target)
+        tdsasa = threshold_for_target(th, "L3_dsasa", target)
+        l3_by_target[target] = all([
+            _cmp(_f(target_value(c, target, "dg")), tdg.get("operator", "<"), tdg.get("value")),
+            _cmp(_f(target_value(c, target, "sc")), tsc.get("operator", ">"), tsc.get("value")),
+            _cmp(_f(target_value(c, target, "dsasa")), tdsasa.get("operator", ">"), tdsasa.get("value")),
+        ])
+    required_dg_method = th.get("L3_dg", {}).get("method")
+    method_ok = (
+        not required_dg_method
+        or str(c.get("dg_method", "")).strip().casefold()
+        == str(required_dg_method).strip().casefold()
+    )
+    l3 = (
+        all(
+            _threshold_has_value(threshold_for_target(th, key, target))
+            for key in ("L3_dg", "L3_sc", "L3_dsasa")
+            for target in targets
+        )
+        and method_ok
+        and all(l3_by_target.values())
+    )
+    return l3, l3_by_target, method_ok
+
+
+def _battery_l4(c: dict, th: dict) -> tuple[bool, object, object]:
+    nc_pre = _f(global_value(c, "nc_distance_pre"))
+    nc_post = _f(global_value(c, "nc_distance_post"))
+    t4 = th.get("L4_nc_term_dist", {})
+    l4 = (
+        _threshold_has_value(t4)
+        and _cmp(nc_pre, t4.get("operator", "<"), t4.get("value"))
+        and _cmp(nc_post, t4.get("operator", "<"), t4.get("value"))
+    )
+    return l4, nc_pre, nc_post
+
+
+def _battery_l5(c: dict, th: dict, targets: tuple[str, ...]) -> tuple[bool, dict]:
+    l5_by_target = {}
+    for target in targets:
+        t5 = threshold_for_target(th, "L5_hotspot_coverage", target)
+        specific_site = target_value(c, target, "site_consistency")
+        if specific_site in (None, "") and len(targets) == 1:
+            specific_site = c.get("site_consistency")
+        l5_by_target[target] = (
+            _cmp(
+                _f(target_value(c, target, "hotspot_cov")),
+                t5.get("operator", ">="),
+                t5.get("value"),
+            )
+            and _truthy(specific_site)
+        )
+    l5 = (
+        all(
+            _threshold_has_value(threshold_for_target(th, "L5_hotspot_coverage", target))
+            for target in targets
+        )
+        and all(l5_by_target.values())
+    )
+    return l5, l5_by_target
+
+
+def _battery_l6(c: dict, th: dict, targets: tuple[str, ...]) -> tuple[bool, dict]:
+    l6_by_target = {}
+    for target in targets:
+        t6 = threshold_for_target(th, "L6_pose_rmsd", target)
+        min_seed_fraction = t6.get("min_seed_fraction", 0.67)
+        pose = target_value(c, target, "pose_rmsd")
+        seed = target_value(c, target, "seed_convergence")
+        if len(targets) == 1:
+            pose = pose if pose not in (None, "") else c.get("pose_rmsd")
+            seed = seed if seed not in (None, "") else c.get("seed_convergence")
+        l6_by_target[target] = (
+            _cmp(_f(pose), t6.get("operator", "<"), t6.get("value"))
+            and _f(seed) is not None
+            and _f(seed) >= float(min_seed_fraction)
+        )
+    l6 = (
+        all(
+            _threshold_has_value(threshold_for_target(th, "L6_pose_rmsd", target))
+            for target in targets
+        )
+        and all(l6_by_target.values())
+    )
+    return l6, l6_by_target
+
+
+def _battery_l7(c: dict, th: dict) -> bool:
+    t7 = th.get("L7_scrmsd", {})
+    return (
+        _cmp(_f(global_value(c, "scrmsd")), t7.get("operator", "<"), t7.get("value"))
+        if _threshold_has_value(t7)
+        else False
+    )
+
+
+def _battery_threshold_audit(th: dict, targets: tuple[str, ...]) -> tuple[dict, bool]:
+    threshold_audit = {}
+    for key in ("L1_plddt", "L4_nc_term_dist", "L7_scrmsd"):
+        ok, reason = _threshold_is_justified(th.get(key) or {})
+        threshold_audit[key] = {"justified": ok, "reason": reason}
+    for key in ("L2_ipsae", "L3_dg", "L3_sc", "L3_dsasa", "L5_hotspot_coverage", "L6_pose_rmsd"):
+        for target in targets:
+            ok, reason = _threshold_is_justified(threshold_for_target(th, key, target))
+            threshold_audit[f"{key}:{target}"] = {"justified": ok, "reason": reason}
+    return threshold_audit, all(item["justified"] for item in threshold_audit.values())
+
+
+def _battery_missing_evidence(c: dict, targets: tuple[str, ...]) -> list[str]:
+    missing_evidence = []
+    global_required = {
+        "plddt": global_value(c, "plddt"),
+        "nc_distance_pre": global_value(c, "nc_distance_pre"),
+        "nc_distance_post": global_value(c, "nc_distance_post"),
+        "scrmsd": global_value(c, "scrmsd"),
+    }
+    missing_evidence.extend(name for name, value in global_required.items() if value in (None, ""))
+    for target in targets:
+        for metric in (
+            "ipsae", "dg", "sc", "dsasa", "hotspot_cov",
+            "site_consistency", "pose_rmsd", "seed_convergence",
+        ):
+            value = target_value(c, target, metric)
+            if value in (None, "") and not (
+                len(targets) == 1
+                and metric in {"site_consistency", "pose_rmsd", "seed_convergence"}
+                and c.get(metric) not in (None, "")
+            ):
+                missing_evidence.append(f"{target}:{metric}")
+    return missing_evidence
 
 def compute_pareto_front(
     candidates: list[dict],
