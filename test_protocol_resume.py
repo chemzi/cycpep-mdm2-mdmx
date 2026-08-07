@@ -281,6 +281,63 @@ class LegacyMigrationTests(unittest.TestCase):
         self.assertTrue(status.startswith("would-repair:"), status)
         self.assertFalse((pred_dir / PROTOCOL_BINDING_FILENAME).exists())
 
+    def _old_identity_bundle(self) -> Path:
+        """A bundle recorded under the pre-round-3 identity format."""
+        bundle_path = self._legacy_bundle()
+        data = json.loads(bundle_path.read_text(encoding="utf-8"))
+        data["protocol"] = {
+            "name": "af2_boltz2_prodigy_rosetta_postrelax_v1",
+            "version": "prediction_v1",
+            "sha256": "b" * 64,
+        }
+        bundle_path.write_text(json.dumps(data), encoding="utf-8")
+        return bundle_path
+
+    def test_stale_binding_refused_without_flag(self):
+        # Identity-format upgrades must never be applied automatically.
+        bundle_path = self._old_identity_bundle()
+        status = migrate_bundle(bundle_path)
+        self.assertTrue(status.startswith("error:"), status)
+        self.assertIn("--recompute-identity", status)
+        data = json.loads(bundle_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["protocol"]["name"], "af2_boltz2_prodigy_rosetta_postrelax_v1")
+
+    def test_stale_binding_rebound_with_recompute_flag(self):
+        bundle_path = self._old_identity_bundle()
+        status = migrate_bundle(bundle_path, recompute_identity=True)
+        self.assertTrue(status.startswith("rebound:"), status)
+        data = json.loads(bundle_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["protocol"], protocol_binding())
+        binding_path = (
+            self.tmp / "candidate" / "colabdesign_monomer"
+            / "model_0_seed_0" / PROTOCOL_BINDING_FILENAME
+        )
+        self.assertEqual(
+            json.loads(binding_path.read_text(encoding="utf-8")),
+            protocol_binding(),
+        )
+
+    def test_rebind_dry_run_does_not_write(self):
+        bundle_path = self._old_identity_bundle()
+        status = migrate_bundle(bundle_path, dry_run=True, recompute_identity=True)
+        self.assertTrue(status.startswith("would-rebind:"), status)
+        data = json.loads(bundle_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["protocol"]["name"], "af2_boltz2_prodigy_rosetta_postrelax_v1")
+
+    def test_rebind_warns_on_parameter_differences(self):
+        # Operator-confirmed rebind is allowed but must surface the mismatch.
+        bundle_path = self._old_identity_bundle()
+        metadata = (
+            self.tmp / "candidate" / "colabdesign_monomer"
+            / "model_0_seed_0" / "metadata.json"
+        )
+        metadata.write_text(json.dumps({"num_recycles": 5}), encoding="utf-8")
+        status = migrate_bundle(bundle_path, recompute_identity=True)
+        self.assertTrue(status.startswith("rebound:"), status)
+        self.assertIn("warning:", status)
+        data = json.loads(bundle_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["protocol"], protocol_binding())
+
 
 
 class ResolveTargetsTests(unittest.TestCase):
