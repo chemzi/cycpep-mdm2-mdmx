@@ -227,6 +227,27 @@ class ProtocolSchemaTests(unittest.TestCase):
                 self._data(af2_prodigy={**self._data()["af2_prodigy"], "seeds": [0, 1]})
             )
 
+    def test_nested_section_missing_model_numbers_rejected(self):
+        # Missing nested key inside af2_prodigy must fail at import time.
+        af2 = {**self._data()["af2_prodigy"]}
+        del af2["model_numbers"]
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(self._data(af2_prodigy=af2))
+
+    def test_nested_section_missing_num_recycles_rejected(self):
+        af2 = {**self._data()["af2_prodigy"]}
+        del af2["num_recycles"]
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(self._data(af2_prodigy=af2))
+
+    def test_non_sequential_model_numbers_accepted(self):
+        # The protocol pins the exact model set; order is data, not a
+        # 0..n-1 assumption.  A permuted set must load and stay authoritative.
+        protocol = PredictionProtocol.from_data(
+            self._data(af2_prodigy={**self._data()["af2_prodigy"], "model_numbers": [2, 0, 1]})
+        )
+        self.assertEqual(protocol.af2_model_numbers, (2, 0, 1))
+
     def test_non_positive_recycles_rejected(self):
         with self.assertRaises(ProtocolError):
             PredictionProtocol.from_data(
