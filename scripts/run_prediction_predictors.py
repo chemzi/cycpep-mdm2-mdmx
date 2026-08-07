@@ -358,6 +358,22 @@ def _require_protocol_parameters(
 
 
 def run(args) -> dict:
+    context = _load_run_context(args)
+    artifacts_root = context["artifacts_root"]
+    summaries = []
+    for candidate in context["candidates"]:
+        candidate_dir = artifacts_root / candidate.candidate_id
+        global_artifacts, target_artifacts = _run_candidate_predictions(
+            candidate, candidate_dir, context["target_inputs"], context["ensemble"],
+            args, context["config"], context["required_targets"],
+        )
+        summaries.append(_write_candidate_bundle(
+            candidate, candidate_dir, global_artifacts, target_artifacts
+        ))
+    return {"candidate_count": len(summaries), "candidates": summaries}
+
+
+def _load_run_context(args) -> dict:
     state = State.load()
     project = state.get("project_config") or State._project_config
     assert_project_approved(project)
@@ -377,148 +393,200 @@ def run(args) -> dict:
         raise ContractError("no_candidates", "no matching Design candidates")
     ensemble = parse_ensemble_members(args.seeds, args.model_numbers)
     _require_protocol_parameters(ensemble, args.num_recycles)
-
     candidates = [candidate_from_row(row) for row in rows]
     require_design_references(candidates)
+    return {
+        "required_targets": required_targets,
+        "config": config,
+        "target_inputs": target_inputs,
+        "ensemble": ensemble,
+        "candidates": candidates,
+        "artifacts_root": Path(args.artifacts_root).expanduser().resolve(),
+    }
 
-    artifacts_root = Path(args.artifacts_root).expanduser().resolve()
-    summaries = []
-    for candidate in candidates:
-        candidate_dir = artifacts_root / candidate.candidate_id
-        candidate_dir.mkdir(parents=True, exist_ok=True)
-        bundle_path = candidate_dir / "artifacts.json"
-        if bundle_path.is_file():
-            _require_existing_bundle_protocol(bundle_path)
 
-        primary_seed, primary_model = ensemble[0]
-        monomer_dir = (
-            candidate_dir / "colabdesign_monomer"
-            / f"model_{primary_model}_seed_{primary_seed}"
+def _run_candidate_predictions(
+    candidate,
+    candidate_dir: Path,
+    target_inputs: dict,
+    ensemble,
+    args,
+    config: PredictionConfig,
+    required_targets: list[str],
+) -> tuple[dict, dict]:
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    bundle_path = candidate_dir / "artifacts.json"
+    if bundle_path.is_file():
+        _require_existing_bundle_protocol(bundle_path)
+    global_artifacts = _run_monomer_prediction(
+        candidate, ensemble, args, config, candidate_dir
+    )
+    target_artifacts = {}
+    for target_id in required_targets:
+        target_pdb, target_chain = target_inputs[target_id]
+        predictions = _run_complex_predictions(
+            candidate, target_id, target_pdb, target_chain,
+            ensemble, args, config, candidate_dir,
         )
-        monomer_command = build_colabdesign_command(
+        target_artifacts[target_id] = {
+            "target_chain": target_chain,
+            "complex_predictions": predictions,
+        }
+        if args.prodigy:
+            target_artifacts[target_id]["prodigy_outputs"] = _run_prodigy_for_predictions(
+                candidate, target_id, target_chain, predictions, candidate_dir, args
+            )
+    return global_artifacts, target_artifacts
+
+
+def _run_monomer_prediction(
+    candidate, ensemble, args, config: PredictionConfig, candidate_dir: Path
+) -> dict:
+    primary_seed, primary_model = ensemble[0]
+    monomer_dir = (
+        candidate_dir / "colabdesign_monomer"
+        / f"model_{primary_model}_seed_{primary_seed}"
+    )
+    monomer_command = build_colabdesign_command(
+        python=args.python,
+        sequence=candidate.sequence,
+        output_dir=monomer_dir,
+        data_dir=args.data_dir,
+        colabdesign_dir=args.colabdesign_dir,
+        expected_commit=config.colabdesign_commit,
+        seed=primary_seed,
+        model_number=primary_model,
+        num_recycles=args.num_recycles,
+    )
+    _run_one(
+        monomer_command,
+        monomer_dir,
+        args,
+        expected={
+            "requested_sequence": candidate.sequence,
+            "seed": primary_seed,
+            "model_number": primary_model,
+            "num_recycles": args.num_recycles,
+        },
+    )
+    return {
+        "monomer_predictions": [
+            _prediction_entry(
+                monomer_dir, "ColabDesign", primary_seed, primary=True
+            )
+        ],
+        "design_reference_pdb": str(candidate.design_reference_pdb),
+        "design_reference_pdb_sha256": candidate.design_reference_sha256,
+    }
+
+
+def _run_complex_predictions(
+    candidate,
+    target_id: str,
+    target_pdb: Path,
+    target_chain: str,
+    ensemble,
+    args,
+    config: PredictionConfig,
+    candidate_dir: Path,
+) -> list[dict]:
+    predictions = []
+    for index, (seed, model_number) in enumerate(ensemble):
+        output_dir = (
+            candidate_dir / "colabdesign_complex" / target_id
+            / f"model_{model_number}_seed_{seed}"
+        )
+        command = build_colabdesign_command(
             python=args.python,
             sequence=candidate.sequence,
-            output_dir=monomer_dir,
+            output_dir=output_dir,
             data_dir=args.data_dir,
             colabdesign_dir=args.colabdesign_dir,
             expected_commit=config.colabdesign_commit,
-            seed=primary_seed,
-            model_number=primary_model,
+            seed=seed,
+            model_number=model_number,
             num_recycles=args.num_recycles,
+            target_pdb=target_pdb,
+            target_chain=target_chain,
+            use_multimer=True,
         )
         _run_one(
-            monomer_command,
-            monomer_dir,
+            command,
+            output_dir,
             args,
             expected={
                 "requested_sequence": candidate.sequence,
-                "seed": primary_seed,
-                "model_number": primary_model,
+                "seed": seed,
+                "model_number": model_number,
                 "num_recycles": args.num_recycles,
             },
         )
-        global_artifacts = {
-            "monomer_predictions": [
-                _prediction_entry(
-                    monomer_dir, "ColabDesign", primary_seed, primary=True
-                )
+        predictions.append(_prediction_entry(
+            output_dir, "ColabDesign", seed, primary=index == 0
+        ))
+    return predictions
+
+
+def _run_prodigy_for_predictions(
+    candidate,
+    target_id: str,
+    target_chain: str,
+    predictions: list[dict],
+    candidate_dir: Path,
+    args,
+) -> list[dict]:
+    prodigy_outputs = []
+    for prediction in predictions:
+        prediction_pdb = Path(prediction["pdb"])
+        metadata = json.loads(Path(prediction["metadata"]).read_text())
+        binder_chain = metadata["binder_chain"]
+        result = run_command(
+            [
+                args.prodigy, "-q", str(prediction_pdb),
+                "--selection", target_chain, binder_chain,
             ],
-            "design_reference_pdb": str(candidate.design_reference_pdb),
-            "design_reference_pdb_sha256": candidate.design_reference_sha256,
-        }
-
-        target_artifacts = {}
-        for target_id in required_targets:
-            target_pdb, target_chain = target_inputs[target_id]
-            predictions = []
-            for index, (seed, model_number) in enumerate(ensemble):
-                output_dir = (
-                    candidate_dir / "colabdesign_complex" / target_id
-                    / f"model_{model_number}_seed_{seed}"
-                )
-                command = build_colabdesign_command(
-                    python=args.python,
-                    sequence=candidate.sequence,
-                    output_dir=output_dir,
-                    data_dir=args.data_dir,
-                    colabdesign_dir=args.colabdesign_dir,
-                    expected_commit=config.colabdesign_commit,
-                    seed=seed,
-                    model_number=model_number,
-                    num_recycles=args.num_recycles,
-                    target_pdb=target_pdb,
-                    target_chain=target_chain,
-                    use_multimer=True,
-                )
-                _run_one(
-                    command,
-                    output_dir,
-                    args,
-                    expected={
-                        "requested_sequence": candidate.sequence,
-                        "seed": seed,
-                        "model_number": model_number,
-                        "num_recycles": args.num_recycles,
-                    },
-                )
-                predictions.append(_prediction_entry(
-                    output_dir, "ColabDesign", seed, primary=index == 0
-                ))
-            target_artifacts[target_id] = {
-                "target_chain": target_chain,
-                "complex_predictions": predictions,
-            }
-            if args.prodigy:
-                prodigy_outputs = []
-                for prediction in predictions:
-                    prediction_pdb = Path(prediction["pdb"])
-                    metadata = json.loads(Path(prediction["metadata"]).read_text())
-                    binder_chain = metadata["binder_chain"]
-                    result = run_command(
-                        [
-                            args.prodigy, "-q", str(prediction_pdb),
-                            "--selection", target_chain, binder_chain,
-                        ],
-                        timeout=300,
-                    )
-                    if result.exit_code:
-                        raise ContractError(
-                            "prodigy_failed",
-                            f"PRODIGY failed for {candidate.candidate_id}/{target_id}/"
-                            f"{metadata['model_id']}: {result.stderr[-500:]}",
-                        )
-                    prodigy_path = (
-                        candidate_dir
-                        / f"{target_id}_{metadata['model_id']}_seed_{prediction['seed']}_prodigy.txt"
-                    )
-                    prodigy_path.write_text(result.stdout, encoding="utf-8")
-                    prodigy_outputs.append({
-                        "predictor": prediction["predictor"],
-                        "model_id": metadata["model_id"],
-                        "seed": prediction["seed"],
-                        "prediction_pdb_sha256": prediction["pdb_sha256"],
-                        "output": str(prodigy_path),
-                        "output_sha256": file_sha256(prodigy_path),
-                    })
-                target_artifacts[target_id]["prodigy_outputs"] = prodigy_outputs
-
-        bundle = {
-            "schema_version": 1,
-            "candidate_id": candidate.candidate_id,
-            "sequence": candidate.sequence,
-            "protocol": protocol_binding(),
-            "global": global_artifacts,
-            "targets": target_artifacts,
-        }
-        bundle_path = candidate_dir / "artifacts.json"
-        atomic_json(bundle_path, bundle)
-        summaries.append({
-            "candidate_id": candidate.candidate_id,
-            "artifact_bundle": str(bundle_path),
-            "artifact_bundle_sha256": file_sha256(bundle_path),
+            timeout=300,
+        )
+        if result.exit_code:
+            raise ContractError(
+                "prodigy_failed",
+                f"PRODIGY failed for {candidate.candidate_id}/{target_id}/"
+                f"{metadata['model_id']}: {result.stderr[-500:]}",
+            )
+        prodigy_path = (
+            candidate_dir
+            / f"{target_id}_{metadata['model_id']}_seed_{prediction['seed']}_prodigy.txt"
+        )
+        prodigy_path.write_text(result.stdout, encoding="utf-8")
+        prodigy_outputs.append({
+            "predictor": prediction["predictor"],
+            "model_id": metadata["model_id"],
+            "seed": prediction["seed"],
+            "prediction_pdb_sha256": prediction["pdb_sha256"],
+            "output": str(prodigy_path),
+            "output_sha256": file_sha256(prodigy_path),
         })
-    return {"candidate_count": len(summaries), "candidates": summaries}
+    return prodigy_outputs
 
+
+def _write_candidate_bundle(
+    candidate, candidate_dir: Path, global_artifacts: dict, target_artifacts: dict
+) -> dict:
+    bundle = {
+        "schema_version": 1,
+        "candidate_id": candidate.candidate_id,
+        "sequence": candidate.sequence,
+        "protocol": protocol_binding(),
+        "global": global_artifacts,
+        "targets": target_artifacts,
+    }
+    bundle_path = candidate_dir / "artifacts.json"
+    atomic_json(bundle_path, bundle)
+    return {
+        "candidate_id": candidate.candidate_id,
+        "artifact_bundle": str(bundle_path),
+        "artifact_bundle_sha256": file_sha256(bundle_path),
+    }
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)

@@ -35,12 +35,6 @@
         "lines": 203
       },
       {
-        "file": "prediction_pipeline/metrics.py",
-        "function": "pose_convergence",
-        "line": 226,
-        "lines": 151
-      },
-      {
         "file": "prediction_pipeline/pipeline.py",
         "function": "_collect_metrics",
         "line": 368,
@@ -57,24 +51,6 @@
         "function": "run_rosetta_interface",
         "line": 53,
         "lines": 191
-      },
-      {
-        "file": "scripts/enrich_prediction_evidence.py",
-        "function": "run",
-        "line": 198,
-        "lines": 231
-      },
-      {
-        "file": "scripts/run_execution_selfcheck.py",
-        "function": "main",
-        "line": 97,
-        "lines": 200
-      },
-      {
-        "file": "scripts/run_prediction_predictors.py",
-        "function": "run",
-        "line": 360,
-        "lines": 161
       }
     ],
     "action_handlers": [],

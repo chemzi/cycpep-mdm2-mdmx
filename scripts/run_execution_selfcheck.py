@@ -111,12 +111,7 @@ def main() -> int:
     from execution.worker import drain_run
     from prediction_pipeline.contracts import file_sha256, object_sha256
 
-    state = State.sync_project_config(ACTIVE_PROJECT_CONFIG)
-    for key in ("critic", "planner", "orchestrator"):
-        state.pop(key, None)
-    state["phase"] = "critic"
-    State.save(state)
-
+    state = _reset_state(State, ACTIVE_PROJECT_CONFIG)
     missing_index = [candidate for candidate in candidates if CandidateIndex.find(candidate) is None]
     missing_artifacts = [
         candidate for candidate in candidates
@@ -128,6 +123,46 @@ def main() -> int:
             "missing_artifacts": missing_artifacts,
         }, ensure_ascii=False))
 
+    request_digest, report_id, issue_code = _compute_request_digest(
+        state, candidates, artifacts_root, file_sha256, object_sha256
+    )
+    bootstrap_path = _write_bootstrap(
+        state, candidates, artifacts_root, work_root,
+        request_digest, report_id, issue_code, ACTIVE_PROJECT_CONFIG,
+    )
+    plan_result, initialized, drained, final_run = _run_selfcheck_execution(
+        bootstrap_path, candidates, args, state,
+        planner_run, record_approval, initialize, drain_run, status, ExecutionConfig,
+    )
+    summary, source_files_unchanged = _build_selfcheck_summary(
+        state, plan_result, final_run, drained, candidates, work_root,
+        source_data, source_hashes_before, file_sha256,
+    )
+    summary_path = work_root / "execution_selfcheck_summary.json"
+    summary_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    print(json.dumps({**summary, "summary_path": str(summary_path)}, ensure_ascii=False, indent=2))
+    return 0 if source_files_unchanged else 2
+
+
+def _reset_state(State, active_project_config: dict) -> dict:
+    state = State.sync_project_config(active_project_config)
+    for key in ("critic", "planner", "orchestrator"):
+        state.pop(key, None)
+    state["phase"] = "critic"
+    State.save(state)
+    return state
+
+
+def _compute_request_digest(
+    state: dict,
+    candidates: list[str],
+    artifacts_root: Path,
+    file_sha256,
+    object_sha256,
+) -> tuple[str, str, str]:
     request_digest = object_sha256({
         "kind": "execution_existing_evidence_selfcheck",
         "project_id": state["project_id"],
@@ -139,6 +174,19 @@ def main() -> int:
     })
     report_id = f"critic_{request_digest[:12]}"
     issue_code = "execution_prediction_evidence_selfcheck_requested"
+    return request_digest, report_id, issue_code
+
+
+def _write_bootstrap(
+    state: dict,
+    candidates: list[str],
+    artifacts_root: Path,
+    work_root: Path,
+    request_digest: str,
+    report_id: str,
+    issue_code: str,
+    active_project_config: dict,
+) -> Path:
     bootstrap = {
         "schema_version": 1,
         "critic_version": "selfcheck-bootstrap-1",
@@ -151,7 +199,7 @@ def main() -> int:
             "prediction_pipeline_version": "selfcheck-bootstrap-1",
             "project_id": state["project_id"],
             "required_targets": [
-                item["id"] for item in ACTIVE_PROJECT_CONFIG["targets"]
+                item["id"] for item in active_project_config["targets"]
                 if item.get("required", True)
             ],
             "record_count": len(candidates),
@@ -195,7 +243,21 @@ def main() -> int:
         json.dumps(bootstrap, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    return bootstrap_path
 
+
+def _run_selfcheck_execution(
+    bootstrap_path: Path,
+    candidates: list[str],
+    args,
+    state: dict,
+    planner_run,
+    record_approval,
+    initialize,
+    drain_run,
+    status,
+    ExecutionConfig,
+) -> tuple[dict, dict, dict, dict]:
     plan_result = planner_run(critic_report_path=bootstrap_path)
     required_task_ids = plan_result["plan"]["approval_request"]["required_task_ids"]
     approval_result = record_approval(
@@ -220,7 +282,20 @@ def main() -> int:
     final_run = status(run_path=initialized["run_path"])["run"]
     if final_run["status"] != "completed":
         raise SystemExit(json.dumps(drained, ensure_ascii=False, indent=2))
+    return plan_result, initialized, drained, final_run
 
+
+def _build_selfcheck_summary(
+    state: dict,
+    plan_result: dict,
+    final_run: dict,
+    drained: dict,
+    candidates: list[str],
+    work_root: Path,
+    source_data: Path,
+    source_hashes_before: dict,
+    file_sha256,
+) -> tuple[dict, bool]:
     planned_tasks = {
         task["task_id"]: task for task in plan_result["plan"]["tasks"]
     }
@@ -287,13 +362,8 @@ def main() -> int:
             "source_sha256_after": source_hashes_after,
         },
     }
-    summary_path = work_root / "execution_selfcheck_summary.json"
-    summary_path.write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    print(json.dumps({**summary, "summary_path": str(summary_path)}, ensure_ascii=False, indent=2))
-    return 0 if source_files_unchanged else 2
+    return summary, source_files_unchanged
+
 
 
 if __name__ == "__main__":
