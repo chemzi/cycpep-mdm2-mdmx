@@ -192,6 +192,10 @@ class ProtocolSchemaTests(unittest.TestCase):
                 "seed_base": 101,
                 "post_relax_seed_base": 20260802,
                 "post_relax_repeats": 3,
+                "post_relax_coordinate_stdev": 0.5,
+            },
+            "boltz": {
+                "diffusion_samples": 1,
             },
         }
         data.update(overrides)
@@ -288,6 +292,34 @@ class ProtocolSchemaTests(unittest.TestCase):
                     }
                 )
             )
+
+    def test_missing_boltz_section_rejected(self):
+        data = self._data()
+        del data["boltz"]
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(data)
+
+    def test_non_positive_diffusion_samples_rejected(self):
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(
+                self._data(boltz={"diffusion_samples": 0})
+            )
+
+    def test_non_positive_coordinate_stdev_rejected(self):
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(
+                self._data(
+                    enrichment={
+                        **self._data()["enrichment"],
+                        "post_relax_coordinate_stdev": 0.0,
+                    }
+                )
+            )
+
+    def test_typed_values_load(self):
+        protocol = PredictionProtocol.from_data(self._data())
+        self.assertEqual(protocol.boltz_diffusion_samples, 1)
+        self.assertEqual(protocol.post_relax_coordinate_stdev, 0.5)
 
 
 class ProtocolRegistryTests(unittest.TestCase):

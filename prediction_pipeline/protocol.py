@@ -56,6 +56,8 @@ class PredictionProtocol:
     enrichment_seed_base: int
     post_relax_seed_base: int
     post_relax_repeats: int
+    post_relax_coordinate_stdev: float
+    boltz_diffusion_samples: int
 
     @classmethod
     def from_data(cls, data: dict) -> "PredictionProtocol":
@@ -106,6 +108,25 @@ class PredictionProtocol:
             raise ProtocolError("enrichment.post_relax_seed_base must be non-negative")
         if post_relax_repeats <= 0:
             raise ProtocolError("enrichment.post_relax_repeats must be a positive integer")
+        coordinate_stdev = enrichment.get("post_relax_coordinate_stdev")
+        if (
+            not isinstance(coordinate_stdev, (int, float))
+            or isinstance(coordinate_stdev, bool)
+            or coordinate_stdev <= 0
+        ):
+            raise ProtocolError(
+                "enrichment.post_relax_coordinate_stdev must be a positive number"
+            )
+        boltz = data.get("boltz")
+        if not isinstance(boltz, dict):
+            raise ProtocolError("prediction protocol section 'boltz' must be an object")
+        diffusion_samples = _int(
+            boltz.get("diffusion_samples"), "boltz.diffusion_samples"
+        )
+        if diffusion_samples <= 0:
+            raise ProtocolError(
+                "boltz.diffusion_samples must be a positive integer"
+            )
         return cls(
             version=version,
             protocol_name=protocol_name,
@@ -115,6 +136,8 @@ class PredictionProtocol:
             enrichment_seed_base=seed_base,
             post_relax_seed_base=post_relax_seed_base,
             post_relax_repeats=post_relax_repeats,
+            post_relax_coordinate_stdev=float(coordinate_stdev),
+            boltz_diffusion_samples=diffusion_samples,
         )
 
 

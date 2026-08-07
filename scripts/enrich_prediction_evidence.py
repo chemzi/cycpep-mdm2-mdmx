@@ -317,6 +317,7 @@ def run(args) -> dict:
                 target_chain=target_chain,
                 binder_chain=args.binder_chain,
                 seed=args.seed,
+                diffusion_samples=PREDICTION_PROTOCOL["boltz"]["diffusion_samples"],
                 timeout=args.timeout,
                 no_kernels=args.no_kernels,
             )
@@ -454,7 +455,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=PREDICTION_PROTOCOL["enrichment"]["post_relax_repeats"],
     )
-    parser.add_argument("--post-relax-coordinate-stdev", type=float, default=0.5)
+    parser.add_argument(
+        "--post-relax-coordinate-stdev",
+        type=float,
+        default=PREDICTION_PROTOCOL["enrichment"]["post_relax_coordinate_stdev"],
+        help="cyclic post-relax coordinate constraint stdev; default from "
+        "protocols/prediction_v1.json",
+    )
     parser.add_argument("--post-relax-timeout", type=int, default=3600)
     parser.add_argument("--binder-chain", default="B")
     parser.add_argument("--timeout", type=int, default=3600)

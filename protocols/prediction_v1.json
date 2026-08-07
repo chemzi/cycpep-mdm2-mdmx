@@ -10,6 +10,10 @@
   "enrichment": {
     "seed_base": 101,
     "post_relax_seed_base": 20260802,
-    "post_relax_repeats": 3
+    "post_relax_repeats": 3,
+    "post_relax_coordinate_stdev": 0.5
+  },
+  "boltz": {
+    "diffusion_samples": 1
   }
 }
