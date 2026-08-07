@@ -675,6 +675,64 @@ def _run_pipeline():
     stage_context = {}
     fallbacks = []
 
+    sr = _step_rcsb_search(stage_status, stage_context)
+    er = _step_rcsb_enrich(stage_status, stage_context, sr)
+    (pocket_differences, dynamic_pdb_list, dynamic_pdb_by_target,
+     n_mdm2_structures, n_mdmx_structures) = _step_biotite(
+        stage_status, stage_context, fallbacks, er, skip_heavy,
+    )
+    pmr = _step_pubmed(stage_status, stage_context)
+    llm_binders, binder_source = _step_llm_extract(
+        stage_status, stage_context, fallbacks, pmr,
+    )
+    thresholds, control_calibration, threshold_normalization, final_normalization = (
+        _step_threshold_research(stage_status, stage_context, fallbacks)
+    )
+    _write_threshold_cache(thresholds, _cfg(), {
+        "literature_input": threshold_normalization,
+        "final": final_normalization,
+        "control_calibration": control_calibration,
+    })
+    if not _module_attr("THRESHOLDS_CACHE").exists():
+        _write_threshold_cache(thresholds, _cfg())
+
+    # ===== 组装结果 =====
+    stage_error_code, error_message = _diagnostics_for_stages(stage_status, stage_context)
+    result = {
+        "targets": TARGETS.copy(),
+        "pocket_differences": pocket_differences,
+        "known_dual_binders": llm_binders,
+        "known_binder_source": binder_source,
+        "design_strategy_summary": DESIGN_STRATEGY_SUMMARY,
+        "data_quality_alert": DATA_QUALITY_ALERT,
+        "literature_refs": LITERATURE_REFS,
+        "thresholds": thresholds,
+        "_pipeline_meta": {
+            "last_run": datetime.now(timezone.utc).isoformat(),
+            "pocket_source": pocket_differences.get("_source", "constant"),
+            "n_pdb_complexes": len(dynamic_pdb_list),
+            "n_mdm2_structures": n_mdm2_structures,
+            "n_mdmx_structures": n_mdmx_structures,
+            "dynamic_pdb_list": (
+                dynamic_pdb_by_target["MDM2"][:10]
+                + dynamic_pdb_by_target["MDMX"][:10]
+            ),
+            "dynamic_pdb_by_target": dynamic_pdb_by_target,
+            "stage_status": stage_status,
+            "stage_error_code": stage_error_code,
+            "error_message": error_message,
+            "fallbacks_used": list(dict.fromkeys(fallbacks)),
+            "control_calibration": control_calibration,
+            "run_status": _overall_run_status(stage_status),
+        },
+        "_cache_meta": _cache_meta(_cfg()),
+    }
+    _atomic_write_json(_module_attr("CACHE_PATH"), result)
+    print(f"[research] Pipeline done. pocket_source={result['_pipeline_meta']['pocket_source']}")
+    return result
+
+
+def _step_rcsb_search(stage_status: dict, stage_context: dict) -> dict:
     # ===== Step 1: RCSB Search =====
     print("[research] Step 1/8: RCSB Search API...")
     sr, se, sc, sd, sh = _run_script("search_pdb.py")
@@ -691,7 +749,10 @@ def _run_pipeline():
             f"MDM2={sr.get('n_mdm2',0)} MDMX={sr.get('n_mdmx',0)}"
         ),
     }, targets=["both"], phase="research")
+    return sr
 
+
+def _step_rcsb_enrich(stage_status: dict, stage_context: dict, sr: dict) -> dict:
     # ===== Step 2: GraphQL Enrich =====
     print("[research] Step 2/8: RCSB GraphQL...")
     er, ee, ec, ed, eh = _run_script("enrich_pdb.py", sr)
@@ -703,7 +764,16 @@ def _run_pipeline():
         "duration_sec": round(ed, 1),
         "stdout_snippet": f"status={stage_status['rcsb_enrich']} peptide_complexes={n_peptide}",
     }, targets=["both"], phase="research")
+    return er
 
+
+def _step_biotite(
+    stage_status: dict,
+    stage_context: dict,
+    fallbacks: list,
+    er: dict,
+    skip_heavy: bool,
+) -> tuple[dict, list, dict, int, int]:
     # ===== Steps 3-5: biotite =====
     pocket_differences = POCKET_DIFFERENCES  # 默认常量
     dynamic_pdb_list = []  # 动态 PDB 列表（来自 enrich）
@@ -809,7 +879,11 @@ def _run_pipeline():
         else:
             print("[research] biotite produced no interface data, using constant pockets")
             fallbacks.append("curated_mdm_pocket_definitions")
+    return (pocket_differences, dynamic_pdb_list, dynamic_pdb_by_target,
+            n_mdm2_structures, n_mdmx_structures)
 
+
+def _step_pubmed(stage_status: dict, stage_context: dict) -> dict:
     # ===== Step 6: PubMed =====
     print("[research] Step 6/8: PubMed...")
     pmr, pme, pmc, pmd_, pmh = _run_script("pubmed_search.py")
@@ -820,7 +894,12 @@ def _run_pipeline():
         "duration_sec": round(pmd_, 1),
         "stdout_snippet": f"status={stage_status['pubmed']} n_papers={pmr.get('n_total',0)}",
     }, targets=["both"], phase="research")
+    return pmr
 
+
+def _step_llm_extract(
+    stage_status: dict, stage_context: dict, fallbacks: list, pmr: dict
+) -> tuple[list, str]:
     # ===== Step 7: LLM extract =====
     print("[research] Step 7/8: LLM extract (concurrent)...")
     llm_binders = KNOWN_DUAL_BINDERS
@@ -856,7 +935,14 @@ def _run_pipeline():
         stage_status["llm_extract"] = "failed"
         stage_context["llm_extract"] = ({}, str(e))
         fallbacks.append("curated_mdm_binders")
+    return llm_binders, binder_source
 
+
+def _step_threshold_research(
+    stage_status: dict, stage_context: dict, fallbacks: list
+) -> tuple[dict, dict, dict, dict]:
+    threshold_normalization = {}
+    final_normalization = {}
     # ===== Step 8: 阈值文献检索 =====
     print("[research] Step 8/8: threshold literature research...")
     thresholds = default_thresholds(_cfg())
@@ -915,48 +1001,8 @@ def _run_pipeline():
     if stage_status.get("threshold_research") != "complete":
         fallbacks.append("provisional_default_thresholds")
     thresholds, control_calibration = _apply_control_calibration(thresholds, _cfg())
-    _write_threshold_cache(thresholds, _cfg(), {
-        "literature_input": threshold_normalization if "threshold_normalization" in locals() else {},
-        "final": final_normalization if "final_normalization" in locals() else {},
-        "control_calibration": control_calibration,
-    })
-    if not _module_attr("THRESHOLDS_CACHE").exists():
-        _write_threshold_cache(thresholds, _cfg())
+    return thresholds, control_calibration, threshold_normalization, final_normalization
 
-    # ===== 组装结果 =====
-    stage_error_code, error_message = _diagnostics_for_stages(stage_status, stage_context)
-    result = {
-        "targets": TARGETS.copy(),
-        "pocket_differences": pocket_differences,
-        "known_dual_binders": llm_binders,
-        "known_binder_source": binder_source,
-        "design_strategy_summary": DESIGN_STRATEGY_SUMMARY,
-        "data_quality_alert": DATA_QUALITY_ALERT,
-        "literature_refs": LITERATURE_REFS,
-        "thresholds": thresholds,
-        "_pipeline_meta": {
-            "last_run": datetime.now(timezone.utc).isoformat(),
-            "pocket_source": pocket_differences.get("_source", "constant"),
-            "n_pdb_complexes": len(dynamic_pdb_list),
-            "n_mdm2_structures": n_mdm2_structures,
-            "n_mdmx_structures": n_mdmx_structures,
-            "dynamic_pdb_list": (
-                dynamic_pdb_by_target["MDM2"][:10]
-                + dynamic_pdb_by_target["MDMX"][:10]
-            ),
-            "dynamic_pdb_by_target": dynamic_pdb_by_target,
-            "stage_status": stage_status,
-            "stage_error_code": stage_error_code,
-            "error_message": error_message,
-            "fallbacks_used": list(dict.fromkeys(fallbacks)),
-            "control_calibration": control_calibration,
-            "run_status": _overall_run_status(stage_status),
-        },
-        "_cache_meta": _cache_meta(_cfg()),
-    }
-    _atomic_write_json(_module_attr("CACHE_PATH"), result)
-    print(f"[research] Pipeline done. pocket_source={result['_pipeline_meta']['pocket_source']}")
-    return result
 
 
 def _run_generic_pipeline():
@@ -967,136 +1013,16 @@ def _run_generic_pipeline():
     stage_context = {}
     fallbacks = []
 
-    sr, se, sc, sd, sh = _run_script("search_pdb.py")
-    stage_status["rcsb_search"] = "complete" if sc == 0 and sr.get("run_status") == "complete" else "empty" if sc == 0 else "failed"
-    stage_context["rcsb_search"] = (sr, se)
-    EvidenceLogger.log("research", "tool_call", {
-        "tool_name": "rcsb_search_api", "output_hash": sh, "exit_code": sc,
-        "duration_sec": round(sd, 1), "stdout_snippet": str(sr.get("counts_by_target", {})),
-    }, targets=target_ids, phase="research")
-
-    er, ee, ec, ed, eh = _run_script("enrich_pdb.py", sr)
-    stage_status["rcsb_enrich"] = "complete" if ec == 0 and er.get("n_peptide_complexes", 0) > 0 else "empty" if ec == 0 else "failed"
-    stage_context["rcsb_enrich"] = (er, ee)
-    EvidenceLogger.log("research", "tool_call", {
-        "tool_name": "rcsb_graphql_api", "output_hash": eh, "exit_code": ec,
-        "duration_sec": round(ed, 1), "stdout_snippet": str(er.get("counts_by_target", {})),
-    }, targets=target_ids, phase="research")
-
-    aggregate = {"results_by_target": {}, "counts_by_target": {}}
-    if os.environ.get("SKIP_BIOTITE", "").lower() in ("1", "true", "yes"):
-        stage_status["interface"] = "skipped"
-        stage_status["aggregate"] = "skipped"
-        stage_context.update({name: ({}, "") for name in ("interface", "aggregate")})
-        fallbacks.append("interface_aggregation_omitted")
-    else:
-        try:
-            ir, ie, ic, id_, ih = _run_script("compute_interface.py", er)
-            stage_status["interface"] = "complete" if ic == 0 and ir.get("n_with_interface", 0) else "empty" if ic == 0 else "failed"
-            stage_context["interface"] = (ir, ie)
-            EvidenceLogger.log("research", "tool_call", {
-                "tool_name": "biotite", "output_hash": ih, "exit_code": ic,
-                "duration_sec": round(id_, 1),
-                "stdout_snippet": f"interfaces={ir.get('n_with_interface', 0)}",
-            }, targets=target_ids, phase="research")
-            aggregate, ae, ac, ad, ah = _run_script("aggregate_pockets.py", ir)
-            has_aggregate = bool(aggregate.get("results_by_target") or aggregate.get("counts_by_target"))
-            stage_status["aggregate"] = "complete" if ac == 0 and has_aggregate else "empty" if ac == 0 else "failed"
-            stage_context["aggregate"] = (aggregate, ae)
-            EvidenceLogger.log("research", "tool_call", {
-                "tool_name": "aggregate_pockets", "output_hash": ah, "exit_code": ac,
-                "duration_sec": round(ad, 1),
-                "stdout_snippet": str(aggregate.get("counts_by_target", {})),
-            }, targets=target_ids, phase="research")
-        except Exception as exc:
-            stage_status["interface"] = "failed"
-            stage_status["aggregate"] = "failed"
-            stage_context["interface"] = ({}, str(exc))
-            stage_context["aggregate"] = ({}, str(exc))
-            fallbacks.append("interface_aggregation_omitted")
-            EvidenceLogger.error("research", "tool_failure", str(exc), recovery="continue without interface aggregation")
-
-    pmr, pme, pc, pd, ph = _run_script("pubmed_search.py")
-    stage_status["pubmed"] = "complete" if pc == 0 and pmr.get("n_total", 0) > 0 else "empty" if pc == 0 else "failed"
-    stage_context["pubmed"] = (pmr, pme)
-    EvidenceLogger.log("research", "tool_call", {
-        "tool_name": "pubmed_eutils", "output_hash": ph, "exit_code": pc,
-        "duration_sec": round(pd, 1), "stdout_snippet": f"papers={pmr.get('n_total', 0)}",
-    }, targets=target_ids, phase="research")
-
-    approved_binders = _approved_known_binders(_cfg())
-    known_binders = list(approved_binders)
-    try:
-        lr, le, lc, ld, lh = _run_script("llm_extract.py", pmr, extra_args=["--concurrency", "3"])
-        extracted_binders = lr.get("known_binders", [])
-        known_binders = _merge_known_binders(
-            approved_binders, extracted_binders
-        )
-        raw_llm_status = lr.get("run_status", "failed")
-        stage_status["llm_extract"] = (
-            "degraded_no_api_key" if raw_llm_status == "degraded_no_api_key"
-            else "complete" if lc == 0 and raw_llm_status == "complete"
-            else "failed"
-        )
-        stage_context["llm_extract"] = (lr, le)
-        if not known_binders:
-            fallbacks.append("no_binder_fallback")
-        EvidenceLogger.log("research", "tool_call", {
-            "tool_name": "llm_extract", "output_hash": lh, "exit_code": lc,
-            "duration_sec": round(ld, 1), "stdout_snippet": f"binders={len(known_binders)}",
-        }, targets=target_ids, phase="research")
-    except Exception as exc:
-        stage_status["llm_extract"] = "failed"
-        stage_context["llm_extract"] = ({}, str(exc))
-        fallbacks.append("no_binder_fallback")
-        EvidenceLogger.error("research", "tool_failure", str(exc), recovery="no fabricated binder fallback")
-
-    thresholds = default_thresholds(_cfg())
-    try:
-        tr, te, tc, td, thash = _run_script("threshold_research.py", extra_args=["--concurrency", "4"])
-        literature_thresholds, threshold_normalization = normalize_thresholds(tr.get("metric_battery", {}))
-        for key, info in literature_thresholds.items():
-            if info.get("auto_usable") and info.get("value") is not None:
-                thresholds[key] = {
-                    **{name: value for name, value in thresholds.get(key, {}).items()
-                       if name in ("method", "min_seed_fraction")},
-                    "value": info["value"], "operator": info.get("operator", ">"),
-                    "unit": info.get("unit"), "source": f"PubMed PMID {info.get('source_pmid')}",
-                    "source_pmid": info.get("source_pmid"), "evidence_quote": info.get("evidence_quote"),
-                    "evidence_grade": "paper_explicit", "quote_verified": True,
-                    "calibration_status": "pending",
-                    "applicable_targets": target_ids,
-                }
-        raw_threshold_status = tr.get("_meta", {}).get("run_status", "failed")
-        stage_status["threshold_research"] = (
-            "degraded_no_api_key" if raw_threshold_status == "degraded_no_llm"
-            else "empty" if raw_threshold_status == "degraded_empty_results"
-            else "complete" if tc == 0 and raw_threshold_status == "complete"
-            else "failed"
-        )
-        stage_context["threshold_research"] = (tr, te)
-        thresholds, final_normalization = normalize_thresholds(thresholds)
-        EvidenceLogger.log("research", "tool_call", {
-            "tool_name": "threshold_research", "output_hash": thash, "exit_code": tc,
-            "duration_sec": round(td, 1),
-            "stdout_snippet": f"usable={tr.get('_meta', {}).get('n_auto_usable', 0)}",
-        }, targets=target_ids, phase="research")
-    except Exception as exc:
-        stage_status["threshold_research"] = "failed"
-        stage_context["threshold_research"] = ({}, str(exc))
-        fallbacks.append("provisional_default_thresholds")
-
-    if stage_status.get("threshold_research") != "complete":
-        fallbacks.append("provisional_default_thresholds")
-    thresholds, control_calibration = _apply_control_calibration(thresholds, _cfg())
-    _write_threshold_cache(thresholds, _cfg(), {
-        "literature_input": threshold_normalization if "threshold_normalization" in locals() else {},
-        "final": final_normalization if "final_normalization" in locals() else {},
-        "control_calibration": control_calibration,
-    })
-    if not _module_attr("THRESHOLDS_CACHE").exists():
-        _write_threshold_cache(thresholds, _cfg())
-        EvidenceLogger.error("research", "tool_failure", str(exc), recovery="provisional thresholds remain non-clearable")
+    sr = _step_generic_search(stage_status, stage_context, target_ids)
+    er = _step_generic_enrich(stage_status, stage_context, target_ids, sr)
+    aggregate = _step_generic_interface(stage_status, stage_context, fallbacks, er)
+    pmr = _step_generic_pubmed(stage_status, stage_context, target_ids)
+    known_binders, approved_binders = _step_generic_llm(
+        stage_status, stage_context, fallbacks, target_ids, pmr,
+    )
+    thresholds, control_calibration, threshold_normalization, final_normalization = (
+        _step_generic_thresholds(stage_status, stage_context, fallbacks, target_ids)
+    )
 
     dynamic_pdb_list = [row.get("pdb_id") for row in er.get("peptide_complexes", []) if row.get("pdb_id")]
     stage_error_code, error_message = _diagnostics_for_stages(stage_status, stage_context)
@@ -1143,6 +1069,163 @@ def _run_generic_pipeline():
     }
     _atomic_write_json(_module_attr("CACHE_PATH"), result)
     return result
+
+
+def _step_generic_search(stage_status: dict, stage_context: dict, target_ids: list) -> dict:
+    sr, se, sc, sd, sh = _run_script("search_pdb.py")
+    stage_status["rcsb_search"] = "complete" if sc == 0 and sr.get("run_status") == "complete" else "empty" if sc == 0 else "failed"
+    stage_context["rcsb_search"] = (sr, se)
+    EvidenceLogger.log("research", "tool_call", {
+        "tool_name": "rcsb_search_api", "output_hash": sh, "exit_code": sc,
+        "duration_sec": round(sd, 1), "stdout_snippet": str(sr.get("counts_by_target", {})),
+    }, targets=target_ids, phase="research")
+    return sr
+
+
+def _step_generic_enrich(stage_status: dict, stage_context: dict, target_ids: list, sr: dict) -> dict:
+    er, ee, ec, ed, eh = _run_script("enrich_pdb.py", sr)
+    stage_status["rcsb_enrich"] = "complete" if ec == 0 and er.get("n_peptide_complexes", 0) > 0 else "empty" if ec == 0 else "failed"
+    stage_context["rcsb_enrich"] = (er, ee)
+    EvidenceLogger.log("research", "tool_call", {
+        "tool_name": "rcsb_graphql_api", "output_hash": eh, "exit_code": ec,
+        "duration_sec": round(ed, 1), "stdout_snippet": str(er.get("counts_by_target", {})),
+    }, targets=target_ids, phase="research")
+    return er
+
+
+def _step_generic_interface(
+    stage_status: dict, stage_context: dict, fallbacks: list, er: dict
+) -> dict:
+    aggregate = {"results_by_target": {}, "counts_by_target": {}}
+    if os.environ.get("SKIP_BIOTITE", "").lower() in ("1", "true", "yes"):
+        stage_status["interface"] = "skipped"
+        stage_status["aggregate"] = "skipped"
+        stage_context.update({name: ({}, "") for name in ("interface", "aggregate")})
+        fallbacks.append("interface_aggregation_omitted")
+    else:
+        try:
+            ir, ie, ic, id_, ih = _run_script("compute_interface.py", er)
+            stage_status["interface"] = "complete" if ic == 0 and ir.get("n_with_interface", 0) else "empty" if ic == 0 else "failed"
+            stage_context["interface"] = (ir, ie)
+            EvidenceLogger.log("research", "tool_call", {
+                "tool_name": "biotite", "output_hash": ih, "exit_code": ic,
+                "duration_sec": round(id_, 1),
+                "stdout_snippet": f"interfaces={ir.get('n_with_interface', 0)}",
+            }, targets=target_ids, phase="research")
+            aggregate, ae, ac, ad, ah = _run_script("aggregate_pockets.py", ir)
+            has_aggregate = bool(aggregate.get("results_by_target") or aggregate.get("counts_by_target"))
+            stage_status["aggregate"] = "complete" if ac == 0 and has_aggregate else "empty" if ac == 0 else "failed"
+            stage_context["aggregate"] = (aggregate, ae)
+            EvidenceLogger.log("research", "tool_call", {
+                "tool_name": "aggregate_pockets", "output_hash": ah, "exit_code": ac,
+                "duration_sec": round(ad, 1),
+                "stdout_snippet": str(aggregate.get("counts_by_target", {})),
+            }, targets=target_ids, phase="research")
+        except Exception as exc:
+            stage_status["interface"] = "failed"
+            stage_status["aggregate"] = "failed"
+            stage_context["interface"] = ({}, str(exc))
+            stage_context["aggregate"] = ({}, str(exc))
+            fallbacks.append("interface_aggregation_omitted")
+            EvidenceLogger.error("research", "tool_failure", str(exc), recovery="continue without interface aggregation")
+    return aggregate
+
+
+def _step_generic_pubmed(stage_status: dict, stage_context: dict, target_ids: list) -> dict:
+    pmr, pme, pc, pd, ph = _run_script("pubmed_search.py")
+    stage_status["pubmed"] = "complete" if pc == 0 and pmr.get("n_total", 0) > 0 else "empty" if pc == 0 else "failed"
+    stage_context["pubmed"] = (pmr, pme)
+    EvidenceLogger.log("research", "tool_call", {
+        "tool_name": "pubmed_eutils", "output_hash": ph, "exit_code": pc,
+        "duration_sec": round(pd, 1), "stdout_snippet": f"papers={pmr.get('n_total', 0)}",
+    }, targets=target_ids, phase="research")
+    return pmr
+
+
+def _step_generic_llm(
+    stage_status: dict, stage_context: dict, fallbacks: list, target_ids: list, pmr: dict
+) -> tuple[list, list]:
+    approved_binders = _approved_known_binders(_cfg())
+    known_binders = list(approved_binders)
+    try:
+        lr, le, lc, ld, lh = _run_script("llm_extract.py", pmr, extra_args=["--concurrency", "3"])
+        extracted_binders = lr.get("known_binders", [])
+        known_binders = _merge_known_binders(
+            approved_binders, extracted_binders
+        )
+        raw_llm_status = lr.get("run_status", "failed")
+        stage_status["llm_extract"] = (
+            "degraded_no_api_key" if raw_llm_status == "degraded_no_api_key"
+            else "complete" if lc == 0 and raw_llm_status == "complete"
+            else "failed"
+        )
+        stage_context["llm_extract"] = (lr, le)
+        if not known_binders:
+            fallbacks.append("no_binder_fallback")
+        EvidenceLogger.log("research", "tool_call", {
+            "tool_name": "llm_extract", "output_hash": lh, "exit_code": lc,
+            "duration_sec": round(ld, 1), "stdout_snippet": f"binders={len(known_binders)}",
+        }, targets=target_ids, phase="research")
+    except Exception as exc:
+        stage_status["llm_extract"] = "failed"
+        stage_context["llm_extract"] = ({}, str(exc))
+        fallbacks.append("no_binder_fallback")
+        EvidenceLogger.error("research", "tool_failure", str(exc), recovery="no fabricated binder fallback")
+    return known_binders, approved_binders
+
+
+def _step_generic_thresholds(
+    stage_status: dict, stage_context: dict, fallbacks: list, target_ids: list
+) -> tuple[dict, dict, dict, dict]:
+    threshold_normalization = {}
+    final_normalization = {}
+    thresholds = default_thresholds(_cfg())
+    try:
+        tr, te, tc, td, thash = _run_script("threshold_research.py", extra_args=["--concurrency", "4"])
+        literature_thresholds, threshold_normalization = normalize_thresholds(tr.get("metric_battery", {}))
+        for key, info in literature_thresholds.items():
+            if info.get("auto_usable") and info.get("value") is not None:
+                thresholds[key] = {
+                    **{name: value for name, value in thresholds.get(key, {}).items()
+                       if name in ("method", "min_seed_fraction")},
+                    "value": info["value"], "operator": info.get("operator", ">"),
+                    "unit": info.get("unit"), "source": f"PubMed PMID {info.get('source_pmid')}",
+                    "source_pmid": info.get("source_pmid"), "evidence_quote": info.get("evidence_quote"),
+                    "evidence_grade": "paper_explicit", "quote_verified": True,
+                    "calibration_status": "pending",
+                    "applicable_targets": target_ids,
+                }
+        raw_threshold_status = tr.get("_meta", {}).get("run_status", "failed")
+        stage_status["threshold_research"] = (
+            "degraded_no_api_key" if raw_threshold_status == "degraded_no_llm"
+            else "empty" if raw_threshold_status == "degraded_empty_results"
+            else "complete" if tc == 0 and raw_threshold_status == "complete"
+            else "failed"
+        )
+        stage_context["threshold_research"] = (tr, te)
+        thresholds, final_normalization = normalize_thresholds(thresholds)
+        EvidenceLogger.log("research", "tool_call", {
+            "tool_name": "threshold_research", "output_hash": thash, "exit_code": tc,
+            "duration_sec": round(td, 1),
+            "stdout_snippet": f"usable={tr.get('_meta', {}).get('n_auto_usable', 0)}",
+        }, targets=target_ids, phase="research")
+    except Exception as exc:
+        stage_status["threshold_research"] = "failed"
+        stage_context["threshold_research"] = ({}, str(exc))
+        fallbacks.append("provisional_default_thresholds")
+
+    if stage_status.get("threshold_research") != "complete":
+        fallbacks.append("provisional_default_thresholds")
+    thresholds, control_calibration = _apply_control_calibration(thresholds, _cfg())
+    _write_threshold_cache(thresholds, _cfg(), {
+        "literature_input": threshold_normalization if "threshold_normalization" in locals() else {},
+        "final": final_normalization if "final_normalization" in locals() else {},
+        "control_calibration": control_calibration,
+    })
+    if not _module_attr("THRESHOLDS_CACHE").exists():
+        _write_threshold_cache(thresholds, _cfg())
+        EvidenceLogger.error("research", "tool_failure", str(exc), recovery="provisional thresholds remain non-clearable")
+    return thresholds, control_calibration, threshold_normalization, final_normalization
 
 
 def run(state=None, force_recompute=False, skip_pipeline=False, project_config=None):

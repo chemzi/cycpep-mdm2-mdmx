@@ -4,7 +4,7 @@
     "file_size": [
       {
         "file": "agents/research.py",
-        "lines": 1283
+        "lines": 1366
       },
       {
         "file": "data_layer.py",
@@ -16,18 +16,6 @@
       }
     ],
     "function_length": [
-      {
-        "file": "agents/research.py",
-        "function": "_run_pipeline",
-        "line": 671,
-        "lines": 289
-      },
-      {
-        "file": "agents/research.py",
-        "function": "_run_generic_pipeline",
-        "line": 962,
-        "lines": 184
-      },
       {
         "file": "prediction_pipeline/pipeline.py",
         "function": "_collect_metrics",
