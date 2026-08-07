@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 import uuid
@@ -11,8 +10,6 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-import numpy as np
 
 import data_layer
 from data_layer import CandidateIndex, EvidenceLogger, State, evaluate_battery
@@ -22,7 +19,6 @@ from .adapters import (
     ArtifactBundle,
     load_artifact_bundle,
     parse_metadata,
-    parse_target_physics,
 )
 from .contracts import (
     CandidateInput,
@@ -38,21 +34,10 @@ from .protocol import (
     MIGRATE_LEGACY_HINT,
     validate_execution_compatibility,
 )
-from .metrics import calculate_ipsae, load_pae, pose_convergence
-from .relax_worker import (
-    POST_RELAX_PROTOCOL,
-    POST_RELAX_TOOL,
-)
-from .rosetta_worker import PYROSETTA_VERSION
 from .structures import (
-    backbone_rmsd,
     canonical_target_residue_numbers,
     exact_sequence_chain,
-    infer_chain_by_length,
-    interface_hotspot_metrics,
-    mean_plddt,
     parse_pdb,
-    terminal_bond_distance,
 )
 
 

@@ -13,7 +13,7 @@ from pathlib import Path
 from project_config import required_target_ids, target_slug
 
 
-_LEGACY_DEFAULT_DESIGN_BUDGET = {
+LEGACY_DEFAULT_DESIGN_BUDGET = {
     "route_A_mdm2": 400,
     "route_A_mdmx": 400,
     "route_B": 400,
@@ -21,7 +21,7 @@ _LEGACY_DEFAULT_DESIGN_BUDGET = {
 }
 
 
-def _default_design_budget(config: dict) -> dict[str, int]:
+def default_design_budget(config: dict) -> dict[str, int]:
     """Build route capacity keys from the approved target identities."""
     budget = {
         f"route_A_{target_slug(target_id)}": 400
@@ -31,7 +31,7 @@ def _default_design_budget(config: dict) -> dict[str, int]:
     return budget
 
 
-def _default_state(config: dict) -> dict:
+def default_state(config: dict) -> dict:
     """Default State projection for the given project config (PR5, lazy)."""
     return {
         "project": config.get("name", config["project_id"]),
@@ -45,7 +45,7 @@ def _default_state(config: dict) -> dict:
         "round": 1,
         "pocket_differences": {},
         "known_dual_binders": [],
-        "design_budget": _default_design_budget(config),
+        "design_budget": default_design_budget(config),
         "candidate_count": 0,
         "iteration_history": [],
         "thresholds": {},
@@ -66,6 +66,20 @@ def _write_json_atomic(path: str | Path, payload: dict):
     finally:
         if os.path.exists(temp_name):
             os.unlink(temp_name)
+
+
+def to_float(value):
+    """Coerce a value to float; return None when it is empty or unparseable.
+
+    Shared by the battery evaluator and CandidateIndex (PR8).  Kept public so
+    sibling modules can reuse it without importing a private name.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 # v5: 七层指标电池主列。旧列名保留做 alias（见 _ALIAS_MAP），不破坏已有代码。
 INDEX_COLUMNS = [
@@ -124,7 +138,7 @@ _ALIAS_MAP = {
 }
 
 
-def _alias_keys(row: dict) -> dict:
+def alias_keys(row: dict) -> dict:
     """旧字段名 → 新字段名（向前兼容旧 Agent 代码）。"""
     for old, new in _ALIAS_MAP.items():
         if old in row and row.get(old) not in (None, "") and row.get(new) in (None, ""):

@@ -13,12 +13,10 @@ from project_config import (
     threshold_for_target,
 )
 
-# Resolved from data_layer (imported at the end of its module body, so every
-# name below is fully initialized before this module binds them).
-from data_layer import (
-    State,
-    _alias_keys,
-)
+# Shared helpers come from data_layer_schema; data_layer re-exports this
+# module from its tail, so battery must not import data_layer at module load
+# (that would form an import-time cycle).
+from data_layer_schema import alias_keys, to_float as _f
 
 
 # ============================================================
@@ -33,13 +31,6 @@ def _cmp(value: float, op: str, threshold: float) -> bool:
            ">=": lambda a, b: a >= b,
            "<=": lambda a, b: a <= b}
     return ops.get(op, lambda a, b: False)(float(value), float(threshold))
-
-
-def _f(v):
-    """尝试转 float，失败返回 None。"""
-    if v is None or v == "": return None
-    try: return float(v)
-    except (TypeError, ValueError): return None
 
 
 def _truthy(value) -> bool:
@@ -201,13 +192,15 @@ def _normalize_battery_context(
     thresholds: dict | None,
     required_targets: tuple[str, ...] | None,
 ) -> tuple[dict, dict, tuple[str, ...]]:
-    c = _alias_keys(dict(c))  # 旧名兜底
+    c = alias_keys(dict(c))  # 旧名兜底
     th = thresholds or {}
     if required_targets is None:
         candidate_targets = c.get("required_targets")
         if candidate_targets:
             required_targets = tuple(candidate_targets)
         else:
+            from data_layer import State  # lazy: avoid import-time cycle
+
             state = State.load()
             config = state.get("project_config") or State._project_config
             required_targets = required_target_ids(config)

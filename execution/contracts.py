@@ -25,11 +25,8 @@ from contracts.action import (
     EXECUTABLE_ACTION_TYPES,
     KNOWN_UNIMPLEMENTED_ACTION_TYPES,
     V2_RESERVED_ACTION_TYPES,
-    ActionSpec,
-    ActionType,
     get_action_spec,
 )
-from contracts.task import ExecutionTask, TaskStatus
 from contracts.trace import TraceContext
 
 

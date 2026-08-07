@@ -55,7 +55,7 @@ class ArchitectureGateTests(unittest.TestCase):
         self.assertEqual(len(violations), 1)
         self.assertEqual(violations[0]["function"], "long")
 
-    def test_private_imports_flags_cross_package_only(self):
+    def test_private_imports_flags_absolute_private_imports(self):
         self._write("agents/research.py", "def default_thresholds(cfg):\n    return {}\n")
         self._write("scripts/calibrate.py", "from agents.research import default_thresholds\n")
         self._write("scripts/bad.py", "from agents.research import _private_helper\n")
@@ -64,8 +64,11 @@ class ArchitectureGateTests(unittest.TestCase):
         violations = check_private_imports(self.root)
         imports = [v["import"] for v in violations]
         self.assertIn("from agents.research import _private_helper", imports)
-        # scripts -> agents same-package-root? scripts vs agents differ: ok.
-        self.assertNotIn("from agents.research import _sibling_private", imports)
+        # same-package absolute private imports are flagged too (PR8 review):
+        # the gate must not have a same-package blind spot.
+        self.assertIn("from agents.research import _sibling_private", imports)
+        # public names are fine.
+        self.assertNotIn("from agents.research import default_thresholds", imports)
 
     def test_baseline_covers_existing_and_rejects_new(self):
         self._write("big.py", "x = 1\n" * 101)

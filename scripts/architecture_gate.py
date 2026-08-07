@@ -6,8 +6,12 @@ Checks (all pure-stdlib AST + file scans, no external dependencies):
 2. function_length -- functions/methods exceeding max lines (default 150)
 3. action_handlers -- every executable planner action must have a real
                        Execution handler (reuses execution.action_registry)
-4. private_imports -- absolute cross-package imports of underscore names
-                      from non-test modules (test files are exempt by design)
+4. private_imports -- absolute imports of underscore names from non-test
+                      modules (test files are exempt by design); covers both
+                      cross-package and same-package imports so a module can
+                      never silently couple to a private name of a sibling
+                      (relative imports stay exempt: they stay inside the
+                      package boundary by construction)
 
 Baseline semantics: existing violations live in architecture_baseline.json
 and are allowed to remain (tracked debt that must only shrink); any NEW
@@ -46,10 +50,6 @@ def iter_py_files(root: Path):
         if any(part.startswith(".") or part in _EXCLUDED_PARTS for part in parts):
             continue
         yield path
-
-
-def _package_of(rel_parts: tuple[str, ...]) -> str:
-    return rel_parts[0] if len(rel_parts) > 1 else "<root>"
 
 
 def check_file_sizes(root: Path, max_lines: int) -> list[dict]:
@@ -99,13 +99,12 @@ def check_action_handlers() -> list[dict]:
 
 
 def check_private_imports(root: Path) -> list[dict]:
-    """Absolute cross-package imports of underscore names in non-test code."""
+    """Absolute imports of underscore names in non-test code."""
     violations = []
     for path in iter_py_files(root):
         rel = path.relative_to(root)
         if rel.parts[0] == "test" or rel.name.startswith("test_"):
             continue
-        importer_pkg = _package_of(rel.with_suffix("").parts)
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError):
@@ -114,9 +113,6 @@ def check_private_imports(root: Path) -> list[dict]:
             if not isinstance(node, ast.ImportFrom) or node.module is None:
                 continue
             if node.level:  # relative imports stay inside the package
-                continue
-            target_pkg = _package_of(tuple(node.module.split(".")))
-            if target_pkg == importer_pkg:
                 continue
             for alias in node.names:
                 if alias.name.startswith("_"):

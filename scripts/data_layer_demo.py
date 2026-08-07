@@ -4,6 +4,13 @@ Moved out of data_layer.py's ``__main__`` block (PR8) so the core module
 stays under the architecture-gate file-size limit.
 """
 
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from data_layer import CandidateIndex, EvidenceLogger, State
 
 

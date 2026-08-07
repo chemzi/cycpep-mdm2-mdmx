@@ -65,6 +65,21 @@ def _get_thresholds_cache() -> Path:
     return _module_attr("DATA_DIR") / "_thresholds_cache.json"
 
 
+def _get_build_dynamic_pockets():
+    from agents import research_steps
+    return research_steps._build_dynamic_pockets
+
+
+def _get_run_generic_pipeline():
+    from agents import research_steps
+    return research_steps._run_generic_pipeline
+
+
+def _get_run_pipeline():
+    from agents import research_steps
+    return research_steps._run_pipeline
+
+
 _LAZY_ATTRIBUTES = {
     "PROJECT_CONFIG": _get_project_config,
     "PROJECT_TARGET_IDS": _get_project_target_ids,
@@ -73,6 +88,9 @@ _LAZY_ATTRIBUTES = {
     "THRESHOLDS_CACHE": _get_thresholds_cache,
     "DATA_DIR": lambda: data_layer.DATA_DIR,
     "EVIDENCE_DIR": lambda: data_layer.EVIDENCE_DIR,
+    "_build_dynamic_pockets": _get_build_dynamic_pockets,
+    "_run_generic_pipeline": _get_run_generic_pipeline,
+    "_run_pipeline": _get_run_pipeline,
 }
 
 
@@ -632,7 +650,7 @@ def _run_impl(state=None, force_recompute=False, skip_pipeline=False):
     # The newly approved config is authoritative even when state.json predates it.
     state = State.sync_project_config(_cfg())
 
-    pipeline_runner = _run_pipeline if _module_attr("IS_MDM_REFERENCE") else _run_generic_pipeline
+    pipeline_runner = _module_attr("_run_pipeline") if _module_attr("IS_MDM_REFERENCE") else _module_attr("_run_generic_pipeline")
     if force_recompute:
         pipeline_result = pipeline_runner()
     else:
@@ -745,11 +763,3 @@ if __name__ == "__main__":
     n = len(out.get("known_dual_binders", []))
     print(f"[research] State updated. {n} dual binders. Phase={State.load().get('phase')}")
 
-# PR8: step implementations were moved to agents.research_steps to keep this
-# module under the architecture-gate file-size limit. Re-export the entry
-# points so the legacy module API stays unchanged.
-from agents.research_steps import (  # noqa: E402
-    _build_dynamic_pockets,
-    _run_generic_pipeline,
-    _run_pipeline,
-)
