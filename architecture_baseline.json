@@ -1,20 +1,7 @@
 {
   "schema_version": 1,
   "items": {
-    "file_size": [
-      {
-        "file": "agents/research.py",
-        "lines": 1366
-      },
-      {
-        "file": "data_layer.py",
-        "lines": 1551
-      },
-      {
-        "file": "prediction_pipeline/pipeline.py",
-        "lines": 1642
-      }
-    ],
+    "file_size": [],
     "function_length": [],
     "action_handlers": [],
     "private_imports": []
