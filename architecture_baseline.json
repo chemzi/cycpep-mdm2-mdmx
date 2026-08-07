@@ -12,17 +12,10 @@
       },
       {
         "file": "prediction_pipeline/pipeline.py",
-        "lines": 1463
+        "lines": 1642
       }
     ],
-    "function_length": [
-      {
-        "file": "prediction_pipeline/pipeline.py",
-        "function": "_collect_metrics",
-        "line": 368,
-        "lines": 525
-      }
-    ],
+    "function_length": [],
     "action_handlers": [],
     "private_imports": []
   }
