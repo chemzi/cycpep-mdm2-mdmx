@@ -228,8 +228,6 @@ class StructureAndParserTests(unittest.TestCase):
             parse_ensemble_members("3,4", "1,4"),
             [(3, 1), (4, 4)],
         )
-        with self.assertRaisesRegex(ContractError, "duplicate evidence"):
-            parse_ensemble_members("0,1,2", legacy_model_number=0)
         with self.assertRaisesRegex(ContractError, "exactly one value"):
             parse_ensemble_members("0,1,2", "0,1")
 
@@ -613,10 +611,12 @@ class PredictionPipelineTests(unittest.TestCase):
                 "prodigy_output": prodigy.name,
                 "rosetta_output": rosetta.name,
             }
+        from prediction_pipeline.protocol import protocol_binding
         bundle = {
             "schema_version": 1,
             "candidate_id": "C0001",
             "sequence": SEQUENCE,
+            "protocol": protocol_binding(),
             "global": {
                 "monomer_predictions": [{
                     "predictor": "ColabDesign",
@@ -634,7 +634,10 @@ class PredictionPipelineTests(unittest.TestCase):
             json.dumps(bundle), encoding="utf-8"
         )
 
-    def _pipeline(self, *, thresholds, project=None, run_id="test_run", resume=False):
+    def _pipeline(
+        self, *, thresholds, project=None, run_id="test_run", resume=False,
+        require_protocol_compatibility=True,
+    ):
         return PredictionPipeline(
             candidate_rows=CandidateIndex.load(),
             project=project or project_config(),
@@ -644,6 +647,7 @@ class PredictionPipelineTests(unittest.TestCase):
             config=PredictionConfig(),
             run_id=run_id,
             resume=resume,
+            require_protocol_compatibility=require_protocol_compatibility,
         )
 
     def test_missing_artifacts_and_thresholds_are_pending_without_fake_values(self):
@@ -656,6 +660,43 @@ class PredictionPipelineTests(unittest.TestCase):
         self.assertEqual(metrics["targets"], {})
         self.assertEqual(row["final_status"], "prediction_pending")
         self.assertNotEqual(row["plddt"], "0")
+
+    def test_stale_protocol_bundle_rejected_before_scoring(self):
+        # P1: a bundle bound to an older protocol must not be scored and
+        # written into formal records, even via agents/prediction.py --resume.
+        reference = self._register_candidate()
+        self._write_complete_artifacts(reference)
+        bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
+        data = json.loads(bundle_path.read_text(encoding="utf-8"))
+        data["protocol"] = {"name": "old", "version": "old", "sha256": "b" * 64}
+        bundle_path.write_text(json.dumps(data), encoding="utf-8")
+        summary = self._pipeline(
+            thresholds={}, project=project_config(("MDM2", "MDMX"))
+        ).run()
+        self.assertEqual(summary["status_counts"], {"invalid": 1})
+        record = json.loads(
+            (self.run_root / "test_run" / "records" / "C0001.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(record["status"], "invalid")
+        self.assertEqual(record["metrics"], {"global": {}, "targets": {}})
+        self.assertEqual(record["issues"][0]["code"], "bundle_protocol_mismatch")
+
+    def test_replay_mode_reads_stale_bundle(self):
+        # Replay/audit tools keep historical evidence readable.
+        reference = self._register_candidate()
+        self._write_complete_artifacts(reference)
+        bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
+        data = json.loads(bundle_path.read_text(encoding="utf-8"))
+        data["protocol"] = {"name": "old", "version": "old", "sha256": "b" * 64}
+        bundle_path.write_text(json.dumps(data), encoding="utf-8")
+        summary = self._pipeline(
+            thresholds={},
+            project=project_config(("MDM2", "MDMX")),
+            require_protocol_compatibility=False,
+        ).run()
+        self.assertEqual(summary["status_counts"], {"prediction_pending": 1})
 
     def test_sequence_drift_in_design_refold_is_invalid(self):
         self._register_candidate(legacy_sequence="AAAAAAAA")

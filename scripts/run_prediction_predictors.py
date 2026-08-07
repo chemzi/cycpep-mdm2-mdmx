@@ -34,6 +34,14 @@ from prediction_pipeline.contracts import (  # noqa: E402
     validate_project,
 )
 from target_bootstrap import assert_project_approved  # noqa: E402
+from execution.supervisor import atomic_json  # noqa: E402
+from core.protocol import ProtocolError  # noqa: E402
+from prediction_pipeline.protocol import (  # noqa: E402
+    MIGRATE_LEGACY_HINT,
+    PREDICTION_PROTOCOL,
+    protocol_binding,
+    validate_execution_compatibility,
+)
 
 
 DEFAULT_PYTHON = os.environ.get(
@@ -52,10 +60,12 @@ DEFAULT_CUDA = os.environ.get(
 )
 
 
+PROTOCOL_BINDING_FILENAME = "protocol_binding.json"
+
+
 def parse_ensemble_members(
     seeds_raw: str,
     model_numbers_raw: str | None = None,
-    legacy_model_number: int | None = None,
 ) -> list[tuple[int, int]]:
     """Return distinct ``(seed, AF2 model_number)`` ensemble members.
 
@@ -79,9 +89,9 @@ def parse_ensemble_members(
             raise ContractError(
                 "model_list_invalid", "--model-numbers must contain integers"
             ) from exc
-    elif legacy_model_number is not None:
-        models = [int(legacy_model_number)] * len(seeds)
     else:
+        # Default pairing pairs each seed with a distinct AF2 model, matching
+        # the protocol ensemble; overriding requires explicit --model-numbers.
         models = list(range(len(seeds)))
 
     if len(models) != len(seeds):
@@ -157,10 +167,123 @@ def _prediction_entry(
     }
 
 
-def _run_one(command: list[str], output_dir: Path, args) -> dict:
+def _read_protocol_binding(output_dir: Path) -> dict | None:
+    """Return the protocol binding recorded next to a prediction output, or None."""
+    path = output_dir / PROTOCOL_BINDING_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ContractError(
+            "resume_protocol_corrupt", f"corrupt protocol binding: {path}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise ContractError(
+            "resume_protocol_corrupt", f"invalid protocol binding: {path}"
+        )
+    return data
+
+
+def _write_protocol_binding(output_dir: Path) -> None:
+    atomic_json(output_dir / PROTOCOL_BINDING_FILENAME, protocol_binding())
+
+
+def _require_resume_protocol(output_dir: Path) -> None:
+    """Refuse to reuse evidence whose recorded protocol is unknown or stale."""
+    recorded = _read_protocol_binding(output_dir)
+    if recorded is None:
+        raise ContractError(
+            "resume_protocol_unrecorded",
+            f"{output_dir} has no recorded prediction protocol; delete the "
+            f"output and rerun, or {MIGRATE_LEGACY_HINT}",
+        )
+    if recorded != protocol_binding():
+        raise ContractError(
+            "resume_protocol_mismatch",
+            f"{output_dir} was produced under a different prediction "
+            f"protocol; delete the output and rerun, or {MIGRATE_LEGACY_HINT}",
+        )
+
+
+def _require_existing_bundle_protocol(bundle_path: Path) -> None:
+    """Refuse to rewrite a candidate bundle whose protocol is unknown or stale."""
+    try:
+        raw = json.loads(bundle_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ContractError(
+            "artifact_bundle_malformed", f"corrupt artifacts.json: {bundle_path}"
+        ) from exc
+    if not isinstance(raw, dict):
+        raise ContractError(
+            "artifact_bundle_type", f"invalid artifacts.json: {bundle_path}"
+        )
+    try:
+        validate_execution_compatibility(raw)
+    except ProtocolError as exc:
+        if raw.get("protocol") is None:
+            raise ContractError(
+                "bundle_protocol_unrecorded",
+                f"{bundle_path} has no recorded prediction protocol; delete "
+                f"the candidate output and rerun, or {MIGRATE_LEGACY_HINT}",
+            ) from exc
+        raise ContractError(
+            "bundle_protocol_mismatch",
+            f"{bundle_path} was produced under a different prediction "
+            f"protocol; delete the candidate output and rerun, or "
+            f"{MIGRATE_LEGACY_HINT}",
+        ) from exc
+
+
+def _require_resume_parameters(recorded: dict, expected: dict) -> None:
+    """Refuse to reuse a prediction computed under different parameters.
+
+    ``--resume`` may only reuse an output whose recorded execution parameters
+    (the designed sequence, AF2 model, seed and recycle count written by the
+    ColabDesign worker) are identical to the requested run.  A candidate_id
+    can be recycled after a state reset while the artifacts_root was left in
+    place; without this check the stale prediction would be silently attached
+    to the new candidate's bundle under a valid protocol binding.
+    """
+    if not isinstance(recorded, dict):
+        raise ContractError(
+            "predictor_metadata_corrupt",
+            "recorded metadata.json is not an object; delete the output and rerun",
+        )
+    mismatches = []
+    for field, expected_value in expected.items():
+        actual = recorded.get(field)
+        if actual != expected_value:
+            mismatches.append(
+                f"{field}: recorded={actual!r} expected={expected_value!r}"
+            )
+    if mismatches:
+        raise ContractError(
+            "resume_parameter_mismatch",
+            "recorded prediction parameters differ from the requested run; "
+            "delete the output and rerun: " + "; ".join(mismatches),
+        )
+
+
+def _run_one(
+    command: list[str],
+    output_dir: Path,
+    args,
+    *,
+    expected: dict | None = None,
+) -> dict:
     metadata = output_dir / "metadata.json"
     if args.resume and metadata.is_file():
-        return json.loads(metadata.read_text(encoding="utf-8"))
+        _require_resume_protocol(output_dir)
+        try:
+            recorded = json.loads(metadata.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ContractError(
+                "predictor_metadata_corrupt", f"corrupt metadata.json: {metadata}"
+            ) from exc
+        if expected is not None:
+            _require_resume_parameters(recorded, expected)
+        return recorded
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ContractError(
             "predictor_output_exists",
@@ -182,7 +305,13 @@ def _run_one(command: list[str], output_dir: Path, args) -> dict:
         )
     if not metadata.is_file():
         raise ContractError("colabdesign_metadata_missing", f"missing {metadata}")
-    return json.loads(metadata.read_text(encoding="utf-8"))
+    _write_protocol_binding(output_dir)
+    try:
+        return json.loads(metadata.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ContractError(
+            "predictor_metadata_corrupt", f"corrupt metadata.json: {metadata}"
+        ) from exc
 
 
 def require_design_references(candidates) -> None:
@@ -197,6 +326,34 @@ def require_design_references(candidates) -> None:
             "design_reference_missing_preflight",
             "independent Design reference is missing for "
             f"{missing}; regenerate these candidates in Design before Prediction",
+        )
+
+
+def _require_protocol_parameters(
+    ensemble: list[tuple[int, int]], num_recycles: int
+) -> None:
+    """Execution parameters must be provably identical to the protocol file.
+
+    The artifact binding records the protocol SHA-256; a run that silently
+    used different seeds / models / recycles would attach that digest to
+    evidence it did not actually follow.  Overriding parameters is therefore
+    refused: change ``protocols/prediction_v1.json`` (and bump version)
+    instead.
+    """
+    af2 = PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]
+    seeds = [seed for seed, _ in ensemble]
+    models = [model for _, model in ensemble]
+    if num_recycles != af2["num_recycles"]:
+        raise ContractError(
+            "protocol_parameter_mismatch",
+            f"--num-recycles {num_recycles} != protocol {af2['num_recycles']}; "
+            "bump the protocol version instead of overriding parameters",
+        )
+    if seeds != af2["seeds"] or models != af2["model_numbers"]:
+        raise ContractError(
+            "protocol_parameter_mismatch",
+            "--seeds/--model-numbers differ from protocols/prediction_v1.json; "
+            "bump the protocol version instead of overriding parameters",
         )
 
 
@@ -218,9 +375,8 @@ def run(args) -> dict:
     ]
     if not rows:
         raise ContractError("no_candidates", "no matching Design candidates")
-    ensemble = parse_ensemble_members(
-        args.seeds, args.model_numbers, args.model_number
-    )
+    ensemble = parse_ensemble_members(args.seeds, args.model_numbers)
+    _require_protocol_parameters(ensemble, args.num_recycles)
 
     candidates = [candidate_from_row(row) for row in rows]
     require_design_references(candidates)
@@ -230,6 +386,9 @@ def run(args) -> dict:
     for candidate in candidates:
         candidate_dir = artifacts_root / candidate.candidate_id
         candidate_dir.mkdir(parents=True, exist_ok=True)
+        bundle_path = candidate_dir / "artifacts.json"
+        if bundle_path.is_file():
+            _require_existing_bundle_protocol(bundle_path)
 
         primary_seed, primary_model = ensemble[0]
         monomer_dir = (
@@ -247,7 +406,17 @@ def run(args) -> dict:
             model_number=primary_model,
             num_recycles=args.num_recycles,
         )
-        _run_one(monomer_command, monomer_dir, args)
+        _run_one(
+            monomer_command,
+            monomer_dir,
+            args,
+            expected={
+                "requested_sequence": candidate.sequence,
+                "seed": primary_seed,
+                "model_number": primary_model,
+                "num_recycles": args.num_recycles,
+            },
+        )
         global_artifacts = {
             "monomer_predictions": [
                 _prediction_entry(
@@ -281,7 +450,17 @@ def run(args) -> dict:
                     target_chain=target_chain,
                     use_multimer=True,
                 )
-                _run_one(command, output_dir, args)
+                _run_one(
+                    command,
+                    output_dir,
+                    args,
+                    expected={
+                        "requested_sequence": candidate.sequence,
+                        "seed": seed,
+                        "model_number": model_number,
+                        "num_recycles": args.num_recycles,
+                    },
+                )
                 predictions.append(_prediction_entry(
                     output_dir, "ColabDesign", seed, primary=index == 0
                 ))
@@ -327,13 +506,12 @@ def run(args) -> dict:
             "schema_version": 1,
             "candidate_id": candidate.candidate_id,
             "sequence": candidate.sequence,
+            "protocol": protocol_binding(),
             "global": global_artifacts,
             "targets": target_artifacts,
         }
         bundle_path = candidate_dir / "artifacts.json"
-        bundle_path.write_text(
-            json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        atomic_json(bundle_path, bundle)
         summaries.append({
             "candidate_id": candidate.candidate_id,
             "artifact_bundle": str(bundle_path),
@@ -350,17 +528,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", default=DEFAULT_PARAMS)
     parser.add_argument("--colabdesign-dir", default=DEFAULT_COLABDESIGN)
     parser.add_argument("--cuda-data-dir", default=DEFAULT_CUDA)
-    parser.add_argument("--seeds", default="0,1,2")
+    parser.add_argument(
+        "--seeds",
+        default=",".join(str(v) for v in PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]["seeds"]),
+    )
     parser.add_argument(
         "--model-numbers",
-        help="comma-separated AF2 models paired with --seeds; default 0,1,2,...",
+        default=",".join(
+            str(value) for value in PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]["model_numbers"]
+        ),
+        help="comma-separated AF2 models paired with --seeds; "
+        "default from protocols/prediction_v1.json",
     )
     parser.add_argument(
-        "--model-number",
+        "--num-recycles",
         type=int,
-        help="legacy single-model option; valid only when exactly one seed is used",
+        default=PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]["num_recycles"],
     )
-    parser.add_argument("--num-recycles", type=int, default=3)
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--prodigy", help="path/name of the PRODIGY executable")
     parser.add_argument("--resume", action="store_true")

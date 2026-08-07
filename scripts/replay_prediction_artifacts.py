@@ -243,6 +243,7 @@ def run(args: argparse.Namespace) -> dict:
         config=PredictionConfig(),
         candidate_ids=[args.candidate],
         run_id=args.run_id,
+        require_protocol_compatibility=False,
     ).run()
     counter_after = State.load().get("candidate_count")
     if counter_after != counter_before:

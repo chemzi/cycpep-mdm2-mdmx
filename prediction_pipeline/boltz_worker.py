@@ -11,6 +11,7 @@ import numpy as np
 
 from .adapters import run_command
 from .contracts import ContractError, SEQUENCE_RE, file_sha256
+from .protocol import PREDICTION_PROTOCOL
 from .structures import exact_sequence_chain, parse_pdb, terminal_bond_distance
 
 
@@ -113,13 +114,29 @@ def run_boltz_prediction(
     output_dir: str | Path,
     target_chain: str = "A",
     binder_chain: str = "B",
-    seed: int = 101,
+    seed: int | None = None,
+    diffusion_samples: int | None = None,
     timeout: int = 3600,
     no_kernels: bool = False,
 ) -> dict:
     """Run one pinned Boltz sample and normalize it to the Prediction contract."""
+    if seed is None:
+        # Fallback defaults come from the versioned protocol, not Magic Numbers.
+        seed = PREDICTION_PROTOCOL["parameters"]["enrichment"]["seed_base"]
+    if diffusion_samples is None:
+        diffusion_samples = PREDICTION_PROTOCOL["parameters"]["boltz"]["diffusion_samples"]
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ContractError("seed_invalid", "Boltz seed must be an integer")
+    if isinstance(diffusion_samples, bool) or not isinstance(diffusion_samples, int):
+        raise ContractError(
+            "boltz_diffusion_samples_invalid",
+            "diffusion_samples must be an integer",
+        )
+    if diffusion_samples <= 0:
+        raise ContractError(
+            "boltz_diffusion_samples_invalid",
+            "diffusion_samples must be a positive integer",
+        )
     target_sequence = _validate_sequence(target_sequence, "target")
     binder_sequence = _validate_sequence(binder_sequence, "binder")
     target_chain = _validate_chain(target_chain, "target_chain")
@@ -180,7 +197,7 @@ def run_boltz_prediction(
         "pdb",
         "--write_full_pae",
         "--diffusion_samples",
-        "1",
+        str(diffusion_samples),
         "--seed",
         str(seed),
         "--accelerator",

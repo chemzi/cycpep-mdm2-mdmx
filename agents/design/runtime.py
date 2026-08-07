@@ -150,13 +150,9 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
         parameter is accepted for API consistency with the rest of the pipeline and
         is only consumed by LigandMPNN and Route C expansion.
     """
-    # Resolve timesteps first so an invalid env value sets the deferred
-    # warning flag before it is consumed below (no EvidenceLogger at import).
+    # Timesteps come straight from the design protocol; scientific
+    # parameters are not env-overridable so identity always matches execution.
     timesteps = config.RFDIFF_TIMESTEPS
-    if config._RFDIFF_TIMESTEPS_INVALID is not None:
-        EvidenceLogger.log("design", "invalid_RFDIFF_TIMESTEPS",
-            {"value": config._RFDIFF_TIMESTEPS_INVALID, "fallback": 50})
-        config._RFDIFF_TIMESTEPS_INVALID = None
 
     if seed is not None:
         import warnings
@@ -371,7 +367,7 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=None, binder_chain=None,
     those residues stay fixed in LigandMPNN.
     """
     if n_seq is None:
-        n_seq = config.DESIGN_PROTOCOL["ligandmpnn"]["n_seq_per_backbone"]
+        n_seq = config.DESIGN_PROTOCOL["parameters"]["ligandmpnn"]["n_seq_per_backbone"]
 
     if config.LIGANDMPNN_MODEL_TYPE != "protein_mpnn":
         EvidenceLogger.error(
@@ -497,10 +493,11 @@ if '"offset" in batch' not in source and "'offset' in batch" not in source:
 
 def _refold_script_core(sequence, L):
     """Generated-script middle: model setup and cyclic-offset injection."""
+    seed = int(config.DESIGN_PROTOCOL["parameters"]["refold"]["seed"])
     return f"""
 model = mk_af_model(protocol='hallucination', data_dir={config.COLABDESIGN_PARAMS!r})
 model.prep_inputs(length={L})
-model.restart(seed=0, seq={sequence!r})
+model.restart(seed={seed}, seq={sequence!r})
 
 i = np.arange({L})
 ij = np.stack([i, i+{L}], -1)
@@ -526,9 +523,15 @@ model._inputs['offset'] = off
 
 def _refold_script_epilogue(sequence, output_pdb):
     """Generated-script tail: predict, verify drift, persist PDB and pLDDT."""
+    refold = config.DESIGN_PROTOCOL["parameters"]["refold"]
+    seed = int(refold["seed"])
+    models = list(refold["models"])
+    num_models = int(refold["num_models"])
+    num_recycles = int(refold["num_recycles"])
     return f"""
 aux = model.predict(
-    seq={sequence!r}, seed=0, models=[0], num_models=1, num_recycles=3,
+    seq={sequence!r}, seed={seed}, models={models!r}, num_models={num_models},
+    num_recycles={num_recycles},
     sample_models=False, dropout=False, hard=True, soft=False,
     verbose=False, return_aux=True,
 )

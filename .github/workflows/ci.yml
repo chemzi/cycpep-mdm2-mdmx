@@ -58,3 +58,9 @@ jobs:
 
       - name: Test Design agent
         run: python test_design.py
+
+      - name: Test protocol / resume / execution contracts
+        run: python -m unittest test_protocol test_protocol_resume test_execution test_prediction_pipeline test_planner
+
+      - name: Full unit test discovery
+        run: python -m unittest discover

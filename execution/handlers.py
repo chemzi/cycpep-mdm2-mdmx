@@ -13,6 +13,11 @@ from typing import Callable
 import data_layer
 from data_layer import CandidateIndex, State
 from prediction_pipeline.contracts import file_sha256, object_sha256
+from core.protocol import ProtocolError
+from prediction_pipeline.protocol import (
+    PREDICTION_PROTOCOL,
+    validate_execution_compatibility,
+)
 
 from .config import ExecutionConfig
 from .contracts import (
@@ -24,6 +29,14 @@ from .contracts import (
 from .supervisor import atomic_json, run_process
 from .results import ExecutionActionResult
 from contracts.candidate_update import CandidateUpdateBatch
+
+
+# Versioned scientific protocol parameters (Engineering Standard section 8):
+# seeds / model numbers / recycles and enrichment seed bases are read from
+# protocols/prediction_v1.json.  Operational timeouts and tool paths stay in
+# ExecutionConfig.
+_AF2_PRODIGY_PROTOCOL = PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]
+_ENRICHMENT_PROTOCOL = PREDICTION_PROTOCOL["parameters"]["enrichment"]
 
 
 def _utcnow() -> str:
@@ -263,22 +276,36 @@ def _artifact_bundle_complete(path: Path, required_targets: list[str]) -> bool:
         return False
     try:
         raw = _json_object(path, "artifact_bundle")
+        # Execution gate: a bundle bound to an older protocol is readable but
+        # not reusable by a run executing under the active protocol.
+        validate_execution_compatibility(raw)
         global_values = raw.get("global") or {}
         if not global_values.get("monomer_predictions"):
             return False
         if not global_values.get("post_relax_pdb") or not global_values.get("post_relax_metadata"):
             return False
+        expected_af2_seeds = set(_AF2_PRODIGY_PROTOCOL["seeds"])
         targets = raw.get("targets") or {}
         for target_id in required_targets:
             values = targets.get(target_id) or {}
             predictions = values.get("complex_predictions") or []
-            if len(predictions) < 4:
+            af2_seeds = {
+                prediction.get("seed")
+                for prediction in predictions
+                if prediction.get("predictor") == "ColabDesign"
+                and isinstance(prediction.get("seed"), int)
+            }
+            if not expected_af2_seeds.issubset(af2_seeds):
+                return False
+            if not any(
+                prediction.get("predictor") == "Boltz" for prediction in predictions
+            ):
                 return False
             if len(values.get("prodigy_outputs") or []) != len(predictions):
                 return False
             if len(values.get("rosetta_outputs") or []) != len(predictions):
                 return False
-    except ExecutionContractError:
+    except (ExecutionContractError, ProtocolError):
         return False
     return True
 
@@ -345,9 +372,9 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
             "--data-dir", context.config.colabdesign_params,
             "--colabdesign-dir", context.config.colabdesign_dir,
             "--cuda-data-dir", context.config.cuda_data_dir,
-            "--seeds", "0,1,2",
-            "--model-numbers", "0,1,2",
-            "--num-recycles", "3",
+            "--seeds", ",".join(str(v) for v in _AF2_PRODIGY_PROTOCOL["seeds"]),
+            "--model-numbers", ",".join(str(v) for v in _AF2_PRODIGY_PROTOCOL["model_numbers"]),
+            "--num-recycles", str(_AF2_PRODIGY_PROTOCOL["num_recycles"]),
             "--timeout", str(context.config.prediction_timeout_seconds),
             "--prodigy", context.config.prodigy_executable,
         ]
@@ -376,9 +403,10 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
                 "--prodigy", context.config.prodigy_executable,
                 "--pyrosetta-python", context.config.pyrosetta_python,
                 "--post-relax-python", context.config.pyrosetta_python,
-                "--seed", str(101 + offset),
-                "--post-relax-seed", str(20260802 + offset),
-                "--post-relax-repeats", "3",
+                "--seed", str(_ENRICHMENT_PROTOCOL["seed_base"] + offset),
+                "--post-relax-seed",
+                str(_ENRICHMENT_PROTOCOL["post_relax_seed_base"] + offset),
+                "--post-relax-repeats", str(_ENRICHMENT_PROTOCOL["post_relax_repeats"]),
                 "--timeout", str(context.config.prediction_timeout_seconds),
                 "--rosetta-timeout", str(context.config.rosetta_timeout_seconds),
                 "--post-relax-timeout", str(context.config.post_relax_timeout_seconds),

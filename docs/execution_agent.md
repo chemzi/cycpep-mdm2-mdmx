@@ -16,7 +16,7 @@ Orchestrator 负责依赖、审批、claim token 与单 GPU lease，Execution �
 
 Planner v1.2.1 会把 T001 物化为 `design_jobs`。每个 job 明确声明 `route`、
 `target_id`、`lengths`、`proposal_count` 和 `seed`；Worker 不再临时猜路线。T002 固定使用
-`af2_boltz2_prodigy_rosetta_postrelax_v1` 协议。Critic 提出的
+`{name: prediction, version: 1.0, sha256: <parameters-only digest>}` 协议 identity。Critic 提出的
 `complete_prediction_evidence` 会被 Planner 映射到同一个 Prediction handler，并用显式
 候选范围补齐或复用证据，不再产生无法执行的旧 action。
 

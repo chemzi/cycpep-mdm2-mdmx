@@ -17,6 +17,13 @@ from agents.planner import (
     run,
 )
 from prediction_pipeline.contracts import object_sha256
+from prediction_pipeline.protocol import (
+    PREDICTOR_PROTOCOL,
+    ProtocolError,
+    protocol_binding,
+    validate_execution_compatibility,
+)
+from execution.contracts import validate_task_parameters
 
 
 POLICY_CONSTRAINTS = [
@@ -27,7 +34,8 @@ POLICY_CONSTRAINTS = [
 ]
 
 
-class PlannerTests(unittest.TestCase):
+class _PlannerFixtures:
+
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="planner-test-"))
         self.original_paths = (
@@ -152,6 +160,8 @@ class PlannerTests(unittest.TestCase):
             "priority": priority,
         }
 
+
+class PlannerTests(_PlannerFixtures, unittest.TestCase):
     def test_c0514_plan_groups_design_then_prediction_then_critic(self):
         report_path = self._report([
             self._issue("l2_interface_confidence_low", "iterate_interface_design"),
@@ -274,7 +284,7 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(prediction["parameters"], {
             "reuse_complete_evidence": True,
             "evidence_mode": "reuse_or_generate_full",
-            "predictor_protocol": "af2_boltz2_prodigy_rosetta_postrelax_v1",
+            "predictor_protocol": dict(PREDICTOR_PROTOCOL),
         })
         self.assertEqual(critic["action"], "review_prediction_handoff")
         self.assertEqual(critic["depends_on"], [prediction["task_id"]])
@@ -560,6 +570,62 @@ class PlannerTests(unittest.TestCase):
             project_config=keap1_approved,
         )
         self.assertEqual(result[0]["action"], "run")
+
+
+class ProtocolWorkflowTests(_PlannerFixtures, unittest.TestCase):
+    """PR40 review round 4, must-fix 3: the full protocol identity loop.
+
+    Planner emits a prediction task carrying a protocol identity object ->
+    Execution contract validation accepts it -> Prediction records the same
+    identity in the artifact bundle -> the execution gate reuses that evidence
+    only when the identity matches the active protocol exactly.
+    """
+
+    def _prediction_task(self):
+        report_path = self._report([
+            self._issue("l2_interface_confidence_low", "iterate_interface_design")
+        ])
+        plan = build_plan(critic_report_path=report_path, state=self._state())
+        return next(
+            task for task in plan["tasks"]
+            if task["action"] == "evaluate_new_design_candidates"
+        )
+
+    def test_planner_prediction_task_carries_active_protocol_identity(self):
+        task = self._prediction_task()
+        identity = task["parameters"]["predictor_protocol"]
+        self.assertEqual(identity, protocol_binding())
+        self.assertEqual(set(identity), {"name", "version", "sha256"})
+        self.assertIsInstance(identity["sha256"], str)
+        self.assertEqual(len(identity["sha256"]), 64)
+
+    def test_planner_task_passes_execution_contract_validation(self):
+        task = self._prediction_task()
+        normalized = validate_task_parameters(task)
+        self.assertEqual(
+            normalized["predictor_protocol"],
+            protocol_binding(),
+        )
+
+    def test_bundle_reuse_gate_full_loop(self):
+        """Prediction records the planner identity; reuse passes; tampering
+        is refused before stale evidence can be mixed into a run."""
+        task = self._prediction_task()
+        identity = dict(task["parameters"]["predictor_protocol"])
+
+        # Prediction writes the bundle with exactly the identity it received.
+        bundle = {"protocol": identity}
+        validate_execution_compatibility(bundle)
+
+        # Resume/reuse under the same identity stays green.
+        validate_execution_compatibility({"protocol": dict(bundle["protocol"])})
+
+        # Any parameter drift changes the identity SHA: refuse, never reuse.
+        tampered = dict(identity)
+        tampered["sha256"] = "f" * 64
+        self.assertNotEqual(tampered["sha256"], identity["sha256"])
+        with self.assertRaises(ProtocolError):
+            validate_execution_compatibility({"protocol": tampered})
 
 
 if __name__ == "__main__":

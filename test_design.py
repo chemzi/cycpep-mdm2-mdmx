@@ -947,24 +947,28 @@ from agents.design.config import (
 
 check(DESIGN_PROTOCOL_PATH.is_file(),
       f'protocol file exists: {DESIGN_PROTOCOL_PATH}')
-check(DESIGN_PROTOCOL['version'] == 'design_v1',
+check(DESIGN_PROTOCOL['version'] == '1.0',
       f'protocol version present: {DESIGN_PROTOCOL["version"]}')
-check(DESIGN_PROTOCOL['ligandmpnn']['n_seq_per_backbone'] == 8,
+check(DESIGN_PROTOCOL['parameters']['ligandmpnn']['n_seq_per_backbone'] == 8,
       'LigandMPNN sampling count is protocol-managed')
-check(DESIGN_PROTOCOL['mutation']['attempts_factor'] == 10,
+check(DESIGN_PROTOCOL['parameters']['mutation']['attempts_factor'] == 10,
       'Route C mutation attempts factor is protocol-managed')
-check(DESIGN_PROTOCOL['mutation']['protected_pharmacophore'] == 'FWL',
+check(DESIGN_PROTOCOL['parameters']['mutation']['protected_pharmacophore'] == 'FWL',
       'pharmacophore protection residues are protocol-managed')
 check(
     json.loads(DESIGN_PROTOCOL_PATH.read_text(encoding='utf-8')) == DESIGN_PROTOCOL,
     'DESIGN_PROTOCOL is loaded from protocols/design_v1.json',
 )
 check(len(DESIGN_PROTOCOL_SHA256) == 64, 'protocol sha256 is a hex digest')
+from core.protocol import protocol_identity_sha256
 check(
-    DESIGN_PROTOCOL_SHA256 == hashlib.sha256(
-        DESIGN_PROTOCOL_PATH.read_bytes()
-    ).hexdigest(),
-    'protocol sha256 is the SHA-256 of the protocol file bytes',
+    DESIGN_PROTOCOL_SHA256
+    == protocol_identity_sha256(
+        DESIGN_PROTOCOL['name'],
+        DESIGN_PROTOCOL['version'],
+        DESIGN_PROTOCOL['parameters'],
+    ),
+    'protocol sha256 is the identity SHA-256 of name+version+parameters',
 )
 
 # Manifest binds the protocol so artifacts can be traced to a concrete protocol.

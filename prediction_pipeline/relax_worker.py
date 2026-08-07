@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 
 from .adapters import run_command
+from .protocol import PREDICTION_PROTOCOL
 from .contracts import ContractError, file_sha256
 from .rosetta_worker import PYROSETTA_VERSION
 from .structures import (
@@ -24,6 +25,7 @@ POST_RELAX_TOOL = "PyRosetta FastRelax"
 MAX_CYCLIC_BOND_DISTANCE_ANGSTROM = 2.0
 MAX_POST_RELAX_BACKBONE_RMSD_ANGSTROM = 2.0
 DEFAULT_COORDINATE_STDEV_ANGSTROM = 0.5
+_ENRICHMENT_PROTOCOL = PREDICTION_PROTOCOL["parameters"]["enrichment"]
 
 
 def topology_xml(*, first_pose_index: int, last_pose_index: int) -> str:
@@ -72,8 +74,8 @@ def run_post_relax(
     sequence: str,
     cyclization_type: str,
     output_dir: str | Path,
-    seed: int = 20260802,
-    repeats: int = 3,
+    seed: int = _ENRICHMENT_PROTOCOL["post_relax_seed_base"],
+    repeats: int = _ENRICHMENT_PROTOCOL["post_relax_repeats"],
     coordinate_stdev_angstrom: float = DEFAULT_COORDINATE_STDEV_ANGSTROM,
     timeout: int = 3600,
 ) -> dict:

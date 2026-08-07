@@ -246,7 +246,7 @@ def _route_c_expand_sequences(template_seq, template_name, n, seed, config, seen
             seen_seqs.add(s)
             expanded.append((s, d))
     attempts = 0
-    while len(expanded) < n and attempts < n * DESIGN_PROTOCOL["mutation"]["attempts_factor"]:
+    while len(expanded) < n and attempts < n * DESIGN_PROTOCOL["parameters"]["mutation"]["attempts_factor"]:
         attempts += 1
         seq, desc = rng.choice(base_combos)
         aa = rng.choice(SCAFFOLD_MUTABLE_AA)
@@ -258,7 +258,7 @@ def _route_c_expand_sequences(template_seq, template_name, n, seed, config, seen
         pos = rng.randint(1, max_pos)
         ix = off + pos - 1
         # 保护 F/W/L 药效团位点（ATSP-7041 核心锚点）
-        if seq[ix] in DESIGN_PROTOCOL["mutation"]["protected_pharmacophore"]:
+        if seq[ix] in DESIGN_PROTOCOL["parameters"]["mutation"]["protected_pharmacophore"]:
             continue
         # 同义突变不改变序列，浪费 attempts budget（P1-4）
         if aa == seq[ix]:

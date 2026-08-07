@@ -312,7 +312,8 @@ def load_artifact_bundle(
     if not isinstance(raw, dict):
         raise ContractError("artifact_bundle_type", "artifacts.json must be an object")
     unknown = sorted(set(raw) - {
-        "schema_version", "candidate_id", "sequence", "global", "targets"
+        "schema_version", "candidate_id", "sequence", "global", "targets",
+        "protocol", "enrichment",
     })
     if unknown:
         raise ContractError(
@@ -333,6 +334,23 @@ def load_artifact_bundle(
             "artifact_sequence_mismatch",
             f"artifact bundle sequence does not match {candidate_id}",
         )
+    protocol_raw = raw.get("protocol")
+    if protocol_raw is not None:
+        if not isinstance(protocol_raw, dict):
+            raise ContractError(
+                "artifact_protocol_type", "artifacts.json protocol must be an object"
+            )
+        missing = sorted({"name", "version", "sha256"} - set(protocol_raw))
+        if missing:
+            raise ContractError(
+                "artifact_protocol_incomplete",
+                f"artifacts.json protocol must contain {missing}",
+            )
+        if not all(isinstance(protocol_raw[key], str) for key in ("name", "version", "sha256")):
+            raise ContractError(
+                "artifact_protocol_type",
+                "artifacts.json protocol name/version/sha256 must be strings",
+            )
     base = path.parent
     global_raw = raw.get("global") or {}
     if not isinstance(global_raw, dict):

@@ -18,6 +18,7 @@ from execution.contracts import (
     assert_action_executable,
     validate_task_parameters,
 )
+from execution.handlers import _artifact_bundle_complete
 from execution.supervisor import run_process
 from execution.worker import execute_task
 from prediction_pipeline.contracts import object_sha256
@@ -273,5 +274,111 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(data_layer.State.load()["project_id"], "execution_test")
 
 
+class ArtifactBundleCompletenessTests(unittest.TestCase):
+    """_artifact_bundle_complete derives expectations from the protocol."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="bundle-complete-test-"))
+
+    def _bundle_path(
+        self, *, protocol="current", af2_seeds=(0, 1, 2), include_boltz=True,
+        prodigy_count=None, rosetta_count=None,
+    ) -> Path:
+        predictions = [
+            {"predictor": "ColabDesign", "seed": seed} for seed in af2_seeds
+        ]
+        if include_boltz:
+            predictions.append({"predictor": "Boltz", "seed": 101})
+        count = len(predictions)
+        from prediction_pipeline.protocol import protocol_binding
+        if protocol == "current":
+            protocol_value = protocol_binding()
+        elif protocol == "stale":
+            protocol_value = {"name": "old", "version": "old", "sha256": "b" * 64}
+        else:
+            protocol_value = None
+        raw = {
+            "schema_version": 1,
+            "candidate_id": "C0001",
+            "sequence": "ACDE",
+            "protocol": protocol_value,
+            "global": {
+                "monomer_predictions": [{"predictor": "ColabDesign", "seed": 0}],
+                "post_relax_pdb": "relax.pdb",
+                "post_relax_metadata": "relax.json",
+            },
+            "targets": {
+                "MDM2": {
+                    "complex_predictions": predictions,
+                    "prodigy_outputs": [{}] * (
+                        prodigy_count if prodigy_count is not None else count
+                    ),
+                    "rosetta_outputs": [{}] * (
+                        rosetta_count if rosetta_count is not None else count
+                    ),
+                }
+            },
+        }
+        path = self.root / "artifacts.json"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        return path
+
+    def test_complete_bundle_passes(self):
+        self.assertTrue(
+            _artifact_bundle_complete(self._bundle_path(), ["MDM2"])
+        )
+
+    def test_missing_boltz_not_complete(self):
+        self.assertFalse(
+            _artifact_bundle_complete(
+                self._bundle_path(include_boltz=False), ["MDM2"]
+            )
+        )
+
+    def test_incomplete_af2_ensemble_not_complete(self):
+        self.assertFalse(
+            _artifact_bundle_complete(
+                self._bundle_path(af2_seeds=(0, 1)), ["MDM2"]
+            )
+        )
+
+    def test_stale_protocol_not_reusable(self):
+        self.assertFalse(
+            _artifact_bundle_complete(
+                self._bundle_path(protocol="stale"), ["MDM2"]
+            )
+        )
+
+    def test_legacy_bundle_not_reusable(self):
+        self.assertFalse(
+            _artifact_bundle_complete(
+                self._bundle_path(protocol=None), ["MDM2"]
+            )
+        )
+
+    def test_short_prodigy_cover_not_complete(self):
+        self.assertFalse(
+            _artifact_bundle_complete(
+                self._bundle_path(prodigy_count=1), ["MDM2"]
+            )
+        )
+
+    def test_expanded_protocol_ensemble_invalidates_old_bundle(self):
+        # Protocol ensemble grows 3 -> 4: a bundle produced under the old
+        # 3-member protocol must be judged incomplete (not silently reused).
+        from unittest.mock import patch
+        from execution import handlers as handlers_module
+        expanded = {
+            "seeds": [0, 1, 2, 3],
+            "model_numbers": [0, 1, 2, 3],
+            "num_recycles": 3,
+        }
+        with patch.object(handlers_module, "_AF2_PRODIGY_PROTOCOL", expanded):
+            self.assertFalse(
+                _artifact_bundle_complete(self._bundle_path(), ["MDM2"])
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
+

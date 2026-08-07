@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contracts.action import get_action_spec
 from prediction_pipeline.contracts import object_sha256
+from prediction_pipeline.protocol import PREDICTOR_PROTOCOL
 from typing import Any
 from .approval import _approval
 from .config import (
@@ -146,7 +147,7 @@ def _design_iteration_prediction_task(
         parameters={
             "reuse_complete_evidence": True,
             "evidence_mode": "reuse_or_generate_full",
-            "predictor_protocol": "af2_boltz2_prodigy_rosetta_postrelax_v1",
+            "predictor_protocol": dict(PREDICTOR_PROTOCOL),
         },
         candidate_limit=min(
             proposal_count, config.max_prediction_candidates_per_task
@@ -243,7 +244,7 @@ def _recommendation_action_config(
         parameters.update({
             "reuse_complete_evidence": True,
             "evidence_mode": "reuse_or_generate_full",
-            "predictor_protocol": "af2_boltz2_prodigy_rosetta_postrelax_v1",
+            "predictor_protocol": dict(PREDICTOR_PROTOCOL),
         })
         outputs = ["prediction_handoff.json"]
     elif action == "regenerate_invalid_artifact":

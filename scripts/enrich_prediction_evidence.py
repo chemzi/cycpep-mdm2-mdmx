@@ -19,6 +19,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data_layer import CandidateIndex, State  # noqa: E402
+from execution.supervisor import atomic_json  # noqa: E402
+from core.protocol import ProtocolError  # noqa: E402
+from prediction_pipeline.protocol import (  # noqa: E402
+    PREDICTION_PROTOCOL,
+    validate_bundle_protocol,
+    validate_execution_compatibility,
+)
 from prediction_pipeline.adapters import (  # noqa: E402
     load_artifact_bundle,
     run_command,
@@ -131,6 +138,63 @@ def _run_prodigy_for_prediction(
     }
 
 
+def preflight_bundle_protocol(source_bundle: Path, raw: object) -> None:
+    """Refuse legacy or stale bundles before any GPU enrichment work.
+
+    Enrichment may run hours of Boltz/Rosetta compute; the bundle protocol
+    must be verified up front so a legacy bundle (no ``protocol`` binding) or
+    a bundle bound to a different protocol is rejected before burning GPU
+    time, not after the work is done.
+    """
+    if not isinstance(raw, dict):
+        raise ContractError(
+            "artifact_bundle_type", f"artifacts.json must be an object: {source_bundle}"
+        )
+    try:
+        validate_execution_compatibility(raw)
+    except ProtocolError as exc:
+        raise ContractError("bundle_protocol_mismatch", str(exc)) from exc
+
+
+def _require_enrichment_protocol(args) -> None:
+    """Enrichment parameters must be provably derived from the protocol file.
+
+    Per-candidate seeds are the protocol seed bases shifted by a candidate
+    offset; only the offset may vary.  The repeats count and the seed-base
+    difference must match ``protocols/prediction_v1.json`` exactly, otherwise
+    the resulting bundle would carry the protocol digest while having been
+    computed with different parameters.
+    """
+    enrichment = PREDICTION_PROTOCOL["parameters"]["enrichment"]
+    if args.post_relax_repeats != enrichment["post_relax_repeats"]:
+        raise ContractError(
+            "protocol_parameter_mismatch",
+            f"--post-relax-repeats {args.post_relax_repeats} != protocol "
+            f"{enrichment['post_relax_repeats']}",
+        )
+    if args.seed < enrichment["seed_base"]:
+        raise ContractError(
+            "protocol_parameter_mismatch",
+            f"--seed {args.seed} < protocol seed_base "
+            f"{enrichment['seed_base']}; seeds must be the protocol base "
+            "shifted by a non-negative candidate offset",
+        )
+    if args.post_relax_seed < enrichment["post_relax_seed_base"]:
+        raise ContractError(
+            "protocol_parameter_mismatch",
+            f"--post-relax-seed {args.post_relax_seed} < protocol "
+            f"post_relax_seed_base {enrichment['post_relax_seed_base']}",
+        )
+    expected_diff = enrichment["post_relax_seed_base"] - enrichment["seed_base"]
+    actual_diff = args.post_relax_seed - args.seed
+    if actual_diff != expected_diff:
+        raise ContractError(
+            "protocol_parameter_mismatch",
+            "--post-relax-seed must shift from the protocol seed base by the "
+            "same candidate offset as --seed",
+        )
+
+
 def run(args) -> dict:
     boltz_values = (args.boltz, args.boltz_cache, args.boltz_checkpoint)
     if any(boltz_values) and not all(boltz_values):
@@ -156,11 +220,13 @@ def run(args) -> dict:
             "enrichment_empty",
             "configure Boltz, Rosetta interface scoring and/or PyRosetta post-relax",
         )
+    _require_enrichment_protocol(args)
     source_bundle = Path(args.source_bundle).expanduser().resolve()
     try:
         raw = json.loads(source_bundle.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ContractError("artifact_bundle_malformed", str(source_bundle)) from exc
+    preflight_bundle_protocol(source_bundle, raw)
     candidate_id = str(raw.get("candidate_id") or "")
     rows = [
         row for row in CandidateIndex.load() if row.get("candidate_id") == candidate_id
@@ -251,6 +317,7 @@ def run(args) -> dict:
                 target_chain=target_chain,
                 binder_chain=args.binder_chain,
                 seed=args.seed,
+                diffusion_samples=PREDICTION_PROTOCOL["parameters"]["boltz"]["diffusion_samples"],
                 timeout=args.timeout,
                 no_kernels=args.no_kernels,
             )
@@ -319,10 +386,24 @@ def run(args) -> dict:
                 ))
             target_values["rosetta_outputs"] = rosetta_outputs
 
+    # Write-back guard: preflight already validated the source bundle for
+    # execution compatibility; re-validate the assembled bundle immediately
+    # before it becomes the formal evidence file so enrichment code can never
+    # accidentally drop or rewrite the protocol binding.
+    # P2-2 provenance: record the actual seeds used so a reader can verify the
+    # candidate offset against the protocol seed bases; the protocol binding
+    # alone only proves which protocol file was declared, not which seeds ran.
+    bundle["enrichment"] = {
+        "seed": args.seed,
+        "post_relax_seed": args.post_relax_seed,
+        "post_relax_repeats": args.post_relax_repeats,
+    }
+    try:
+        validate_bundle_protocol(bundle)
+    except ProtocolError as exc:
+        raise ContractError("bundle_protocol_mismatch", str(exc)) from exc
     output_bundle = candidate_dir / "artifacts.json"
-    output_bundle.write_text(
-        json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    atomic_json(output_bundle, bundle)
     validated = load_artifact_bundle(
         output_bundle,
         candidate_id=candidate.candidate_id,
@@ -361,10 +442,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--post-relax-python",
         help="Pinned PyRosetta Python used only for cyclic monomer post-relax",
     )
-    parser.add_argument("--seed", type=int, default=101)
-    parser.add_argument("--post-relax-seed", type=int, default=20260802)
-    parser.add_argument("--post-relax-repeats", type=int, default=3)
-    parser.add_argument("--post-relax-coordinate-stdev", type=float, default=0.5)
+    parser.add_argument(
+        "--seed", type=int, default=PREDICTION_PROTOCOL["parameters"]["enrichment"]["seed_base"]
+    )
+    parser.add_argument(
+        "--post-relax-seed",
+        type=int,
+        default=PREDICTION_PROTOCOL["parameters"]["enrichment"]["post_relax_seed_base"],
+    )
+    parser.add_argument(
+        "--post-relax-repeats",
+        type=int,
+        default=PREDICTION_PROTOCOL["parameters"]["enrichment"]["post_relax_repeats"],
+    )
+    parser.add_argument(
+        "--post-relax-coordinate-stdev",
+        type=float,
+        default=PREDICTION_PROTOCOL["parameters"]["enrichment"]["post_relax_coordinate_stdev"],
+        help="cyclic post-relax coordinate constraint stdev; default from "
+        "protocols/prediction_v1.json",
+    )
     parser.add_argument("--post-relax-timeout", type=int, default=3600)
     parser.add_argument("--binder-chain", default="B")
     parser.add_argument("--timeout", type=int, default=3600)
