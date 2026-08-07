@@ -25,7 +25,7 @@ POST_RELAX_TOOL = "PyRosetta FastRelax"
 MAX_CYCLIC_BOND_DISTANCE_ANGSTROM = 2.0
 MAX_POST_RELAX_BACKBONE_RMSD_ANGSTROM = 2.0
 DEFAULT_COORDINATE_STDEV_ANGSTROM = 0.5
-_ENRICHMENT_PROTOCOL = PREDICTION_PROTOCOL["enrichment"]
+_ENRICHMENT_PROTOCOL = PREDICTION_PROTOCOL["parameters"]["enrichment"]
 
 
 def topology_xml(*, first_pose_index: int, last_pose_index: int) -> str:

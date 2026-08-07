@@ -20,9 +20,9 @@ if str(ROOT) not in sys.path:
 
 from data_layer import CandidateIndex, State  # noqa: E402
 from execution.supervisor import atomic_json  # noqa: E402
+from core.protocol import ProtocolError  # noqa: E402
 from prediction_pipeline.protocol import (  # noqa: E402
     PREDICTION_PROTOCOL,
-    ProtocolError,
     validate_bundle_protocol,
     validate_execution_compatibility,
 )
@@ -165,7 +165,7 @@ def _require_enrichment_protocol(args) -> None:
     the resulting bundle would carry the protocol digest while having been
     computed with different parameters.
     """
-    enrichment = PREDICTION_PROTOCOL["enrichment"]
+    enrichment = PREDICTION_PROTOCOL["parameters"]["enrichment"]
     if args.post_relax_repeats != enrichment["post_relax_repeats"]:
         raise ContractError(
             "protocol_parameter_mismatch",
@@ -317,7 +317,7 @@ def run(args) -> dict:
                 target_chain=target_chain,
                 binder_chain=args.binder_chain,
                 seed=args.seed,
-                diffusion_samples=PREDICTION_PROTOCOL["boltz"]["diffusion_samples"],
+                diffusion_samples=PREDICTION_PROTOCOL["parameters"]["boltz"]["diffusion_samples"],
                 timeout=args.timeout,
                 no_kernels=args.no_kernels,
             )
@@ -443,22 +443,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Pinned PyRosetta Python used only for cyclic monomer post-relax",
     )
     parser.add_argument(
-        "--seed", type=int, default=PREDICTION_PROTOCOL["enrichment"]["seed_base"]
+        "--seed", type=int, default=PREDICTION_PROTOCOL["parameters"]["enrichment"]["seed_base"]
     )
     parser.add_argument(
         "--post-relax-seed",
         type=int,
-        default=PREDICTION_PROTOCOL["enrichment"]["post_relax_seed_base"],
+        default=PREDICTION_PROTOCOL["parameters"]["enrichment"]["post_relax_seed_base"],
     )
     parser.add_argument(
         "--post-relax-repeats",
         type=int,
-        default=PREDICTION_PROTOCOL["enrichment"]["post_relax_repeats"],
+        default=PREDICTION_PROTOCOL["parameters"]["enrichment"]["post_relax_repeats"],
     )
     parser.add_argument(
         "--post-relax-coordinate-stdev",
         type=float,
-        default=PREDICTION_PROTOCOL["enrichment"]["post_relax_coordinate_stdev"],
+        default=PREDICTION_PROTOCOL["parameters"]["enrichment"]["post_relax_coordinate_stdev"],
         help="cyclic post-relax coordinate constraint stdev; default from "
         "protocols/prediction_v1.json",
     )

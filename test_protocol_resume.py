@@ -357,7 +357,7 @@ class CLIProtocolDefaultsTests(unittest.TestCase):
         args = build_parser().parse_args(["--artifacts-root", "."])
         self.assertEqual(
             args.model_numbers,
-            ",".join(str(value) for value in PREDICTION_PROTOCOL["af2_prodigy"]["model_numbers"]),
+            ",".join(str(value) for value in PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]["model_numbers"]),
         )
 
     def test_seeds_default_from_protocol(self):
@@ -365,7 +365,7 @@ class CLIProtocolDefaultsTests(unittest.TestCase):
         args = build_parser().parse_args(["--artifacts-root", "."])
         self.assertEqual(
             args.seeds,
-            ",".join(str(value) for value in PREDICTION_PROTOCOL["af2_prodigy"]["seeds"]),
+            ",".join(str(value) for value in PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]["seeds"]),
         )
 
 

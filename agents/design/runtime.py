@@ -371,7 +371,7 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=None, binder_chain=None,
     those residues stay fixed in LigandMPNN.
     """
     if n_seq is None:
-        n_seq = config.DESIGN_PROTOCOL["ligandmpnn"]["n_seq_per_backbone"]
+        n_seq = config.DESIGN_PROTOCOL["parameters"]["ligandmpnn"]["n_seq_per_backbone"]
 
     if config.LIGANDMPNN_MODEL_TYPE != "protein_mpnn":
         EvidenceLogger.error(
@@ -497,7 +497,7 @@ if '"offset" in batch' not in source and "'offset' in batch" not in source:
 
 def _refold_script_core(sequence, L):
     """Generated-script middle: model setup and cyclic-offset injection."""
-    seed = int(config.DESIGN_PROTOCOL["refold"]["seed"])
+    seed = int(config.DESIGN_PROTOCOL["parameters"]["refold"]["seed"])
     return f"""
 model = mk_af_model(protocol='hallucination', data_dir={config.COLABDESIGN_PARAMS!r})
 model.prep_inputs(length={L})
@@ -527,7 +527,7 @@ model._inputs['offset'] = off
 
 def _refold_script_epilogue(sequence, output_pdb):
     """Generated-script tail: predict, verify drift, persist PDB and pLDDT."""
-    refold = config.DESIGN_PROTOCOL["refold"]
+    refold = config.DESIGN_PROTOCOL["parameters"]["refold"]
     seed = int(refold["seed"])
     models = list(refold["models"])
     num_models = int(refold["num_models"])

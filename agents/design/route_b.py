@@ -98,7 +98,7 @@ def _route_b_generate_backbones(config, batch_dir, templates):
             mpnn_dir = os.path.join(batch_dir, f"mpnn_{bb_path.stem}")
             os.makedirs(mpnn_dir, exist_ok=True)
             mpnn_seed = (config["seed"] + total_gen) % 2**31
-            seqs = _run_ligandmpnn(str(bb_path), mpnn_dir, n_seq=DESIGN_PROTOCOL["ligandmpnn"]["n_seq_per_backbone"],
+            seqs = _run_ligandmpnn(str(bb_path), mpnn_dir, n_seq=DESIGN_PROTOCOL["parameters"]["ligandmpnn"]["n_seq_per_backbone"],
                 binder_chain=binder_chain, fixed_residues=fixed_res or None,
                 seed=mpnn_seed)
             if not seqs:

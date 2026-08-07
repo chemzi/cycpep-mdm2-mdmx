@@ -13,9 +13,9 @@ from typing import Callable
 import data_layer
 from data_layer import CandidateIndex, State
 from prediction_pipeline.contracts import file_sha256, object_sha256
+from core.protocol import ProtocolError
 from prediction_pipeline.protocol import (
     PREDICTION_PROTOCOL,
-    ProtocolError,
     validate_execution_compatibility,
 )
 
@@ -35,8 +35,8 @@ from contracts.candidate_update import CandidateUpdateBatch
 # seeds / model numbers / recycles and enrichment seed bases are read from
 # protocols/prediction_v1.json.  Operational timeouts and tool paths stay in
 # ExecutionConfig.
-_AF2_PRODIGY_PROTOCOL = PREDICTION_PROTOCOL["af2_prodigy"]
-_ENRICHMENT_PROTOCOL = PREDICTION_PROTOCOL["enrichment"]
+_AF2_PRODIGY_PROTOCOL = PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]
+_ENRICHMENT_PROTOCOL = PREDICTION_PROTOCOL["parameters"]["enrichment"]
 
 
 def _utcnow() -> str:

@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from prediction_pipeline.contracts import file_sha256, object_sha256
-from prediction_pipeline.protocol import PREDICTOR_PROTOCOLS
+from prediction_pipeline.protocol import (
+    PREDICTOR_PROTOCOLS,
+    protocol_binding,
+)
 from contracts.action import (
     ACTION_CATALOG,
     ALL_ACTION_TYPES,
@@ -249,10 +252,42 @@ def validate_task_parameters(task: dict) -> dict:
             raise ExecutionContractError(
                 "prediction_evidence_mode_invalid", f"unsupported mode {evidence_mode!r}"
             )
-        protocol = str(parameters.get("predictor_protocol") or "")
-        if protocol not in PREDICTOR_PROTOCOLS:
+        protocol = parameters.get("predictor_protocol")
+        if not isinstance(protocol, dict):
             raise ExecutionContractError(
-                "prediction_protocol_invalid", f"unsupported protocol {protocol!r}"
+                "prediction_protocol_invalid",
+                "predictor_protocol must be a protocol identity object "
+                "{name, version, sha256}",
+            )
+        unknown = sorted(set(protocol) - {"name", "version", "sha256"})
+        if unknown:
+            raise ExecutionContractError(
+                "prediction_protocol_invalid",
+                f"predictor_protocol has unsupported fields: {unknown}",
+            )
+        if not all(
+            isinstance(protocol[key], str) and protocol[key]
+            for key in ("name", "version", "sha256")
+        ):
+            raise ExecutionContractError(
+                "prediction_protocol_invalid",
+                "predictor_protocol name/version/sha256 must be non-empty strings",
+            )
+        if not SHA256_RE.fullmatch(protocol["sha256"]):
+            raise ExecutionContractError(
+                "prediction_protocol_invalid",
+                "predictor_protocol sha256 must be a SHA-256 hex digest",
+            )
+        if protocol["name"] not in PREDICTOR_PROTOCOLS:
+            raise ExecutionContractError(
+                "prediction_protocol_invalid",
+                f"unsupported protocol {protocol['name']!r}",
+            )
+        if protocol != protocol_binding():
+            raise ExecutionContractError(
+                "prediction_protocol_invalid",
+                "predictor_protocol identity does not match the active "
+                "protocol; execution can only run the active protocol",
             )
         normalized = {
             "reuse_complete_evidence": _require_bool(
@@ -261,7 +296,7 @@ def validate_task_parameters(task: dict) -> dict:
                 "reuse_complete_evidence",
             ),
             "evidence_mode": evidence_mode,
-            "predictor_protocol": protocol,
+            "predictor_protocol": dict(protocol),
         }
     elif action == "review_prediction_handoff":
         allowed = {"min_cohort", "low_diversity_similarity"}

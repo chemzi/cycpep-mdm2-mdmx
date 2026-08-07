@@ -33,9 +33,9 @@ from .contracts import (
     object_sha256,
     validate_project,
 )
+from core.protocol import ProtocolError
 from .protocol import (
     MIGRATE_LEGACY_HINT,
-    ProtocolError,
     validate_execution_compatibility,
 )
 from .metrics import calculate_ipsae, load_pae, pose_convergence

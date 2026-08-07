@@ -4,10 +4,11 @@ Scientific parameters no longer live as Magic Numbers in execution handlers;
 they are read from ``protocols/prediction_v1.json`` so results stay
 reproducible and a parameter change forces a protocol version bump.
 
-The task-level ``predictor_protocol`` name and its registered set are derived
-from the same file, giving contracts and planners a single source of truth.
-The loader and version/sha256 contract are shared with Design via
-``core.protocol.load_protocol``.
+The task-level ``predictor_protocol`` identity object ``{name, version,
+sha256}`` and the registered set are derived from the same file, giving
+contracts and planners a single source of truth.  The loader and the
+parameters-only identity SHA-256 are shared with Design via
+``core.protocol``.
 """
 
 from __future__ import annotations
@@ -29,13 +30,32 @@ PREDICTION_PROTOCOL_PATH = ROOT / "protocols" / "prediction_v1.json"
 PREDICTION_PROTOCOL, PREDICTION_PROTOCOL_SHA256 = load_protocol(
     PREDICTION_PROTOCOL_PATH,
     required_sections={
-        "protocol_name": str,
         "af2_prodigy": dict,
         "enrichment": dict,
+        "boltz": dict,
     },
 )
 
 AF2_MODEL_NUMBER_RANGE = range(0, 5)
+
+_AF2_ALLOWED_KEYS = frozenset({"seeds", "model_numbers", "num_recycles"})
+_ENRICHMENT_ALLOWED_KEYS = frozenset({
+    "seed_base",
+    "post_relax_seed_base",
+    "post_relax_repeats",
+    "post_relax_coordinate_stdev",
+})
+_BOLTZ_ALLOWED_KEYS = frozenset({"diffusion_samples"})
+
+
+def _require_known_keys(section: dict, allowed: frozenset[str], label: str) -> None:
+    """Reject typos inside a parameter section (e.g. ``recycels``)."""
+    unknown = sorted(set(section) - allowed)
+    if unknown:
+        raise ProtocolError(
+            f"prediction protocol {label} has unsupported fields {unknown}; "
+            f"allowed keys are {sorted(allowed)}"
+        )
 
 
 @dataclass(frozen=True)
@@ -43,13 +63,14 @@ class PredictionProtocol:
     """Typed view of a prediction protocol (Engineering Standard section 8).
 
     Loading a protocol through :meth:`from_data` enforces the full scientific
-    contract -- seeds/models presence and ranges, ensemble pairing, recycles
-    and repeat counts -- so a typo in ``protocols/*.json`` fails at import
-    time instead of surfacing as a bare KeyError or a bad subprocess later.
+    contract -- name/version, seeds/models presence and ranges, ensemble
+    pairing, recycles and repeat counts, and unknown-key rejection -- so a
+    typo in ``protocols/*.json`` fails at import time instead of surfacing as
+    a bare KeyError or a bad subprocess later.
     """
 
+    name: str
     version: str
-    protocol_name: str
     af2_seeds: tuple[int, ...]
     af2_model_numbers: tuple[int, ...]
     num_recycles: int
@@ -61,15 +82,21 @@ class PredictionProtocol:
 
     @classmethod
     def from_data(cls, data: dict) -> "PredictionProtocol":
+        name = str(data.get("name") or "")
         version = str(data.get("version") or "")
-        protocol_name = str(data.get("protocol_name") or "")
-        if not version or not protocol_name:
+        if not name or not version:
             raise ProtocolError(
-                "prediction protocol must declare non-empty version and protocol_name"
+                "prediction protocol must declare non-empty name and version"
             )
-        af2 = data.get("af2_prodigy")
+        parameters = data.get("parameters")
+        if not isinstance(parameters, dict):
+            raise ProtocolError(
+                "prediction protocol must declare a 'parameters' object"
+            )
+        af2 = parameters.get("af2_prodigy")
         if not isinstance(af2, dict):
             raise ProtocolError("prediction protocol section 'af2_prodigy' must be an object")
+        _require_known_keys(af2, _AF2_ALLOWED_KEYS, "af2_prodigy")
         seeds = _int_list(af2.get("seeds"), "af2_prodigy.seeds")
         models = _int_list(af2.get("model_numbers"), "af2_prodigy.model_numbers")
         if not seeds:
@@ -92,9 +119,10 @@ class PredictionProtocol:
         recycles = af2.get("num_recycles")
         if not isinstance(recycles, int) or isinstance(recycles, bool) or recycles <= 0:
             raise ProtocolError("af2_prodigy.num_recycles must be a positive integer")
-        enrichment = data.get("enrichment")
+        enrichment = parameters.get("enrichment")
         if not isinstance(enrichment, dict):
             raise ProtocolError("prediction protocol section 'enrichment' must be an object")
+        _require_known_keys(enrichment, _ENRICHMENT_ALLOWED_KEYS, "enrichment")
         seed_base = _int(enrichment.get("seed_base"), "enrichment.seed_base")
         post_relax_seed_base = _int(
             enrichment.get("post_relax_seed_base"), "enrichment.post_relax_seed_base"
@@ -117,9 +145,10 @@ class PredictionProtocol:
             raise ProtocolError(
                 "enrichment.post_relax_coordinate_stdev must be a positive number"
             )
-        boltz = data.get("boltz")
+        boltz = parameters.get("boltz")
         if not isinstance(boltz, dict):
             raise ProtocolError("prediction protocol section 'boltz' must be an object")
+        _require_known_keys(boltz, _BOLTZ_ALLOWED_KEYS, "boltz")
         diffusion_samples = _int(
             boltz.get("diffusion_samples"), "boltz.diffusion_samples"
         )
@@ -128,8 +157,8 @@ class PredictionProtocol:
                 "boltz.diffusion_samples must be a positive integer"
             )
         return cls(
+            name=name,
             version=version,
-            protocol_name=protocol_name,
             af2_seeds=tuple(seeds),
             af2_model_numbers=tuple(models),
             num_recycles=recycles,
@@ -159,16 +188,33 @@ def _int_list(value: object, label: str) -> list[int]:
 # tasks and validated by Execution contracts.  The registry currently holds
 # exactly one protocol (protocols/prediction_v1.json) loaded at import time;
 # extending it to multiple protocols requires loading each protocol file and
-# recording its per-file SHA-256 -- until then the registry is a closed world
-# with one active member.
+# recording its per-file identity SHA-256 -- until then the registry is a
+# closed world with one active member.
 PROTOCOL_REGISTRY: dict[str, PredictionProtocol] = {
-    str(PREDICTION_PROTOCOL["protocol_name"]): PredictionProtocol.from_data(
+    str(PREDICTION_PROTOCOL["name"]): PredictionProtocol.from_data(
         PREDICTION_PROTOCOL
     ),
 }
-ACTIVE_PREDICTOR_PROTOCOL = str(PREDICTION_PROTOCOL["protocol_name"])
-PREDICTOR_PROTOCOL = ACTIVE_PREDICTOR_PROTOCOL
+ACTIVE_PREDICTOR_PROTOCOL = str(PREDICTION_PROTOCOL["name"])
 PREDICTOR_PROTOCOLS = frozenset(PROTOCOL_REGISTRY)
+
+
+def protocol_binding() -> dict:
+    """Return the ``{name, version, sha256}`` identity of the active protocol.
+
+    ``sha256`` is the parameters-only canonical digest, so metadata edits to
+    the protocol file do not change the binding.
+    """
+    return {
+        "name": ACTIVE_PREDICTOR_PROTOCOL,
+        "version": PREDICTION_PROTOCOL["version"],
+        "sha256": PREDICTION_PROTOCOL_SHA256,
+    }
+
+
+# The identity object carried by Planner tasks (Action Contract); Execution
+# requires the task identity to equal the active binding exactly.
+PREDICTOR_PROTOCOL = protocol_binding()
 
 
 # Shared operator hint for legacy evidence that cannot be bound automatically.
@@ -176,15 +222,6 @@ MIGRATE_LEGACY_HINT = (
     "run scripts/migrate_legacy_prediction_protocol.py to bind it "
     "explicitly, or regenerate the evidence"
 )
-
-
-def protocol_binding() -> dict:
-    """Return the ``{name, version, sha256}`` binding recorded in artifacts."""
-    return {
-        "name": ACTIVE_PREDICTOR_PROTOCOL,
-        "version": PREDICTION_PROTOCOL["version"],
-        "sha256": PREDICTION_PROTOCOL_SHA256,
-    }
 
 
 def validate_bundle_protocol(bundle: dict) -> None:

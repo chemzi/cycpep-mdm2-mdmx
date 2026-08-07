@@ -35,10 +35,10 @@ from prediction_pipeline.contracts import (  # noqa: E402
 )
 from target_bootstrap import assert_project_approved  # noqa: E402
 from execution.supervisor import atomic_json  # noqa: E402
+from core.protocol import ProtocolError  # noqa: E402
 from prediction_pipeline.protocol import (  # noqa: E402
     MIGRATE_LEGACY_HINT,
     PREDICTION_PROTOCOL,
-    ProtocolError,
     protocol_binding,
     validate_execution_compatibility,
 )
@@ -340,7 +340,7 @@ def _require_protocol_parameters(
     refused: change ``protocols/prediction_v1.json`` (and bump version)
     instead.
     """
-    af2 = PREDICTION_PROTOCOL["af2_prodigy"]
+    af2 = PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]
     seeds = [seed for seed, _ in ensemble]
     models = [model for _, model in ensemble]
     if num_recycles != af2["num_recycles"]:
@@ -530,12 +530,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cuda-data-dir", default=DEFAULT_CUDA)
     parser.add_argument(
         "--seeds",
-        default=",".join(str(v) for v in PREDICTION_PROTOCOL["af2_prodigy"]["seeds"]),
+        default=",".join(str(v) for v in PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]["seeds"]),
     )
     parser.add_argument(
         "--model-numbers",
         default=",".join(
-            str(value) for value in PREDICTION_PROTOCOL["af2_prodigy"]["model_numbers"]
+            str(value) for value in PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]["model_numbers"]
         ),
         help="comma-separated AF2 models paired with --seeds; "
         "default from protocols/prediction_v1.json",
@@ -543,7 +543,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--num-recycles",
         type=int,
-        default=PREDICTION_PROTOCOL["af2_prodigy"]["num_recycles"],
+        default=PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]["num_recycles"],
     )
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--prodigy", help="path/name of the PRODIGY executable")

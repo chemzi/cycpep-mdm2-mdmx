@@ -74,7 +74,7 @@ def _parameter_differences(bundle: dict, base: Path) -> list[str]:
     provably do not follow the current protocol so the operator can decide
     whether regeneration is required.
     """
-    af2 = PREDICTION_PROTOCOL["af2_prodigy"]
+    af2 = PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]
     differences: list[str] = []
     for prediction in _iter_predictions(bundle):
         if prediction.get("predictor") != "ColabDesign":
@@ -166,7 +166,7 @@ def migrate_bundle(bundle_path: Path, *, dry_run: bool = False) -> str:
             atomic_json(output_dir / PROTOCOL_BINDING_FILENAME, protocol_binding())
         return (
             f"repaired: {bundle_path} "
-            f"(bound {PREDICTOR_PROTOCOL} to {len(reparable)} output dirs){warning}"
+            f"(bound {PREDICTOR_PROTOCOL['name']} to {len(reparable)} output dirs){warning}"
         )
     if existing is not None:
         return (
@@ -176,7 +176,7 @@ def migrate_bundle(bundle_path: Path, *, dry_run: bool = False) -> str:
     if dry_run:
         return (
             f"would-migrate: {bundle_path} "
-            f"(bind {PREDICTOR_PROTOCOL} to {len(output_dirs)} output dirs){warning}"
+            f"(bind {PREDICTOR_PROTOCOL['name']} to {len(output_dirs)} output dirs){warning}"
         )
     raw["protocol"] = protocol_binding()
     atomic_json(bundle_path, raw)
@@ -191,7 +191,7 @@ def migrate_bundle(bundle_path: Path, *, dry_run: bool = False) -> str:
     missing_note = f", {missing_dirs} missing" if missing_dirs else ""
     return (
         f"migrated: {bundle_path} "
-        f"(bound {PREDICTOR_PROTOCOL}, {bound_dirs} output dirs{missing_note}){warning}"
+        f"(bound {PREDICTOR_PROTOCOL['name']}, {bound_dirs} output dirs{missing_note}){warning}"
     )
 
 

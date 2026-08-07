@@ -145,7 +145,7 @@ def _get_output_dir():
 @functools.lru_cache(maxsize=1)
 def _get_rfdiff_timesteps():
     """RFdiffusion timesteps from env or protocol; invalid env is deferred-logged."""
-    raw = os.environ.get("RFDIFF_TIMESTEPS") or str(DESIGN_PROTOCOL["rfdiff"]["timesteps"])
+    raw = os.environ.get("RFDIFF_TIMESTEPS") or str(DESIGN_PROTOCOL["parameters"]["rfdiff"]["timesteps"])
     try:
         return max(1, int(raw))
     except (ValueError, TypeError):
@@ -153,19 +153,19 @@ def _get_rfdiff_timesteps():
         # EvidenceLogger side effects at import time).
         global _RFDIFF_TIMESTEPS_INVALID
         _RFDIFF_TIMESTEPS_INVALID = os.environ.get("RFDIFF_TIMESTEPS")
-        return DESIGN_PROTOCOL["rfdiff"]["timesteps"]
+        return DESIGN_PROTOCOL["parameters"]["rfdiff"]["timesteps"]
 
 
 @functools.lru_cache(maxsize=1)
 def _get_ligandmpnn_model_type():
-    return os.environ.get("LIGANDMPNN_MODEL_TYPE") or DESIGN_PROTOCOL["ligandmpnn"]["model_type"]
+    return os.environ.get("LIGANDMPNN_MODEL_TYPE") or DESIGN_PROTOCOL["parameters"]["ligandmpnn"]["model_type"]
 
 
 @functools.lru_cache(maxsize=1)
 def _get_ligandmpnn_checkpoint():
     return os.environ.get(
         "LIGANDMPNN_CHECKPOINT"
-    ) or f"{_get_ligandmpnn_dir()}/model_params/{DESIGN_PROTOCOL['ligandmpnn']['checkpoint']}"
+    ) or f"{_get_ligandmpnn_dir()}/model_params/{DESIGN_PROTOCOL['parameters']['ligandmpnn']['checkpoint']}"
 
 
 @functools.lru_cache(maxsize=1)
@@ -174,9 +174,9 @@ def _get_cheap_filter_max_keep():
         return max(1, int(
             os.environ.get("CHEAP_FILTER_MAX_KEEP")
             or os.environ.get("CHEAP_FILTER_TOP_K")
-            or str(DESIGN_PROTOCOL["cheap_filter"]["max_keep_per_backbone"])))
+            or str(DESIGN_PROTOCOL["parameters"]["cheap_filter"]["max_keep_per_backbone"])))
     except (ValueError, TypeError):
-        return DESIGN_PROTOCOL["cheap_filter"]["max_keep_per_backbone"]
+        return DESIGN_PROTOCOL["parameters"]["cheap_filter"]["max_keep_per_backbone"]
 
 
 _LAZY_ATTRIBUTES = {

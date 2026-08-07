@@ -1,11 +1,15 @@
-"""PR7 protocol layer tests: shared loader, prediction binding, bundle checks."""
+"""PR7 protocol layer tests: shared loader, envelope schema, identity SHA, contracts."""
 
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from core.protocol import ProtocolError, load_protocol
+from core.protocol import (
+    ProtocolError,
+    canonical_parameters_sha256,
+    load_protocol,
+)
 from prediction_pipeline.adapters import load_artifact_bundle
 from prediction_pipeline.contracts import ContractError
 from prediction_pipeline.protocol import (
@@ -20,6 +24,18 @@ from prediction_pipeline.protocol import (
     validate_execution_compatibility,
 )
 from execution.contracts import ExecutionContractError, validate_task_parameters
+
+
+def _valid_envelope(**overrides) -> dict:
+    """A minimal envelope that passes the shared loader schema."""
+    data = {
+        "name": "test",
+        "version": "1.0",
+        "parameters": {"af2_prodigy": {"seeds": [0]}},
+        "metadata": {"description": "hello"},
+    }
+    data.update(overrides)
+    return data
 
 
 class ProtocolLoaderTests(unittest.TestCase):
@@ -39,17 +55,47 @@ class ProtocolLoaderTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             load_protocol(self._write("{not json"))
 
+    def test_missing_name_raises(self):
+        with self.assertRaises(ProtocolError):
+            load_protocol(self._write(json.dumps({"version": "1.0"})))
+
     def test_missing_version_raises(self):
         with self.assertRaises(ProtocolError):
-            load_protocol(self._write("{}"))
+            load_protocol(self._write(json.dumps({"name": "test"})))
+
+    def test_bad_version_format_raises(self):
+        path = self._write(json.dumps(_valid_envelope(version="hello")))
+        with self.assertRaises(ProtocolError):
+            load_protocol(path)
+
+    def test_version_format_accepts_major_minor(self):
+        data, sha = load_protocol(
+            self._write(json.dumps(_valid_envelope(version="2.3")))
+        )
+        self.assertEqual(data["version"], "2.3")
+        self.assertEqual(len(sha), 64)
+
+    def test_missing_parameters_raises(self):
+        path = self._write(json.dumps({"name": "test", "version": "1.0"}))
+        with self.assertRaises(ProtocolError):
+            load_protocol(path)
+
+    def test_unknown_top_level_key_rejected(self):
+        path = self._write(
+            json.dumps(_valid_envelope(protocol_name="smuggled"))
+        )
+        with self.assertRaises(ProtocolError):
+            load_protocol(path)
 
     def test_missing_required_section_raises(self):
-        path = self._write(json.dumps({"version": "v1"}))
+        path = self._write(json.dumps(_valid_envelope(parameters={})))
         with self.assertRaises(ProtocolError):
             load_protocol(path, required_sections={"af2_prodigy": dict})
 
     def test_wrong_section_type_raises(self):
-        path = self._write(json.dumps({"version": "v1", "af2_prodigy": "nope"}))
+        path = self._write(
+            json.dumps(_valid_envelope(parameters={"af2_prodigy": "nope"}))
+        )
         with self.assertRaises(ProtocolError):
             load_protocol(path, required_sections={"af2_prodigy": dict})
 
@@ -58,16 +104,54 @@ class ProtocolLoaderTests(unittest.TestCase):
             "protocols/design_v1.json",
             required_sections={"refold": dict, "rfdiff": dict},
         )
-        self.assertEqual(data["version"], "design_v1")
+        self.assertEqual(data["name"], "design")
+        self.assertEqual(data["version"], "1.0")
         self.assertEqual(len(sha), 64)
+
+    def test_metadata_change_does_not_change_hash(self):
+        # P0 canonicalization: metadata edits must NOT invalidate evidence.
+        base = _valid_envelope()
+        edited = _valid_envelope(
+            metadata={"description": "better explanation", "author": "lead"}
+        )
+        sha_base = load_protocol(
+            self._write(json.dumps(base))
+        )[1]
+        sha_edited = load_protocol(
+            self._write(json.dumps(edited))
+        )[1]
+        self.assertEqual(sha_base, sha_edited)
+
+    def test_parameter_change_changes_hash(self):
+        base = _valid_envelope()
+        edited = _valid_envelope(
+            parameters={"af2_prodigy": {"seeds": [0, 1, 2]}}
+        )
+        sha_base = load_protocol(
+            self._write(json.dumps(base))
+        )[1]
+        sha_edited = load_protocol(
+            self._write(json.dumps(edited))
+        )[1]
+        self.assertNotEqual(sha_base, sha_edited)
+
+    def test_hash_is_key_order_independent(self):
+        params_a = {"a": [1, 2], "b": {"c": 3}}
+        params_b = {"b": {"c": 3}, "a": [1, 2]}
+        self.assertEqual(
+            canonical_parameters_sha256(params_a),
+            canonical_parameters_sha256(params_b),
+        )
 
 
 class PredictionBindingTests(unittest.TestCase):
     def test_binding_matches_protocol(self):
         binding = protocol_binding()
-        self.assertEqual(binding["name"], PREDICTOR_PROTOCOL)
+        self.assertEqual(binding["name"], PREDICTOR_PROTOCOL["name"])
+        self.assertEqual(binding["name"], ACTIVE_PREDICTOR_PROTOCOL)
         self.assertEqual(binding["version"], PREDICTION_PROTOCOL["version"])
         self.assertEqual(binding["sha256"], PREDICTION_PROTOCOL_SHA256)
+        self.assertEqual(binding, PREDICTOR_PROTOCOL)
 
     def test_validate_rejects_missing_protocol(self):
         bundle: dict = {}
@@ -149,7 +233,9 @@ class BundleProtocolValidationTests(unittest.TestCase):
 
 
 class TaskProtocolContractTests(unittest.TestCase):
-    def _task(self, protocol: str) -> dict:
+    """The Action Contract carries a protocol identity object, not a string."""
+
+    def _task(self, protocol) -> dict:
         return {
             "action": "evaluate_new_design_candidates",
             "parameters": {
@@ -166,14 +252,44 @@ class TaskProtocolContractTests(unittest.TestCase):
             "outputs": ["prediction_handoff.json"],
         }
 
-    def test_unknown_predictor_protocol_rejected(self):
+    def test_string_protocol_rejected(self):
+        # 必修2: a bare protocol name no longer pins exact parameters.
         with self.assertRaises(ExecutionContractError) as ctx:
-            validate_task_parameters(self._task("bogus_protocol"))
+            validate_task_parameters(self._task("af2_boltz2_prodigy_rosetta_postrelax_v1"))
+        self.assertEqual(ctx.exception.code, "prediction_protocol_invalid")
+
+    def test_unknown_predictor_protocol_rejected(self):
+        identity = {"name": "bogus", "version": "1.0", "sha256": "b" * 64}
+        with self.assertRaises(ExecutionContractError) as ctx:
+            validate_task_parameters(self._task(identity))
+        self.assertEqual(ctx.exception.code, "prediction_protocol_invalid")
+
+    def test_mismatched_sha_rejected(self):
+        # Same name but different sha: not the protocol execution will run.
+        identity = {"name": ACTIVE_PREDICTOR_PROTOCOL, "version": "1.0", "sha256": "b" * 64}
+        with self.assertRaises(ExecutionContractError) as ctx:
+            validate_task_parameters(self._task(identity))
+        self.assertEqual(ctx.exception.code, "prediction_protocol_invalid")
+
+    def test_non_hex_sha_rejected(self):
+        identity = {"name": ACTIVE_PREDICTOR_PROTOCOL, "version": "1.0", "sha256": "not-hex"}
+        with self.assertRaises(ExecutionContractError) as ctx:
+            validate_task_parameters(self._task(identity))
         self.assertEqual(ctx.exception.code, "prediction_protocol_invalid")
 
     def test_registered_predictor_protocol_accepted(self):
         normalized = validate_task_parameters(self._task(PREDICTOR_PROTOCOL))
         self.assertEqual(normalized["predictor_protocol"], PREDICTOR_PROTOCOL)
+
+    def test_task_identity_must_match_active_protocol(self):
+        # A registered-but-older identity must be refused: execution can only
+        # run the active protocol.
+        stale = dict(PREDICTOR_PROTOCOL)
+        stale["version"] = "0.9"
+        stale["sha256"] = "c" * 64
+        with self.assertRaises(ExecutionContractError) as ctx:
+            validate_task_parameters(self._task(stale))
+        self.assertEqual(ctx.exception.code, "prediction_protocol_invalid")
 
 
 class ProtocolSchemaTests(unittest.TestCase):
@@ -181,105 +297,131 @@ class ProtocolSchemaTests(unittest.TestCase):
 
     def _data(self, **overrides) -> dict:
         data = {
-            "version": "prediction_v1",
-            "protocol_name": "af2_boltz2_prodigy_rosetta_postrelax_v1",
-            "af2_prodigy": {
-                "seeds": [0, 1, 2],
-                "model_numbers": [0, 1, 2],
-                "num_recycles": 3,
+            "name": "prediction",
+            "version": "1.0",
+            "parameters": {
+                "af2_prodigy": {
+                    "seeds": [0, 1, 2],
+                    "model_numbers": [0, 1, 2],
+                    "num_recycles": 3,
+                },
+                "enrichment": {
+                    "seed_base": 101,
+                    "post_relax_seed_base": 20260802,
+                    "post_relax_repeats": 3,
+                    "post_relax_coordinate_stdev": 0.5,
+                },
+                "boltz": {
+                    "diffusion_samples": 1,
+                },
             },
-            "enrichment": {
-                "seed_base": 101,
-                "post_relax_seed_base": 20260802,
-                "post_relax_repeats": 3,
-                "post_relax_coordinate_stdev": 0.5,
-            },
-            "boltz": {
-                "diffusion_samples": 1,
-            },
+            "metadata": {"description": "x"},
         }
-        data.update(overrides)
+        parameters = data["parameters"]
+        for key, value in overrides.items():
+            if key in {"name", "version", "metadata"}:
+                data[key] = value
+            else:
+                parameters[key] = value
         return data
 
     def test_valid_protocol_loads(self):
         protocol = PredictionProtocol.from_data(self._data())
-        self.assertEqual(protocol.protocol_name, PREDICTOR_PROTOCOL)
+        self.assertEqual(protocol.name, PREDICTOR_PROTOCOL["name"])
         self.assertEqual(protocol.af2_seeds, (0, 1, 2))
         self.assertEqual(protocol.num_recycles, 3)
 
     def test_duplicate_seeds_rejected(self):
         with self.assertRaises(ProtocolError):
             PredictionProtocol.from_data(
-                self._data(af2_prodigy={**self._data()["af2_prodigy"], "seeds": [0, 0, 1]})
+                self._data(af2_prodigy={**self._data()["parameters"]["af2_prodigy"], "seeds": [0, 0, 1]})
             )
 
     def test_duplicate_models_rejected(self):
         with self.assertRaises(ProtocolError):
             PredictionProtocol.from_data(
-                self._data(af2_prodigy={**self._data()["af2_prodigy"], "model_numbers": [0, 0, 1]})
+                self._data(af2_prodigy={**self._data()["parameters"]["af2_prodigy"], "model_numbers": [0, 0, 1]})
             )
 
     def test_model_out_of_range_rejected(self):
         with self.assertRaises(ProtocolError):
             PredictionProtocol.from_data(
-                self._data(af2_prodigy={**self._data()["af2_prodigy"], "model_numbers": [0, 1, 5]})
+                self._data(af2_prodigy={**self._data()["parameters"]["af2_prodigy"], "model_numbers": [0, 1, 5]})
             )
 
     def test_seed_model_length_mismatch_rejected(self):
         with self.assertRaises(ProtocolError):
             PredictionProtocol.from_data(
-                self._data(af2_prodigy={**self._data()["af2_prodigy"], "seeds": [0, 1]})
+                self._data(af2_prodigy={**self._data()["parameters"]["af2_prodigy"], "seeds": [0, 1]})
             )
 
     def test_nested_section_missing_model_numbers_rejected(self):
-        # Missing nested key inside af2_prodigy must fail at import time.
-        af2 = {**self._data()["af2_prodigy"]}
+        af2 = {**self._data()["parameters"]["af2_prodigy"]}
         del af2["model_numbers"]
         with self.assertRaises(ProtocolError):
             PredictionProtocol.from_data(self._data(af2_prodigy=af2))
 
     def test_nested_section_missing_num_recycles_rejected(self):
-        af2 = {**self._data()["af2_prodigy"]}
+        af2 = {**self._data()["parameters"]["af2_prodigy"]}
         del af2["num_recycles"]
         with self.assertRaises(ProtocolError):
             PredictionProtocol.from_data(self._data(af2_prodigy=af2))
+
+    def test_unknown_af2_key_rejected(self):
+        # 必修3: a typo like "recycels" must fail at import time.
+        af2 = {**self._data()["parameters"]["af2_prodigy"], "recycels": 3}
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(self._data(af2_prodigy=af2))
+
+    def test_unknown_enrichment_key_rejected(self):
+        enrichment = {
+            **self._data()["parameters"]["enrichment"],
+            "seed_baze": 101,
+        }
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(self._data(enrichment=enrichment))
+
+    def test_unknown_boltz_key_rejected(self):
+        boltz = {**self._data()["parameters"]["boltz"], "diffusion_sampls": 1}
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(self._data(boltz=boltz))
 
     def test_non_sequential_model_numbers_accepted(self):
         # The protocol pins the exact model set; order is data, not a
         # 0..n-1 assumption.  A permuted set must load and stay authoritative.
         protocol = PredictionProtocol.from_data(
-            self._data(af2_prodigy={**self._data()["af2_prodigy"], "model_numbers": [2, 0, 1]})
+            self._data(af2_prodigy={**self._data()["parameters"]["af2_prodigy"], "model_numbers": [2, 0, 1]})
         )
         self.assertEqual(protocol.af2_model_numbers, (2, 0, 1))
 
     def test_non_positive_recycles_rejected(self):
         with self.assertRaises(ProtocolError):
             PredictionProtocol.from_data(
-                self._data(af2_prodigy={**self._data()["af2_prodigy"], "num_recycles": 0})
+                self._data(af2_prodigy={**self._data()["parameters"]["af2_prodigy"], "num_recycles": 0})
             )
 
     def test_empty_seeds_rejected(self):
         with self.assertRaises(ProtocolError):
             PredictionProtocol.from_data(
-                self._data(af2_prodigy={**self._data()["af2_prodigy"], "seeds": []})
+                self._data(af2_prodigy={**self._data()["parameters"]["af2_prodigy"], "seeds": []})
             )
 
     def test_non_integer_enrichment_rejected(self):
         with self.assertRaises(ProtocolError):
             PredictionProtocol.from_data(
-                self._data(enrichment={**self._data()["enrichment"], "post_relax_repeats": "3"})
+                self._data(enrichment={**self._data()["parameters"]["enrichment"], "post_relax_repeats": "3"})
             )
 
     def test_non_positive_repeats_rejected(self):
         with self.assertRaises(ProtocolError):
             PredictionProtocol.from_data(
-                self._data(enrichment={**self._data()["enrichment"], "post_relax_repeats": 0})
+                self._data(enrichment={**self._data()["parameters"]["enrichment"], "post_relax_repeats": 0})
             )
 
     def test_negative_seed_base_rejected(self):
         with self.assertRaises(ProtocolError):
             PredictionProtocol.from_data(
-                self._data(enrichment={**self._data()["enrichment"], "seed_base": -1})
+                self._data(enrichment={**self._data()["parameters"]["enrichment"], "seed_base": -1})
             )
 
     def test_negative_post_relax_seed_base_rejected(self):
@@ -287,7 +429,7 @@ class ProtocolSchemaTests(unittest.TestCase):
             PredictionProtocol.from_data(
                 self._data(
                     enrichment={
-                        **self._data()["enrichment"],
+                        **self._data()["parameters"]["enrichment"],
                         "post_relax_seed_base": -20260802,
                     }
                 )
@@ -295,7 +437,7 @@ class ProtocolSchemaTests(unittest.TestCase):
 
     def test_missing_boltz_section_rejected(self):
         data = self._data()
-        del data["boltz"]
+        del data["parameters"]["boltz"]
         with self.assertRaises(ProtocolError):
             PredictionProtocol.from_data(data)
 
@@ -310,7 +452,7 @@ class ProtocolSchemaTests(unittest.TestCase):
             PredictionProtocol.from_data(
                 self._data(
                     enrichment={
-                        **self._data()["enrichment"],
+                        **self._data()["parameters"]["enrichment"],
                         "post_relax_coordinate_stdev": 0.0,
                     }
                 )
@@ -320,6 +462,31 @@ class ProtocolSchemaTests(unittest.TestCase):
         protocol = PredictionProtocol.from_data(self._data())
         self.assertEqual(protocol.boltz_diffusion_samples, 1)
         self.assertEqual(protocol.post_relax_coordinate_stdev, 0.5)
+
+    def test_multi_protocol_coexistence(self):
+        # Two parameter sets produce two distinct identities; a registry keyed
+        # by name can hold both.
+        v1 = PredictionProtocol.from_data(self._data())
+        v2 = PredictionProtocol.from_data(
+            self._data(
+                version="2.0",
+                af2_prodigy={**self._data()["parameters"]["af2_prodigy"], "seeds": [4, 5, 6]},
+            )
+        )
+        self.assertEqual(v1.name, v2.name)
+        self.assertNotEqual(v1.version, v2.version)
+        self.assertNotEqual(v1.af2_seeds, v2.af2_seeds)
+        # Identities differ when parameters differ:
+        self.assertNotEqual(
+            canonical_parameters_sha256(
+                self._data()["parameters"]
+            ),
+            canonical_parameters_sha256(
+                self._data(
+                    af2_prodigy={**self._data()["parameters"]["af2_prodigy"], "seeds": [4, 5, 6]}
+                )["parameters"]
+            ),
+        )
 
 
 class ProtocolRegistryTests(unittest.TestCase):
@@ -335,10 +502,13 @@ class ProtocolRegistryTests(unittest.TestCase):
 
     def test_registry_matches_loaded_raw_protocol(self):
         typed = PROTOCOL_REGISTRY[ACTIVE_PREDICTOR_PROTOCOL]
-        self.assertEqual(typed.af2_seeds, tuple(PREDICTION_PROTOCOL["af2_prodigy"]["seeds"]))
+        self.assertEqual(
+            typed.af2_seeds,
+            tuple(PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]["seeds"]),
+        )
         self.assertEqual(
             typed.af2_model_numbers,
-            tuple(PREDICTION_PROTOCOL["af2_prodigy"]["model_numbers"]),
+            tuple(PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]["model_numbers"]),
         )
 
 
@@ -356,6 +526,42 @@ class ExecutionCompatibilityTests(unittest.TestCase):
                 {"protocol": {"name": "old", "version": "old", "sha256": "b" * 64}}
             )
 
+    def test_tampered_parameter_invalidates_reuse(self):
+        # P2 CI gap: changing a scientific parameter (seed) changes the
+        # identity SHA, so a bundle bound to the tampered protocol must be
+        # refused on the execution path.
+        tampered = dict(PREDICTION_PROTOCOL)
+        tampered["parameters"] = {
+            "af2_prodigy": {
+                "seeds": [9, 9, 9],
+                "model_numbers": [0, 1, 2],
+                "num_recycles": 3,
+            },
+            "enrichment": PREDICTION_PROTOCOL["parameters"]["enrichment"],
+            "boltz": PREDICTION_PROTOCOL["parameters"]["boltz"],
+        }
+        tampered_binding = {
+            "name": ACTIVE_PREDICTOR_PROTOCOL,
+            "version": PREDICTION_PROTOCOL["version"],
+            "sha256": canonical_parameters_sha256(tampered["parameters"]),
+        }
+        self.assertNotEqual(tampered_binding["sha256"], PREDICTION_PROTOCOL_SHA256)
+        with self.assertRaises(ProtocolError):
+            validate_execution_compatibility({"protocol": tampered_binding})
+
+    def test_metadata_edit_keeps_reuse_valid(self):
+        # P0: a description edit must NOT invalidate recorded evidence.
+        edited = dict(PREDICTION_PROTOCOL)
+        edited["metadata"] = {
+            "description": "better explanation",
+            "author": "team lead",
+        }
+        self.assertEqual(
+            canonical_parameters_sha256(edited["parameters"]),
+            PREDICTION_PROTOCOL_SHA256,
+        )
+        validate_execution_compatibility({"protocol": protocol_binding()})
+
+
 if __name__ == "__main__":
     unittest.main()
-

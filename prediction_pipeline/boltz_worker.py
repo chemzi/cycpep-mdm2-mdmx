@@ -122,9 +122,9 @@ def run_boltz_prediction(
     """Run one pinned Boltz sample and normalize it to the Prediction contract."""
     if seed is None:
         # Fallback defaults come from the versioned protocol, not Magic Numbers.
-        seed = PREDICTION_PROTOCOL["enrichment"]["seed_base"]
+        seed = PREDICTION_PROTOCOL["parameters"]["enrichment"]["seed_base"]
     if diffusion_samples is None:
-        diffusion_samples = PREDICTION_PROTOCOL["boltz"]["diffusion_samples"]
+        diffusion_samples = PREDICTION_PROTOCOL["parameters"]["boltz"]["diffusion_samples"]
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ContractError("seed_invalid", "Boltz seed must be an integer")
     if isinstance(diffusion_samples, bool) or not isinstance(diffusion_samples, int):

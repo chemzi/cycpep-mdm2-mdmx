@@ -147,7 +147,7 @@ def _design_iteration_prediction_task(
         parameters={
             "reuse_complete_evidence": True,
             "evidence_mode": "reuse_or_generate_full",
-            "predictor_protocol": PREDICTOR_PROTOCOL,
+            "predictor_protocol": dict(PREDICTOR_PROTOCOL),
         },
         candidate_limit=min(
             proposal_count, config.max_prediction_candidates_per_task
@@ -244,7 +244,7 @@ def _recommendation_action_config(
         parameters.update({
             "reuse_complete_evidence": True,
             "evidence_mode": "reuse_or_generate_full",
-            "predictor_protocol": PREDICTOR_PROTOCOL,
+            "predictor_protocol": dict(PREDICTOR_PROTOCOL),
         })
         outputs = ["prediction_handoff.json"]
     elif action == "regenerate_invalid_artifact":
