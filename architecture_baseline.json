@@ -29,12 +29,6 @@
         "lines": 184
       },
       {
-        "file": "execution/worker.py",
-        "function": "execute_task",
-        "line": 144,
-        "lines": 204
-      },
-      {
         "file": "prediction_pipeline/boltz_worker.py",
         "function": "run_boltz_prediction",
         "line": 107,
