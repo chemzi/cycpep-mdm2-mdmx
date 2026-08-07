@@ -33,6 +33,11 @@ from .contracts import (
     object_sha256,
     validate_project,
 )
+from .protocol import (
+    MIGRATE_LEGACY_HINT,
+    ProtocolError,
+    validate_execution_compatibility,
+)
 from .metrics import calculate_ipsae, load_pae, pose_convergence
 from .relax_worker import (
     POST_RELAX_PROTOCOL,
@@ -127,6 +132,7 @@ class PredictionPipeline:
         candidate_ids: list[str] | None = None,
         run_id: str | None = None,
         resume: bool = False,
+        require_protocol_compatibility: bool = True,
     ):
         self.config = config or PredictionConfig()
         self.project = project
@@ -135,6 +141,7 @@ class PredictionPipeline:
         self.artifacts_root = Path(artifacts_root).expanduser().resolve()
         self.run_root = Path(run_root).expanduser().resolve()
         self.resume = bool(resume)
+        self.require_protocol_compatibility = bool(require_protocol_compatibility)
         self.requested_ids = {
             value.strip() for value in (candidate_ids or []) if value.strip()
         }
@@ -1174,6 +1181,22 @@ class PredictionPipeline:
                 sequence=candidate.sequence,
                 required_targets=self.required_targets,
             )
+            if self.require_protocol_compatibility:
+                # Execution gate: a bundle bound to an older protocol (or a
+                # legacy bundle) must not be scored and written into formal
+                # records; every reuse must prove the exact protocol binding.
+                # Replay/audit tools pass require_protocol_compatibility=False
+                # to keep reading historical evidence read-only.
+                try:
+                    validate_execution_compatibility(
+                        json.loads(bundle_path.read_text(encoding="utf-8"))
+                    )
+                except ProtocolError as exc:
+                    raise ContractError(
+                        "bundle_protocol_mismatch",
+                        f"{bundle_path} is not executable under the current "
+                        f"prediction protocol; {MIGRATE_LEGACY_HINT}",
+                    ) from exc
         artifact_digest = bundle.digest if bundle else "missing"
         record_path = self._record_path(candidate.candidate_id)
         cached = self._cached_record(

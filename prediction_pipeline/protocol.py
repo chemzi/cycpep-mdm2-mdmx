@@ -155,10 +155,12 @@ def _int_list(value: object, label: str) -> list[int]:
     return value
 
 
-# Single source of truth for the predictor protocol referenced by Planner tasks
-# and validated by Execution contracts.  ``PREDICTOR_PROTOCOLS`` is derived
-# from the registry, so adding a protocol file extends the closed world
-# instead of hard-coding the set.
+# Single source of truth for the predictor protocol referenced by Planner
+# tasks and validated by Execution contracts.  The registry currently holds
+# exactly one protocol (protocols/prediction_v1.json) loaded at import time;
+# extending it to multiple protocols requires loading each protocol file and
+# recording its per-file SHA-256 -- until then the registry is a closed world
+# with one active member.
 PROTOCOL_REGISTRY: dict[str, PredictionProtocol] = {
     str(PREDICTION_PROTOCOL["protocol_name"]): PredictionProtocol.from_data(
         PREDICTION_PROTOCOL
@@ -167,6 +169,13 @@ PROTOCOL_REGISTRY: dict[str, PredictionProtocol] = {
 ACTIVE_PREDICTOR_PROTOCOL = str(PREDICTION_PROTOCOL["protocol_name"])
 PREDICTOR_PROTOCOL = ACTIVE_PREDICTOR_PROTOCOL
 PREDICTOR_PROTOCOLS = frozenset(PROTOCOL_REGISTRY)
+
+
+# Shared operator hint for legacy evidence that cannot be bound automatically.
+MIGRATE_LEGACY_HINT = (
+    "run scripts/migrate_legacy_prediction_protocol.py to bind it "
+    "explicitly, or regenerate the evidence"
+)
 
 
 def protocol_binding() -> dict:
@@ -192,9 +201,8 @@ def validate_bundle_protocol(bundle: dict) -> None:
     existing = bundle.get("protocol")
     if existing is None:
         raise ProtocolError(
-            "artifact bundle has no recorded prediction protocol; run "
-            "scripts/migrate_legacy_prediction_protocol.py to bind it "
-            "explicitly, or regenerate the evidence"
+            "artifact bundle has no recorded prediction protocol; "
+            + MIGRATE_LEGACY_HINT
         )
     if existing != protocol_binding():
         raise ProtocolError(
@@ -217,9 +225,8 @@ def validate_execution_compatibility(bundle: dict) -> None:
     existing = bundle.get("protocol")
     if existing is None:
         raise ProtocolError(
-            "artifact bundle has no recorded prediction protocol; run "
-            "scripts/migrate_legacy_prediction_protocol.py to bind it "
-            "explicitly, or regenerate the evidence"
+            "artifact bundle has no recorded prediction protocol; "
+            + MIGRATE_LEGACY_HINT
         )
     if not isinstance(existing, dict) or (
         existing.get("name") != ACTIVE_PREDICTOR_PROTOCOL

@@ -36,6 +36,7 @@ from prediction_pipeline.contracts import (  # noqa: E402
 from target_bootstrap import assert_project_approved  # noqa: E402
 from execution.supervisor import atomic_json  # noqa: E402
 from prediction_pipeline.protocol import (  # noqa: E402
+    MIGRATE_LEGACY_HINT,
     PREDICTION_PROTOCOL,
     ProtocolError,
     protocol_binding,
@@ -65,7 +66,6 @@ PROTOCOL_BINDING_FILENAME = "protocol_binding.json"
 def parse_ensemble_members(
     seeds_raw: str,
     model_numbers_raw: str | None = None,
-    legacy_model_number: int | None = None,
 ) -> list[tuple[int, int]]:
     """Return distinct ``(seed, AF2 model_number)`` ensemble members.
 
@@ -89,9 +89,9 @@ def parse_ensemble_members(
             raise ContractError(
                 "model_list_invalid", "--model-numbers must contain integers"
             ) from exc
-    elif legacy_model_number is not None:
-        models = [int(legacy_model_number)] * len(seeds)
     else:
+        # Default pairing pairs each seed with a distinct AF2 model, matching
+        # the protocol ensemble; overriding requires explicit --model-numbers.
         models = list(range(len(seeds)))
 
     if len(models) != len(seeds):
@@ -196,15 +196,13 @@ def _require_resume_protocol(output_dir: Path) -> None:
         raise ContractError(
             "resume_protocol_unrecorded",
             f"{output_dir} has no recorded prediction protocol; delete the "
-            "output and rerun, or bind legacy evidence explicitly with "
-            "scripts/migrate_legacy_prediction_protocol.py",
+            f"output and rerun, or {MIGRATE_LEGACY_HINT}",
         )
     if recorded != protocol_binding():
         raise ContractError(
             "resume_protocol_mismatch",
             f"{output_dir} was produced under a different prediction "
-            "protocol; delete the output and rerun, or bind legacy evidence "
-            "explicitly with scripts/migrate_legacy_prediction_protocol.py",
+            f"protocol; delete the output and rerun, or {MIGRATE_LEGACY_HINT}",
         )
 
 
@@ -227,15 +225,13 @@ def _require_existing_bundle_protocol(bundle_path: Path) -> None:
             raise ContractError(
                 "bundle_protocol_unrecorded",
                 f"{bundle_path} has no recorded prediction protocol; delete "
-                "the candidate output and rerun, or bind legacy evidence "
-                "explicitly with scripts/migrate_legacy_prediction_protocol.py",
+                f"the candidate output and rerun, or {MIGRATE_LEGACY_HINT}",
             ) from exc
         raise ContractError(
             "bundle_protocol_mismatch",
             f"{bundle_path} was produced under a different prediction "
-            "protocol; delete the candidate output and rerun, or bind legacy "
-            "evidence explicitly with "
-            "scripts/migrate_legacy_prediction_protocol.py",
+            f"protocol; delete the candidate output and rerun, or "
+            f"{MIGRATE_LEGACY_HINT}",
         ) from exc
 
 
@@ -379,9 +375,7 @@ def run(args) -> dict:
     ]
     if not rows:
         raise ContractError("no_candidates", "no matching Design candidates")
-    ensemble = parse_ensemble_members(
-        args.seeds, args.model_numbers, args.model_number
-    )
+    ensemble = parse_ensemble_members(args.seeds, args.model_numbers)
     _require_protocol_parameters(ensemble, args.num_recycles)
 
     candidates = [candidate_from_row(row) for row in rows]
@@ -545,11 +539,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         help="comma-separated AF2 models paired with --seeds; "
         "default from protocols/prediction_v1.json",
-    )
-    parser.add_argument(
-        "--model-number",
-        type=int,
-        help="legacy single-model option; valid only when exactly one seed is used",
     )
     parser.add_argument(
         "--num-recycles",
