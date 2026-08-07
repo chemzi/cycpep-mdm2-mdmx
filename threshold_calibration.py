@@ -356,6 +356,48 @@ def calibrate_thresholds(
     target-scoped metrics, cutoffs are stored under the existing ``targets``
     override field so ``threshold_for_target`` remains the single resolver.
     """
+    records, dataset_meta, target_ids = _normalize_calibration_inputs(
+        controls, target_ids, min_negative_controls, min_positive_controls,
+        min_positive_recall,
+    )
+    output = deepcopy(thresholds or {})
+    audit = _build_calibration_audit(
+        records, dataset_meta, protocol, protocol_hash,
+        min_positive_controls, min_negative_controls,
+        max_false_positive_rate, min_positive_recall,
+    )
+    _, invalid, positives, negatives = _label_control_records(records, audit)
+    expected_protocol_hash = audit["protocol_hash"]
+
+    for key, spec in METRIC_SPECS.items():
+        scopes = target_ids if spec["scope"] == "target" else [None]
+        if spec["scope"] == "target" and not scopes:
+            audit["metrics"][key] = {
+                "status": "missing_target_ids",
+                "reason": "target-scoped calibration requires approved target IDs",
+            }
+            audit["skipped_keys"].append(key)
+            continue
+        for scope in scopes:
+            _calibrate_metric_scope(
+                key, scope, spec, positives, negatives, output, audit,
+                target_ids, protocol, dataset_meta,
+                min_negative_controls, min_positive_controls,
+                max_false_positive_rate, min_positive_recall,
+                expected_protocol_hash,
+            )
+
+    _finalize_calibration_status(audit, records, invalid)
+    return output, audit
+
+
+def _normalize_calibration_inputs(
+    controls: Iterable[dict] | dict,
+    target_ids: Iterable[str],
+    min_negative_controls: int,
+    min_positive_controls: int,
+    min_positive_recall: float,
+) -> tuple[list, dict, list[str]]:
     records, dataset_meta = coerce_dataset(controls)
     target_ids = [str(item).strip() for item in target_ids if str(item).strip()]
     if not isinstance(min_negative_controls, int) or min_negative_controls < 1:
@@ -364,9 +406,20 @@ def calibrate_thresholds(
         raise ValueError("min_positive_controls must be a positive integer")
     if not 0 <= min_positive_recall <= 1:
         raise ValueError("min_positive_recall must be in [0, 1]")
+    return records, dataset_meta, target_ids
 
-    output = deepcopy(thresholds or {})
-    audit: dict[str, Any] = {
+
+def _build_calibration_audit(
+    records: list,
+    dataset_meta: dict,
+    protocol: Any | None,
+    protocol_hash: str | None,
+    min_positive_controls: int,
+    min_negative_controls: int,
+    max_false_positive_rate: float,
+    min_positive_recall: float,
+) -> dict[str, Any]:
+    return {
         "schema_version": CALIBRATION_SCHEMA_VERSION,
         "status": "not_configured" if not records else "pending_controls",
         "controls_total": len(records),
@@ -385,6 +438,11 @@ def calibrate_thresholds(
         "calibrated_keys": [],
         "skipped_keys": [],
     }
+
+
+def _label_control_records(
+    records: list, audit: dict
+) -> tuple[list[tuple[int, dict, str]], list[str], list, list]:
     labelled: list[tuple[int, dict, str]] = []
     invalid = []
     expected_protocol_hash = audit["protocol_hash"]
@@ -411,106 +469,117 @@ def calibrate_thresholds(
     audit["n_negative_controls"] = len(negatives)
     if invalid:
         audit["invalid_controls"] = invalid
+    return labelled, invalid, positives, negatives
 
-    for key, spec in METRIC_SPECS.items():
-        scopes = target_ids if spec["scope"] == "target" else [None]
-        if spec["scope"] == "target" and not scopes:
-            audit["metrics"][key] = {
-                "status": "missing_target_ids",
-                "reason": "target-scoped calibration requires approved target IDs",
-            }
-            audit["skipped_keys"].append(key)
-            continue
-        for scope in scopes:
-            scope_key = f"{key}:{scope}" if scope else key
-            pos_values = []
-            neg_values = []
-            pos_ids = []
-            neg_ids = []
-            for index, record, label in positives:
-                value = _control_value(record, spec["metric"], scope)
-                if value is not None:
-                    pos_values.append(value)
-                    pos_ids.append(_control_id(record, index))
-            for index, record, label in negatives:
-                value = _control_value(record, spec["metric"], scope)
-                if value is not None:
-                    neg_values.append(value)
-                    neg_ids.append(_control_id(record, index))
-            metric_audit: dict[str, Any] = {
-                "metric": key,
-                "target_id": scope,
-                "direction": spec["direction"],
-                "n_positive": len(pos_values),
-                "n_negative": len(neg_values),
-                "positive_control_ids": pos_ids,
-                "negative_control_ids": neg_ids,
-                "protocol_hash": audit["protocol_hash"],
-            }
-            if len(neg_values) < min_negative_controls or len(pos_values) < min_positive_controls:
-                metric_audit.update({
-                    "status": "insufficient_controls",
-                    "reason": (
-                        f"need >= {min_negative_controls} negatives and "
-                        f">= {min_positive_controls} positives"
-                    ),
-                })
-                audit["metrics"][scope_key] = metric_audit
-                audit["skipped_keys"].append(scope_key)
-                continue
-            calibrated = calibrate_threshold(
-                metric=key,
-                target_id=scope or "global",
-                negatives=neg_values,
-                positives=pos_values,
-                direction=spec["direction"],
-                max_false_positive_rate=max_false_positive_rate,
-                tool=(protocol or dataset_meta.get("protocol") or {}).get("tool")
-                if isinstance(protocol or dataset_meta.get("protocol"), dict)
-                else None,
-                protocol=protocol or dataset_meta.get("protocol"),
-            )
-            if expected_protocol_hash:
-                calibrated["protocol_hash"] = expected_protocol_hash
-            metric_audit.update({
-                "status": "calibrated",
-                "value": calibrated["value"],
-                "operator": calibrated["operator"],
-                "observed_false_positive_rate": calibrated["observed_false_positive_rate"],
-                "positive_recall": calibrated["positive_recall"],
-                "false_positive_rate_ci95": calibrated["false_positive_rate_ci95"],
-                "positive_recall_ci95": calibrated["positive_recall_ci95"],
-            })
-            if (calibrated.get("positive_recall") or 0.0) < min_positive_recall:
-                metric_audit.update({
-                    "status": "not_separated",
-                    "reason": (
-                        f"positive recall {calibrated.get('positive_recall')!r} "
-                        f"is below required {min_positive_recall}"
-                    ),
-                })
-                audit["metrics"][scope_key] = metric_audit
-                audit["skipped_keys"].append(scope_key)
-                continue
-            if scope:
-                base = deepcopy(output.get(key) or {})
-                overrides = base.setdefault("targets", {})
-                previous = overrides.get(scope) if isinstance(overrides, dict) else {}
-                overrides[scope] = _merge_calibrated_entry(
-                    previous if isinstance(previous, dict) else {},
-                    calibrated,
-                    targets=[scope],
-                )
-                base["targets"] = overrides
-                base.setdefault("applicable_targets", list(target_ids))
-                output[key] = base
-            else:
-                output[key] = _merge_calibrated_entry(
-                    output.get(key) or {}, calibrated, targets=target_ids or None
-                )
-            audit["metrics"][scope_key] = metric_audit
-            audit["calibrated_keys"].append(scope_key)
 
+def _calibrate_metric_scope(
+    key: str,
+    scope: str | None,
+    spec: dict,
+    positives: list,
+    negatives: list,
+    output: dict,
+    audit: dict,
+    target_ids: list[str],
+    protocol: Any | None,
+    dataset_meta: dict,
+    min_negative_controls: int,
+    min_positive_controls: int,
+    max_false_positive_rate: float,
+    min_positive_recall: float,
+    expected_protocol_hash: str | None,
+) -> None:
+    scope_key = f"{key}:{scope}" if scope else key
+    pos_values = []
+    neg_values = []
+    pos_ids = []
+    neg_ids = []
+    for index, record, label in positives:
+        value = _control_value(record, spec["metric"], scope)
+        if value is not None:
+            pos_values.append(value)
+            pos_ids.append(_control_id(record, index))
+    for index, record, label in negatives:
+        value = _control_value(record, spec["metric"], scope)
+        if value is not None:
+            neg_values.append(value)
+            neg_ids.append(_control_id(record, index))
+    metric_audit: dict[str, Any] = {
+        "metric": key,
+        "target_id": scope,
+        "direction": spec["direction"],
+        "n_positive": len(pos_values),
+        "n_negative": len(neg_values),
+        "positive_control_ids": pos_ids,
+        "negative_control_ids": neg_ids,
+        "protocol_hash": audit["protocol_hash"],
+    }
+    if len(neg_values) < min_negative_controls or len(pos_values) < min_positive_controls:
+        metric_audit.update({
+            "status": "insufficient_controls",
+            "reason": (
+                f"need >= {min_negative_controls} negatives and "
+                f">= {min_positive_controls} positives"
+            ),
+        })
+        audit["metrics"][scope_key] = metric_audit
+        audit["skipped_keys"].append(scope_key)
+        return
+    calibrated = calibrate_threshold(
+        metric=key,
+        target_id=scope or "global",
+        negatives=neg_values,
+        positives=pos_values,
+        direction=spec["direction"],
+        max_false_positive_rate=max_false_positive_rate,
+        tool=(protocol or dataset_meta.get("protocol") or {}).get("tool")
+        if isinstance(protocol or dataset_meta.get("protocol"), dict)
+        else None,
+        protocol=protocol or dataset_meta.get("protocol"),
+    )
+    if expected_protocol_hash:
+        calibrated["protocol_hash"] = expected_protocol_hash
+    metric_audit.update({
+        "status": "calibrated",
+        "value": calibrated["value"],
+        "operator": calibrated["operator"],
+        "observed_false_positive_rate": calibrated["observed_false_positive_rate"],
+        "positive_recall": calibrated["positive_recall"],
+        "false_positive_rate_ci95": calibrated["false_positive_rate_ci95"],
+        "positive_recall_ci95": calibrated["positive_recall_ci95"],
+    })
+    if (calibrated.get("positive_recall") or 0.0) < min_positive_recall:
+        metric_audit.update({
+            "status": "not_separated",
+            "reason": (
+                f"positive recall {calibrated.get('positive_recall')!r} "
+                f"is below required {min_positive_recall}"
+            ),
+        })
+        audit["metrics"][scope_key] = metric_audit
+        audit["skipped_keys"].append(scope_key)
+        return
+    if scope:
+        base = deepcopy(output.get(key) or {})
+        overrides = base.setdefault("targets", {})
+        previous = overrides.get(scope) if isinstance(overrides, dict) else {}
+        overrides[scope] = _merge_calibrated_entry(
+            previous if isinstance(previous, dict) else {},
+            calibrated,
+            targets=[scope],
+        )
+        base["targets"] = overrides
+        base.setdefault("applicable_targets", list(target_ids))
+        output[key] = base
+    else:
+        output[key] = _merge_calibrated_entry(
+            output.get(key) or {}, calibrated, targets=target_ids or None
+        )
+    audit["metrics"][scope_key] = metric_audit
+    audit["calibrated_keys"].append(scope_key)
+
+
+def _finalize_calibration_status(audit: dict, records: list, invalid: list) -> None:
     if audit["calibrated_keys"]:
         audit["status"] = (
             "calibrated"
@@ -529,4 +598,4 @@ def calibrate_thresholds(
             audit["status"] = "invalid_controls"
         else:
             audit["status"] = "insufficient_controls"
-    return output, audit
+

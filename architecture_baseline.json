@@ -75,12 +75,6 @@
         "function": "run",
         "line": 360,
         "lines": 161
-      },
-      {
-        "file": "threshold_calibration.py",
-        "function": "calibrate_thresholds",
-        "line": 340,
-        "lines": 193
       }
     ],
     "action_handlers": [],
