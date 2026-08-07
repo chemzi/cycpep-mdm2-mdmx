@@ -52,6 +52,7 @@ class TransactionContext:
         attempt_id: str,
         action: str,
         transaction_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> "TransactionContext":
         if not action:
             raise ValueError("transaction action is required")
@@ -63,6 +64,7 @@ class TransactionContext:
             attempt_id=attempt_id,
             action=action,
             created_at=datetime.now(timezone.utc).isoformat(),
+            metadata=dict(metadata or {}),
         )
 
     def transition(self, next_status: TransactionStatus) -> None:

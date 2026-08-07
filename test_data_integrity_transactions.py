@@ -187,11 +187,13 @@ class DataIntegrityTransactionTests(unittest.TestCase):
 
         first = self._transaction("1")
         worker.run(first, handler, validator=_validate_action_result)
+        self.assertEqual(store.get_state(store.project_id)["candidate_count"], 1)
         worker.rollback(first)
         self.assertEqual(first.status, TransactionStatus.ROLLED_BACK)
         self.assertEqual(store.list(), [])
         self.assertEqual(store.query(task_id="T001"), [])
         self.assertFalse(any((self.root / "formal_artifacts").rglob("shared.pdb")))
+        self.assertEqual(store.get_state(store.project_id)["candidate_count"], 0)
 
         retry = self._transaction("2")
         worker.run(retry, handler, validator=_validate_action_result)
@@ -274,13 +276,34 @@ class DataIntegrityTransactionTests(unittest.TestCase):
 
     def test_recovery_reports_unresolved_compensation_conflict(self):
         store = SQLiteStore(self.root / "recovery-conflict.db", project_id="p1")
+        store.replace_state("p1", {"candidate_count": 0})
         worker = ExecutionWorker(store, self.root / "staging", self.root / "artifacts")
         context = self._transaction()
+        source = self.root / "conflict-artifact.txt"
+        source.write_text("keep-me", encoding="utf-8")
+
+        def handler(_context, staging):
+            artifact = staging.stage_artifact(
+                source, artifact_id="conflict-artifact", artifact_type="text"
+            )
+            return ExecutionActionResult(
+                candidate_updates=({"candidate_id": "C0001", "sequence": "AAAA"},),
+                state_updates={"shared": "from-a"},
+                artifacts=(artifact,),
+                evidence_events=({
+                    "agent": "critic",
+                    "event_type": "critic_review",
+                    "phase": "critic",
+                    "summary": "must survive conflict",
+                },),
+            )
+
         worker.run(
             context,
-            lambda *_: ExecutionActionResult(state_updates={"shared": "from-a"}),
+            handler,
             validator=_validate_action_result,
         )
+        artifact = store.get_artifact("conflict-artifact")
         store.update_state("p1", {"shared": "from-b"})
         marker = (
             self.root / "staging" / context.transaction_id / "metadata" / "commit.json"
@@ -293,9 +316,89 @@ class DataIntegrityTransactionTests(unittest.TestCase):
         self.assertEqual(recovery.recover_pending(self.root / "staging"), [])
         self.assertEqual(recovery.unresolved_transactions, [context.transaction_id])
         self.assertEqual(store.get_state("p1")["shared"], "from-b")
+        self.assertIsNotNone(store.get("C0001"))
+        self.assertTrue(store.query(task_id="T001"))
+        self.assertIsNotNone(store.get_artifact("conflict-artifact"))
+        self.assertTrue(Path(artifact["path"]).is_file())
         self.assertEqual(
             json.loads(marker.read_text(encoding="utf-8"))["status"],
             "COMPENSATION_UNRESOLVED",
+        )
+
+    def test_recovery_compensates_db_commit_before_orchestrator_closure(self):
+        store = SQLiteStore(self.root / "crash-window.db", project_id="p1")
+        store.replace_state("p1", {"candidate_count": 0, "phase": "iterate"})
+        worker = ExecutionWorker(store, self.root / "staging", self.root / "artifacts")
+        context = self._transaction()
+        source = self.root / "crash-artifact.txt"
+        source.write_text("committed", encoding="utf-8")
+
+        def handler(_context, staging):
+            artifact = staging.stage_artifact(
+                source, artifact_id="crash-artifact", artifact_type="text"
+            )
+            return ExecutionActionResult(
+                candidate_updates=({"candidate_id": "C0001", "sequence": "AAAA"},),
+                state_updates={"phase": "critic"},
+                artifacts=(artifact,),
+            )
+
+        worker.run(context, handler, validator=_validate_action_result)
+        committed_file = Path(store.get_artifact("crash-artifact")["path"])
+        marker = (
+            self.root / "staging" / context.transaction_id / "metadata" / "commit.json"
+        )
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        payload["status"] = "PREPARED"
+        marker.write_text(json.dumps(payload), encoding="utf-8")
+
+        restarted = ExecutionWorker(
+            store, self.root / "staging", self.root / "artifacts"
+        )
+        recovered = restarted.commit_manager.recover_pending(
+            self.root / "staging", orchestrator_closed=lambda _: False
+        )
+        self.assertEqual(recovered, [context.transaction_id])
+        self.assertEqual(store.get_transaction_status(context.transaction_id), "ROLLED_BACK")
+        self.assertEqual(store.list(), [])
+        self.assertEqual(store.query(task_id="T001"), [])
+        self.assertIsNone(store.get_artifact("crash-artifact"))
+        self.assertFalse(committed_file.exists())
+        self.assertEqual(
+            store.get_state("p1"), {"candidate_count": 0, "phase": "iterate"}
+        )
+        recovered_marker = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual(
+            recovered_marker["recovery_state"],
+            "DB_COMMITTED_AWAITING_ORCHESTRATOR",
+        )
+        self.assertEqual(recovered_marker["status"], "ROLLED_BACK")
+
+    def test_recovery_keeps_commit_when_matching_orchestrator_attempt_closed(self):
+        store = SQLiteStore(self.root / "closed-window.db", project_id="p1")
+        worker = ExecutionWorker(store, self.root / "staging", self.root / "artifacts")
+        context = self._transaction()
+        worker.run(
+            context,
+            lambda *_: ExecutionActionResult(state_updates={"formal": True}),
+            validator=_validate_action_result,
+        )
+        marker = (
+            self.root / "staging" / context.transaction_id / "metadata" / "commit.json"
+        )
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        payload["status"] = "PREPARED"
+        marker.write_text(json.dumps(payload), encoding="utf-8")
+
+        recovery = RecoveryManager(store)
+        recovered = recovery.recover_pending(
+            self.root / "staging", orchestrator_closed=lambda _: True
+        )
+        self.assertEqual(recovered, [context.transaction_id])
+        self.assertTrue(store.get_state("p1")["formal"])
+        self.assertEqual(
+            json.loads(marker.read_text(encoding="utf-8"))["status"],
+            "ORCHESTRATOR_CLOSED",
         )
 
     def test_database_commit_failure_rolls_back_artifacts_and_evidence(self):
@@ -343,8 +446,14 @@ class DataIntegrityTransactionTests(unittest.TestCase):
                 "temporary": str(temporary),
             }],
         }), encoding="utf-8")
-        recovered = RecoveryManager(store).recover_pending(self.root / "staging")
+        malformed = self.root / "staging" / "tx-malformed" / "metadata" / "commit.json"
+        malformed.parent.mkdir(parents=True)
+        malformed.write_text('{"transaction_id":', encoding="utf-8")
+        recovery = RecoveryManager(store)
+        recovered = recovery.recover_pending(self.root / "staging")
         self.assertEqual(recovered, ["tx-recovery"])
+        self.assertEqual(len(recovery.marker_errors), 1)
+        self.assertEqual(recovery.marker_errors[0]["code"], "JSONDecodeError")
         self.assertFalse(destination.exists())
         self.assertFalse(temporary.exists())
 

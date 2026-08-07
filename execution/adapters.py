@@ -118,6 +118,12 @@ def make_iterate_design_adapter(
                         artifact_id=f"{candidate_id}-{artifact_type}",
                         artifact_type=artifact_type,
                     ))
+        for role, path in result.outputs:
+            staged.append(staging.stage_artifact(
+                path,
+                artifact_id=f"{context.transaction_id}-{role}",
+                artifact_type=role,
+            ))
         return ExecutionActionResult(
             candidate_updates=result.candidate_updates,
             state_updates=result.state_updates,

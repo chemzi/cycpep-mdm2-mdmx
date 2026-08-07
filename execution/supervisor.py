@@ -20,17 +20,40 @@ def _utcnow() -> str:
 
 
 def atomic_json(path: Path, value: dict) -> None:
+    _atomic_json(path, value, durable=False)
+
+
+def durable_atomic_json(path: Path, value: dict) -> None:
+    """Atomically persist recovery metadata before dependent side effects."""
+    _atomic_json(path, value, durable=True)
+
+
+def _atomic_json(path: Path, value: dict, *, durable: bool) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        temporary.write_text(
-            json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2, sort_keys=True)
+            stream.flush()
+            if durable:
+                os.fsync(stream.fileno())
         os.replace(temporary, path)
+        if durable:
+            _fsync_directory(path.parent)
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _terminate_group(process: subprocess.Popen, grace_seconds: float = 10.0) -> None:

@@ -11,8 +11,9 @@ import argparse
 import json
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -85,7 +86,7 @@ class ExecutionWorker:
                 )
             context.transition(TransactionStatus.VALIDATING)
             validator(result)
-            self.commit_manager.commit(
+            commit_result = self.commit_manager.commit(
                 context,
                 candidate_updates=result.candidate_updates,
                 state_updates=result.state_updates,
@@ -94,7 +95,14 @@ class ExecutionWorker:
                 evidence_events=result.evidence_events,
                 staging_path=staging.path,
             )
-            return result
+            committed_by_role = {
+                str(item.get("artifact_type")): Path(str(item["path"]))
+                for item in commit_result.artifacts
+            }
+            return replace(result, outputs=tuple(
+                (role, committed_by_role.get(role, path))
+                for role, path in result.outputs
+            ))
         except BaseException as exc:
             if context.status == TransactionStatus.ROLLED_BACK:
                 context.transition(TransactionStatus.FAILED)
@@ -157,6 +165,24 @@ def _read_packet(path: Path, expected_sha256: str) -> dict:
     return validate_dispatch_packet(value)
 
 
+def _orchestrator_closed_for_transaction(context: Mapping[str, object]) -> bool:
+    metadata = context.get("metadata") or {}
+    run_path = metadata.get("orchestrator_run_path") if isinstance(metadata, dict) else None
+    if not run_path:
+        return False
+    try:
+        snapshot = status(run_path=run_path)["run"]
+        task_state = snapshot["tasks"][str(context["task_id"])]
+        attempt = int(task_state.get("attempts") or 0)
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, OrchestratorContractError):
+        return False
+    return (
+        task_state.get("status") == TaskStatus.SUCCEEDED.value
+        and context.get("attempt_id")
+        == TraceContext.attempt_id_for(str(context["task_id"]), attempt)
+    )
+
+
 def execute_task(
     *,
     run_path: str | Path,
@@ -212,6 +238,7 @@ def execute_task(
             task_id=task_id,
             attempt_id=trace_context.attempt_id,
             action=action,
+            metadata={"orchestrator_run_path": str(Path(run_path).resolve())},
         )
         transaction_worker = ExecutionWorker(
             get_storage_backend(),
@@ -219,7 +246,8 @@ def execute_task(
             config.execution_root / "artifacts",
         )
         transaction_worker.commit_manager.recover_pending(
-            config.execution_root / ".staging"
+            config.execution_root / ".staging",
+            orchestrator_closed=_orchestrator_closed_for_transaction,
         )
         atomic_json(task_dir / "dispatch_snapshot.json", packet)
         atomic_json(task_dir / "execution_started.json", {

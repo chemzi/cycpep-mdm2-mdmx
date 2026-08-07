@@ -57,6 +57,9 @@ class TransactionStore(ABC):
     def get_artifact(self, artifact_id: str) -> dict[str, Any] | None: ...
 
     @abstractmethod
+    def get_transaction_status(self, transaction_id: str) -> str | None: ...
+
+    @abstractmethod
     def commit_transaction(
         self,
         *,

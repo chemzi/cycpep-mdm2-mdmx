@@ -168,6 +168,8 @@ class TransactionalHandlerTests(unittest.TestCase):
                 artifact = store.get_artifact(result.artifacts[0].artifact_id)
                 self.assertIsNotNone(artifact)
                 self.assertTrue(Path(artifact["path"]).is_file())
+                self.assertEqual(result.outputs[0][1], Path(artifact["path"]))
+                self.assertIn(str(root / "artifacts"), str(result.outputs[0][1]))
                 events = store.query(task_id="T001")
                 expected = "critic_review" if action.startswith("review") else "threshold_calibration"
                 self.assertEqual(

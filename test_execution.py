@@ -22,7 +22,7 @@ from execution.contracts import (
 )
 from execution.handlers import _artifact_bundle_complete
 from execution.supervisor import run_process
-from execution.worker import execute_task
+from execution.worker import _orchestrator_closed_for_transaction, execute_task
 from execution.results import ExecutionActionResult
 from prediction_pipeline.contracts import object_sha256
 from storage import SQLiteStore
@@ -224,6 +224,7 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "succeeded")
         self.assertEqual(data_layer.State.load()["thresholds"], before)
         proposal = json.loads(Path(receipt["outputs"][0]["path"]).read_text())
+        self.assertIn(str(self.root / "execution" / "artifacts"), receipt["outputs"][0]["path"])
         self.assertFalse(proposal["applied_to_state"])
         self.assertEqual(proposal["status"], "pending_controls")
 
@@ -363,6 +364,25 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(failure["compensation_error"]["message"], "rollback failed")
         fail_mock.assert_called_once()
         self.assertEqual(evidence_mock.call_args_list[-1].args[1], "execution_task_failed")
+
+    def test_recovery_requires_matching_succeeded_orchestrator_attempt(self):
+        context = {
+            "task_id": "T001",
+            "attempt_id": "T001-A01",
+            "metadata": {"orchestrator_run_path": str(self.root / "run.json")},
+        }
+        snapshot = {
+            "run": {
+                "tasks": {
+                    "T001": {"status": "succeeded", "attempts": 1}
+                }
+            }
+        }
+        with patch("execution.worker.status", return_value=snapshot):
+            self.assertTrue(_orchestrator_closed_for_transaction(context))
+        snapshot["run"]["tasks"]["T001"]["attempts"] = 2
+        with patch("execution.worker.status", return_value=snapshot):
+            self.assertFalse(_orchestrator_closed_for_transaction(context))
 
 
 class ArtifactBundleCompletenessTests(unittest.TestCase):

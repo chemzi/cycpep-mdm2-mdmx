@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from copy import deepcopy
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -273,7 +274,7 @@ class SQLiteStore(Store):
 
     def _advance_candidate_count(
         self, connection: sqlite3.Connection, candidate_ids: Iterable[str]
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         numbers = [
             int(value[1:])
             for value in map(str, candidate_ids)
@@ -281,10 +282,21 @@ class SQLiteStore(Store):
         ]
         state = self._state_in(connection, self.project_id)
         if numbers and state:
-            state["candidate_count"] = max(
-                int(state.get("candidate_count") or 0), max(numbers)
-            )
+            before_exists = "candidate_count" in state
+            before = state.get("candidate_count")
+            after = max(int(before or 0), max(numbers))
+            if after == before:
+                return []
+            state["candidate_count"] = after
             self._write_state(connection, self.project_id, state)
+            return [{
+                "kind": "candidate_count_max",
+                "key": "candidate_count",
+                "before_exists": before_exists,
+                "before": before,
+                "after": after,
+            }]
+        return []
 
     def update_candidate(self, candidate_id: str, patches: Mapping[str, Any]) -> dict[str, Any]:
         with self._write() as connection:
@@ -499,14 +511,13 @@ class SQLiteStore(Store):
                 self._put_candidate(connection, _mapping(item), "raise_duplicate")
                 for item in candidate_updates
             ]
-            self._advance_candidate_count(
+            state_effects = self._advance_candidate_count(
                 connection, [item["candidate_id"] for item in candidates]
             )
-            state_effects: list[dict[str, Any]] = []
             if state_updates or state_appends:
                 state = self._state_in(connection, self.project_id)
-                state_effects = self._apply_state_effects(
-                    state, state_updates, state_appends
+                state_effects.extend(
+                    self._apply_state_effects(state, state_updates, state_appends)
                 )
                 self._write_state(connection, self.project_id, state)
             for artifact in artifacts:
@@ -629,6 +640,21 @@ class SQLiteStore(Store):
                 ) and not (not effect.get("before_exists") and current is _MISSING):
                     conflicts.append({"kind": "set", "key": key})
                 continue
+            if effect["kind"] == "candidate_count_max":
+                current = state.get(key, _MISSING)
+                if current == effect.get("after"):
+                    if effect.get("before_exists"):
+                        state[key] = effect.get("before")
+                    else:
+                        state.pop(key, None)
+                elif isinstance(current, int) and current > int(effect.get("after") or 0):
+                    pass
+                elif not (
+                    (effect.get("before_exists") and current == effect.get("before"))
+                    or (not effect.get("before_exists") and current is _MISSING)
+                ):
+                    conflicts.append({"kind": "candidate_count_max", "key": key})
+                continue
             if effect["kind"] == "append_if_absent" and effect.get("applied"):
                 path = list(effect["identity_path"])
                 identity = effect.get("identity_value")
@@ -652,44 +678,72 @@ class SQLiteStore(Store):
             if row["status"] not in {"COMMITTED", "COMPENSATION_CONFLICT"}:
                 return [{"kind": "transaction_status", "status": row["status"]}]
             payload = json.loads(row["payload_json"])
-            event_ids = list(payload.get("event_ids") or [])
-            candidate_ids = list(payload.get("candidate_ids") or [])
-            artifact_ids = list(payload.get("artifact_ids") or [])
-            if event_ids:
-                connection.executemany(
-                    "DELETE FROM evidence_events WHERE event_id = ?",
-                    [(value,) for value in event_ids],
-                )
-            if candidate_ids:
-                connection.executemany(
-                    "DELETE FROM candidates WHERE project_id = ? AND candidate_id = ?",
-                    [(self.project_id, value) for value in candidate_ids],
-                )
-            if artifact_ids:
-                connection.executemany(
-                    "DELETE FROM artifacts WHERE artifact_id = ?",
-                    [(value,) for value in artifact_ids],
-                )
             state_effects = payload.get("state_effects")
             if state_effects is None and payload.get("previous_state") is not None:
                 conflicts = [{"kind": "legacy_state_snapshot"}]
+                compensated_state = None
             else:
                 state = self._state_in(connection, self.project_id)
-                conflicts = self._compensate_state_effects(state, state_effects or [])
-                if state_effects:
-                    self._write_state(connection, self.project_id, state)
+                compensated_state = deepcopy(state)
+                conflicts = self._compensate_state_effects(
+                    compensated_state, state_effects or []
+                )
             payload["compensation_conflicts"] = conflicts
-            connection.execute(
-                "UPDATE execution_transactions SET status = ?, updated_at = ?, payload_json = ? "
-                "WHERE transaction_id = ?",
-                (
-                    "COMPENSATION_CONFLICT" if conflicts else "ROLLED_BACK",
-                    _now(),
-                    _json(payload),
-                    transaction_id,
-                ),
+            if conflicts:
+                self._set_transaction_status(
+                    connection, transaction_id, "COMPENSATION_CONFLICT", payload
+                )
+                return conflicts
+            self._delete_transaction_effects(connection, payload)
+            if state_effects and compensated_state is not None:
+                self._write_state(connection, self.project_id, compensated_state)
+            self._set_transaction_status(
+                connection, transaction_id, "ROLLED_BACK", payload
             )
         return conflicts
+
+    def get_transaction_status(self, transaction_id: str) -> str | None:
+        with self._read() as connection:
+            row = connection.execute(
+                "SELECT status FROM execution_transactions WHERE transaction_id = ?",
+                (transaction_id,),
+            ).fetchone()
+        return str(row["status"]) if row else None
+
+    def _delete_transaction_effects(
+        self, connection: sqlite3.Connection, payload: Mapping[str, Any]
+    ) -> None:
+        event_ids = list(payload.get("event_ids") or [])
+        candidate_ids = list(payload.get("candidate_ids") or [])
+        artifact_ids = list(payload.get("artifact_ids") or [])
+        if event_ids:
+            connection.executemany(
+                "DELETE FROM evidence_events WHERE event_id = ?",
+                [(value,) for value in event_ids],
+            )
+        if candidate_ids:
+            connection.executemany(
+                "DELETE FROM candidates WHERE project_id = ? AND candidate_id = ?",
+                [(self.project_id, value) for value in candidate_ids],
+            )
+        if artifact_ids:
+            connection.executemany(
+                "DELETE FROM artifacts WHERE artifact_id = ?",
+                [(value,) for value in artifact_ids],
+            )
+
+    @staticmethod
+    def _set_transaction_status(
+        connection: sqlite3.Connection,
+        transaction_id: str,
+        status: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        connection.execute(
+            "UPDATE execution_transactions SET status = ?, updated_at = ?, payload_json = ? "
+            "WHERE transaction_id = ?",
+            (status, _now(), _json(payload), transaction_id),
+        )
 
     def record_task_failure(
         self, *, context: Mapping[str, Any], error: Mapping[str, Any]
