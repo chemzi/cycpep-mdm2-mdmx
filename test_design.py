@@ -960,11 +960,15 @@ check(
     'DESIGN_PROTOCOL is loaded from protocols/design_v1.json',
 )
 check(len(DESIGN_PROTOCOL_SHA256) == 64, 'protocol sha256 is a hex digest')
-from core.protocol import canonical_parameters_sha256
+from core.protocol import protocol_identity_sha256
 check(
     DESIGN_PROTOCOL_SHA256
-    == canonical_parameters_sha256(DESIGN_PROTOCOL['parameters']),
-    'protocol sha256 is the canonical SHA-256 of the parameters only',
+    == protocol_identity_sha256(
+        DESIGN_PROTOCOL['name'],
+        DESIGN_PROTOCOL['version'],
+        DESIGN_PROTOCOL['parameters'],
+    ),
+    'protocol sha256 is the identity SHA-256 of name+version+parameters',
 )
 
 # Manifest binds the protocol so artifacts can be traced to a concrete protocol.

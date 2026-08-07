@@ -24,10 +24,14 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.protocol import ProtocolError, load_protocol  # noqa: E402
+from core.protocol import (  # noqa: E402
+    ProtocolError,
+    canonical_parameters_sha256,
+    load_protocol,
+)
 
 PREDICTION_PROTOCOL_PATH = ROOT / "protocols" / "prediction_v1.json"
-PREDICTION_PROTOCOL, PREDICTION_PROTOCOL_SHA256 = load_protocol(
+PREDICTION_PROTOCOL, PREDICTION_PROTOCOL_IDENTITY_SHA256 = load_protocol(
     PREDICTION_PROTOCOL_PATH,
     required_sections={
         "af2_prodigy": dict,
@@ -35,6 +39,14 @@ PREDICTION_PROTOCOL, PREDICTION_PROTOCOL_SHA256 = load_protocol(
         "boltz": dict,
     },
 )
+# Parameters-only digest (scientific semantics); the identity digest above
+# additionally binds name/version, so two protocols with identical parameters
+# but different name/version are still distinct identities.
+PREDICTION_PROTOCOL_PARAMETERS_SHA256 = canonical_parameters_sha256(
+    PREDICTION_PROTOCOL["parameters"]
+)
+# Backward-compatible name: bundle bindings use the full identity digest.
+PREDICTION_PROTOCOL_SHA256 = PREDICTION_PROTOCOL_IDENTITY_SHA256
 
 AF2_MODEL_NUMBER_RANGE = range(0, 5)
 
@@ -208,7 +220,7 @@ def protocol_binding() -> dict:
     return {
         "name": ACTIVE_PREDICTOR_PROTOCOL,
         "version": PREDICTION_PROTOCOL["version"],
-        "sha256": PREDICTION_PROTOCOL_SHA256,
+        "sha256": PREDICTION_PROTOCOL_IDENTITY_SHA256,
     }
 
 

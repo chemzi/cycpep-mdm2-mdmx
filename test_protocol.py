@@ -9,12 +9,14 @@ from core.protocol import (
     ProtocolError,
     canonical_parameters_sha256,
     load_protocol,
+    protocol_identity_sha256,
 )
 from prediction_pipeline.adapters import load_artifact_bundle
 from prediction_pipeline.contracts import ContractError
 from prediction_pipeline.protocol import (
     ACTIVE_PREDICTOR_PROTOCOL,
     PREDICTION_PROTOCOL,
+    PREDICTION_PROTOCOL_PARAMETERS_SHA256,
     PREDICTION_PROTOCOL_SHA256,
     PREDICTOR_PROTOCOL,
     PROTOCOL_REGISTRY,
@@ -143,6 +145,57 @@ class ProtocolLoaderTests(unittest.TestCase):
             canonical_parameters_sha256(params_b),
         )
 
+    def test_identity_hash_binds_name_and_version(self):
+        # Two protocols with identical parameters but different name/version
+        # must produce different identity digests.
+        base = _valid_envelope()
+        renamed = _valid_envelope(name="prediction2")
+        reversioned = _valid_envelope(version="2.0")
+        sha_base = load_protocol(self._write(json.dumps(base)))[1]
+        sha_renamed = load_protocol(self._write(json.dumps(renamed)))[1]
+        sha_reversioned = load_protocol(self._write(json.dumps(reversioned)))[1]
+        self.assertNotEqual(sha_base, sha_renamed)
+        self.assertNotEqual(sha_base, sha_reversioned)
+
+    def test_identity_hash_differs_from_parameters_hash(self):
+        data, identity_sha = load_protocol(
+            self._write(json.dumps(_valid_envelope()))
+        )
+        params_sha = canonical_parameters_sha256(data["parameters"])
+        self.assertEqual(len(identity_sha), 64)
+        self.assertEqual(len(params_sha), 64)
+        self.assertNotEqual(identity_sha, params_sha)
+
+    def test_identity_hash_function_matches_loader(self):
+        data, identity_sha = load_protocol(
+            self._write(json.dumps(_valid_envelope()))
+        )
+        self.assertEqual(
+            identity_sha,
+            protocol_identity_sha256(
+                data["name"], data["version"], data["parameters"]
+            ),
+        )
+
+    def test_file_declared_required_sections_enforced(self):
+        data = _valid_envelope()
+        data["metadata"]["required_sections"] = ["af2_prodigy", "ligandmpnn"]
+        with self.assertRaises(ProtocolError):
+            load_protocol(self._write(json.dumps(data)))
+
+    def test_file_declared_required_sections_bad_type_rejected(self):
+        data = _valid_envelope()
+        data["metadata"]["required_sections"] = "af2_prodigy"
+        with self.assertRaises(ProtocolError):
+            load_protocol(self._write(json.dumps(data)))
+
+    def test_file_declared_required_sections_pass(self):
+        data = _valid_envelope()
+        data["metadata"]["required_sections"] = ["af2_prodigy"]
+        data["parameters"]["ligandmpnn"] = {"n_seq_per_backbone": 8}
+        _, sha = load_protocol(self._write(json.dumps(data)))
+        self.assertEqual(len(sha), 64)
+
 
 class PredictionBindingTests(unittest.TestCase):
     def test_binding_matches_protocol(self):
@@ -152,6 +205,19 @@ class PredictionBindingTests(unittest.TestCase):
         self.assertEqual(binding["version"], PREDICTION_PROTOCOL["version"])
         self.assertEqual(binding["sha256"], PREDICTION_PROTOCOL_SHA256)
         self.assertEqual(binding, PREDICTOR_PROTOCOL)
+
+    def test_identity_and_parameters_hashes_separated(self):
+        from prediction_pipeline.protocol import (
+            PREDICTION_PROTOCOL_IDENTITY_SHA256,
+            PREDICTION_PROTOCOL_PARAMETERS_SHA256,
+        )
+        self.assertNotEqual(
+            PREDICTION_PROTOCOL_IDENTITY_SHA256,
+            PREDICTION_PROTOCOL_PARAMETERS_SHA256,
+        )
+        self.assertEqual(
+            PREDICTION_PROTOCOL_SHA256, PREDICTION_PROTOCOL_IDENTITY_SHA256
+        )
 
     def test_validate_rejects_missing_protocol(self):
         bundle: dict = {}
@@ -556,10 +622,17 @@ class ExecutionCompatibilityTests(unittest.TestCase):
             "description": "better explanation",
             "author": "team lead",
         }
+        # A metadata edit must not change the parameters SHA nor the
+        # identity SHA: recorded evidence stays valid.
         self.assertEqual(
             canonical_parameters_sha256(edited["parameters"]),
-            PREDICTION_PROTOCOL_SHA256,
+            PREDICTION_PROTOCOL_PARAMETERS_SHA256,
         )
+        self.assertEqual(
+            PREDICTION_PROTOCOL_PARAMETERS_SHA256,
+            canonical_parameters_sha256(PREDICTION_PROTOCOL["parameters"]),
+        )
+        self.assertEqual(PREDICTION_PROTOCOL_SHA256, protocol_binding()["sha256"])
         validate_execution_compatibility({"protocol": protocol_binding()})
 
 

@@ -27,6 +27,13 @@
     }
   },
   "metadata": {
-    "description": "RFdiffusion backbone generation + LigandMPNN sequence sampling + AfCycDesign fixed-sequence refold, with global cheap pre-filter and Route C template cyclization/mutation expansion."
+    "description": "RFdiffusion backbone generation + LigandMPNN sequence sampling + AfCycDesign fixed-sequence refold, with global cheap pre-filter and Route C template cyclization/mutation expansion.",
+    "required_sections": [
+      "cheap_filter",
+      "ligandmpnn",
+      "mutation",
+      "refold",
+      "rfdiff"
+    ]
   }
 }

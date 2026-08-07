@@ -26,6 +26,11 @@
     }
   },
   "metadata": {
-    "description": "ColabDesign (AF2) fixed-sequence prediction + PRODIGY binding energy + Boltz-2 cross-check + Rosetta cyclic-monomer post-relax enrichment."
+    "description": "ColabDesign (AF2) fixed-sequence prediction + PRODIGY binding energy + Boltz-2 cross-check + Rosetta cyclic-monomer post-relax enrichment.",
+    "required_sections": [
+      "af2_prodigy",
+      "enrichment",
+      "boltz"
+    ]
   }
 }

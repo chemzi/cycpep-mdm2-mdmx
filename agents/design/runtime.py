@@ -150,13 +150,9 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
         parameter is accepted for API consistency with the rest of the pipeline and
         is only consumed by LigandMPNN and Route C expansion.
     """
-    # Resolve timesteps first so an invalid env value sets the deferred
-    # warning flag before it is consumed below (no EvidenceLogger at import).
+    # Timesteps come straight from the design protocol; scientific
+    # parameters are not env-overridable so identity always matches execution.
     timesteps = config.RFDIFF_TIMESTEPS
-    if config._RFDIFF_TIMESTEPS_INVALID is not None:
-        EvidenceLogger.log("design", "invalid_RFDIFF_TIMESTEPS",
-            {"value": config._RFDIFF_TIMESTEPS_INVALID, "fallback": 50})
-        config._RFDIFF_TIMESTEPS_INVALID = None
 
     if seed is not None:
         import warnings

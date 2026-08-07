@@ -35,7 +35,7 @@ VALID_EVENT_TYPES = frozenset({
     "execution_task_started", "execution_task_completed", "execution_task_failed",
     "state_project_config_sync", "threshold_cache_sync", "candidate_index_migrated",
     "colabdesign_verify_skipped", "cheap_filter_empty", "route_c_fallback_binder",
-    "route_c_under_target", "mdm_legacy_defaults_active", "invalid_RFDIFF_TIMESTEPS",
+    "route_c_under_target", "mdm_legacy_defaults_active",
     "ligandmpnn_multiple_fasta", "ligandmpnn_fasta_no_id_marker",
     "pdb_insertion_code_detected", "benchmark_reference_candidate_registered",
     "candidate_finalized", "error", "test",

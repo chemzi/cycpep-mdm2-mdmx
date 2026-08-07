@@ -14,11 +14,13 @@ the legacy module-level names importable unchanged for backward compatibility.
 Reproducibility contract
 ------------------------
 Scientific parameters live in ``protocols/design_v1.json``
-(:data:`DESIGN_PROTOCOL`); every manifest records ``protocol_sha256`` of that
-file so results stay reproducible (Engineering Standard §8 / Roadmap PR7).
-Tool paths default to the deployment layout under ``/root/...`` and can be
-overridden with ``CYCPEP_CONDA`` / ``RFDIFF_CONDA`` / ``RFDIFF_DIR`` /
-``LIGANDMPNN_DIR`` / ``COLABDESIGN_DIR`` / ``CYCPEP_DESIGN_ROOT``.
+(:data:`DESIGN_PROTOCOL`); every manifest records the protocol identity
+SHA-256 (name + version + parameters) so results stay reproducible
+(Engineering Standard §8 / Roadmap PR7).  Scientific parameters are NOT
+overridable via environment variables -- env vars only select runtime tool
+paths (``CYCPEP_CONDA`` / ``RFDIFF_CONDA`` / ``RFDIFF_DIR`` /
+``LIGANDMPNN_DIR`` / ``COLABDESIGN_DIR`` / ``CYCPEP_DESIGN_ROOT``), never
+scientific values, so recorded protocol identity always matches execution.
 """
 
 from __future__ import annotations
@@ -37,7 +39,10 @@ if str(ROOT) not in sys.path:
 
 from project_config import load_project_config  # noqa: E402
 from core.context import ProjectContext  # noqa: E402
-from core.protocol import load_protocol  # noqa: E402
+from core.protocol import (  # noqa: E402
+    canonical_parameters_sha256,
+    load_protocol,
+)
 
 # ============================================================
 # Versioned scientific protocol (Engineering Standard §8 / Roadmap PR7)
@@ -48,7 +53,7 @@ from core.protocol import load_protocol  # noqa: E402
 # parameter change forces a protocol version bump.
 
 DESIGN_PROTOCOL_PATH = ROOT / "protocols" / "design_v1.json"
-DESIGN_PROTOCOL, DESIGN_PROTOCOL_SHA256 = load_protocol(
+DESIGN_PROTOCOL, DESIGN_PROTOCOL_IDENTITY_SHA256 = load_protocol(
     DESIGN_PROTOCOL_PATH,
     required_sections={
         "cheap_filter": dict,
@@ -58,6 +63,13 @@ DESIGN_PROTOCOL, DESIGN_PROTOCOL_SHA256 = load_protocol(
         "refold": dict,
     },
 )
+# Parameters-only digest (scientific semantics); the identity digest above
+# additionally binds name/version and is what manifests record.
+DESIGN_PROTOCOL_PARAMETERS_SHA256 = canonical_parameters_sha256(
+    DESIGN_PROTOCOL["parameters"]
+)
+# Backward-compatible name: manifests bind the full identity digest.
+DESIGN_PROTOCOL_SHA256 = DESIGN_PROTOCOL_IDENTITY_SHA256
 
 # ============================================================
 # Lazy runtime environment (Engineering Standard §7)
@@ -67,11 +79,6 @@ DESIGN_PROTOCOL, DESIGN_PROTOCOL_SHA256 = load_protocol(
 # project-config / env side effects.  Legacy module-level names are served
 # through module ``__getattr__`` (PEP 562), so ``from agents.design.config
 # import CYCPEP_PYTHON`` keeps working unchanged.
-
-# Deferred warning flag for an invalid RFDIFF_TIMESTEPS env value; consumed by
-# runtime._run_rfdiff before the first RFdiffusion invocation.
-_RFDIFF_TIMESTEPS_INVALID = None
-
 
 @functools.lru_cache(maxsize=1)
 def _get_active_project_config():
@@ -144,39 +151,33 @@ def _get_output_dir():
 
 @functools.lru_cache(maxsize=1)
 def _get_rfdiff_timesteps():
-    """RFdiffusion timesteps from env or protocol; invalid env is deferred-logged."""
-    raw = os.environ.get("RFDIFF_TIMESTEPS") or str(DESIGN_PROTOCOL["parameters"]["rfdiff"]["timesteps"])
-    try:
-        return max(1, int(raw))
-    except (ValueError, TypeError):
-        # Defer the warning until runtime._run_rfdiff consumes the value (no
-        # EvidenceLogger side effects at import time).
-        global _RFDIFF_TIMESTEPS_INVALID
-        _RFDIFF_TIMESTEPS_INVALID = os.environ.get("RFDIFF_TIMESTEPS")
-        return DESIGN_PROTOCOL["parameters"]["rfdiff"]["timesteps"]
+    """RFdiffusion timesteps -- protocol is the single source of truth.
+
+    Scientific-parameter environment overrides are intentionally NOT honored:
+    the protocol identity recorded in manifests must exactly match what is
+    executed, so a parameter change goes through ``protocols/design_v1.json``
+    (and a version bump) instead of an ambient env var.
+    """
+    return DESIGN_PROTOCOL["parameters"]["rfdiff"]["timesteps"]
 
 
 @functools.lru_cache(maxsize=1)
 def _get_ligandmpnn_model_type():
-    return os.environ.get("LIGANDMPNN_MODEL_TYPE") or DESIGN_PROTOCOL["parameters"]["ligandmpnn"]["model_type"]
+    # Protocol-managed scientific parameter (no env override, see above).
+    return DESIGN_PROTOCOL["parameters"]["ligandmpnn"]["model_type"]
 
 
 @functools.lru_cache(maxsize=1)
 def _get_ligandmpnn_checkpoint():
-    return os.environ.get(
-        "LIGANDMPNN_CHECKPOINT"
-    ) or f"{_get_ligandmpnn_dir()}/model_params/{DESIGN_PROTOCOL['parameters']['ligandmpnn']['checkpoint']}"
+    # Protocol-managed scientific parameter (no env override, see above);
+    # only the tool DIRECTORY remains env-configurable at runtime.
+    return f"{_get_ligandmpnn_dir()}/model_params/{DESIGN_PROTOCOL['parameters']['ligandmpnn']['checkpoint']}"
 
 
 @functools.lru_cache(maxsize=1)
 def _get_cheap_filter_max_keep():
-    try:
-        return max(1, int(
-            os.environ.get("CHEAP_FILTER_MAX_KEEP")
-            or os.environ.get("CHEAP_FILTER_TOP_K")
-            or str(DESIGN_PROTOCOL["parameters"]["cheap_filter"]["max_keep_per_backbone"])))
-    except (ValueError, TypeError):
-        return DESIGN_PROTOCOL["parameters"]["cheap_filter"]["max_keep_per_backbone"]
+    # Protocol-managed scientific parameter (no env override, see above).
+    return DESIGN_PROTOCOL["parameters"]["cheap_filter"]["max_keep_per_backbone"]
 
 
 _LAZY_ATTRIBUTES = {
