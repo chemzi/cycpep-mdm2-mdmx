@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-import data_layer
 from data_layer import CandidateIndex, State
 from prediction_pipeline.contracts import file_sha256, object_sha256
 from core.protocol import ProtocolError
