@@ -9,11 +9,15 @@ from core.protocol import ProtocolError, load_protocol
 from prediction_pipeline.adapters import load_artifact_bundle
 from prediction_pipeline.contracts import ContractError
 from prediction_pipeline.protocol import (
+    ACTIVE_PREDICTOR_PROTOCOL,
     PREDICTION_PROTOCOL,
     PREDICTION_PROTOCOL_SHA256,
     PREDICTOR_PROTOCOL,
+    PROTOCOL_REGISTRY,
+    PredictionProtocol,
     protocol_binding,
-    reconcile_bundle_protocol,
+    validate_bundle_protocol,
+    validate_execution_compatibility,
 )
 from execution.contracts import ExecutionContractError, validate_task_parameters
 
@@ -65,20 +69,20 @@ class PredictionBindingTests(unittest.TestCase):
         self.assertEqual(binding["version"], PREDICTION_PROTOCOL["version"])
         self.assertEqual(binding["sha256"], PREDICTION_PROTOCOL_SHA256)
 
-    def test_reconcile_fills_missing(self):
+    def test_validate_rejects_missing_protocol(self):
         bundle: dict = {}
-        reconcile_bundle_protocol(bundle)
-        self.assertEqual(bundle["protocol"], protocol_binding())
+        with self.assertRaises(ProtocolError):
+            validate_bundle_protocol(bundle)
 
-    def test_reconcile_preserves_matching(self):
+    def test_validate_preserves_matching(self):
         bundle = {"protocol": protocol_binding()}
-        reconcile_bundle_protocol(bundle)
+        validate_bundle_protocol(bundle)
         self.assertEqual(bundle["protocol"], protocol_binding())
 
-    def test_reconcile_rejects_mismatch(self):
+    def test_validate_rejects_mismatch(self):
         bundle = {"protocol": {"name": "old", "version": "old", "sha256": "b" * 64}}
         with self.assertRaises(ProtocolError):
-            reconcile_bundle_protocol(bundle)
+            validate_bundle_protocol(bundle)
 
 
 class BundleProtocolValidationTests(unittest.TestCase):
@@ -112,16 +116,36 @@ class BundleProtocolValidationTests(unittest.TestCase):
         )
         self.assertEqual(result.candidate_id, "C0001")
 
-    def test_bundle_with_stale_protocol_rejected(self):
+    def test_bundle_with_stale_protocol_still_readable(self):
+        # A well-formed protocol binding for an older protocol is valid
+        # history: reading it must not require it to equal the active one.
+        result = load_artifact_bundle(
+            self._bundle(
+                {"protocol": {"name": "old", "version": "old", "sha256": "b" * 64}}
+            ),
+            candidate_id="C0001", sequence="ACDEFGHIK", required_targets=(),
+        )
+        self.assertEqual(result.candidate_id, "C0001")
+
+    def test_bundle_with_incomplete_protocol_rejected(self):
+        path = self._bundle({"protocol": {"name": "only-name"}})
+        with self.assertRaises(ContractError) as ctx:
+            load_artifact_bundle(
+                path, candidate_id="C0001", sequence="ACDEFGHIK",
+                required_targets=(),
+            )
+        self.assertEqual(ctx.exception.code, "artifact_protocol_incomplete")
+
+    def test_bundle_with_non_string_protocol_fields_rejected(self):
         path = self._bundle(
-            {"protocol": {"name": "old", "version": "old", "sha256": "b" * 64}}
+            {"protocol": {"name": "old", "version": 1, "sha256": "b" * 64}}
         )
         with self.assertRaises(ContractError) as ctx:
             load_artifact_bundle(
                 path, candidate_id="C0001", sequence="ACDEFGHIK",
                 required_targets=(),
             )
-        self.assertEqual(ctx.exception.code, "artifact_protocol_mismatch")
+        self.assertEqual(ctx.exception.code, "artifact_protocol_type")
 
 
 class TaskProtocolContractTests(unittest.TestCase):
@@ -152,5 +176,133 @@ class TaskProtocolContractTests(unittest.TestCase):
         self.assertEqual(normalized["predictor_protocol"], PREDICTOR_PROTOCOL)
 
 
+class ProtocolSchemaTests(unittest.TestCase):
+    """PredictionProtocol.from_data enforces the full scientific schema."""
+
+    def _data(self, **overrides) -> dict:
+        data = {
+            "version": "prediction_v1",
+            "protocol_name": "af2_boltz2_prodigy_rosetta_postrelax_v1",
+            "af2_prodigy": {
+                "seeds": [0, 1, 2],
+                "model_numbers": [0, 1, 2],
+                "num_recycles": 3,
+            },
+            "enrichment": {
+                "seed_base": 101,
+                "post_relax_seed_base": 20260802,
+                "post_relax_repeats": 3,
+            },
+        }
+        data.update(overrides)
+        return data
+
+    def test_valid_protocol_loads(self):
+        protocol = PredictionProtocol.from_data(self._data())
+        self.assertEqual(protocol.protocol_name, PREDICTOR_PROTOCOL)
+        self.assertEqual(protocol.af2_seeds, (0, 1, 2))
+        self.assertEqual(protocol.num_recycles, 3)
+
+    def test_duplicate_seeds_rejected(self):
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(
+                self._data(af2_prodigy={**self._data()["af2_prodigy"], "seeds": [0, 0, 1]})
+            )
+
+    def test_duplicate_models_rejected(self):
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(
+                self._data(af2_prodigy={**self._data()["af2_prodigy"], "model_numbers": [0, 0, 1]})
+            )
+
+    def test_model_out_of_range_rejected(self):
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(
+                self._data(af2_prodigy={**self._data()["af2_prodigy"], "model_numbers": [0, 1, 5]})
+            )
+
+    def test_seed_model_length_mismatch_rejected(self):
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(
+                self._data(af2_prodigy={**self._data()["af2_prodigy"], "seeds": [0, 1]})
+            )
+
+    def test_non_positive_recycles_rejected(self):
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(
+                self._data(af2_prodigy={**self._data()["af2_prodigy"], "num_recycles": 0})
+            )
+
+    def test_empty_seeds_rejected(self):
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(
+                self._data(af2_prodigy={**self._data()["af2_prodigy"], "seeds": []})
+            )
+
+    def test_non_integer_enrichment_rejected(self):
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(
+                self._data(enrichment={**self._data()["enrichment"], "post_relax_repeats": "3"})
+            )
+
+    def test_non_positive_repeats_rejected(self):
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(
+                self._data(enrichment={**self._data()["enrichment"], "post_relax_repeats": 0})
+            )
+
+    def test_negative_seed_base_rejected(self):
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(
+                self._data(enrichment={**self._data()["enrichment"], "seed_base": -1})
+            )
+
+    def test_negative_post_relax_seed_base_rejected(self):
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(
+                self._data(
+                    enrichment={
+                        **self._data()["enrichment"],
+                        "post_relax_seed_base": -20260802,
+                    }
+                )
+            )
+
+
+class ProtocolRegistryTests(unittest.TestCase):
+    def test_registry_contains_active_protocol(self):
+        self.assertIn(ACTIVE_PREDICTOR_PROTOCOL, PROTOCOL_REGISTRY)
+        self.assertIsInstance(
+            PROTOCOL_REGISTRY[ACTIVE_PREDICTOR_PROTOCOL], PredictionProtocol
+        )
+
+    def test_predictor_protocols_derived_from_registry(self):
+        from prediction_pipeline.protocol import PREDICTOR_PROTOCOLS
+        self.assertEqual(PREDICTOR_PROTOCOLS, frozenset(PROTOCOL_REGISTRY))
+
+    def test_registry_matches_loaded_raw_protocol(self):
+        typed = PROTOCOL_REGISTRY[ACTIVE_PREDICTOR_PROTOCOL]
+        self.assertEqual(typed.af2_seeds, tuple(PREDICTION_PROTOCOL["af2_prodigy"]["seeds"]))
+        self.assertEqual(
+            typed.af2_model_numbers,
+            tuple(PREDICTION_PROTOCOL["af2_prodigy"]["model_numbers"]),
+        )
+
+
+class ExecutionCompatibilityTests(unittest.TestCase):
+    def test_matching_binding_executable(self):
+        validate_execution_compatibility({"protocol": protocol_binding()})
+
+    def test_legacy_bundle_not_executable(self):
+        with self.assertRaises(ProtocolError):
+            validate_execution_compatibility({})
+
+    def test_stale_binding_not_executable(self):
+        with self.assertRaises(ProtocolError):
+            validate_execution_compatibility(
+                {"protocol": {"name": "old", "version": "old", "sha256": "b" * 64}}
+            )
+
 if __name__ == "__main__":
     unittest.main()
+

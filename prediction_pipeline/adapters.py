@@ -19,7 +19,6 @@ from .contracts import (
     file_sha256,
     object_sha256,
 )
-from .protocol import protocol_binding
 from .metrics import parse_prodigy_output, parse_rosetta_interface_output
 
 
@@ -314,7 +313,7 @@ def load_artifact_bundle(
         raise ContractError("artifact_bundle_type", "artifacts.json must be an object")
     unknown = sorted(set(raw) - {
         "schema_version", "candidate_id", "sequence", "global", "targets",
-        "protocol",
+        "protocol", "enrichment",
     })
     if unknown:
         raise ContractError(
@@ -347,10 +346,10 @@ def load_artifact_bundle(
                 "artifact_protocol_incomplete",
                 f"artifacts.json protocol must contain {missing}",
             )
-        if protocol_raw != protocol_binding():
+        if not all(isinstance(protocol_raw[key], str) for key in ("name", "version", "sha256")):
             raise ContractError(
-                "artifact_protocol_mismatch",
-                "artifacts.json protocol does not match the current prediction protocol",
+                "artifact_protocol_type",
+                "artifacts.json protocol name/version/sha256 must be strings",
             )
     base = path.parent
     global_raw = raw.get("global") or {}

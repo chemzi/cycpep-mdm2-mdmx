@@ -13,7 +13,11 @@ from typing import Callable
 import data_layer
 from data_layer import CandidateIndex, State
 from prediction_pipeline.contracts import file_sha256, object_sha256
-from prediction_pipeline.protocol import PREDICTION_PROTOCOL
+from prediction_pipeline.protocol import (
+    PREDICTION_PROTOCOL,
+    ProtocolError,
+    validate_execution_compatibility,
+)
 
 from .config import ExecutionConfig
 from .contracts import (
@@ -272,22 +276,36 @@ def _artifact_bundle_complete(path: Path, required_targets: list[str]) -> bool:
         return False
     try:
         raw = _json_object(path, "artifact_bundle")
+        # Execution gate: a bundle bound to an older protocol is readable but
+        # not reusable by a run executing under the active protocol.
+        validate_execution_compatibility(raw)
         global_values = raw.get("global") or {}
         if not global_values.get("monomer_predictions"):
             return False
         if not global_values.get("post_relax_pdb") or not global_values.get("post_relax_metadata"):
             return False
+        expected_af2_seeds = set(_AF2_PRODIGY_PROTOCOL["seeds"])
         targets = raw.get("targets") or {}
         for target_id in required_targets:
             values = targets.get(target_id) or {}
             predictions = values.get("complex_predictions") or []
-            if len(predictions) < 4:
+            af2_seeds = {
+                prediction.get("seed")
+                for prediction in predictions
+                if prediction.get("predictor") == "ColabDesign"
+                and isinstance(prediction.get("seed"), int)
+            }
+            if not expected_af2_seeds.issubset(af2_seeds):
+                return False
+            if not any(
+                prediction.get("predictor") == "Boltz" for prediction in predictions
+            ):
                 return False
             if len(values.get("prodigy_outputs") or []) != len(predictions):
                 return False
             if len(values.get("rosetta_outputs") or []) != len(predictions):
                 return False
-    except ExecutionContractError:
+    except (ExecutionContractError, ProtocolError):
         return False
     return True
 

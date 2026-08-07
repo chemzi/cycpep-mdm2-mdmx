@@ -69,6 +69,7 @@ Research → Design → Prediction → Critic → Planner
 6. 禁止 shadow state / shadow log。影响正式 workflow 的状态不能只保存在私有临时 JSON 或 agent 私有日志中。
 7. `workflow_id` 必须从 Planner 向下传播至 Orchestrator 和 Execution；下游不得重新生成一条独立 workflow。
 8. 正式状态应通过统一 Store/数据层访问；执行失败不能留下已部分写入的正式 CandidateIndex 或 State。
+9. Prediction evidence 必须携带产生它的协议绑定 `{name, version, sha256}`（见 `protocols/prediction_v1.json`）。bundle 可以合法地“未绑定”（legacy），但系统绝不允许猜测或自动补标协议；任何 reuse/resume/enrichment 都必须证明计算参数与声明的协议 SHA 完全一致。**协议升级成本**：`protocols/prediction_v1.json` 的任何改动（包括 description）都会改变 SHA-256 → 所有存量 bundle 在 Execution 完整性判定中视为“绑定不同协议”，不得复用，即协议升级 = Prediction evidence 全量重跑。
 
 ## 4. Quick Start
 
