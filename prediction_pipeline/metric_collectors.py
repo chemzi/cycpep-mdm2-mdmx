@@ -238,6 +238,31 @@ class MetricCollectorsMixin:
         coordinate_constraints = extracted["coordinate_constraints"]
         required_relax_metadata = extracted["required_relax_metadata"]
         chain = extracted["chain"]
+        self._validate_relax_provenance(
+            relax_metadata,
+            post_relax,
+            primary_monomer,
+            candidate,
+            chain,
+            required_relax_metadata,
+        )
+        self._validate_relax_runtime_parameters(relax_metadata, coordinate_constraints)
+        return _parse_numeric_relax_metadata(relax_metadata, coordinate_constraints)
+
+    def _validate_relax_provenance(
+        self,
+        relax_metadata: dict,
+        post_relax: dict,
+        primary_monomer: dict | None,
+        candidate: CandidateInput,
+        chain: str,
+        required_relax_metadata: dict,
+    ) -> None:
+        """校验 post-relax 的工具、版本与输入输出指纹与候选一致。"""
+        expected_input_sha = (
+            primary_monomer["pdb"]["sha256"] if primary_monomer else None
+        )
+        input_chain = primary_monomer["binder_chain"] if primary_monomer else None
         if relax_metadata["tool"] != POST_RELAX_TOOL:
             raise ContractError(
                 "post_relax_tool_mismatch",
@@ -253,9 +278,6 @@ class MetricCollectorsMixin:
                 "post_relax_protocol_mismatch",
                 f"L4 requires protocol {POST_RELAX_PROTOCOL}",
             )
-        expected_input_sha = (
-            primary_monomer["pdb"]["sha256"] if primary_monomer else None
-        )
         if relax_metadata["input_pdb_sha256"] != expected_input_sha:
             raise ContractError(
                 "post_relax_input_mismatch",
@@ -291,7 +313,6 @@ class MetricCollectorsMixin:
                 "post_relax_topology_constraints_missing",
                 "post-relax did not attest peptide-bond geometry constraints",
             )
-        input_chain = primary_monomer["binder_chain"] if primary_monomer else None
         if (
             relax_metadata["input_chain"] != input_chain
             or relax_metadata["output_chain"] != chain
@@ -301,6 +322,11 @@ class MetricCollectorsMixin:
                 "post_relax_chain_mismatch",
                 "post-relax metadata/PDB chain differs from primary monomer",
             )
+
+    def _validate_relax_runtime_parameters(
+        self, relax_metadata: dict, coordinate_constraints: dict
+    ) -> None:
+        """校验 post-relax 运行参数（seed/repeats/约束开关）合法。"""
         seed = relax_metadata["seed"]
         repeats = relax_metadata["repeats"]
         if isinstance(seed, bool) or not isinstance(seed, int):
@@ -327,37 +353,6 @@ class MetricCollectorsMixin:
                 "post_relax_constraint_invalid",
                 "L4 requires fixed start-coordinate constraints and design disabled",
             )
-
-        numeric_metadata = {}
-        for key in (
-            "terminal_c_to_n_distance_pre_angstrom",
-            "terminal_c_to_n_distance_post_angstrom",
-            "backbone_rmsd_to_input_angstrom",
-            "pre_total_score_ref2015",
-            "post_total_score_ref2015",
-        ):
-            try:
-                value = float(relax_metadata[key])
-            except (TypeError, ValueError) as exc:
-                raise ContractError(
-                    "post_relax_metadata_invalid", f"{key} must be numeric"
-                ) from exc
-            if not math.isfinite(value):
-                raise ContractError(
-                    "post_relax_metadata_invalid", f"{key} must be finite"
-                )
-            numeric_metadata[key] = value
-        try:
-            constraint_stdev = float(coordinate_constraints["stdev_angstrom"])
-        except (TypeError, ValueError) as exc:
-            raise ContractError(
-                "post_relax_constraint_invalid", "constraint stdev must be numeric"
-            ) from exc
-        if not math.isfinite(constraint_stdev) or constraint_stdev <= 0:
-            raise ContractError(
-                "post_relax_constraint_invalid", "constraint stdev must be positive"
-            )
-        return numeric_metadata
 
 
     def _record_l4_metrics(
@@ -745,3 +740,39 @@ class MetricCollectorsMixin:
         if battery["missing_evidence"] or battery["missing_thresholds"]:
             return "prediction_pending"
         return "needs_optimization"
+
+
+def _parse_numeric_relax_metadata(
+    relax_metadata: dict, coordinate_constraints: dict
+) -> dict:
+    """解析 post-relax 数值字段，校验类型与有限性。"""
+    numeric_metadata = {}
+    for key in (
+        "terminal_c_to_n_distance_pre_angstrom",
+        "terminal_c_to_n_distance_post_angstrom",
+        "backbone_rmsd_to_input_angstrom",
+        "pre_total_score_ref2015",
+        "post_total_score_ref2015",
+    ):
+        try:
+            value = float(relax_metadata[key])
+        except (TypeError, ValueError) as exc:
+            raise ContractError(
+                "post_relax_metadata_invalid", f"{key} must be numeric"
+            ) from exc
+        if not math.isfinite(value):
+            raise ContractError(
+                "post_relax_metadata_invalid", f"{key} must be finite"
+            )
+        numeric_metadata[key] = value
+    try:
+        constraint_stdev = float(coordinate_constraints["stdev_angstrom"])
+    except (TypeError, ValueError) as exc:
+        raise ContractError(
+            "post_relax_constraint_invalid", "constraint stdev must be numeric"
+        ) from exc
+    if not math.isfinite(constraint_stdev) or constraint_stdev <= 0:
+        raise ContractError(
+            "post_relax_constraint_invalid", "constraint stdev must be positive"
+        )
+    return numeric_metadata

@@ -1,4 +1,4 @@
-﻿"""Design config / context / protocol behavior tests (split from test_design.py, PR8).
+"""Design config / context / protocol behavior tests (split from test_design.py, PR8).
 
 Covers output-dir resolution, hotspot-segment validation, Route C empty-guard,
 seed coercion, DesignContext injection and versioned protocol binding.

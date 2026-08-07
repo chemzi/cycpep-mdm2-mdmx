@@ -1,4 +1,4 @@
-﻿"""Architecture gate tests: detection rules and baseline semantics (PR8)."""
+"""Architecture gate tests: detection rules and baseline semantics (PR8)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from scripts.architecture_gate import (
+    check_bom,
     check_file_sizes,
     check_function_lengths,
     check_private_imports,
@@ -70,11 +71,22 @@ class ArchitectureGateTests(unittest.TestCase):
         # public names are fine.
         self.assertNotIn("from agents.research import default_thresholds", imports)
 
+    def test_bom_flags_utf8_bom_files(self):
+        # A BOM would make ast.parse fail and silently skip the file, so the
+        # gate must reject BOM files outright (PR8 review P1-2).
+        self._write("clean.py", "def f():\n    return 1\n")
+        bom_path = self.root / "smuggled.py"
+        bom_path.write_bytes(b"\xef\xbb\xbfdef f():\n    return 1\n")
+        violations = check_bom(self.root)
+        files = [v["file"] for v in violations]
+        self.assertIn("smuggled.py", files)
+        self.assertNotIn("clean.py", files)
+
     def test_baseline_covers_existing_and_rejects_new(self):
         self._write("big.py", "x = 1\n" * 101)
         violations = {"file_size": check_file_sizes(self.root, max_lines=100),
                       "function_length": [], "action_handlers": [],
-                      "private_imports": []}
+                      "private_imports": [], "bom": []}
         baseline = {"schema_version": 1, "items": {"file_size": [{"file": "big.py", "lines": 101}],
                     "function_length": [], "action_handlers": [], "private_imports": []}}
         report, ok = format_report(violations, baseline, update=False)
@@ -83,7 +95,7 @@ class ArchitectureGateTests(unittest.TestCase):
         new_violations = {"file_size": [{"file": "big.py", "lines": 101},
                                         {"file": "bigger.py", "lines": 200}],
                           "function_length": [], "action_handlers": [],
-                          "private_imports": []}
+                          "private_imports": [], "bom": []}
         report, ok = format_report(new_violations, baseline, update=False)
         self.assertFalse(ok)
         self.assertIn("bigger.py", report)
@@ -92,7 +104,7 @@ class ArchitectureGateTests(unittest.TestCase):
         path = self.root / "baseline.json"
         violations = {"file_size": [{"file": "a.py", "lines": 1200}],
                       "function_length": [{"file": "b.py", "function": "f", "line": 1, "lines": 200}],
-                      "action_handlers": [], "private_imports": []}
+                      "action_handlers": [], "private_imports": [], "bom": []}
         write_baseline(path, violations)
         loaded = load_baseline(path)
         self.assertEqual(loaded["items"]["file_size"][0]["file"], "a.py")

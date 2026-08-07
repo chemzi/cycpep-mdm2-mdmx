@@ -6,6 +6,7 @@ here, so ``from data_layer import INDEX_COLUMNS`` keeps working.
 """
 
 import json
+import math
 import os
 import tempfile
 from pathlib import Path
@@ -69,17 +70,21 @@ def _write_json_atomic(path: str | Path, payload: dict):
 
 
 def to_float(value):
-    """Coerce a value to float; return None when it is empty or unparseable.
+    """Coerce a value to float; return None when it is empty or non-finite.
 
     Shared by the battery evaluator and CandidateIndex (PR8).  Kept public so
-    sibling modules can reuse it without importing a private name.
+    sibling modules can reuse it without importing a private name.  NaN/Inf
+    are rejected so they can never flow into ranking or Pareto logic.
     """
     if value is None or value == "":
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(number):
+        return None
+    return number
 
 # v5: 七层指标电池主列。旧列名保留做 alias（见 _ALIAS_MAP），不破坏已有代码。
 INDEX_COLUMNS = [

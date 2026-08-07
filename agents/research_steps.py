@@ -179,21 +179,12 @@ def _step_rcsb_enrich(stage_status: dict, stage_context: dict, sr: dict) -> dict
     return er
 
 
-def _step_biotite(
-    stage_status: dict,
-    stage_context: dict,
-    fallbacks: list,
-    er: dict,
-    skip_heavy: bool,
-) -> tuple[dict, list, dict, int, int]:
-    # ===== Steps 3-5: biotite =====
-    pocket_differences = _research.POCKET_DIFFERENCES  # 默认常量
-    dynamic_pdb_list = []  # 动态 PDB 列表（来自 enrich）
+def _collect_dynamic_pdbs(er: dict) -> tuple[list, dict, int, int]:
+    """Extract the dynamic PDB list and per-target counts from enrich output."""
+    dynamic_pdb_list = []
     dynamic_pdb_by_target = {"MDM2": [], "MDMX": []}
     n_mdm2_structures = 0
     n_mdmx_structures = 0
-
-    # 从 enrich 提取动态 PDB 列表
     for entry in er.get("peptide_complexes", []):
         target_name = entry.get("target")
         if (
@@ -207,6 +198,93 @@ def _step_biotite(
             n_mdm2_structures += 1
         elif entry.get("target") == "MDMX":
             n_mdmx_structures += 1
+    return dynamic_pdb_list, dynamic_pdb_by_target, n_mdm2_structures, n_mdmx_structures
+
+
+def _run_interface_tool(stage_status: dict, stage_context: dict, er: dict) -> dict:
+    """Step 3: run biotite compute_interface and record its stage status."""
+    print("[research] Step 3/8: biotite interface...")
+    try:
+        ir, ie2, ic, id_, ih = _research._run_script("compute_interface.py", er)
+        n_iface = ir.get("n_with_interface", 0)
+        stage_status["interface"] = (
+            "complete" if ic == 0 and n_iface > 0 else "empty" if ic == 0 else "failed"
+        )
+        stage_context["interface"] = (ir, ie2)
+        EvidenceLogger.log("research", "tool_call", {
+            "tool_name": "biotite", "output_hash": ih, "exit_code": ic,
+            "duration_sec": round(id_, 1),
+            "stdout_snippet": f"status={stage_status['interface']} with_interface={n_iface}",
+        }, targets=["both"], phase="research")
+        return ir
+    except (OSError, UnicodeError) as e:
+        EvidenceLogger.error("research", "tool_failure", f"biotite: {e}", recovery="fallback")
+        stage_status["interface"] = "failed"
+        stage_context["interface"] = ({}, str(e))
+        return {"with_interface": []}
+
+
+def _run_aggregate_tool(stage_status: dict, stage_context: dict, iface_result: dict) -> dict:
+    """Step 4: run aggregate_pockets and record its stage status."""
+    print("[research] Step 4/8: aggregate pockets...")
+    pr, pe2, pc, pd_, ph = _research._run_script("aggregate_pockets.py", iface_result)
+    n_agg_mdm2 = pr.get("n_mdm2_structures", 0)
+    n_agg_mdmx = pr.get("n_mdmx_structures", 0)
+    stage_status["aggregate"] = (
+        "complete" if pc == 0 and n_agg_mdm2 > 0 and n_agg_mdmx > 0
+        else "empty" if pc == 0 else "failed"
+    )
+    stage_context["aggregate"] = (pr, pe2)
+    EvidenceLogger.log("research", "tool_call", {
+        "tool_name": "aggregate_pockets", "output_hash": ph, "exit_code": pc,
+        "duration_sec": round(pd_, 1),
+        "stdout_snippet": (
+            f"status={stage_status['aggregate']} "
+            f"MDM2={n_agg_mdm2}struct MDMX={n_agg_mdmx}struct"
+        ),
+    }, targets=["both"], phase="research")
+    return pr
+
+
+def _run_superpose_tool(stage_status: dict, stage_context: dict, pr: dict) -> dict:
+    """Step 5: run superpose_analyze and record its stage status."""
+    print("[research] Step 5/8: superposition...")
+    try:
+        spr, spe2, spc, spd_, sph = _research._run_script("superpose_analyze.py", pr)
+        stage_status["superposition"] = (
+            "complete" if spc == 0 and spr.get("ca_rmsd_A") is not None
+            else "empty" if spc == 0 else "failed"
+        )
+        stage_context["superposition"] = (spr, spe2)
+        EvidenceLogger.log("research", "tool_call", {
+            "tool_name": "biotite_superimpose", "output_hash": sph, "exit_code": spc,
+            "duration_sec": round(spd_, 1),
+            "stdout_snippet": (
+                f"status={stage_status['superposition']} "
+                f"rmsd={spr.get('ca_rmsd_A','?')}A "
+                f"n_ca={spr.get('n_ca_atoms_superposed','?')}"
+            ),
+        }, targets=["both"], phase="research")
+        return spr
+    except (OSError, UnicodeError) as e:
+        EvidenceLogger.error("research", "tool_failure", f"superpose: {e}", recovery="fallback")
+        stage_status["superposition"] = "failed"
+        stage_context["superposition"] = ({}, str(e))
+        return {}
+
+
+def _step_biotite(
+    stage_status: dict,
+    stage_context: dict,
+    fallbacks: list,
+    er: dict,
+    skip_heavy: bool,
+) -> tuple[dict, list, dict, int, int]:
+    # ===== Steps 3-5: biotite =====
+    pocket_differences = _research.POCKET_DIFFERENCES  # curated default pockets
+    dynamic_pdb_list, dynamic_pdb_by_target, n_mdm2_structures, n_mdmx_structures = (
+        _collect_dynamic_pdbs(er)
+    )
 
     if skip_heavy:
         print("[research] Steps 3-5: skipped (SKIP_BIOTITE=1)")
@@ -216,77 +294,16 @@ def _step_biotite(
         stage_context.update({name: ({}, "") for name in ("interface", "aggregate", "superposition")})
         fallbacks.append("curated_mdm_pocket_definitions")
     else:
-        # Step 3: biotite interface
-        print("[research] Step 3/8: biotite interface...")
-        iface_result = {"with_interface": []}
-        try:
-            ir, ie2, ic, id_, ih = _research._run_script("compute_interface.py", er)
-            n_iface = ir.get("n_with_interface", 0)
-            stage_status["interface"] = (
-                "complete" if ic == 0 and n_iface > 0 else "empty" if ic == 0 else "failed"
-            )
-            stage_context["interface"] = (ir, ie2)
-            EvidenceLogger.log("research", "tool_call", {
-                "tool_name": "biotite", "output_hash": ih, "exit_code": ic,
-                "duration_sec": round(id_, 1),
-                "stdout_snippet": f"status={stage_status['interface']} with_interface={n_iface}",
-            }, targets=["both"], phase="research")
-            iface_result = ir
-        except Exception as e:
-            EvidenceLogger.error("research", "tool_failure", f"biotite: {e}", recovery="fallback")
-            iface_result = {"with_interface": []}
-            stage_status["interface"] = "failed"
-            stage_context["interface"] = ({}, str(e))
+        iface_result = _run_interface_tool(stage_status, stage_context, er)
+        pr = _run_aggregate_tool(stage_status, stage_context, iface_result)
+        spr = _run_superpose_tool(stage_status, stage_context, pr)
 
-        # Step 4: aggregate pockets
-        print("[research] Step 4/8: aggregate pockets...")
-        pr, pe2, pc, pd_, ph = _research._run_script("aggregate_pockets.py", iface_result)
-        n_agg_mdm2 = pr.get("n_mdm2_structures", 0)
-        n_agg_mdmx = pr.get("n_mdmx_structures", 0)
-        stage_status["aggregate"] = (
-            "complete" if pc == 0 and n_agg_mdm2 > 0 and n_agg_mdmx > 0
-            else "empty" if pc == 0 else "failed"
-        )
-        stage_context["aggregate"] = (pr, pe2)
-        EvidenceLogger.log("research", "tool_call", {
-            "tool_name": "aggregate_pockets", "output_hash": ph, "exit_code": pc,
-            "duration_sec": round(pd_, 1),
-            "stdout_snippet": (
-                f"status={stage_status['aggregate']} "
-                f"MDM2={n_agg_mdm2}struct MDMX={n_agg_mdmx}struct"
-            ),
-        }, targets=["both"], phase="research")
-
-        # Step 5: superpose
-        print("[research] Step 5/8: superposition...")
-        spr = {}
-        try:
-            spr, spe2, spc, spd_, sph = _research._run_script("superpose_analyze.py", pr)
-            stage_status["superposition"] = (
-                "complete" if spc == 0 and spr.get("ca_rmsd_A") is not None
-                else "empty" if spc == 0 else "failed"
-            )
-            stage_context["superposition"] = (spr, spe2)
-            EvidenceLogger.log("research", "tool_call", {
-                "tool_name": "biotite_superimpose", "output_hash": sph, "exit_code": spc,
-                "duration_sec": round(spd_, 1),
-                "stdout_snippet": (
-                    f"status={stage_status['superposition']} "
-                    f"rmsd={spr.get('ca_rmsd_A','?')}A "
-                    f"n_ca={spr.get('n_ca_atoms_superposed','?')}"
-                ),
-            }, targets=["both"], phase="research")
-        except Exception as e:
-            EvidenceLogger.error("research", "tool_failure", f"superpose: {e}", recovery="fallback")
-            stage_status["superposition"] = "failed"
-            stage_context["superposition"] = ({}, str(e))
-
-        # 用动态数据构建 pocket_differences
+        # build pocket_differences from dynamic data when available
         dynamic = _build_dynamic_pockets(pr, spr)
         if dynamic:
             pocket_differences = dynamic
-            n_mdm2_structures = n_agg_mdm2
-            n_mdmx_structures = n_agg_mdmx
+            n_mdm2_structures = pr.get("n_mdm2_structures", 0)
+            n_mdmx_structures = pr.get("n_mdmx_structures", 0)
             print(f"[research] Using dynamic pockets: MDM2={n_mdm2_structures}struct MDMX={n_mdmx_structures}struct")
         else:
             print("[research] biotite produced no interface data, using constant pockets")
@@ -427,7 +444,7 @@ def _run_generic_pipeline():
 
     sr = _step_generic_search(stage_status, stage_context, target_ids)
     er = _step_generic_enrich(stage_status, stage_context, target_ids, sr)
-    aggregate = _step_generic_interface(stage_status, stage_context, fallbacks, er)
+    aggregate = _step_generic_interface(stage_status, stage_context, fallbacks, er, target_ids)
     pmr = _step_generic_pubmed(stage_status, stage_context, target_ids)
     known_binders, approved_binders = _step_generic_llm(
         stage_status, stage_context, fallbacks, target_ids, pmr,
@@ -506,7 +523,7 @@ def _step_generic_enrich(stage_status: dict, stage_context: dict, target_ids: li
 
 
 def _step_generic_interface(
-    stage_status: dict, stage_context: dict, fallbacks: list, er: dict
+    stage_status: dict, stage_context: dict, fallbacks: list, er: dict, target_ids: list
 ) -> dict:
     aggregate = {"results_by_target": {}, "counts_by_target": {}}
     if os.environ.get("SKIP_BIOTITE", "").lower() in ("1", "true", "yes"):
@@ -533,7 +550,10 @@ def _step_generic_interface(
                 "duration_sec": round(ad, 1),
                 "stdout_snippet": str(aggregate.get("counts_by_target", {})),
             }, targets=target_ids, phase="research")
-        except Exception as exc:
+        except (OSError, UnicodeError) as exc:
+            # Tool-level failures degrade gracefully; programming errors
+            # (NameError/TypeError/...) must propagate loudly instead of being
+            # misreported as a tool failure (PR8 review P1-1).
             stage_status["interface"] = "failed"
             stage_status["aggregate"] = "failed"
             stage_context["interface"] = ({}, str(exc))
@@ -636,5 +656,4 @@ def _step_generic_thresholds(
     })
     if not _research._module_attr("THRESHOLDS_CACHE").exists():
         _research._write_threshold_cache(thresholds, _research._cfg())
-        EvidenceLogger.error("research", "tool_failure", str(exc), recovery="provisional thresholds remain non-clearable")
     return thresholds, control_calibration, threshold_normalization, final_normalization

@@ -4,6 +4,7 @@
     "file_size": [],
     "function_length": [],
     "action_handlers": [],
-    "private_imports": []
+    "private_imports": [],
+    "bom": []
   }
 }

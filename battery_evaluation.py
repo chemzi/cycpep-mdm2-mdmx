@@ -119,6 +119,46 @@ def evaluate_battery(
         and not l4
     ):
         hard_failures.append("ring_closure_geometry")
+
+    return _build_battery_report(
+        c=c,
+        targets=targets,
+        layer_pass=layer_pass,
+        failed=failed,
+        hard_failures=hard_failures,
+        missing_evidence=missing_evidence,
+        missing_thresholds=missing_thresholds,
+        threshold_audit=threshold_audit,
+        all_thresholds_justified=all_thresholds_justified,
+        l2_by_target=l2_by_target,
+        l3_by_target=l3_by_target,
+        method_ok=method_ok,
+        l5_by_target=l5_by_target,
+        l6_by_target=l6_by_target,
+        nc_pre=nc_pre,
+        nc_post=nc_post,
+    )
+
+
+def _build_battery_report(
+    c: dict,
+    targets: tuple[str, ...],
+    layer_pass: dict[str, bool],
+    failed: list[str],
+    hard_failures: list[str],
+    missing_evidence: list[str],
+    missing_thresholds: list[str],
+    threshold_audit: dict,
+    all_thresholds_justified: bool,
+    l2_by_target: dict,
+    l3_by_target: dict,
+    method_ok: bool,
+    l5_by_target: dict,
+    l6_by_target: dict,
+    nc_pre: float | None,
+    nc_post: float | None,
+) -> dict:
+    """把七层判定结果组装为 v5 报告（纯组装，无副作用）。"""
     if hard_failures:
         triage_status = "invalid"
     elif missing_evidence or missing_thresholds:
@@ -150,40 +190,50 @@ def evaluate_battery(
             }
             for target in targets
         },
-        "layer_values": {
-            "L1_plddt": _f(global_value(c, "plddt")),
-            **{
-                f"L2_ipsae_{target_slug(target)}": _f(target_value(c, target, "ipsae"))
-                for target in targets
-            },
-            **{
-                f"L3_dg_{target_slug(target)}": _f(target_value(c, target, "dg"))
-                for target in targets
-            },
-            **{
-                f"L3_sc_{target_slug(target)}": _f(target_value(c, target, "sc"))
-                for target in targets
-            },
-            **{
-                f"L3_dsasa_{target_slug(target)}": _f(target_value(c, target, "dsasa"))
-                for target in targets
-            },
-            "L4_nc_distance_pre": nc_pre,
-            "L4_nc_distance_post": nc_post,
-            **{
-                f"L5_hotspot_cov_{target_slug(target)}": _f(target_value(c, target, "hotspot_cov"))
-                for target in targets
-            },
-            **{
-                f"L6_pose_rmsd_{target_slug(target)}": _f(
-                    target_value(c, target, "pose_rmsd")
-                    if target_value(c, target, "pose_rmsd") not in (None, "")
-                    else c.get("pose_rmsd") if len(targets) == 1 else None
-                )
-                for target in targets
-            },
-            "L7_scrmsd": _f(global_value(c, "scrmsd")),
+        "layer_values": _build_layer_values(c, targets, nc_pre, nc_post),
+    }
+
+
+def _build_layer_values(
+    c: dict,
+    targets: tuple[str, ...],
+    nc_pre: float | None,
+    nc_post: float | None,
+) -> dict:
+    """组装七层主值（纯取值+格式化，无副作用）。"""
+    return {
+        "L1_plddt": _f(global_value(c, "plddt")),
+        **{
+            f"L2_ipsae_{target_slug(target)}": _f(target_value(c, target, "ipsae"))
+            for target in targets
         },
+        **{
+            f"L3_dg_{target_slug(target)}": _f(target_value(c, target, "dg"))
+            for target in targets
+        },
+        **{
+            f"L3_sc_{target_slug(target)}": _f(target_value(c, target, "sc"))
+            for target in targets
+        },
+        **{
+            f"L3_dsasa_{target_slug(target)}": _f(target_value(c, target, "dsasa"))
+            for target in targets
+        },
+        "L4_nc_distance_pre": nc_pre,
+        "L4_nc_distance_post": nc_post,
+        **{
+            f"L5_hotspot_cov_{target_slug(target)}": _f(target_value(c, target, "hotspot_cov"))
+            for target in targets
+        },
+        **{
+            f"L6_pose_rmsd_{target_slug(target)}": _f(
+                target_value(c, target, "pose_rmsd")
+                if target_value(c, target, "pose_rmsd") not in (None, "")
+                else c.get("pose_rmsd") if len(targets) == 1 else None
+            )
+            for target in targets
+        },
+        "L7_scrmsd": _f(global_value(c, "scrmsd")),
     }
 
 

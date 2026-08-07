@@ -1,4 +1,4 @@
-﻿"""Architecture gate: CI-enforced anti-spaghetti checks (Roadmap PR8).
+"""Architecture gate: CI-enforced anti-spaghetti checks (Roadmap PR8).
 
 Checks (all pure-stdlib AST + file scans, no external dependencies):
 
@@ -12,6 +12,9 @@ Checks (all pure-stdlib AST + file scans, no external dependencies):
                       never silently couple to a private name of a sibling
                       (relative imports stay exempt: they stay inside the
                       package boundary by construction)
+5. bom              -- UTF-8 BOM files are rejected: ast.parse chokes on the
+                      BOM byte, so a BOM would silently disable the
+                      function-length and private-import checks for that file
 
 Baseline semantics: existing violations live in architecture_baseline.json
 and are allowed to remain (tracked debt that must only shrink); any NEW
@@ -55,7 +58,7 @@ def iter_py_files(root: Path):
 def check_file_sizes(root: Path, max_lines: int) -> list[dict]:
     violations = []
     for path in iter_py_files(root):
-        with path.open(encoding="utf-8") as handle:
+        with path.open(encoding="utf-8-sig") as handle:
             line_count = sum(1 for _ in handle)
         if line_count > max_lines:
             violations.append({
@@ -69,7 +72,7 @@ def check_function_lengths(root: Path, max_lines: int) -> list[dict]:
     violations = []
     for path in iter_py_files(root):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"))
         except (SyntaxError, UnicodeDecodeError):
             # Syntax/encoding errors belong to the unit test suite; the gate
             # focuses on structural debt and must stay green for parsing.
@@ -106,7 +109,7 @@ def check_private_imports(root: Path) -> list[dict]:
         if rel.parts[0] == "test" or rel.name.startswith("test_"):
             continue
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"))
         except (SyntaxError, UnicodeDecodeError):
             continue
         for node in ast.walk(tree):
@@ -123,7 +126,16 @@ def check_private_imports(root: Path) -> list[dict]:
     return violations
 
 
-CHECK_ORDER = ["file_size", "function_length", "action_handlers", "private_imports"]
+CHECK_ORDER = ["file_size", "function_length", "action_handlers", "private_imports", "bom"]
+
+
+def check_bom(root: Path) -> list[dict]:
+    """Reject UTF-8 BOM files that would bypass AST-based checks."""
+    violations = []
+    for path in iter_py_files(root):
+        if path.read_bytes().startswith(b"\xef\xbb\xbf"):
+            violations.append({"file": path.relative_to(root).as_posix()})
+    return violations
 
 
 def run_checks(root: Path, max_file_lines: int, max_function_lines: int) -> dict:
@@ -132,11 +144,12 @@ def run_checks(root: Path, max_file_lines: int, max_function_lines: int) -> dict
         "function_length": check_function_lengths(root, max_function_lines),
         "action_handlers": check_action_handlers(),
         "private_imports": check_private_imports(root),
+        "bom": check_bom(root),
     }
 
 
 def _item_key(check: str, item: dict) -> tuple:
-    if check == "file_size":
+    if check in ("file_size", "bom"):
         return ("file", item["file"])
     if check == "function_length":
         return ("file", item["file"], "function", item["function"])
@@ -148,7 +161,7 @@ def _item_key(check: str, item: dict) -> tuple:
 def load_baseline(path: Path) -> dict:
     if not path.is_file():
         return {"schema_version": BASELINE_SCHEMA_VERSION, "items": {}}
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     if data.get("schema_version") != BASELINE_SCHEMA_VERSION:
         raise SystemExit(
             f"architecture baseline schema mismatch: {path} "

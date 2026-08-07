@@ -128,18 +128,29 @@ class CandidateIndex:
         scores = alias_keys(dict(scores))
         patches = {}
         for key, value in scores.items():
-            if key == "metrics" and isinstance(value, dict):
-                patches[key] = value
-            elif key == "threshold_audit" and isinstance(value, dict):
-                patches["threshold_audit_json"] = json.dumps(
-                    value, ensure_ascii=False, separators=(",", ":")
-                )
-            elif key in INDEX_COLUMNS:
-                patches[key] = str(value) if not isinstance(value, str) else value
+            patch = cls._score_patch(key, value)
+            if patch:
+                patches.update(patch)
         patches["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         backend = get_storage_backend()
         backend.update_candidate(candidate_id, patches)
         project_candidates(backend)
+
+    @staticmethod
+    def _score_patch(key: str, value) -> dict | None:
+        """把单条 score 字段映射为 SQLite 补丁；无法映射时返回 None。"""
+        if key == "metrics" and isinstance(value, dict):
+            return {key: value}
+        if key == "threshold_audit" and isinstance(value, dict):
+            return {
+                "threshold_audit_json": json.dumps(
+                    value, ensure_ascii=False, separators=(",", ":")
+                )
+            }
+        if key in INDEX_COLUMNS:
+            return {key: str(value) if not isinstance(value, str) else value}
+        return None
+
 
     @classmethod
     def update_status(cls, candidate_id: str, status: str, notes: str = ""):
@@ -182,12 +193,12 @@ class CandidateIndex:
     def stats(cls) -> dict:
         """快速统计：总数、七层各层通过数、ipSAE/dG 中位数（v5 主指标）"""
         rows = cls.load()
-        ipsae_m2 = [float(r["ipsae_mdm2"]) for r in rows if r.get("ipsae_mdm2")]
-        ipsae_mx = [float(r["ipsae_mdmx"]) for r in rows if r.get("ipsae_mdmx")]
-        dg_m2   = [float(r["dg_mdm2"]) for r in rows if r.get("dg_mdm2")]
-        scrmsds = [float(r["scrmsd"]) for r in rows if r.get("scrmsd")]
-        # ipTM 保留做参考（导师 Trap 1：不做门槛）
-        iptm_m2 = [float(r["iptm_mdm2"]) for r in rows if r.get("iptm_mdm2")]
+        ipsae_m2 = [v for v in (to_float(r.get("ipsae_mdm2")) for r in rows) if v is not None]
+        ipsae_mx = [v for v in (to_float(r.get("ipsae_mdmx")) for r in rows) if v is not None]
+        dg_m2   = [v for v in (to_float(r.get("dg_mdm2")) for r in rows) if v is not None]
+        scrmsds = [v for v in (to_float(r.get("scrmsd")) for r in rows) if v is not None]
+        iptm_m2 = [v for v in (to_float(r.get("iptm_mdm2")) for r in rows) if v is not None]
+
 
         def med(lst):
             return statistics.median(lst) if lst else 0
