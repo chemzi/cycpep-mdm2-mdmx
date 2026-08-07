@@ -10,12 +10,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping
 
+from contracts.event import EvidenceEvent
+
 from .base import Store
+from .sqlite_ownership import (
+    TERMINAL_TRANSACTION_STATUSES,
+    SQLiteOwnership,
+    assert_transaction_transition,
+    patch_candidate_value,
+)
 from .sqlite_schema import ensure_schema
 
 
 _BUSY_TIMEOUT_MS = 30_000
-
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -29,6 +36,18 @@ def _mapping(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise TypeError("store records must be mappings")
     return dict(value)
+
+
+_MISSING = object()
+
+
+def _path_value(value: Any, path: Iterable[str]) -> Any:
+    current = value
+    for key in path:
+        if not isinstance(current, Mapping) or key not in current:
+            return _MISSING
+        current = current[key]
+    return current
 
 
 class SQLiteStore(Store):
@@ -123,18 +142,26 @@ class SQLiteStore(Store):
         return json.loads(row["payload_json"]) if row else {}
 
     def update_state(self, project_id: str, patches: Mapping[str, Any]) -> dict[str, Any]:
+        updates = dict(patches)
         with self._write() as connection:
             self._ensure_project(connection, project_id)
             state = self._state_in(connection, project_id)
-            state.update(dict(patches))
+            state.update(updates)
             self._write_state(connection, project_id, state)
+            ownership = SQLiteOwnership(connection, project_id)
+            for key in updates:
+                ownership.advance_state(key, None)
         return state
 
     def replace_state(self, project_id: str, value: Mapping[str, Any]) -> dict[str, Any]:
         state = dict(value)
         with self._write() as connection:
             self._ensure_project(connection, project_id)
+            previous = self._state_in(connection, project_id)
             self._write_state(connection, project_id, state)
+            ownership = SQLiteOwnership(connection, project_id)
+            for key in set(previous) | set(state):
+                ownership.advance_state(key, None)
         return state
 
     def initialize_state(self, project_id: str, value: Mapping[str, Any]) -> dict[str, Any]:
@@ -154,6 +181,10 @@ class SQLiteStore(Store):
                     _json(state),
                 ),
             )
+            if connection.execute("SELECT changes()").fetchone()[0]:
+                ownership = SQLiteOwnership(connection, project_id)
+                for key in state:
+                    ownership.advance_state(key, None)
             return self._state_in(connection, project_id)
 
     def append_state_item(self, project_id: str, key: str, item: Mapping[str, Any]) -> dict[str, Any]:
@@ -164,7 +195,29 @@ class SQLiteStore(Store):
             values.append(dict(item))
             state[key] = values
             self._write_state(connection, project_id, state)
-        return state
+            SQLiteOwnership(connection, project_id).advance_state(key, None)
+            return state
+
+    def append_state_item_if_absent(
+        self,
+        project_id: str,
+        key: str,
+        item: Mapping[str, Any],
+        *,
+        identity_path: Iterable[str],
+        identity_value: Any,
+    ) -> dict[str, Any]:
+        with self._write() as connection:
+            self._ensure_project(connection, project_id)
+            state = self._state_in(connection, project_id)
+            values = list(state.get(key) or [])
+            path = tuple(identity_path)
+            if not any(_path_value(value, path) == identity_value for value in values):
+                values.append(dict(item))
+                state[key] = values
+                self._write_state(connection, project_id, state)
+                SQLiteOwnership(connection, project_id).advance_state(key, None)
+            return state
 
     @staticmethod
     def _state_in(connection: sqlite3.Connection, project_id: str) -> dict[str, Any]:
@@ -240,19 +293,19 @@ class SQLiteStore(Store):
         return results
 
     def _advance_candidate_count(
-        self, connection: sqlite3.Connection, candidate_ids: Iterable[str]
-    ) -> None:
-        numbers = [
-            int(value[1:])
-            for value in map(str, candidate_ids)
-            if value.startswith("C") and value[1:].isdigit()
-        ]
-        state = self._state_in(connection, self.project_id)
-        if numbers and state:
-            state["candidate_count"] = max(
-                int(state.get("candidate_count") or 0), max(numbers)
-            )
-            self._write_state(connection, self.project_id, state)
+        self,
+        connection: sqlite3.Connection,
+        candidate_ids: Iterable[str],
+        writer_transaction_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return SQLiteOwnership(connection, self.project_id).advance_candidate_count(
+            self._state_in(connection, self.project_id),
+            candidate_ids,
+            writer_transaction_id,
+            write_state=lambda state: self._write_state(
+                connection, self.project_id, state
+            ),
+        )
 
     def update_candidate(self, candidate_id: str, patches: Mapping[str, Any]) -> dict[str, Any]:
         with self._write() as connection:
@@ -263,32 +316,16 @@ class SQLiteStore(Store):
             if row is None:
                 raise KeyError(f"candidate_id not found: {candidate_id}")
             value = json.loads(row["payload_json"])
-            updates = dict(patches)
-            metrics_update = updates.pop("metrics", None)
-            if isinstance(metrics_update, Mapping):
-                try:
-                    metrics = json.loads(value.get("metrics_json") or "{}")
-                except json.JSONDecodeError:
-                    metrics = {}
-                self._merge_mapping(metrics, metrics_update)
-                updates["metrics_json"] = _json(metrics)
-            value.update(updates)
+            value = patch_candidate_value(value, patches)
             result = self._put_candidate(connection, value, "update")
         return result
-
-    @classmethod
-    def _merge_mapping(cls, target: dict[str, Any], source: Mapping[str, Any]) -> None:
-        for key, item in source.items():
-            if isinstance(item, Mapping) and isinstance(target.get(key), dict):
-                cls._merge_mapping(target[key], item)
-            else:
-                target[key] = item
 
     def _put_candidate(
         self,
         connection: sqlite3.Connection,
         value: Mapping[str, Any],
         policy: Literal["update", "insert_only", "raise_duplicate"],
+        writer_transaction_id: str | None = None,
     ) -> dict[str, Any]:
         candidate_id = str(value.get("candidate_id") or "")
         sequence = str(value.get("sequence") or "")
@@ -329,6 +366,9 @@ class SQLiteStore(Store):
                 _json(merged),
             ),
         )
+        SQLiteOwnership(connection, self.project_id).advance_candidate(
+            candidate_id, writer_transaction_id
+        )
         return merged
 
     def list(self, *, status: str | None = None) -> list[dict[str, Any]]:
@@ -353,15 +393,16 @@ class SQLiteStore(Store):
         timestamp = str(value.get("timestamp") or _now())
         payload = dict(value)
         for key in (
-            "event_id", "timestamp", "workflow_id", "run_id", "task_id",
+            "event_id", "timestamp", "transaction_id", "workflow_id", "run_id", "task_id",
             "candidate_id", "agent", "event_type",
         ):
             payload.pop(key, None)
         connection.execute(
-            "INSERT INTO evidence_events(event_id, workflow_id, run_id, task_id, candidate_id, agent, event_type, timestamp, payload_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO evidence_events(event_id, transaction_id, workflow_id, run_id, task_id, candidate_id, agent, event_type, timestamp, payload_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 event_id,
+                value.get("transaction_id"),
                 value.get("workflow_id"),
                 value.get("run_id"),
                 value.get("task_id"),
@@ -374,12 +415,33 @@ class SQLiteStore(Store):
         )
         return event_id
 
+    @staticmethod
+    def _append_formal_event(
+        connection: sqlite3.Connection, event: Mapping[str, Any]
+    ) -> str:
+        """Validate newly committed evidence without breaking legacy ingestion."""
+        value = _mapping(event)
+        value.setdefault("event_id", str(uuid.uuid4()))
+        value.setdefault("timestamp", _now())
+        EvidenceEvent.from_dict(value)
+        return SQLiteStore._append_event(connection, value)
+
     def query(self, **filters: Any) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
-        for key in ("workflow_id", "run_id", "task_id", "candidate_id", "agent", "event_type"):
+        for key in (
+            "transaction_id", "workflow_id", "run_id", "task_id", "candidate_id",
+            "agent", "event_type",
+        ):
             if filters.get(key) is not None:
-                clauses.append(f"{key} = ?")
+                if key == "transaction_id":
+                    clauses.append(
+                        "(transaction_id = ? OR (transaction_id IS NULL AND "
+                        "json_extract(payload_json, '$.transaction_id') = ?))"
+                    )
+                    params.append(filters[key])
+                else:
+                    clauses.append(f"{key} = ?")
                 params.append(filters[key])
         sql = "SELECT * FROM evidence_events"
         if clauses:
@@ -392,7 +454,7 @@ class SQLiteStore(Store):
             event = {
                 key: row[key]
                 for key in (
-                    "event_id", "workflow_id", "run_id", "task_id", "candidate_id",
+                    "event_id", "transaction_id", "workflow_id", "run_id", "task_id", "candidate_id",
                     "agent", "event_type", "timestamp",
                 )
                 if row[key] is not None
@@ -415,13 +477,14 @@ class SQLiteStore(Store):
         artifact_id = str(value.get("artifact_id") or uuid.uuid4())
         with self._write() as connection:
             connection.execute(
-                "INSERT OR IGNORE INTO artifacts(artifact_id, artifact_type, path, size_bytes, producer_task_id, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO artifacts(artifact_id, artifact_type, path, size_bytes, sha256, producer_task_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     artifact_id,
                     value.get("artifact_type"),
                     value.get("path"),
                     value.get("size_bytes"),
+                    value.get("sha256"),
                     value.get("producer_task_id"),
                     value.get("created_at") or _now(),
                 ),
@@ -440,14 +503,20 @@ class SQLiteStore(Store):
         *,
         context: Mapping[str, Any],
         candidate_updates: Iterable[Mapping[str, Any]],
+        candidate_patches: Iterable[Mapping[str, Any]] = (),
         state_updates: Mapping[str, Any],
+        state_appends: Iterable[Mapping[str, Any]],
         artifacts: Iterable[Mapping[str, Any]],
+        evidence_events: Iterable[Mapping[str, Any]] = (),
     ) -> list[str]:
         """Atomically publish one execution transaction and post-commit evidence."""
         context_value = _mapping(context)
         transaction_id = str(context_value["transaction_id"])
         candidate_updates = list(candidate_updates)
+        candidate_patches = [_mapping(item) for item in candidate_patches]
+        state_appends = [_mapping(item) for item in state_appends]
         artifacts = list(artifacts)
+        evidence_events = list(evidence_events)
         now = _now()
         event_ids: list[str] = []
         with self._write() as connection:
@@ -457,35 +526,47 @@ class SQLiteStore(Store):
             ).fetchone()
             if existing and existing["status"] == "COMMITTED":
                 return list(json.loads(existing["payload_json"]).get("event_ids") or [])
+            if existing:
+                raise ValueError(
+                    f"transaction {transaction_id} is already {existing['status']}"
+                )
             self._ensure_project(connection)
-            previous_state = self._state_in(connection, self.project_id)
-            candidates = [
-                self._put_candidate(connection, _mapping(item), "raise_duplicate")
-                for item in candidate_updates
-            ]
-            self._advance_candidate_count(
-                connection, [item["candidate_id"] for item in candidates]
+            ownership = SQLiteOwnership(connection, self.project_id)
+            candidates, candidate_effects = ownership.apply_candidates(
+                candidate_updates,
+                candidate_patches,
+                transaction_id,
+                put_candidate=lambda value, policy, writer: self._put_candidate(
+                    connection, value, policy, writer
+                ),
             )
-            if state_updates:
-                state = self._state_in(connection, self.project_id)
-                state.update(dict(state_updates))
-                self._write_state(connection, self.project_id, state)
+            state_effects = ownership.apply_state(
+                self._state_in(connection, self.project_id),
+                state_updates,
+                state_appends,
+                [item["candidate_id"] for item in candidates],
+                transaction_id,
+                write_state=lambda state: self._write_state(
+                    connection, self.project_id, state
+                ),
+            )
             for artifact in artifacts:
                 value = _mapping(artifact)
                 connection.execute(
-                    "INSERT INTO artifacts(artifact_id, artifact_type, path, size_bytes, producer_task_id, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO artifacts(artifact_id, artifact_type, path, size_bytes, sha256, producer_task_id, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         str(value["artifact_id"]),
                         value.get("artifact_type"),
                         value.get("path"),
                         value.get("size_bytes"),
+                        value.get("sha256"),
                         context_value.get("task_id"),
                         now,
                     ),
                 )
             for candidate in candidates:
-                event_ids.append(self._append_event(connection, {
+                event_ids.append(self._append_formal_event(connection, {
                     "workflow_id": context_value.get("workflow_id"),
                     "run_id": context_value.get("run_id"),
                     "task_id": context_value.get("task_id"),
@@ -496,7 +577,17 @@ class SQLiteStore(Store):
                     "attempt_id": context_value.get("attempt_id"),
                     "candidate": candidate,
                 }))
-            event_ids.append(self._append_event(connection, {
+            for event in evidence_events:
+                formal_event = dict(_mapping(event))
+                formal_event.update({
+                    "workflow_id": context_value.get("workflow_id"),
+                    "run_id": context_value.get("run_id"),
+                    "task_id": context_value.get("task_id"),
+                    "attempt_id": context_value.get("attempt_id"),
+                    "transaction_id": transaction_id,
+                })
+                event_ids.append(self._append_formal_event(connection, formal_event))
+            event_ids.append(self._append_formal_event(connection, {
                 "workflow_id": context_value.get("workflow_id"),
                 "run_id": context_value.get("run_id"),
                 "task_id": context_value.get("task_id"),
@@ -510,13 +601,13 @@ class SQLiteStore(Store):
                 context_value,
                 event_ids=event_ids,
                 candidate_ids=[item["candidate_id"] for item in candidates],
+                candidate_effects=candidate_effects,
                 artifact_ids=[str(item["artifact_id"]) for item in artifacts],
-                previous_state=previous_state if state_updates or candidates else None,
+                state_effects=state_effects,
             )
             connection.execute(
                 "INSERT INTO execution_transactions(transaction_id, task_id, attempt_id, status, created_at, updated_at, payload_json) "
-                "VALUES (?, ?, ?, 'COMMITTED', ?, ?, ?) ON CONFLICT(transaction_id) DO UPDATE SET "
-                "status='COMMITTED', updated_at=excluded.updated_at, payload_json=excluded.payload_json",
+                "VALUES (?, ?, ?, 'COMMITTED', ?, ?, ?)",
                 (
                     transaction_id,
                     str(context_value["task_id"]),
@@ -528,42 +619,140 @@ class SQLiteStore(Store):
             )
         return event_ids
 
-    def rollback_transaction(self, transaction_id: str) -> None:
+    def rollback_transaction(self, transaction_id: str) -> list[dict[str, Any]]:
         """Compensate a committed effect set when orchestration cannot close."""
         with self._write() as connection:
             row = connection.execute(
                 "SELECT status, payload_json FROM execution_transactions WHERE transaction_id = ?",
                 (transaction_id,),
             ).fetchone()
-            if row is None or row["status"] != "COMMITTED":
-                return
+            if row is None or row["status"] == "ROLLED_BACK":
+                return []
+            if row["status"] not in {"COMMITTED", "COMPENSATION_CONFLICT"}:
+                return [{"kind": "transaction_status", "status": row["status"]}]
             payload = json.loads(row["payload_json"])
-            event_ids = list(payload.get("event_ids") or [])
-            candidate_ids = list(payload.get("candidate_ids") or [])
-            artifact_ids = list(payload.get("artifact_ids") or [])
-            if event_ids:
-                connection.executemany(
-                    "DELETE FROM evidence_events WHERE event_id = ?",
-                    [(value,) for value in event_ids],
+            compensation_event_ids = list(payload.get("compensation_event_ids") or [])
+            compensation_event_ids.append(self._append_transaction_event(
+                connection,
+                payload,
+                "execution_transaction_compensation_started",
+            ))
+            ownership = SQLiteOwnership(connection, self.project_id)
+            state_effects = payload.get("state_effects")
+            if state_effects is None and payload.get("previous_state") is not None:
+                conflicts = [{"kind": "legacy_state_snapshot"}]
+            else:
+                conflicts = ownership.state_conflicts(transaction_id, state_effects or [])
+            candidate_effects = payload.get("candidate_effects")
+            if candidate_effects is None and payload.get("candidate_ids"):
+                conflicts.append({"kind": "legacy_candidate_ownership"})
+            else:
+                conflicts.extend(
+                    ownership.candidate_conflicts(transaction_id, candidate_effects or [])
                 )
-            if candidate_ids:
-                connection.executemany(
-                    "DELETE FROM candidates WHERE project_id = ? AND candidate_id = ?",
-                    [(self.project_id, value) for value in candidate_ids],
+            payload["compensation_conflicts"] = conflicts
+            payload["compensation_event_ids"] = compensation_event_ids
+            if conflicts:
+                compensation_event_ids.append(self._append_transaction_event(
+                    connection,
+                    payload,
+                    "execution_transaction_compensation_conflict",
+                    conflicts=conflicts,
+                ))
+                payload["compensation_event_ids"] = compensation_event_ids
+                self._set_transaction_status(
+                    connection, transaction_id, "COMPENSATION_CONFLICT", payload
                 )
-            if artifact_ids:
-                connection.executemany(
-                    "DELETE FROM artifacts WHERE artifact_id = ?",
-                    [(value,) for value in artifact_ids],
-                )
-            previous_state = payload.get("previous_state")
-            if previous_state is not None:
-                self._write_state(connection, self.project_id, previous_state)
-            connection.execute(
-                "UPDATE execution_transactions SET status = 'ROLLED_BACK', updated_at = ? "
-                "WHERE transaction_id = ?",
-                (_now(), transaction_id),
+                return conflicts
+            ownership.compensate_state(
+                self._state_in(connection, self.project_id),
+                transaction_id,
+                state_effects or [],
+                write_state=lambda state: self._write_state(
+                    connection, self.project_id, state
+                ),
             )
+            ownership.compensate_candidates(
+                transaction_id,
+                candidate_effects or [],
+            )
+            self._delete_transaction_effects(connection, payload)
+            compensation_event_ids.append(self._append_transaction_event(
+                connection,
+                payload,
+                "execution_transaction_rolled_back",
+            ))
+            payload["compensation_event_ids"] = compensation_event_ids
+            self._set_transaction_status(
+                connection, transaction_id, "ROLLED_BACK", payload
+            )
+        return conflicts
+
+    def get_transaction_status(self, transaction_id: str) -> str | None:
+        with self._read() as connection:
+            row = connection.execute(
+                "SELECT status FROM execution_transactions WHERE transaction_id = ?",
+                (transaction_id,),
+            ).fetchone()
+        return str(row["status"]) if row else None
+
+    def _delete_transaction_effects(
+        self, connection: sqlite3.Connection, payload: Mapping[str, Any]
+    ) -> None:
+        artifact_ids = list(payload.get("artifact_ids") or [])
+        if artifact_ids:
+            connection.executemany(
+                "DELETE FROM artifacts WHERE artifact_id = ?",
+                [(value,) for value in artifact_ids],
+            )
+
+    def _append_transaction_event(
+        self,
+        connection: sqlite3.Connection,
+        transaction_payload: Mapping[str, Any],
+        event_type: str,
+        **details: Any,
+    ) -> str:
+        metadata = transaction_payload.get("metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        event = {
+            "event_id": uuid.uuid4().hex,
+            "timestamp": _now(),
+            "project_id": str(metadata.get("project_id") or self.project_id),
+            "workflow_id": transaction_payload.get("workflow_id"),
+            "run_id": transaction_payload.get("run_id"),
+            "plan_id": metadata.get("plan_id"),
+            "task_id": transaction_payload.get("task_id"),
+            "attempt_id": transaction_payload.get("attempt_id"),
+            "transaction_id": transaction_payload.get("transaction_id"),
+            "agent": "execution",
+            "event_type": event_type,
+            **details,
+        }
+        event = {key: value for key, value in event.items() if value is not None}
+        EvidenceEvent.from_dict(event)
+        return self._append_event(connection, event)
+
+    def _set_transaction_status(
+        self,
+        connection: sqlite3.Connection,
+        transaction_id: str,
+        status: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        row = connection.execute(
+            "SELECT status FROM execution_transactions WHERE transaction_id = ?",
+            (transaction_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"transaction not found: {transaction_id}")
+        current = str(row["status"])
+        assert_transaction_transition(current, status)
+        connection.execute(
+            "UPDATE execution_transactions SET status = ?, updated_at = ?, payload_json = ? "
+            "WHERE transaction_id = ?",
+            (status, _now(), _json(payload), transaction_id),
+        )
 
     def record_task_failure(
         self, *, context: Mapping[str, Any], error: Mapping[str, Any]
@@ -571,27 +760,48 @@ class SQLiteStore(Store):
         context_value = _mapping(context)
         now = _now()
         payload = dict(context_value, error=dict(error))
+        transaction_id = str(context_value["transaction_id"])
+        context_status = str(context_value.get("status") or "")
         with self._write() as connection:
-            connection.execute(
-                "INSERT INTO execution_transactions(transaction_id, task_id, attempt_id, status, created_at, updated_at, payload_json) "
-                "VALUES (?, ?, ?, 'FAILED', ?, ?, ?) ON CONFLICT(transaction_id) DO UPDATE SET "
-                "status='FAILED', updated_at=excluded.updated_at, payload_json=excluded.payload_json",
-                (
-                    str(context_value["transaction_id"]),
-                    str(context_value["task_id"]),
-                    str(context_value["attempt_id"]),
-                    context_value.get("created_at", now),
-                    now,
-                    _json(payload),
-                ),
+            row = connection.execute(
+                "SELECT status FROM execution_transactions WHERE transaction_id = ?",
+                (transaction_id,),
+            ).fetchone()
+            missing_transaction_row = row is None
+            if row is None:
+                stored_status = (
+                    context_status
+                    if context_status in TERMINAL_TRANSACTION_STATUSES
+                    else "FAILED"
+                )
+                connection.execute(
+                    "INSERT INTO execution_transactions(transaction_id, task_id, attempt_id, status, created_at, updated_at, payload_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        transaction_id,
+                        str(context_value["task_id"]),
+                        str(context_value["attempt_id"]),
+                        stored_status,
+                        context_value.get("created_at", now),
+                        now,
+                        _json(payload),
+                    ),
+                )
+            else:
+                stored_status = str(row["status"])
+                if stored_status not in TERMINAL_TRANSACTION_STATUSES:
+                    connection.execute(
+                        "UPDATE execution_transactions SET status = 'FAILED', updated_at = ?, payload_json = ? "
+                        "WHERE transaction_id = ? AND status = ?",
+                        (now, _json(payload), transaction_id, stored_status),
+                    )
+                    stored_status = "FAILED"
+            event_type = (
+                "execution_transaction_failed"
+                if stored_status == "FAILED"
+                or (missing_transaction_row and context_status == "ROLLED_BACK")
+                else "execution_transaction_post_commit_failure"
             )
-            self._append_event(connection, {
-                "workflow_id": context_value.get("workflow_id"),
-                "run_id": context_value.get("run_id"),
-                "task_id": context_value.get("task_id"),
-                "agent": "execution",
-                "event_type": "execution_transaction_failed",
-                "transaction_id": context_value.get("transaction_id"),
-                "attempt_id": context_value.get("attempt_id"),
-                **dict(error),
-            })
+            self._append_transaction_event(
+                connection, context_value, event_type, **dict(error)
+            )

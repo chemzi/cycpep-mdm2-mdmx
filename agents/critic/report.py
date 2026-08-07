@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 from collections import Counter
+from contracts.critic import critic_persistence_effects
 from data_layer import CandidateIndex, EvidenceLogger, State
 from dataclasses import asdict
 from pathlib import Path
@@ -349,40 +349,26 @@ def run(
     output_path = Path(output_path).expanduser().resolve()
     _atomic_json(output_path, report)
     report_sha = file_sha256(output_path)
-    summary = {
-        "critic_version": CRITIC_VERSION,
-        "report_id": report["report_id"],
-        "report_path": str(output_path),
-        "report_sha256": report_sha,
-        "prediction_run_id": report["source"]["prediction_run_id"],
-        "verdict": report["verdict"],
-        "passed": report["passed"],
-        "issue_counts": report["issue_counts"],
-        "recommendation_count": len(report["recommendations"]),
-    }
-    State.update({"phase": "critic", "critic": summary})
-    history = State.load().get("iteration_history") or []
-    if not any(
-        item.get("agent") == "critic"
-        and (item.get("summary") or {}).get("report_id") == report["report_id"]
-        for item in history
-    ):
-        State.append_history({"phase": "critic", "agent": "critic", "summary": summary})
+    state_updates, evidence_payload = critic_persistence_effects(
+        report=report,
+        report_path=output_path,
+        report_digest=report_sha,
+        state=state,
+    )
+    State.update(state_updates)
+    State.append_history_if_absent(
+        evidence_payload["history_entry"],
+        identity_path=("summary", "report_id"),
+        identity_value=report["report_id"],
+    )
     if not any(
         entry.get("event_type") == "critic_review"
         and entry.get("report_id") == report["report_id"]
         for entry in EvidenceLogger.get_all()
     ):
-        EvidenceLogger.critic_review(
-            issues=report["issues"],
-            passed=report["passed"],
-            summary=report["summary"],
-            recommendation=json.dumps(
-                report["recommendations"], ensure_ascii=False, separators=(",", ":")
-            ),
-            metrics=report["metrics_snapshot"],
-            report_id=report["report_id"],
-            report_path=str(output_path),
-            report_sha256=report_sha,
-        )
+        EvidenceLogger.critic_review(**{
+            key: value
+            for key, value in evidence_payload.items()
+            if key != "history_entry"
+        })
     return {"report": report, "report_path": str(output_path), "report_sha256": report_sha}

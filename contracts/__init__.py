@@ -36,6 +36,7 @@ from .candidate_update import (
     CandidateUpdate,
     CandidateUpdateBatch,
 )
+from .critic import critic_persistence_effects
 
 __all__ = [
     "ACTION_CATALOG",
@@ -67,4 +68,5 @@ __all__ = [
     "CANDIDATE_UPDATE_SCHEMA_VERSION",
     "CandidateUpdate",
     "CandidateUpdateBatch",
+    "critic_persistence_effects",
 ]

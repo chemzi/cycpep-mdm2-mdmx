@@ -19,6 +19,13 @@ CREATE TABLE IF NOT EXISTS states (
     updated_at TEXT NOT NULL,
     payload_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS state_key_versions (
+    project_id TEXT NOT NULL REFERENCES projects(project_id),
+    key TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    last_writer_transaction_id TEXT,
+    PRIMARY KEY(project_id, key)
+);
 CREATE TABLE IF NOT EXISTS candidate_sequences (
     project_id TEXT PRIMARY KEY REFERENCES projects(project_id),
     current_value INTEGER NOT NULL DEFAULT 0
@@ -33,8 +40,16 @@ CREATE TABLE IF NOT EXISTS candidates (
     updated_at TEXT NOT NULL,
     payload_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS candidate_versions (
+    project_id TEXT NOT NULL REFERENCES projects(project_id),
+    candidate_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    last_writer_transaction_id TEXT,
+    PRIMARY KEY(project_id, candidate_id)
+);
 CREATE TABLE IF NOT EXISTS evidence_events (
     event_id TEXT PRIMARY KEY,
+    transaction_id TEXT,
     workflow_id TEXT,
     run_id TEXT,
     task_id TEXT,
@@ -49,6 +64,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
     artifact_type TEXT,
     path TEXT,
     size_bytes INTEGER,
+    sha256 TEXT,
     producer_task_id TEXT,
     created_at TEXT NOT NULL
 );
@@ -86,6 +102,7 @@ CREATE INDEX IF NOT EXISTS idx_candidates_project ON candidates(project_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_workflow ON evidence_events(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_task ON evidence_events(task_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_candidate ON evidence_events(candidate_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_transaction ON evidence_events(transaction_id);
 """
 
 
@@ -102,4 +119,11 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
     }
     if "size_bytes" not in artifact_columns:
         connection.execute("ALTER TABLE artifacts ADD COLUMN size_bytes INTEGER")
+    if "sha256" not in artifact_columns:
+        connection.execute("ALTER TABLE artifacts ADD COLUMN sha256 TEXT")
+    evidence_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(evidence_events)")
+    }
+    if "transaction_id" not in evidence_columns:
+        connection.execute("ALTER TABLE evidence_events ADD COLUMN transaction_id TEXT")
     connection.executescript(INDEXES)

@@ -64,12 +64,15 @@ def run(
     run_id: str | None = None,
     resume: bool = False,
     project_config: dict | None = None,
+    effects_output: str | Path | None = None,
+    transaction_id: str | None = None,
 ) -> dict:
     """Run Prediction for existing Design candidates.
 
     ``state`` remains accepted for compatibility with the agent scheduler.  A
-    supplied state object is read-only here; authoritative mutations still go
-    through ``State``/``CandidateIndex`` atomic helpers.
+    supplied state object is read-only here.  When ``effects_output`` is set,
+    all formal mutations are returned as proposals for Execution to commit;
+    otherwise the compatibility path uses the existing atomic helpers.
 
     ``project_config`` optionally injects an explicit approved project config
     (PR5, Engineering Standard §7) and must agree with ``state``'s
@@ -89,6 +92,11 @@ def run(
             )
         project = project_config
     thresholds = current_state.get("thresholds") or {}
+    if effects_output is not None and not transaction_id:
+        raise ContractError(
+            "prediction_transaction_missing",
+            "transaction_id is required when emitting Prediction effects",
+        )
     pipeline = PredictionPipeline(
         candidate_rows=CandidateIndex.load(),
         project=project,
@@ -99,8 +107,23 @@ def run(
         candidate_ids=candidate_ids,
         run_id=run_id,
         resume=resume,
+        defer_formal_writes=effects_output is not None,
+        artifact_id_prefix=transaction_id,
     )
-    return pipeline.run()
+    summary = pipeline.run()
+    if effects_output is not None:
+        destination = Path(effects_output).expanduser().resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(
+                pipeline.transaction_effects(),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+    return summary
 
 
 def _load_config(path: str | None) -> PredictionConfig:
@@ -128,6 +151,11 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--candidate", action="append", dest="candidates")
     command.add_argument("--run-id")
     command.add_argument("--resume", action="store_true")
+    command.add_argument(
+        "--effects-output",
+        help="write staged mutation/evidence proposals instead of formal writes",
+    )
+    command.add_argument("--transaction-id")
     return parser
 
 
@@ -142,6 +170,8 @@ def main() -> int:
                 candidate_ids=args.candidates,
                 run_id=args.run_id,
                 resume=args.resume,
+                effects_output=args.effects_output,
+                transaction_id=args.transaction_id,
             )
         else:
             raise AssertionError(args.command)

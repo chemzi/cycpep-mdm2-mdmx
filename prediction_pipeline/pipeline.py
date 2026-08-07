@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 
 import data_layer
-from data_layer import CandidateIndex, EvidenceLogger, State, evaluate_battery
+from data_layer import evaluate_battery
 from project_config import target_slug
 
 from .adapters import (
@@ -36,6 +36,7 @@ from .contracts import (
 from core.protocol import ProtocolError
 from .protocol import (
     MIGRATE_LEGACY_HINT,
+    protocol_binding,
     validate_execution_compatibility,
 )
 from .metrics import calculate_ipsae, load_pae, pose_convergence
@@ -54,6 +55,7 @@ from .structures import (
     parse_pdb,
     terminal_bond_distance,
 )
+from .transaction_effects import PredictionPersistence
 
 
 PREDICTION_PIPELINE_VERSION = "1.5.1"
@@ -133,6 +135,8 @@ class PredictionPipeline:
         run_id: str | None = None,
         resume: bool = False,
         require_protocol_compatibility: bool = True,
+        defer_formal_writes: bool = False,
+        artifact_id_prefix: str | None = None,
     ):
         self.config = config or PredictionConfig()
         self.project = project
@@ -142,6 +146,7 @@ class PredictionPipeline:
         self.run_root = Path(run_root).expanduser().resolve()
         self.resume = bool(resume)
         self.require_protocol_compatibility = bool(require_protocol_compatibility)
+        self.defer_formal_writes = bool(defer_formal_writes)
         self.requested_ids = {
             value.strip() for value in (candidate_ids or []) if value.strip()
         }
@@ -190,10 +195,17 @@ class PredictionPipeline:
         if not SAFE_RUN_ID.fullmatch(run_id):
             raise ContractError("run_id_invalid", f"unsafe run_id: {run_id!r}")
         self.run_id = run_id
+        self.artifact_id_prefix = artifact_id_prefix or run_id
         self.run_dir = self.run_root / run_id
         self.records_dir = self.run_dir / "records"
         self.handoff_path = self.run_dir / "prediction_handoff.json"
         self._target_reference_cache: dict[str, tuple[Any, Path, str]] = {}
+        self.persistence = PredictionPersistence(
+            run_id=self.run_id,
+            required_targets=self.required_targets,
+            defer_formal_writes=self.defer_formal_writes,
+            artifact_id_prefix=self.artifact_id_prefix,
+        )
 
     def _canonical_target_numbering(
         self,
@@ -244,6 +256,7 @@ class PredictionPipeline:
             "schema_version": RUN_SCHEMA_VERSION,
             "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
+            "protocol_identity": protocol_binding(),
             "batch_digest": self.batch_digest,
             "project_id": self.project.get("project_id"),
             "project_digest": self.project_digest,
@@ -906,6 +919,10 @@ class PredictionPipeline:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", candidate_id) or "invalid"
         return self.records_dir / f"{safe}.json"
 
+    def transaction_effects(self) -> dict:
+        """Return staged proposals for the Execution transaction boundary."""
+        return self.persistence.effects(self.handoff_path)
+
     def _cached_record(
         self, path: Path, *, input_digest: str, artifact_digest: str
     ) -> dict | None:
@@ -927,6 +944,7 @@ class PredictionPipeline:
         if (
             record.get("schema_version") != RECORD_SCHEMA_VERSION
             or record.get("run_id") != self.run_id
+            or record.get("protocol_identity") != protocol_binding()
             or not isinstance(record.get("metrics"), dict)
             or not isinstance(record.get("battery"), dict)
             or not isinstance(record.get("issues"), list)
@@ -997,17 +1015,14 @@ class PredictionPipeline:
     def _writeback(self, candidate: CandidateInput, record: dict, row: dict) -> None:
         battery = record["battery"]
         metrics = record["metrics"]
-        prediction_meta = {
-            "schema_version": RECORD_SCHEMA_VERSION,
-            "pipeline_version": PREDICTION_PIPELINE_VERSION,
-            "run_id": self.run_id,
-            "record_path": str(self._record_path(candidate.candidate_id)),
-            "record_sha256": record["record_sha256"],
-            "input_digest": candidate.input_digest,
-            "artifact_digest": record["cache_key"]["artifact_digest"],
-            "evidence_status": record["status"],
-            "issues": record["issues"],
-        }
+        record_path = self._record_path(candidate.candidate_id)
+        prediction_meta = self.persistence.prediction_metadata(
+            candidate_id=candidate.candidate_id,
+            record_path=record_path,
+            record=record,
+            input_digest=candidate.input_digest,
+            evidence_status=record["status"],
+        )
         nested = self._replace_prediction_metrics(row, metrics, prediction_meta)
         scores: dict[str, Any] = {
             "metrics_json": json.dumps(
@@ -1072,36 +1087,33 @@ class PredictionPipeline:
                 column = f"{key}_{slug}"
                 if column in data_layer.INDEX_COLUMNS:
                     scores[column] = ""
-        CandidateIndex.update_score(candidate.candidate_id, scores)
         old_notes = str(row.get("notes") or "").strip()
         prediction_note = (
             f"prediction_run={self.run_id}; status={record['status']}; "
-            f"record={self._record_path(candidate.candidate_id)}"
+            f"record={self.persistence.record_label(candidate.candidate_id, record_path)}"
         )
         combined_notes = (
             old_notes if prediction_note in old_notes
             else f"{old_notes}; {prediction_note}".strip("; ")
         )
-        CandidateIndex.update_status(
+        self.persistence.persist_candidate(
             candidate.candidate_id,
-            record["status"],
+            scores,
+            status=record["status"],
             notes=combined_notes,
         )
 
     def _writeback_invalid(self, row: dict, record: dict) -> None:
         """Withdraw all Prediction-owned values after a contract failure."""
         candidate_id = record["candidate"]["candidate_id"]
-        prediction_meta = {
-            "schema_version": RECORD_SCHEMA_VERSION,
-            "pipeline_version": PREDICTION_PIPELINE_VERSION,
-            "run_id": self.run_id,
-            "record_path": str(self._record_path(candidate_id)),
-            "record_sha256": record["record_sha256"],
-            "input_digest": record["cache_key"]["input_digest"],
-            "artifact_digest": record["cache_key"]["artifact_digest"],
-            "evidence_status": "invalid",
-            "issues": record["issues"],
-        }
+        record_path = self._record_path(candidate_id)
+        prediction_meta = self.persistence.prediction_metadata(
+            candidate_id=candidate_id,
+            record_path=record_path,
+            record=record,
+            input_digest=record["cache_key"]["input_digest"],
+            evidence_status="invalid",
+        )
         nested = self._replace_prediction_metrics(
             row, {"global": {}, "targets": {}}, prediction_meta
         )
@@ -1136,19 +1148,23 @@ class PredictionPipeline:
                 column = f"{key}_{slug}"
                 if column in data_layer.INDEX_COLUMNS:
                     scores[column] = ""
-        CandidateIndex.update_score(candidate_id, scores)
-
         old_notes = str(row.get("notes") or "").strip()
         error_code = record["issues"][0]["code"]
         prediction_note = (
             f"prediction_run={self.run_id}; status=invalid; "
-            f"error={error_code}; record={self._record_path(candidate_id)}"
+            f"error={error_code}; "
+            f"record={self.persistence.record_label(candidate_id, record_path)}"
         )
         combined_notes = (
             old_notes if prediction_note in old_notes
             else f"{old_notes}; {prediction_note}".strip("; ")
         )
-        CandidateIndex.update_status(candidate_id, "invalid", notes=combined_notes)
+        self.persistence.persist_candidate(
+            candidate_id,
+            scores,
+            status="invalid",
+            notes=combined_notes,
+        )
 
     def _distance_pass(self, value: float) -> str:
         threshold = self.thresholds.get("L4_nc_term_dist") or {}
@@ -1205,6 +1221,10 @@ class PredictionPipeline:
             artifact_digest=artifact_digest,
         )
         if cached is not None:
+            self.persistence.remember_record(
+                candidate.candidate_id,
+                record_path,
+            )
             self._writeback(candidate, cached, row)
             return cached, True
 
@@ -1232,6 +1252,7 @@ class PredictionPipeline:
             "schema_version": RECORD_SCHEMA_VERSION,
             "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
+            "protocol_identity": protocol_binding(),
             "created_at": _utcnow(),
             "candidate": candidate.snapshot(),
             "cache_key": {
@@ -1249,6 +1270,10 @@ class PredictionPipeline:
         }
         _atomic_json(record_path, record)
         record["record_sha256"] = file_sha256(record_path)
+        self.persistence.remember_record(
+            candidate.candidate_id,
+            record_path,
+        )
         self._writeback(candidate, record, row)
 
         tool_trace = {
@@ -1262,40 +1287,15 @@ class PredictionPipeline:
             "output_hash": record["record_sha256"],
             "exit_code": 0,
         }
-        for layer, pass_key in enumerate(LAYER_KEYS, start=1):
-            EvidenceLogger.candidate_scored(
-                candidate.candidate_id,
-                layer,
-                {"metrics": metrics},
-                tool_trace,
-                bool(battery[pass_key]),
-                target_ids=list(self.required_targets),
-            )
-        EvidenceLogger.log(
-            "prediction",
-            "prediction_recorded",
-            {
-                "candidate_id": candidate.candidate_id,
-                "prediction_status": status,
-                "record_path": str(record_path),
-                "record_sha256": record["record_sha256"],
-                "issues": issues,
-            },
-            targets=list(self.required_targets),
-            phase="evaluate",
+        self.persistence.record_scoring_events(
+            candidate_id=candidate.candidate_id,
+            record_path=record_path,
+            record=record,
+            metrics=metrics,
+            battery=battery,
+            tool_trace=tool_trace,
+            layer_keys=LAYER_KEYS,
         )
-        if status == "finalized":
-            EvidenceLogger.log(
-                "prediction",
-                "candidate_finalized",
-                {
-                    "candidate_id": candidate.candidate_id,
-                    "record_path": str(record_path),
-                    "record_sha256": record["record_sha256"],
-                },
-                targets=list(self.required_targets),
-                phase="evaluate",
-            )
         return record, False
 
     def _invalid_record(self, row: dict, error: ContractError) -> dict:
@@ -1306,6 +1306,7 @@ class PredictionPipeline:
             "schema_version": RECORD_SCHEMA_VERSION,
             "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
+            "protocol_identity": protocol_binding(),
             "created_at": _utcnow(),
             "candidate": {
                 "candidate_id": candidate_id,
@@ -1332,40 +1333,25 @@ class PredictionPipeline:
         }
         _atomic_json(record_path, record)
         record["record_sha256"] = file_sha256(record_path)
+        self.persistence.remember_record(
+            candidate_id,
+            record_path,
+        )
         if candidate_id != "unknown":
             try:
                 self._writeback_invalid(row, record)
             except KeyError:
                 pass
-        EvidenceLogger.log(
-            "prediction",
-            "prediction_recorded",
-            {
-                "candidate_id": candidate_id,
-                "prediction_status": "invalid",
-                "record_path": str(record_path),
-                "record_sha256": record["record_sha256"],
-                "issues": record["issues"],
-            },
-            targets=list(self.required_targets),
-            phase="evaluate",
-        )
+        self.persistence.record_invalid_event(candidate_id, record_path, record)
         return record
 
     def run(self) -> dict:
         self._prepare_run()
-        EvidenceLogger.log(
-            "prediction",
-            "prediction_run_started",
-            {
-                "run_id": self.run_id,
-                "pipeline_version": PREDICTION_PIPELINE_VERSION,
-                "run_dir": str(self.run_dir),
-                "candidate_count": len(self.rows),
-                "config_digest": self.config_digest,
-            },
-            targets=list(self.required_targets),
-            phase="evaluate",
+        self.persistence.record_run_started(
+            pipeline_version=PREDICTION_PIPELINE_VERSION,
+            run_dir=self.run_dir,
+            candidate_count=len(self.rows),
+            config_digest=self.config_digest,
         )
         records, cache_hits = [], 0
         for row in self.rows:
@@ -1379,19 +1365,15 @@ class PredictionPipeline:
 
         categories: dict[str, list[dict]] = {}
         for record in records:
-            categories.setdefault(record["status"], []).append({
-                "candidate_id": record["candidate"]["candidate_id"],
-                "sequence": record["candidate"].get("sequence"),
-                "record_path": str(
-                    self._record_path(record["candidate"]["candidate_id"])
-                ),
-                "record_sha256": record.get("record_sha256"),
-                "issues": record.get("issues", []),
-            })
+            record_path = self._record_path(record["candidate"]["candidate_id"])
+            categories.setdefault(record["status"], []).append(
+                self.persistence.category_entry(record, record_path)
+            )
         handoff = {
             "schema_version": RUN_SCHEMA_VERSION,
             "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
+            "protocol_identity": protocol_binding(),
             "created_at": _utcnow(),
             "project_id": self.project.get("project_id"),
             "required_targets": list(self.required_targets),
@@ -1421,6 +1403,7 @@ class PredictionPipeline:
         summary = {
             "run_id": self.run_id,
             "pipeline_version": PREDICTION_PIPELINE_VERSION,
+            "protocol_identity": protocol_binding(),
             "run_dir": str(self.run_dir),
             "handoff_path": str(self.handoff_path),
             "evaluated": len(records),
@@ -1433,31 +1416,6 @@ class PredictionPipeline:
                 for record in records if record["status"] == "finalized"
             ),
         }
-        updated_state = State.update({
-            "phase": "evaluate",
-            "prediction": summary,
-        })
-        if not any(
-            entry.get("agent") == "prediction"
-            and (entry.get("summary") or {}).get("run_id") == self.run_id
-            for entry in updated_state.get("iteration_history", [])
-        ):
-            State.append_history({
-                "phase": "evaluate",
-                "agent": "prediction",
-                "timestamp": _utcnow(),
-                "summary": summary,
-            })
-        EvidenceLogger.log(
-            "prediction",
-            "prediction_handoff_ready",
-            {
-                "run_id": self.run_id,
-                "handoff_path": str(self.handoff_path),
-                "handoff_sha256": file_sha256(self.handoff_path),
-                "status_counts": summary["status_counts"],
-            },
-            targets=list(self.required_targets),
-            phase="evaluate",
-        )
+        self.persistence.persist_state(summary, self.handoff_path)
+        self.persistence.record_handoff_ready(summary, self.handoff_path)
         return summary
