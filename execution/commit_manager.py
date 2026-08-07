@@ -10,6 +10,7 @@ from typing import Iterable, Mapping
 
 from contracts.transaction import TransactionContext, TransactionStatus
 from storage.base import Store
+from prediction_pipeline.contracts import file_sha256
 
 from .recovery import RecoveryManager
 from .staging import StagedArtifact
@@ -30,6 +31,8 @@ class CommitManager:
                 raise ValueError(f"staged artifact is missing: {path}")
             if path.stat().st_size != artifact.size_bytes:
                 raise ValueError(f"staged artifact size changed: {artifact.artifact_id}")
+            if file_sha256(path) != artifact.sha256:
+                raise ValueError(f"staged artifact sha256 changed: {artifact.artifact_id}")
             validated.append(artifact)
         return validated
 
@@ -39,6 +42,7 @@ class CommitManager:
         *,
         candidate_updates: Iterable[Mapping[str, object]] = (),
         state_updates: Mapping[str, object] | None = None,
+        state_appends: Iterable[object] = (),
         artifacts: Iterable[StagedArtifact] = (),
         evidence_events: Iterable[Mapping[str, object]] = (),
         staging_path: str | Path,
@@ -85,6 +89,7 @@ class CommitManager:
                     "artifact_type": artifact.artifact_type,
                     "path": str(destination),
                     "size_bytes": artifact.size_bytes,
+                    "sha256": artifact.sha256,
                 })
             marker.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
             for artifact, temporary in zip(manifest["artifacts"], temporary_paths):
@@ -98,6 +103,10 @@ class CommitManager:
                     for item in candidate_updates
                 ],
                 state_updates=dict(state_updates or {}),
+                state_appends=[
+                    item.to_dict() if hasattr(item, "to_dict") else dict(item)
+                    for item in state_appends
+                ],
                 artifacts=registrations,
                 evidence_events=evidence_events,
             )
@@ -129,11 +138,24 @@ class CommitManager:
     ) -> None:
         marker = Path(staging_path) / "metadata" / "commit.json"
         payload = json.loads(marker.read_text(encoding="utf-8"))
-        self.store.rollback_transaction(context.transaction_id)
-        for artifact in payload.get("artifacts", []):
-            path = Path(artifact["path"])
-            if path.exists():
-                path.unlink()
+        payload["status"] = "COMPENSATING"
+        marker.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            conflicts = self.store.rollback_transaction(context.transaction_id)
+            if conflicts:
+                raise RuntimeError(f"state compensation conflicts: {conflicts}")
+            self.recovery.remove_artifact_files(payload)
+        except BaseException as exc:
+            payload["status"] = "COMPENSATION_FAILED"
+            payload["compensation_error"] = {
+                "code": exc.__class__.__name__,
+                "message": str(exc),
+            }
+            marker.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            raise
         payload["status"] = "ROLLED_BACK"
+        payload.pop("compensation_error", None)
         marker.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         context.transition(TransactionStatus.ROLLED_BACK)

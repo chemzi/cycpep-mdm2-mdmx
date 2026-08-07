@@ -6,7 +6,9 @@ import json
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 import data_layer
 from agents.orchestrator import initialize, status
@@ -21,7 +23,9 @@ from execution.contracts import (
 from execution.handlers import _artifact_bundle_complete
 from execution.supervisor import run_process
 from execution.worker import execute_task
+from execution.results import ExecutionActionResult
 from prediction_pipeline.contracts import object_sha256
+from storage import SQLiteStore
 
 
 POLICY_CONSTRAINTS = [
@@ -272,6 +276,93 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(proposal["project_id"], "keap1")
         # State is untouched by the injection.
         self.assertEqual(data_layer.State.load()["project_id"], "execution_test")
+
+    def _complete_failure_case(self, *, rollback_error: Exception | None = None):
+        config = self._config()
+        store = SQLiteStore(self.root / "closure.db", project_id="execution_test")
+        task = {
+            "task_id": "T001",
+            "action": "propose_threshold_calibration",
+            "phase": "iterate",
+            "parameters": {"threshold_keys": []},
+            "candidate_scope": {"candidate_ids": [], "from_task_id": None},
+            "resource_request": {
+                "class": "network_cpu", "proposal_count": 0, "candidate_limit": 0
+            },
+            "outputs": ["threshold_calibration_proposal.json"],
+        }
+        claimed = {
+            "claim_token": "claim-close",
+            "dispatch_packet_path": str(self.root / "dispatch.json"),
+            "dispatch_packet_sha256": "unused",
+            "run": {
+                "run_id": "run-close",
+                "workflow_id": "workflow-close",
+                "plan": {
+                    "project_id": "execution_test",
+                    "plan_id": "plan-close",
+                },
+                "tasks": {"T001": {"attempts": 1}},
+                "resources": {},
+            },
+        }
+        packet = {"run_id": "run-close", "task": task}
+
+        def adapter(_context, _staging):
+            return ExecutionActionResult(state_updates={"committed_then_closed": True})
+
+        fail_mock = Mock(return_value={})
+        evidence_mock = Mock()
+        patches = [
+            patch("execution.worker.claim", return_value=claimed),
+            patch("execution.worker._read_packet", return_value=packet),
+            patch("execution.worker.handler_for", return_value=Mock()),
+            patch("execution.worker.adapter_for", return_value=adapter),
+            patch("execution.worker.complete", side_effect=RuntimeError("complete failed")),
+            patch("execution.worker.fail", fail_mock),
+            patch("execution.worker.get_storage_backend", return_value=store),
+            patch("execution.worker.refresh_projections"),
+            patch("execution.worker.EvidenceLogger.log", evidence_mock),
+        ]
+        if rollback_error is not None:
+            patches.append(patch(
+                "execution.worker.ExecutionWorker.rollback", side_effect=rollback_error
+            ))
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            with self.assertRaisesRegex(RuntimeError, "complete failed"):
+                execute_task(
+                    run_path=self.root / "run.json",
+                    task_id="T001",
+                    worker_id="execution-test",
+                    config=config,
+                )
+        failure_path = config.task_dir("run-close", "T001", 1) / "execution_failure.json"
+        return (
+            store,
+            fail_mock,
+            evidence_mock,
+            json.loads(failure_path.read_text(encoding="utf-8")),
+        )
+
+    def test_complete_failure_compensates_then_closes_orchestrator(self):
+        store, fail_mock, evidence_mock, failure = self._complete_failure_case()
+        self.assertNotIn("committed_then_closed", store.get_state("execution_test"))
+        self.assertNotIn("compensation_error", failure)
+        fail_mock.assert_called_once()
+        self.assertEqual(evidence_mock.call_args_list[-1].args[1], "execution_task_failed")
+
+    def test_compensation_failure_still_closes_and_preserves_original_error(self):
+        store, fail_mock, evidence_mock, failure = self._complete_failure_case(
+            rollback_error=RuntimeError("rollback failed")
+        )
+        self.assertTrue(store.get_state("execution_test")["committed_then_closed"])
+        self.assertEqual(failure["code"], "RuntimeError")
+        self.assertEqual(failure["message"], "complete failed")
+        self.assertEqual(failure["compensation_error"]["message"], "rollback failed")
+        fail_mock.assert_called_once()
+        self.assertEqual(evidence_mock.call_args_list[-1].args[1], "execution_task_failed")
 
 
 class ArtifactBundleCompletenessTests(unittest.TestCase):

@@ -23,11 +23,11 @@ from execution.adapters import adapter_for
 from execution.config import ExecutionConfig
 from execution.contracts import _validate_design_result
 from execution.handlers import HandlerContext
-from execution.results import ExecutionActionResult
+from execution.results import ExecutionActionResult, StateAppendMutation
 from execution.recovery import RecoveryManager
 from execution.staging import StagingArea
 from execution.worker import ExecutionWorker, _validate_action_result
-from prediction_pipeline.contracts import object_sha256
+from prediction_pipeline.contracts import file_sha256, object_sha256
 from storage import SQLiteStore
 
 
@@ -124,6 +124,11 @@ class DataIntegrityTransactionTests(unittest.TestCase):
             }
         self.assertIn("project_id", candidate_columns)
         self.assertIn("idx_candidates_project", indexes)
+        with store._connect() as connection:
+            artifact_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(artifacts)")
+            }
+        self.assertIn("sha256", artifact_columns)
 
     def test_state_store_honors_explicit_project_id(self):
         store = SQLiteStore(self.root / "projects.db", project_id="primary")
@@ -192,6 +197,106 @@ class DataIntegrityTransactionTests(unittest.TestCase):
         worker.run(retry, handler, validator=_validate_action_result)
         self.assertEqual(retry.status, TransactionStatus.COMMITTED)
         self.assertEqual([item["candidate_id"] for item in store.list()], ["C0001"])
+
+    def test_critic_append_uses_latest_state_inside_commit(self):
+        store = SQLiteStore(self.root / "state-append.db", project_id="p1")
+        store.replace_state("p1", {"iteration_history": [], "phase": "iterate"})
+        worker = ExecutionWorker(store, self.root / "staging", self.root / "artifacts")
+        context = self._transaction()
+        entry = {"agent": "critic", "summary": {"report_id": "critic-1"}}
+
+        def handler(_context, _staging):
+            store.update_state("p1", {"other_worker_effect": "preserved"})
+            return ExecutionActionResult(state_appends=(StateAppendMutation(
+                key="iteration_history",
+                item=entry,
+                identity_path=("summary", "report_id"),
+                identity_value="critic-1",
+            ),))
+
+        worker.run(context, handler, validator=_validate_action_result)
+        state = store.get_state("p1")
+        self.assertEqual(state["other_worker_effect"], "preserved")
+        self.assertEqual(state["iteration_history"], [entry])
+
+    def test_rollback_only_compensates_own_state_effects_and_is_idempotent(self):
+        store = SQLiteStore(self.root / "state-compensation.db", project_id="p1")
+        store.replace_state("p1", {"base": True})
+        worker = ExecutionWorker(store, self.root / "staging", self.root / "artifacts")
+        first = self._transaction("1")
+        second = self._transaction("2")
+        worker.run(
+            first,
+            lambda *_: ExecutionActionResult(state_updates={"from_a": 1}),
+            validator=_validate_action_result,
+        )
+        worker.run(
+            second,
+            lambda *_: ExecutionActionResult(state_updates={"from_b": 2}),
+            validator=_validate_action_result,
+        )
+        worker.rollback(first)
+        worker.rollback(first)
+        self.assertEqual(store.get_state("p1"), {"base": True, "from_b": 2})
+
+    def test_same_size_staged_artifact_tamper_is_rejected(self):
+        store = SQLiteStore(self.root / "artifact-tamper.db", project_id="p1")
+        worker = ExecutionWorker(store, self.root / "staging", self.root / "artifacts")
+        source = self.root / "same-size.txt"
+        source.write_text("AAAA", encoding="utf-8")
+
+        def handler(_context, staging):
+            artifact = staging.stage_artifact(
+                source, artifact_id="same-size", artifact_type="text"
+            )
+            Path(artifact.staged_path).write_text("BBBB", encoding="utf-8")
+            return ExecutionActionResult(artifacts=(artifact,))
+
+        with self.assertRaisesRegex(ValueError, "sha256 changed"):
+            worker.run(self._transaction(), handler, validator=_validate_action_result)
+        self.assertIsNone(store.get_artifact("same-size"))
+
+    def test_artifact_registry_persists_staged_sha256(self):
+        store = SQLiteStore(self.root / "artifact-digest.db", project_id="p1")
+        worker = ExecutionWorker(store, self.root / "staging", self.root / "artifacts")
+        source = self.root / "digest.txt"
+        source.write_text("artifact", encoding="utf-8")
+
+        def handler(_context, staging):
+            artifact = staging.stage_artifact(
+                source, artifact_id="with-digest", artifact_type="text"
+            )
+            return ExecutionActionResult(artifacts=(artifact,))
+
+        worker.run(self._transaction(), handler, validator=_validate_action_result)
+        row = store.get_artifact("with-digest")
+        self.assertEqual(row["sha256"], file_sha256(source))
+
+    def test_recovery_reports_unresolved_compensation_conflict(self):
+        store = SQLiteStore(self.root / "recovery-conflict.db", project_id="p1")
+        worker = ExecutionWorker(store, self.root / "staging", self.root / "artifacts")
+        context = self._transaction()
+        worker.run(
+            context,
+            lambda *_: ExecutionActionResult(state_updates={"shared": "from-a"}),
+            validator=_validate_action_result,
+        )
+        store.update_state("p1", {"shared": "from-b"})
+        marker = (
+            self.root / "staging" / context.transaction_id / "metadata" / "commit.json"
+        )
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        payload["status"] = "COMPENSATION_FAILED"
+        marker.write_text(json.dumps(payload), encoding="utf-8")
+
+        recovery = RecoveryManager(store)
+        self.assertEqual(recovery.recover_pending(self.root / "staging"), [])
+        self.assertEqual(recovery.unresolved_transactions, [context.transaction_id])
+        self.assertEqual(store.get_state("p1")["shared"], "from-b")
+        self.assertEqual(
+            json.loads(marker.read_text(encoding="utf-8"))["status"],
+            "COMPENSATION_UNRESOLVED",
+        )
 
     def test_database_commit_failure_rolls_back_artifacts_and_evidence(self):
         store = data_layer.get_storage_backend()

@@ -89,6 +89,7 @@ class ExecutionWorker:
                 context,
                 candidate_updates=result.candidate_updates,
                 state_updates=result.state_updates,
+                state_appends=result.state_appends,
                 artifacts=result.artifacts,
                 evidence_events=result.evidence_events,
                 staging_path=staging.path,
@@ -336,7 +337,15 @@ def execute_task(
             and transaction_context.status == TransactionStatus.COMMITTED
             and not orchestrator_closed
         ):
-            transaction_worker.rollback(transaction_context)
+            try:
+                transaction_worker.rollback(transaction_context)
+            except BaseException as rollback_exc:
+                failure["compensation_error"] = {
+                    "code": getattr(
+                        rollback_exc, "code", rollback_exc.__class__.__name__
+                    ),
+                    "message": str(rollback_exc),
+                }
         atomic_json(task_dir / "execution_failure.json", failure)
         if not orchestrator_closed:
             try:
@@ -354,11 +363,18 @@ def execute_task(
                     "message": str(close_exc),
                 }
                 atomic_json(task_dir / "execution_failure.json", failure)
-        EvidenceLogger.log(
-            "execution", "execution_task_failed", failure,
-            phase=task["phase"] if task else "iterate",
-            trace_context=trace_context,
-        )
+        try:
+            EvidenceLogger.log(
+                "execution", "execution_task_failed", failure,
+                phase=task["phase"] if task else "iterate",
+                trace_context=trace_context,
+            )
+        except BaseException as evidence_exc:
+            failure["failure_evidence_error"] = {
+                "code": getattr(evidence_exc, "code", evidence_exc.__class__.__name__),
+                "message": str(evidence_exc),
+            }
+            atomic_json(task_dir / "execution_failure.json", failure)
         raise
 
 

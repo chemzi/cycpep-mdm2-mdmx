@@ -26,13 +26,7 @@ def critic_persistence_effects(
         "issue_counts": report["issue_counts"],
         "recommendation_count": len(report["recommendations"]),
     }
-    history = list(state.get("iteration_history") or [])
-    if not any(
-        item.get("agent") == "critic"
-        and (item.get("summary") or {}).get("report_id") == report["report_id"]
-        for item in history
-    ):
-        history.append({"phase": "critic", "agent": "critic", "summary": summary})
+    history_entry = {"phase": "critic", "agent": "critic", "summary": summary}
     evidence = {
         "issues": report["issues"],
         "passed": report["passed"],
@@ -44,9 +38,9 @@ def critic_persistence_effects(
         "report_id": report["report_id"],
         "report_path": summary["report_path"],
         "report_sha256": report_digest,
+        "history_entry": history_entry,
     }
     return {
         "phase": "critic",
         "critic": summary,
-        "iteration_history": history,
     }, evidence

@@ -27,7 +27,7 @@ from .contracts import (
     validate_task_parameters,
 )
 from .supervisor import atomic_json, run_process
-from .results import ExecutionActionResult
+from .results import ExecutionActionResult, StateAppendMutation
 from contracts.candidate_update import CandidateUpdateBatch
 from contracts.critic import critic_persistence_effects
 
@@ -491,6 +491,12 @@ def review_prediction_handoff(context: HandlerContext) -> HandlerOutcome:
         )
         return HandlerOutcome(
             state_updates=state_updates,
+            state_appends=(StateAppendMutation(
+                key="iteration_history",
+                item=evidence["history_entry"],
+                identity_path=("summary", "report_id"),
+                identity_value=report["report_id"],
+            ),),
             evidence_events=({
                 "agent": "critic",
                 "event_type": "critic_review",

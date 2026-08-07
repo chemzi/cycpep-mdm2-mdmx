@@ -356,10 +356,19 @@ def run(
         state=state,
     )
     State.update(state_updates)
+    State.append_history_if_absent(
+        evidence_payload["history_entry"],
+        identity_path=("summary", "report_id"),
+        identity_value=report["report_id"],
+    )
     if not any(
         entry.get("event_type") == "critic_review"
         and entry.get("report_id") == report["report_id"]
         for entry in EvidenceLogger.get_all()
     ):
-        EvidenceLogger.critic_review(**evidence_payload)
+        EvidenceLogger.critic_review(**{
+            key: value
+            for key, value in evidence_payload.items()
+            if key != "history_entry"
+        })
     return {"report": report, "report_path": str(output_path), "report_sha256": report_sha}

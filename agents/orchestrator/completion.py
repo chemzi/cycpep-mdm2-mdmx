@@ -86,7 +86,10 @@ def _validate_output_contract(
             for dependency in task["depends_on"]
         }
         validate_output_inventory(
-            task, inventory, dependency_outputs=dependency_outputs
+            task,
+            inventory,
+            dependency_outputs=dependency_outputs,
+            approved_project_id=(run.get("plan") or {}).get("project_id"),
         )
     except Exception as exc:
         if isinstance(exc, OrchestratorContractError):

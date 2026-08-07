@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 from contracts.transaction import TransactionContext, TransactionStatus
 from execution.adapters import adapter_for, make_legacy_handler_adapter
 from execution.config import ExecutionConfig
-from execution.contracts import ExecutionContractError
+from execution.contracts import ExecutionContractError, validate_output_inventory
 from execution.handlers import HandlerContext
 from execution.results import ExecutionActionResult
 from execution.worker import ExecutionWorker, _validate_action_result
@@ -78,7 +78,11 @@ class TransactionalHandlerTests(unittest.TestCase):
             },
             "outputs": ["threshold_calibration_proposal.json"],
         }
-        return {"run_id": "run-typed", "task": task}, "calibration_proposal", ""
+        return {
+            "run_id": "run-typed",
+            "task": task,
+            "trace_context": {"project_id": "typed-test"},
+        }, "calibration_proposal", ""
 
     def _valid_payload(self, action: str, task: dict, dependency_digest: str) -> dict:
         if action == "review_prediction_handoff":
@@ -104,6 +108,7 @@ class TransactionalHandlerTests(unittest.TestCase):
             "status": "pending_controls",
             "requested_threshold_keys": ["L2_ipsae:MDM2"],
             "current_thresholds": {},
+            "control_data": {"available": False, "path": None, "sha256": None},
             "control_requirements": {},
             "applied_to_state": False,
             "created_at": "2026-08-07T00:00:00+00:00",
@@ -336,6 +341,51 @@ class TransactionalHandlerTests(unittest.TestCase):
         )
         result = adapter(context, Mock())
         self.assertIsInstance(result, ExecutionActionResult)
+
+    def test_calibration_rejects_threshold_key_mismatch(self):
+        packet, role, _ = self._case("propose_threshold_calibration", self.root)
+        payload = self._valid_payload(packet["task"]["action"], packet["task"], "")
+        payload["requested_threshold_keys"] = ["different:key"]
+        path = self.root / "threshold-mismatch.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaisesRegex(ExecutionContractError, "threshold keys"):
+            validate_output_inventory(
+                packet["task"],
+                [{"role": role, "path": str(path)}],
+                approved_project_id="typed-test",
+            )
+
+    def test_calibration_validates_control_data_file_and_sha256(self):
+        packet, role, _ = self._case("propose_threshold_calibration", self.root)
+        payload = self._valid_payload(packet["task"]["action"], packet["task"], "")
+        proposal = self.root / "control-proposal.json"
+        payload["status"] = "ready_for_calibration"
+        payload["control_data"] = {
+            "available": True,
+            "path": str(self.root / "missing-controls.json"),
+            "sha256": "a" * 64,
+        }
+        proposal.write_text(json.dumps(payload), encoding="utf-8")
+        inventory = [{"role": role, "path": str(proposal)}]
+        with self.assertRaisesRegex(ExecutionContractError, "missing or changed"):
+            validate_output_inventory(
+                packet["task"], inventory, approved_project_id="typed-test"
+            )
+
+        controls = self.root / "controls.json"
+        controls.write_text("{}", encoding="utf-8")
+        payload["control_data"].update(path=str(controls), sha256="b" * 64)
+        proposal.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaisesRegex(ExecutionContractError, "missing or changed"):
+            validate_output_inventory(
+                packet["task"], inventory, approved_project_id="typed-test"
+            )
+
+        payload["control_data"]["sha256"] = file_sha256(controls)
+        proposal.write_text(json.dumps(payload), encoding="utf-8")
+        validate_output_inventory(
+            packet["task"], inventory, approved_project_id="typed-test"
+        )
 
 
 if __name__ == "__main__":

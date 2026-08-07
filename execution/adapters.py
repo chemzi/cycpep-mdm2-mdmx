@@ -56,6 +56,10 @@ def make_transactional_output_adapter(
             packet["task"],
             _semantic_output_inventory(result),
             dependency_outputs=packet.get("dependency_outputs") or {},
+            approved_project_id=(
+                (project_config or {}).get("project_id")
+                or (packet.get("trace_context") or {}).get("project_id")
+            ),
         )
         staged = [
             staging.stage_artifact(
@@ -73,6 +77,7 @@ def make_transactional_output_adapter(
         return ExecutionActionResult(
             candidate_updates=result.candidate_updates,
             state_updates=result.state_updates,
+            state_appends=result.state_appends,
             artifacts=(*result.artifacts, *staged),
             evidence_events=evidence_events,
             outputs=result.outputs,

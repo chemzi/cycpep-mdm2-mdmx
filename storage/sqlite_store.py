@@ -31,6 +31,18 @@ def _mapping(value: Mapping[str, Any]) -> dict[str, Any]:
     return dict(value)
 
 
+_MISSING = object()
+
+
+def _path_value(value: Any, path: Iterable[str]) -> Any:
+    current = value
+    for key in path:
+        if not isinstance(current, Mapping) or key not in current:
+            return _MISSING
+        current = current[key]
+    return current
+
+
 class SQLiteStore(Store):
     """Single-writer/multi-reader store with explicit atomic write boundaries."""
 
@@ -164,7 +176,27 @@ class SQLiteStore(Store):
             values.append(dict(item))
             state[key] = values
             self._write_state(connection, project_id, state)
-        return state
+            return state
+
+    def append_state_item_if_absent(
+        self,
+        project_id: str,
+        key: str,
+        item: Mapping[str, Any],
+        *,
+        identity_path: Iterable[str],
+        identity_value: Any,
+    ) -> dict[str, Any]:
+        with self._write() as connection:
+            self._ensure_project(connection, project_id)
+            state = self._state_in(connection, project_id)
+            values = list(state.get(key) or [])
+            path = tuple(identity_path)
+            if not any(_path_value(value, path) == identity_value for value in values):
+                values.append(dict(item))
+                state[key] = values
+                self._write_state(connection, project_id, state)
+            return state
 
     @staticmethod
     def _state_in(connection: sqlite3.Connection, project_id: str) -> dict[str, Any]:
@@ -415,13 +447,14 @@ class SQLiteStore(Store):
         artifact_id = str(value.get("artifact_id") or uuid.uuid4())
         with self._write() as connection:
             connection.execute(
-                "INSERT OR IGNORE INTO artifacts(artifact_id, artifact_type, path, size_bytes, producer_task_id, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO artifacts(artifact_id, artifact_type, path, size_bytes, sha256, producer_task_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     artifact_id,
                     value.get("artifact_type"),
                     value.get("path"),
                     value.get("size_bytes"),
+                    value.get("sha256"),
                     value.get("producer_task_id"),
                     value.get("created_at") or _now(),
                 ),
@@ -441,6 +474,7 @@ class SQLiteStore(Store):
         context: Mapping[str, Any],
         candidate_updates: Iterable[Mapping[str, Any]],
         state_updates: Mapping[str, Any],
+        state_appends: Iterable[Mapping[str, Any]],
         artifacts: Iterable[Mapping[str, Any]],
         evidence_events: Iterable[Mapping[str, Any]] = (),
     ) -> list[str]:
@@ -448,6 +482,7 @@ class SQLiteStore(Store):
         context_value = _mapping(context)
         transaction_id = str(context_value["transaction_id"])
         candidate_updates = list(candidate_updates)
+        state_appends = [_mapping(item) for item in state_appends]
         artifacts = list(artifacts)
         evidence_events = list(evidence_events)
         now = _now()
@@ -460,7 +495,6 @@ class SQLiteStore(Store):
             if existing and existing["status"] == "COMMITTED":
                 return list(json.loads(existing["payload_json"]).get("event_ids") or [])
             self._ensure_project(connection)
-            previous_state = self._state_in(connection, self.project_id)
             candidates = [
                 self._put_candidate(connection, _mapping(item), "raise_duplicate")
                 for item in candidate_updates
@@ -468,20 +502,24 @@ class SQLiteStore(Store):
             self._advance_candidate_count(
                 connection, [item["candidate_id"] for item in candidates]
             )
-            if state_updates:
+            state_effects: list[dict[str, Any]] = []
+            if state_updates or state_appends:
                 state = self._state_in(connection, self.project_id)
-                state.update(dict(state_updates))
+                state_effects = self._apply_state_effects(
+                    state, state_updates, state_appends
+                )
                 self._write_state(connection, self.project_id, state)
             for artifact in artifacts:
                 value = _mapping(artifact)
                 connection.execute(
-                    "INSERT INTO artifacts(artifact_id, artifact_type, path, size_bytes, producer_task_id, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO artifacts(artifact_id, artifact_type, path, size_bytes, sha256, producer_task_id, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         str(value["artifact_id"]),
                         value.get("artifact_type"),
                         value.get("path"),
                         value.get("size_bytes"),
+                        value.get("sha256"),
                         context_value.get("task_id"),
                         now,
                     ),
@@ -523,7 +561,7 @@ class SQLiteStore(Store):
                 event_ids=event_ids,
                 candidate_ids=[item["candidate_id"] for item in candidates],
                 artifact_ids=[str(item["artifact_id"]) for item in artifacts],
-                previous_state=previous_state if state_updates or candidates else None,
+                state_effects=state_effects,
             )
             connection.execute(
                 "INSERT INTO execution_transactions(transaction_id, task_id, attempt_id, status, created_at, updated_at, payload_json) "
@@ -540,15 +578,79 @@ class SQLiteStore(Store):
             )
         return event_ids
 
-    def rollback_transaction(self, transaction_id: str) -> None:
+    @staticmethod
+    def _apply_state_effects(
+        state: dict[str, Any],
+        updates: Mapping[str, Any],
+        appends: Iterable[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        effects = []
+        for key, after in updates.items():
+            effects.append({
+                "kind": "set",
+                "key": key,
+                "before_exists": key in state,
+                "before": state.get(key),
+                "after": after,
+            })
+            state[key] = after
+        for mutation in appends:
+            if mutation.get("kind") != "append_if_absent":
+                raise ValueError("unsupported state append mutation")
+            key = str(mutation["key"])
+            values = list(state.get(key) or [])
+            identity_path = list(mutation["identity_path"])
+            identity_value = mutation.get("identity_value")
+            applied = not any(
+                _path_value(item, identity_path) == identity_value for item in values
+            )
+            if applied:
+                values.append(dict(mutation["item"]))
+                state[key] = values
+            effects.append(dict(mutation, applied=applied))
+        return effects
+
+    @staticmethod
+    def _compensate_state_effects(
+        state: dict[str, Any], effects: Iterable[Mapping[str, Any]]
+    ) -> list[dict[str, Any]]:
+        conflicts = []
+        for effect in reversed(list(effects)):
+            key = str(effect["key"])
+            if effect["kind"] == "set":
+                current = state.get(key, _MISSING)
+                if current == effect.get("after"):
+                    if effect.get("before_exists"):
+                        state[key] = effect.get("before")
+                    else:
+                        state.pop(key, None)
+                elif not (
+                    effect.get("before_exists") and current == effect.get("before")
+                ) and not (not effect.get("before_exists") and current is _MISSING):
+                    conflicts.append({"kind": "set", "key": key})
+                continue
+            if effect["kind"] == "append_if_absent" and effect.get("applied"):
+                path = list(effect["identity_path"])
+                identity = effect.get("identity_value")
+                values = list(state.get(key) or [])
+                matches = [item for item in values if _path_value(item, path) == identity]
+                if matches == [effect.get("item")]:
+                    state[key] = [item for item in values if item is not matches[0]]
+                elif matches:
+                    conflicts.append({"kind": "append_if_absent", "key": key})
+        return conflicts
+
+    def rollback_transaction(self, transaction_id: str) -> list[dict[str, Any]]:
         """Compensate a committed effect set when orchestration cannot close."""
         with self._write() as connection:
             row = connection.execute(
                 "SELECT status, payload_json FROM execution_transactions WHERE transaction_id = ?",
                 (transaction_id,),
             ).fetchone()
-            if row is None or row["status"] != "COMMITTED":
-                return
+            if row is None or row["status"] == "ROLLED_BACK":
+                return []
+            if row["status"] not in {"COMMITTED", "COMPENSATION_CONFLICT"}:
+                return [{"kind": "transaction_status", "status": row["status"]}]
             payload = json.loads(row["payload_json"])
             event_ids = list(payload.get("event_ids") or [])
             candidate_ids = list(payload.get("candidate_ids") or [])
@@ -568,14 +670,26 @@ class SQLiteStore(Store):
                     "DELETE FROM artifacts WHERE artifact_id = ?",
                     [(value,) for value in artifact_ids],
                 )
-            previous_state = payload.get("previous_state")
-            if previous_state is not None:
-                self._write_state(connection, self.project_id, previous_state)
+            state_effects = payload.get("state_effects")
+            if state_effects is None and payload.get("previous_state") is not None:
+                conflicts = [{"kind": "legacy_state_snapshot"}]
+            else:
+                state = self._state_in(connection, self.project_id)
+                conflicts = self._compensate_state_effects(state, state_effects or [])
+                if state_effects:
+                    self._write_state(connection, self.project_id, state)
+            payload["compensation_conflicts"] = conflicts
             connection.execute(
-                "UPDATE execution_transactions SET status = 'ROLLED_BACK', updated_at = ? "
+                "UPDATE execution_transactions SET status = ?, updated_at = ?, payload_json = ? "
                 "WHERE transaction_id = ?",
-                (_now(), transaction_id),
+                (
+                    "COMPENSATION_CONFLICT" if conflicts else "ROLLED_BACK",
+                    _now(),
+                    _json(payload),
+                    transaction_id,
+                ),
             )
+        return conflicts
 
     def record_task_failure(
         self, *, context: Mapping[str, Any], error: Mapping[str, Any]

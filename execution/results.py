@@ -10,9 +10,33 @@ from .staging import StagedArtifact
 
 
 @dataclass(frozen=True)
+class StateAppendMutation:
+    """Append one state-list item only when its semantic identity is absent."""
+
+    key: str
+    item: Mapping[str, Any]
+    identity_path: tuple[str, ...]
+    identity_value: Any
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "item", dict(self.item))
+        object.__setattr__(self, "identity_path", tuple(self.identity_path))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "append_if_absent",
+            "key": self.key,
+            "item": dict(self.item),
+            "identity_path": list(self.identity_path),
+            "identity_value": self.identity_value,
+        }
+
+
+@dataclass(frozen=True)
 class ExecutionActionResult:
     candidate_updates: tuple[Mapping[str, Any], ...] = ()
     state_updates: Mapping[str, Any] | None = None
+    state_appends: tuple[StateAppendMutation, ...] = ()
     artifacts: tuple[StagedArtifact, ...] = ()
     evidence_events: tuple[Mapping[str, Any], ...] = ()
     outputs: tuple[tuple[str, Path], ...] = ()
@@ -21,6 +45,7 @@ class ExecutionActionResult:
     def __post_init__(self) -> None:
         object.__setattr__(self, "candidate_updates", tuple(self.candidate_updates))
         object.__setattr__(self, "state_updates", dict(self.state_updates or {}))
+        object.__setattr__(self, "state_appends", tuple(self.state_appends))
         object.__setattr__(self, "artifacts", tuple(self.artifacts))
         object.__setattr__(
             self, "evidence_events", tuple(dict(item) for item in self.evidence_events)

@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
     artifact_type TEXT,
     path TEXT,
     size_bytes INTEGER,
+    sha256 TEXT,
     producer_task_id TEXT,
     created_at TEXT NOT NULL
 );
@@ -102,4 +103,6 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
     }
     if "size_bytes" not in artifact_columns:
         connection.execute("ALTER TABLE artifacts ADD COLUMN size_bytes INTEGER")
+    if "sha256" not in artifact_columns:
+        connection.execute("ALTER TABLE artifacts ADD COLUMN sha256 TEXT")
     connection.executescript(INDEXES)

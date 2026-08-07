@@ -654,11 +654,12 @@ def _validate_calibration_proposal(
     value: dict,
     task: dict,
     dependency_outputs: dict[str, list[dict]] | None = None,
+    approved_project_id: str | None = None,
 ) -> None:
     required = {
         "schema_version", "execution_worker_version", "action", "task_id", "project_id",
         "status", "requested_threshold_keys", "current_thresholds", "control_requirements",
-        "applied_to_state", "created_at",
+        "control_data", "applied_to_state", "created_at",
     }
     if not required.issubset(value):
         raise ExecutionContractError(
@@ -667,6 +668,41 @@ def _validate_calibration_proposal(
         )
     if value.get("action") != task.get("action") or value.get("task_id") != task.get("task_id"):
         raise ExecutionContractError("calibration_proposal_invalid", "proposal identity mismatch")
+    requested = (task.get("parameters") or {}).get("threshold_keys") or []
+    if value.get("requested_threshold_keys") != requested:
+        raise ExecutionContractError(
+            "calibration_proposal_invalid", "requested threshold keys differ from task"
+        )
+    if value.get("status") not in {"pending_controls", "ready_for_calibration"}:
+        raise ExecutionContractError(
+            "calibration_proposal_invalid", "calibration proposal status is invalid"
+        )
+    approved_project_id = approved_project_id or task.get("project_id")
+    if not approved_project_id or value.get("project_id") != approved_project_id:
+        raise ExecutionContractError(
+            "calibration_proposal_invalid", "proposal project differs from approved project"
+        )
+    control_data = value.get("control_data")
+    if (
+        not isinstance(control_data, dict)
+        or not {"available", "path", "sha256"}.issubset(control_data)
+        or not isinstance(control_data.get("available"), bool)
+    ):
+        raise ExecutionContractError(
+            "calibration_proposal_invalid", "control_data must declare availability"
+        )
+    control_path = control_data.get("path")
+    control_digest = control_data.get("sha256")
+    if control_data["available"]:
+        path = Path(str(control_path or "")).expanduser().resolve()
+        if not path.is_file() or not control_digest or file_sha256(path) != control_digest:
+            raise ExecutionContractError(
+                "calibration_proposal_invalid", "available control_data is missing or changed"
+            )
+    elif control_path not in (None, "") or control_digest not in (None, ""):
+        raise ExecutionContractError(
+            "calibration_proposal_invalid", "unavailable control_data cannot carry path or sha256"
+        )
     if value.get("applied_to_state") is not False:
         raise ExecutionContractError(
             "calibration_proposal_invalid", "calibration proposal must not mutate thresholds"
@@ -686,6 +722,7 @@ def validate_output_inventory(
     inventory: Iterable[dict],
     *,
     dependency_outputs: dict[str, list[dict]] | None = None,
+    approved_project_id: str | None = None,
 ) -> None:
     """Validate role, JSON semantics and linked immutable artifacts."""
     action = str(task.get("action") or "")
@@ -705,5 +742,7 @@ def validate_output_inventory(
     validator = OUTPUT_VALIDATORS[action]
     if action == "iterate_design":
         validator(value, task)
+    elif action == "propose_threshold_calibration":
+        validator(value, task, dependency_outputs, approved_project_id)
     else:
         validator(value, task, dependency_outputs)

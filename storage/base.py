@@ -13,6 +13,17 @@ class StateStore(ABC):
     @abstractmethod
     def update_state(self, project_id: str, patches: Mapping[str, Any]) -> dict[str, Any]: ...
 
+    @abstractmethod
+    def append_state_item_if_absent(
+        self,
+        project_id: str,
+        key: str,
+        item: Mapping[str, Any],
+        *,
+        identity_path: Iterable[str],
+        identity_value: Any,
+    ) -> dict[str, Any]: ...
+
 
 class CandidateStore(ABC):
     @abstractmethod
@@ -52,6 +63,7 @@ class TransactionStore(ABC):
         context: Mapping[str, Any],
         candidate_updates: Iterable[Mapping[str, Any]],
         state_updates: Mapping[str, Any],
+        state_appends: Iterable[Mapping[str, Any]],
         artifacts: Iterable[Mapping[str, Any]],
         evidence_events: Iterable[Mapping[str, Any]] = (),
     ) -> list[str]: ...
@@ -62,8 +74,7 @@ class TransactionStore(ABC):
     ) -> None: ...
 
     @abstractmethod
-    def rollback_transaction(self, transaction_id: str) -> None: ...
-
+    def rollback_transaction(self, transaction_id: str) -> list[dict[str, Any]]: ...
 
 class Store(StateStore, CandidateStore, EvidenceStore, TransactionStore):
     """Business-facing store contract; no SQL operations are exposed."""
