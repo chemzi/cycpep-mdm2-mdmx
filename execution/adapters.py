@@ -8,8 +8,78 @@ from typing import Callable
 from contracts.transaction import TransactionContext
 
 from .config import ExecutionConfig
+from .contracts import validate_output_inventory
 from .results import ExecutionActionResult
 from .staging import StagingArea
+
+
+TRANSACTIONAL_ACTIONS = frozenset({
+    "iterate_design",
+    "review_prediction_handoff",
+    "propose_threshold_calibration",
+})
+
+
+def _semantic_output_inventory(result: ExecutionActionResult) -> list[dict]:
+    return [
+        {"role": role, "path": str(path)}
+        for role, path in result.outputs
+    ]
+
+
+def make_transactional_output_adapter(
+    handler: Callable,
+    packet: dict,
+    config: ExecutionConfig,
+    task_dir: Path,
+    project_config: dict | None,
+):
+    """Run a typed output handler through semantic validation and staging."""
+    def adapter(
+        context: TransactionContext, staging: StagingArea
+    ) -> ExecutionActionResult:
+        from .handlers import HandlerContext
+
+        result = handler(HandlerContext(
+            packet=packet,
+            config=config,
+            task_dir=task_dir,
+            project_config=project_config,
+            transaction_managed=True,
+        ))
+        if not isinstance(result, ExecutionActionResult):
+            raise TypeError(
+                f"transactional handler must return ExecutionActionResult, "
+                f"got {type(result).__name__}"
+            )
+        validate_output_inventory(
+            packet["task"],
+            _semantic_output_inventory(result),
+            dependency_outputs=packet.get("dependency_outputs") or {},
+        )
+        staged = [
+            staging.stage_artifact(
+                path,
+                artifact_id=f"{context.transaction_id}-{role}",
+                artifact_type=role,
+            )
+            for role, path in result.outputs
+        ]
+        artifact_ids = [artifact.artifact_id for artifact in staged]
+        evidence_events = tuple(
+            dict(event, artifact_ids=artifact_ids)
+            for event in result.evidence_events
+        )
+        return ExecutionActionResult(
+            candidate_updates=result.candidate_updates,
+            state_updates=result.state_updates,
+            artifacts=(*result.artifacts, *staged),
+            evidence_events=evidence_events,
+            outputs=result.outputs,
+            processes=result.processes,
+        )
+
+    return adapter
 
 
 def make_iterate_design_adapter(
@@ -92,6 +162,10 @@ def adapter_for(
     if action == "iterate_design":
         return make_iterate_design_adapter(
             packet, config, task_dir, project_config
+        )
+    if action in TRANSACTIONAL_ACTIONS:
+        return make_transactional_output_adapter(
+            handler, packet, config, task_dir, project_config
         )
     return make_legacy_handler_adapter(
         handler, packet, config, task_dir, project_config

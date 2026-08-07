@@ -29,6 +29,7 @@ from .contracts import (
 from .supervisor import atomic_json, run_process
 from .results import ExecutionActionResult
 from contracts.candidate_update import CandidateUpdateBatch
+from contracts.critic import critic_persistence_effects
 
 
 # Versioned scientific protocol parameters (Engineering Standard section 8):
@@ -49,6 +50,7 @@ class HandlerContext:
     config: ExecutionConfig
     task_dir: Path
     project_config: dict | None = None
+    transaction_managed: bool = False
 
     @property
     def task(self) -> dict:
@@ -467,6 +469,41 @@ def review_prediction_handoff(context: HandlerContext) -> HandlerOutcome:
     params = context.parameters
     handoff = _dependency_output(context, "prediction_handoff")
     output = context.task_dir / "outputs" / "critic_report.json"
+    if context.transaction_managed:
+        from agents.critic import CriticConfig, review
+
+        state = State.load()
+        report = review(
+            handoff_path=handoff,
+            state=state,
+            config=CriticConfig(
+                min_cohort_for_distribution=params["min_cohort"],
+                low_diversity_median_similarity=params["low_diversity_similarity"],
+            ),
+            project_config=context.project_config,
+        )
+        atomic_json(output, report)
+        state_updates, evidence = critic_persistence_effects(
+            report=report,
+            report_path=output,
+            report_digest=file_sha256(output),
+            state=state,
+        )
+        return HandlerOutcome(
+            state_updates=state_updates,
+            evidence_events=({
+                "agent": "critic",
+                "event_type": "critic_review",
+                "phase": "critic",
+                "issues": evidence["issues"],
+                "pass": evidence["passed"],
+                "summary": evidence["summary"],
+                "recommendation": evidence["recommendation"],
+                "metrics_snapshot": evidence["metrics"],
+                "report_id": evidence["report_id"],
+            },),
+            outputs=(("critic_report", output),),
+        )
     process = run_process(
         [
             context.config.core_python,
@@ -529,7 +566,20 @@ def propose_threshold_calibration(context: HandlerContext) -> HandlerOutcome:
         "applied_to_state": False,
         "created_at": _utcnow(),
     })
-    return HandlerOutcome(outputs=(("calibration_proposal", output),))
+    evidence_events = ()
+    if context.transaction_managed:
+        evidence_events = ({
+            "agent": "execution",
+            "event_type": "threshold_calibration",
+            "phase": "iterate",
+            "status": "ready_for_calibration" if controls_available else "pending_controls",
+            "requested_threshold_keys": list(requested),
+            "applied_to_state": False,
+        },)
+    return HandlerOutcome(
+        evidence_events=evidence_events,
+        outputs=(("calibration_proposal", output),),
+    )
 
 
 HANDLERS: dict[str, Callable[[HandlerContext], HandlerOutcome]] = {
