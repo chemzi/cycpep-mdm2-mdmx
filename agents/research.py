@@ -447,7 +447,7 @@ def _merge_known_binders(*collections: list[dict]) -> list[dict]:
     return merged
 
 
-def _default_thresholds(config: dict) -> dict:
+def default_thresholds(config: dict) -> dict:
     thresholds, _ = normalize_thresholds(
         json.loads(json.dumps(DEFAULT_THRESHOLDS)),
         applicable_targets=list(required_target_ids(config)),
@@ -859,7 +859,7 @@ def _run_pipeline():
 
     # ===== Step 8: 阈值文献检索 =====
     print("[research] Step 8/8: threshold literature research...")
-    thresholds = _default_thresholds(_cfg())
+    thresholds = default_thresholds(_cfg())
     try:
         tr, te2, tc, td_, th = _run_script("threshold_research.py", extra_args=["--concurrency", "4"])
         lit, threshold_normalization = normalize_thresholds(tr.get("metric_battery", {}))
@@ -1051,7 +1051,7 @@ def _run_generic_pipeline():
         fallbacks.append("no_binder_fallback")
         EvidenceLogger.error("research", "tool_failure", str(exc), recovery="no fabricated binder fallback")
 
-    thresholds = _default_thresholds(_cfg())
+    thresholds = default_thresholds(_cfg())
     try:
         tr, te, tc, td, thash = _run_script("threshold_research.py", extra_args=["--concurrency", "4"])
         literature_thresholds, threshold_normalization = normalize_thresholds(tr.get("metric_battery", {}))
@@ -1180,7 +1180,7 @@ def _run_impl(state=None, force_recompute=False, skip_pipeline=False):
             pipeline_result = pipeline_runner()
 
     thresholds, threshold_normalization = normalize_thresholds(
-        pipeline_result.get("thresholds") or _default_thresholds(_cfg())
+        pipeline_result.get("thresholds") or default_thresholds(_cfg())
     )
     pipeline_result["thresholds"] = thresholds
     threshold_cache = None if force_recompute else _load_valid_cache(_module_attr("THRESHOLDS_CACHE"), _cfg())

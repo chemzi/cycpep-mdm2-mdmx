@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "items": {
+    "file_size": [
+      {
+        "file": "agents/research.py",
+        "lines": 1283
+      },
+      {
+        "file": "data_layer.py",
+        "lines": 1487
+      },
+      {
+        "file": "prediction_pipeline/pipeline.py",
+        "lines": 1463
+      },
+      {
+        "file": "test_design.py",
+        "lines": 1020
+      },
+      {
+        "file": "test_prediction_pipeline.py",
+        "lines": 1367
+      }
+    ],
+    "function_length": [
+      {
+        "file": "agents/research.py",
+        "function": "_run_pipeline",
+        "line": 671,
+        "lines": 289
+      },
+      {
+        "file": "agents/research.py",
+        "function": "_run_generic_pipeline",
+        "line": 962,
+        "lines": 184
+      },
+      {
+        "file": "data_layer.py",
+        "function": "evaluate_battery",
+        "line": 1137,
+        "lines": 246
+      },
+      {
+        "file": "execution/contracts.py",
+        "function": "validate_task_parameters",
+        "line": 167,
+        "lines": 216
+      },
+      {
+        "file": "execution/worker.py",
+        "function": "execute_task",
+        "line": 144,
+        "lines": 204
+      },
+      {
+        "file": "prediction_pipeline/adapters.py",
+        "function": "load_artifact_bundle",
+        "line": 298,
+        "lines": 267
+      },
+      {
+        "file": "prediction_pipeline/boltz_worker.py",
+        "function": "run_boltz_prediction",
+        "line": 107,
+        "lines": 203
+      },
+      {
+        "file": "prediction_pipeline/metrics.py",
+        "function": "pose_convergence",
+        "line": 226,
+        "lines": 151
+      },
+      {
+        "file": "prediction_pipeline/pipeline.py",
+        "function": "_collect_metrics",
+        "line": 368,
+        "lines": 525
+      },
+      {
+        "file": "prediction_pipeline/relax_worker.py",
+        "function": "run_post_relax",
+        "line": 70,
+        "lines": 228
+      },
+      {
+        "file": "prediction_pipeline/rosetta_worker.py",
+        "function": "run_rosetta_interface",
+        "line": 53,
+        "lines": 191
+      },
+      {
+        "file": "scripts/enrich_prediction_evidence.py",
+        "function": "run",
+        "line": 198,
+        "lines": 231
+      },
+      {
+        "file": "scripts/run_execution_selfcheck.py",
+        "function": "main",
+        "line": 97,
+        "lines": 200
+      },
+      {
+        "file": "scripts/run_prediction_predictors.py",
+        "function": "run",
+        "line": 360,
+        "lines": 161
+      },
+      {
+        "file": "threshold_calibration.py",
+        "function": "calibrate_thresholds",
+        "line": 340,
+        "lines": 193
+      }
+    ],
+    "action_handlers": [],
+    "private_imports": []
+  }
+}

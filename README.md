@@ -208,6 +208,20 @@ python -m unittest -v test_planner.py test_orchestrator.py test_execution.py
 python -m unittest -v test_critic.py test_prediction_pipeline.py test_target_bootstrap.py
 ```
 
+### Architecture gate
+
+```bash
+python scripts/architecture_gate.py --baseline architecture_baseline.json
+```
+
+Enforced in CI (`.github/workflows/architecture.yml`): python files > 1000 lines,
+functions > 150 lines, executable planner actions without a real Execution
+handler, and absolute cross-package imports of private (`_name`) symbols from
+non-test code all fail the gate. Existing violations are tracked in
+`architecture_baseline.json` and must only shrink; any NEW violation blocks the
+PR. Maintainers regenerate the baseline with
+`python scripts/architecture_gate.py --update-baseline`.
+
 ### GPU / external-tool validation
 
 `test_design_gpu.py`、Prediction 服务器回归和外部工具验证需要专用环境与显式配置，不能在基础 CPU 环境中默认运行。具体命令、数据和许可要求见 `docs/` 下的 validation 文档。

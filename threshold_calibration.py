@@ -234,7 +234,7 @@ def _merge_calibrated_entry(existing: dict, calibrated: dict, *, targets: list[s
     return merged
 
 
-def _coerce_dataset(raw: Any) -> tuple[list[dict], dict]:
+def coerce_dataset(raw: Any) -> tuple[list[dict], dict]:
     if isinstance(raw, (list, tuple)):
         return [item for item in raw if isinstance(item, dict)], {}
     if not isinstance(raw, (dict, str, bytes)):
@@ -319,7 +319,7 @@ def load_control_dataset(
         payload = json.loads(source.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ControlDataError(f"cannot read control dataset: {type(exc).__name__}") from exc
-    controls, metadata = _coerce_dataset(payload)
+    controls, metadata = coerce_dataset(payload)
     payload_meta = payload if isinstance(payload, dict) else {}
     for key in ("project_id", "approved_digest", "protocol", "protocol_hash", "schema_version"):
         if key in payload_meta and key not in metadata:
@@ -356,7 +356,7 @@ def calibrate_thresholds(
     target-scoped metrics, cutoffs are stored under the existing ``targets``
     override field so ``threshold_for_target`` remains the single resolver.
     """
-    records, dataset_meta = _coerce_dataset(controls)
+    records, dataset_meta = coerce_dataset(controls)
     target_ids = [str(item).strip() for item in target_ids if str(item).strip()]
     if not isinstance(min_negative_controls, int) or min_negative_controls < 1:
         raise ValueError("min_negative_controls must be a positive integer")
