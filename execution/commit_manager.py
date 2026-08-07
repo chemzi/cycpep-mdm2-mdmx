@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping
@@ -14,7 +14,13 @@ from contracts.transaction import TransactionContext, TransactionStatus
 from storage.base import Store
 from prediction_pipeline.contracts import file_sha256
 
-from .recovery import OrchestratorProbe, RecoveryManager, RecoveryResult
+from .recovery import (
+    OrchestratorProbe,
+    RecoveryManager,
+    RecoveryResult,
+    owner_lease,
+    utc_now,
+)
 from .staging import StagedArtifact
 from .supervisor import durable_atomic_json
 
@@ -30,6 +36,7 @@ class CommitManager:
         self.store = store
         self.artifact_root = Path(artifact_root)
         self.recovery = RecoveryManager(store)
+        self.owner_instance_id = uuid.uuid4().hex
 
     @staticmethod
     def validate(artifacts: Iterable[StagedArtifact]) -> list[StagedArtifact]:
@@ -50,6 +57,7 @@ class CommitManager:
         context: TransactionContext,
         *,
         candidate_updates: Iterable[Mapping[str, object]] = (),
+        candidate_patches: Iterable[Mapping[str, object]] = (),
         state_updates: Mapping[str, object] | None = None,
         state_appends: Iterable[object] = (),
         artifacts: Iterable[StagedArtifact] = (),
@@ -63,13 +71,16 @@ class CommitManager:
         moved: list[Path] = []
         registrations: list[dict] = []
         temporary_paths: list[Path] = []
+        store_invoked = False
         manifest = {
             "transaction_id": context.transaction_id,
             "context": context.to_dict(),
             "status": "PREPARED",
             "artifacts": [],
-            "owner_worker_id": (context.metadata or {}).get("worker_id"),
-            "heartbeat_monotonic": time.monotonic(),
+            **owner_lease(
+                worker_id=(context.metadata or {}).get("worker_id"),
+                instance_id=self.owner_instance_id,
+            ),
         }
         try:
             manifest_artifacts, registrations, temporary_paths = self._prepare_artifacts(
@@ -81,11 +92,16 @@ class CommitManager:
                 destination = Path(artifact["path"])
                 os.replace(temporary, destination)
                 moved.append(destination)
+            store_invoked = True
             event_ids = self.store.commit_transaction(
                 context=context.to_dict(),
                 candidate_updates=[
                     item.to_dict() if hasattr(item, "to_dict") else dict(item)
                     for item in candidate_updates
+                ],
+                candidate_patches=[
+                    item.to_dict() if hasattr(item, "to_dict") else dict(item)
+                    for item in candidate_patches
                 ],
                 state_updates=dict(state_updates or {}),
                 state_appends=[
@@ -95,20 +111,82 @@ class CommitManager:
                 artifacts=registrations,
                 evidence_events=evidence_events,
             )
-        except BaseException:
-            self._remove_paths((*temporary_paths, *moved))
-            manifest["status"] = "ROLLED_BACK"
-            durable_atomic_json(marker, manifest)
-            if context.status == TransactionStatus.COMMITTING:
-                context.transition(TransactionStatus.ROLLED_BACK)
+        except BaseException as exc:
+            self._handle_commit_failure(
+                context=context,
+                marker=marker,
+                manifest=manifest,
+                temporary_paths=temporary_paths,
+                moved=moved,
+                store_invoked=store_invoked,
+                commit_error=exc,
+            )
             raise
         context.transition(TransactionStatus.COMMITTED)
         manifest["status"] = "COMMITTED"
+        manifest["context"] = context.to_dict()
+        manifest["heartbeat_at"] = utc_now()
         try:
             durable_atomic_json(marker, manifest)
         except OSError:
             pass
         return CommitResult(tuple(event_ids), tuple(registrations))
+
+    def _handle_commit_failure(
+        self,
+        *,
+        context: TransactionContext,
+        marker: Path,
+        manifest: dict,
+        temporary_paths: Iterable[Path],
+        moved: Iterable[Path],
+        store_invoked: bool,
+        commit_error: BaseException,
+    ) -> None:
+        database_status: str | None = None
+        probe_error: Exception | None = None
+        if store_invoked:
+            try:
+                database_status = self.store.get_transaction_status(
+                    context.transaction_id
+                )
+            except Exception as exc:
+                probe_error = exc
+        definitely_not_committed = (
+            not store_invoked
+            or (probe_error is None and database_status in {None, "FAILED", "ROLLED_BACK"})
+        )
+        if definitely_not_committed:
+            self._remove_paths((*temporary_paths, *moved))
+            manifest["status"] = "ROLLED_BACK"
+            durable_atomic_json(marker, manifest)
+            if context.status == TransactionStatus.COMMITTING:
+                context.transition(TransactionStatus.ROLLED_BACK)
+            return
+
+        if database_status == "COMMITTED":
+            context.transition(TransactionStatus.COMMITTED)
+        manifest["status"] = "RECOVERY_UNRESOLVED"
+        manifest["context"] = context.to_dict()
+        manifest["database_status_after_commit_error"] = database_status or "UNKNOWN"
+        manifest["recovery_error"] = {
+            "code": commit_error.__class__.__name__,
+            "message": str(commit_error),
+            "probe_error": (
+                {
+                    "code": probe_error.__class__.__name__,
+                    "message": str(probe_error),
+                }
+                if probe_error is not None
+                else None
+            ),
+        }
+        try:
+            durable_atomic_json(marker, manifest)
+        except OSError:
+            # The durable PREPARED marker already on disk remains sufficient
+            # for startup recovery to probe the database without deleting files.
+            pass
 
     def _prepare_artifacts(
         self, context: TransactionContext, staged: Iterable[StagedArtifact]
@@ -175,11 +253,7 @@ class CommitManager:
         )
 
     def refresh_heartbeat(self, context: TransactionContext, staging_path: str | Path) -> None:
-        """Best-effort liveness beat for a transaction still being committed.
-
-        Recovery treats a marker whose heartbeat is younger than the stall
-        threshold as possibly-live and will not roll it back.
-        """
+        """Best-effort UTC heartbeat for this manager's active transaction."""
         marker = Path(staging_path) / "metadata" / "commit.json"
         if not marker.is_file():
             return
@@ -187,7 +261,12 @@ class CommitManager:
             payload = json.loads(marker.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return
-        payload["heartbeat_monotonic"] = time.monotonic()
+        if (
+            payload.get("transaction_id") != context.transaction_id
+            or payload.get("owner_instance_id") != self.owner_instance_id
+        ):
+            return
+        payload["heartbeat_at"] = utc_now()
         try:
             durable_atomic_json(marker, payload)
         except OSError:
@@ -202,11 +281,27 @@ class CommitManager:
         durable_atomic_json(marker, payload)
         try:
             conflicts = self.store.rollback_transaction(context.transaction_id)
-            if conflicts:
-                raise RuntimeError(f"state compensation conflicts: {conflicts}")
-            self.recovery.remove_artifact_files(payload)
         except BaseException as exc:
-            payload["status"] = "COMPENSATION_FAILED"
+            payload["status"] = "COMPENSATION_UNRESOLVED"
+            payload["compensation_error"] = {
+                "code": exc.__class__.__name__,
+                "message": str(exc),
+            }
+            durable_atomic_json(marker, payload)
+            raise
+        if conflicts:
+            payload["status"] = "COMPENSATION_CONFLICT"
+            payload["compensation_error"] = {
+                "code": "COMPENSATION_CONFLICT",
+                "message": f"state compensation conflicts: {conflicts}",
+            }
+            durable_atomic_json(marker, payload)
+            context.transition(TransactionStatus.COMPENSATION_CONFLICT)
+            raise RuntimeError(f"state compensation conflicts: {conflicts}")
+        try:
+            self.recovery.remove_artifact_files(payload)
+        except OSError as exc:
+            payload["status"] = "COMPENSATION_UNRESOLVED"
             payload["compensation_error"] = {
                 "code": exc.__class__.__name__,
                 "message": str(exc),

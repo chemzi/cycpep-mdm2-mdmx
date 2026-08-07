@@ -17,6 +17,7 @@ class TransactionStatus(str, Enum):
     COMMITTED = "COMMITTED"
     FAILED = "FAILED"
     ROLLED_BACK = "ROLLED_BACK"
+    COMPENSATION_CONFLICT = "COMPENSATION_CONFLICT"
 
 
 _TRANSITIONS = {
@@ -24,8 +25,12 @@ _TRANSITIONS = {
     TransactionStatus.STAGING: {TransactionStatus.VALIDATING, TransactionStatus.FAILED},
     TransactionStatus.VALIDATING: {TransactionStatus.COMMITTING, TransactionStatus.FAILED},
     TransactionStatus.COMMITTING: {TransactionStatus.COMMITTED, TransactionStatus.ROLLED_BACK},
-    TransactionStatus.ROLLED_BACK: {TransactionStatus.FAILED},
-    TransactionStatus.COMMITTED: {TransactionStatus.ROLLED_BACK},
+    TransactionStatus.ROLLED_BACK: set(),
+    TransactionStatus.COMMITTED: {
+        TransactionStatus.ROLLED_BACK,
+        TransactionStatus.COMPENSATION_CONFLICT,
+    },
+    TransactionStatus.COMPENSATION_CONFLICT: {TransactionStatus.ROLLED_BACK},
     TransactionStatus.FAILED: set(),
 }
 

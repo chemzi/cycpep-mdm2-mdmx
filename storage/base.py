@@ -65,6 +65,7 @@ class TransactionStore(ABC):
         *,
         context: Mapping[str, Any],
         candidate_updates: Iterable[Mapping[str, Any]],
+        candidate_patches: Iterable[Mapping[str, Any]] = (),
         state_updates: Mapping[str, Any],
         state_appends: Iterable[Mapping[str, Any]],
         artifacts: Iterable[Mapping[str, Any]],

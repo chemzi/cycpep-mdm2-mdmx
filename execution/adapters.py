@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Callable
 
 from contracts.transaction import TransactionContext
 
 from .config import ExecutionConfig
-from .contracts import validate_output_inventory
-from .results import ExecutionActionResult
+
+from .contracts import ExecutionContractError, validate_output_inventory
+from .results import (
+    CandidatePatchMutation,
+    ExecutionActionResult,
+)
 from .staging import StagingArea
 
 
 TRANSACTIONAL_ACTIONS = frozenset({
     "iterate_design",
+    "evaluate_new_design_candidates",
     "review_prediction_handoff",
     "propose_threshold_calibration",
 })
@@ -25,6 +31,166 @@ def _semantic_output_inventory(result: ExecutionActionResult) -> list[dict]:
         {"role": role, "path": str(path)}
         for role, path in result.outputs
     ]
+
+
+def _prediction_artifacts(
+    result: ExecutionActionResult,
+    context: TransactionContext,
+    staging: StagingArea,
+    expected_protocol: dict,
+    artifact_root: Path,
+) -> tuple[list, dict[str, str]]:
+    handoff_paths = [
+        path for role, path in result.outputs if role == "prediction_handoff"
+    ]
+    if len(handoff_paths) != 1:
+        raise ExecutionContractError(
+            "prediction_handoff_invalid", "typed Prediction requires one handoff"
+        )
+    handoff = json.loads(handoff_paths[0].read_text(encoding="utf-8"))
+    if handoff.get("protocol_identity") != expected_protocol:
+        raise ExecutionContractError(
+            "prediction_protocol_mismatch",
+            "Prediction handoff does not match the task protocol identity",
+        )
+    staged = []
+    committed_inputs: dict[tuple[str, str], tuple[str, str]] = {}
+    record_shas: dict[str, str] = {}
+    approved_candidates = {
+        mutation.candidate_id for mutation in result.candidate_patches
+    }
+    seen_candidates: set[str] = set()
+    input_index = 0
+    for entries in (handoff.get("categories") or {}).values():
+        for item in entries:
+            candidate_id = str(item.get("candidate_id") or "")
+            if candidate_id not in approved_candidates or candidate_id in seen_candidates:
+                raise ExecutionContractError(
+                    "prediction_effects_scope_mismatch",
+                    "Prediction handoff exceeds the approved candidate scope",
+                )
+            seen_candidates.add(candidate_id)
+            record_path = Path(str(item.get("record_path") or "")).resolve()
+            expected_id = f"{context.transaction_id}-prediction-record-{candidate_id}"
+            if item.get("record_artifact_id") != expected_id:
+                raise ExecutionContractError(
+                    "prediction_record_invalid",
+                    f"Prediction record artifact identity mismatch for {candidate_id}",
+                )
+            if not record_path.is_file():
+                raise ExecutionContractError(
+                    "prediction_record_invalid",
+                    f"Prediction record is missing: {record_path}",
+                )
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            if record.get("protocol_identity") != expected_protocol:
+                raise ExecutionContractError(
+                    "prediction_protocol_mismatch",
+                    f"Prediction record protocol mismatch for {candidate_id}",
+                )
+            inventory = record.get("artifact_inventory") or []
+            if not isinstance(inventory, list) or any(
+                not isinstance(artifact, dict) for artifact in inventory
+            ):
+                raise ExecutionContractError(
+                    "prediction_record_invalid",
+                    f"Prediction artifact inventory is invalid for {candidate_id}",
+                )
+            for artifact in inventory:
+                source = Path(str(artifact.get("path") or "")).resolve()
+                declared_sha = str(artifact.get("sha256") or "")
+                identity = (str(source), declared_sha)
+                committed = committed_inputs.get(identity)
+                if committed is None:
+                    input_index += 1
+                    artifact_id = (
+                        f"{context.transaction_id}-prediction-input-{input_index:04d}"
+                    )
+                    staged_input = staging.stage_artifact(
+                        source,
+                        artifact_id=artifact_id,
+                        artifact_type=(
+                            f"prediction_input:{artifact.get('role') or 'unknown'}"
+                        ),
+                    )
+                    if staged_input.sha256 != declared_sha:
+                        raise ExecutionContractError(
+                            "prediction_artifact_invalid",
+                            f"Prediction input artifact missing or changed: {source}",
+                        )
+                    committed_path = str(
+                        artifact_root
+                        / context.workflow_id
+                        / context.task_id
+                        / artifact_id
+                        / source.name
+                    )
+                    committed = (artifact_id, committed_path)
+                    committed_inputs[identity] = committed
+                    staged.append(staged_input)
+                artifact["artifact_id"], artifact["path"] = committed
+            record_path.write_text(
+                json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            staged_record = staging.stage_artifact(
+                record_path,
+                artifact_id=expected_id,
+                artifact_type="prediction_record",
+            )
+            staged.append(staged_record)
+            record_shas[candidate_id] = staged_record.sha256
+            item["record_path"] = str(
+                artifact_root
+                / context.workflow_id
+                / context.task_id
+                / expected_id
+                / record_path.name
+            )
+            item["record_sha256"] = staged_record.sha256
+    if seen_candidates != approved_candidates:
+        raise ExecutionContractError(
+            "prediction_effects_scope_mismatch",
+            "Prediction handoff omits an approved candidate",
+        )
+    handoff_paths[0].write_text(
+        json.dumps(handoff, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return staged, record_shas
+
+
+def _prediction_committed_effects(
+    result: ExecutionActionResult,
+    record_shas: dict[str, str],
+) -> tuple[tuple, tuple]:
+    candidate_patches = []
+    for mutation in result.candidate_patches:
+        patch = dict(mutation.patch)
+        if mutation.candidate_id in record_shas and patch.get("metrics_json"):
+            metrics = json.loads(patch["metrics_json"])
+            prediction = dict(metrics.get("prediction") or {})
+            prediction["record_sha256"] = record_shas[mutation.candidate_id]
+            metrics["prediction"] = prediction
+            patch["metrics_json"] = json.dumps(
+                metrics, ensure_ascii=False, separators=(",", ":")
+            )
+        candidate_patches.append(CandidatePatchMutation(
+            candidate_id=mutation.candidate_id,
+            patch=patch,
+        ))
+
+    evidence_events = []
+    for event in result.evidence_events:
+        value = dict(event)
+        candidate_id = str(value.get("candidate_id") or "")
+        if candidate_id in record_shas:
+            if isinstance(value.get("tool_trace"), dict):
+                value["tool_trace"] = dict(
+                    value["tool_trace"], output_hash=record_shas[candidate_id]
+                )
+        evidence_events.append(value)
+    return tuple(candidate_patches), tuple(evidence_events)
 
 
 def make_transactional_output_adapter(
@@ -62,6 +228,17 @@ def make_transactional_output_adapter(
                 or (packet.get("trace_context") or {}).get("project_id")
             ),
         )
+        additional_staged = []
+        record_shas = {}
+        is_prediction = packet["task"]["action"] == "evaluate_new_design_candidates"
+        if is_prediction:
+            additional_staged, record_shas = _prediction_artifacts(
+                result,
+                context,
+                staging,
+                packet["task"]["parameters"]["predictor_protocol"],
+                config.execution_root / "artifacts",
+            )
         staged = [
             staging.stage_artifact(
                 path,
@@ -70,13 +247,22 @@ def make_transactional_output_adapter(
             )
             for role, path in result.outputs
         ]
+        staged.extend(additional_staged)
         artifact_ids = [artifact.artifact_id for artifact in staged]
+        if is_prediction:
+            candidate_patches, evidence_events = _prediction_committed_effects(
+                result, record_shas
+            )
+        else:
+            candidate_patches = result.candidate_patches
+            evidence_events = result.evidence_events
         evidence_events = tuple(
             dict(event, artifact_ids=artifact_ids)
-            for event in result.evidence_events
+            for event in evidence_events
         )
         return ExecutionActionResult(
             candidate_updates=result.candidate_updates,
+            candidate_patches=candidate_patches,
             state_updates=result.state_updates,
             state_appends=result.state_appends,
             artifacts=(*result.artifacts, *staged),

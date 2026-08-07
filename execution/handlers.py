@@ -27,7 +27,14 @@ from .contracts import (
     validate_task_parameters,
 )
 from .supervisor import atomic_json, run_process
-from .results import ExecutionActionResult, StateAppendMutation
+from .results import (
+    ExecutionActionResult,
+    StateAppendMutation,
+)
+from .prediction_effects import (
+    load_prediction_transaction_effects,
+    typed_prediction_result,
+)
 from contracts.candidate_update import CandidateUpdateBatch
 from contracts.critic import critic_persistence_effects
 
@@ -352,6 +359,29 @@ def _require_prediction_tools(config: ExecutionConfig) -> None:
         )
 
 
+def _prediction_transaction_effects(
+    context: HandlerContext,
+    path: Path,
+    candidate_ids: list[str],
+    run_id: str,
+) -> dict:
+    return load_prediction_transaction_effects(
+        path=path,
+        candidate_ids=candidate_ids,
+        run_id=run_id,
+        transaction_id=str(context.transaction_id),
+        expected_protocol=context.parameters["predictor_protocol"],
+    )
+
+
+def _typed_prediction_result(
+    effects: dict,
+    handoff: Path,
+    processes: list[dict],
+) -> HandlerOutcome:
+    return typed_prediction_result(effects, handoff, processes)
+
+
 def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
     params = context.parameters
     candidate_ids = _prediction_candidate_ids(context)
@@ -451,6 +481,7 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
         f"_{context.task['task_id'].lower()}_a{context.packet['task_attempt']}"
     )
     run_root = context.task_dir / "prediction_runs"
+    effects_path = context.task_dir / "prediction_transaction_effects.json"
     argv = [
         context.config.prediction_python,
         context.config.repo_root / "agents" / "prediction.py",
@@ -459,6 +490,11 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
         "--run-root", run_root,
         "--run-id", run_id,
     ]
+    if context.transaction_managed:
+        argv.extend([
+            "--effects-output", effects_path,
+            "--transaction-id", context.transaction_id,
+        ])
     for candidate_id in candidate_ids:
         argv.extend(["--candidate", candidate_id])
     processes.append(run_process(
@@ -473,6 +509,11 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
         raise ExecutionContractError(
             "prediction_handoff_missing", f"Prediction did not write handoff: {handoff}"
         )
+    if context.transaction_managed:
+        effects = _prediction_transaction_effects(
+            context, effects_path, candidate_ids, run_id
+        )
+        return _typed_prediction_result(effects, handoff, processes)
     return HandlerOutcome(
         outputs=(("prediction_handoff", handoff),),
         processes=tuple(processes),

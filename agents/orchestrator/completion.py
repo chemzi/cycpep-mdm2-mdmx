@@ -126,6 +126,53 @@ def _complete_gpu_cleanup(
     return usage, False
 
 
+def _post_completion_steps(
+    *,
+    release_global_gpu: bool,
+    claim_token: str,
+    run: dict,
+    plan: dict,
+    task: dict,
+    task_id: str,
+    inventory: list[dict],
+    usage: dict[str, Any],
+    state: dict,
+) -> list[dict[str, str]]:
+    """Run diagnostic/projection work after durable SUCCEEDED without reopening it."""
+    warnings: list[dict[str, str]] = []
+
+    def attempt(step: str, operation) -> None:
+        try:
+            operation()
+        except Exception as exc:
+            warnings.append({
+                "step": step,
+                "code": getattr(exc, "code", exc.__class__.__name__),
+                "message": str(exc),
+            })
+
+    if release_global_gpu:
+        attempt("release_global_gpu_lease", lambda: _release_global_gpu_lease(claim_token))
+    attempt("sync_state", lambda: _sync_state(run, plan))
+    attempt(
+        "completion_evidence",
+        lambda: EvidenceLogger.log("orchestrator", "orchestrator_task_completed", {
+            "run_id": run["run_id"],
+            "task_id": task_id,
+            "outputs": inventory,
+            "resource_usage": usage,
+            "run_status": run["status"],
+            "attempt": int(state.get("attempts") or 0),
+            "attempt_id": TraceContext.attempt_id_for(
+                task_id, int(state.get("attempts") or 0)
+            ),
+        }, phase=task["phase"], trace_context=_trace_for_run(
+            run, task_id=task_id, attempt=int(state.get("attempts") or 0)
+        )),
+    )
+    return warnings
+
+
 def complete(
     *,
     run_path: str | Path,
@@ -174,21 +221,19 @@ def complete(
             })
         _refresh(run, plan)
         _atomic_json(run_path, run)
-    if release_global_gpu:
-        _release_global_gpu_lease(claim_token)
-    _sync_state(run, plan)
-    EvidenceLogger.log("orchestrator", "orchestrator_task_completed", {
-        "run_id": run["run_id"],
-        "task_id": task_id,
-        "outputs": inventory,
-        "resource_usage": usage,
-        "run_status": run["status"],
-        "attempt": int(state.get("attempts") or 0),
-        "attempt_id": TraceContext.attempt_id_for(
-            task_id, int(state.get("attempts") or 0)
-        ),
-    }, phase=task["phase"], trace_context=_trace_for_run(
-        run, task_id=task_id, attempt=int(state.get("attempts") or 0)
-    ))
-    return {"run": run, "run_path": str(run_path), "task_id": task_id}
+    warnings = _post_completion_steps(
+        release_global_gpu=release_global_gpu,
+        claim_token=claim_token,
+        run=run,
+        plan=plan,
+        task=task,
+        task_id=task_id,
+        inventory=inventory,
+        usage=usage,
+        state=state,
+    )
+    result = {"run": run, "run_path": str(run_path), "task_id": task_id}
+    if warnings:
+        result["post_completion_warnings"] = warnings
+    return result
 

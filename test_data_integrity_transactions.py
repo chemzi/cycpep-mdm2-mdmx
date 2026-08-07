@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import sqlite3
 import sys
 import tempfile
@@ -85,6 +86,14 @@ class DataIntegrityTransactionTests(unittest.TestCase):
             attempt_id=f"T001-A0{suffix}",
             action="iterate_design",
         )
+
+    @staticmethod
+    def _mark_owner_dead(payload: dict) -> None:
+        """Replace a live test-process lease with an explicitly dead owner."""
+        payload["owner_host"] = socket.gethostname()
+        payload["owner_pid"] = 99_999_999
+        payload["owner_process_identity"] = "dead-test-process"
+        payload["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
 
     def test_concurrent_candidate_ids_are_unique_and_contiguous(self):
         store = SQLiteStore(self.root / "sequence.db", project_id="p1")
@@ -191,7 +200,17 @@ class DataIntegrityTransactionTests(unittest.TestCase):
         worker.rollback(first)
         self.assertEqual(first.status, TransactionStatus.ROLLED_BACK)
         self.assertEqual(store.list(), [])
-        self.assertEqual(store.query(task_id="T001"), [])
+        self.assertEqual(
+            [event["event_type"] for event in store.query(
+                transaction_id=first.transaction_id
+            )],
+            [
+                "candidate_registered",
+                "execution_transaction_committed",
+                "execution_transaction_compensation_started",
+                "execution_transaction_rolled_back",
+            ],
+        )
         self.assertFalse(any((self.root / "formal_artifacts").rglob("shared.pdb")))
         self.assertEqual(store.get_state(store.project_id)["candidate_count"], 0)
 
@@ -353,7 +372,7 @@ class DataIntegrityTransactionTests(unittest.TestCase):
         self.assertTrue(Path(artifact["path"]).is_file())
         self.assertEqual(
             json.loads(marker.read_text(encoding="utf-8"))["status"],
-            "COMPENSATION_UNRESOLVED",
+            "COMPENSATION_CONFLICT",
         )
 
     def test_recovery_compensates_db_commit_before_orchestrator_closure(self):
@@ -381,8 +400,7 @@ class DataIntegrityTransactionTests(unittest.TestCase):
         )
         payload = json.loads(marker.read_text(encoding="utf-8"))
         payload["status"] = "PREPARED"
-        # Simulate a crashed owner: no live heartbeat signal.
-        payload.pop("heartbeat_monotonic", None)
+        self._mark_owner_dead(payload)
         marker.write_text(json.dumps(payload), encoding="utf-8")
 
         restarted = ExecutionWorker(
@@ -394,7 +412,17 @@ class DataIntegrityTransactionTests(unittest.TestCase):
         self.assertEqual(list(result.recovered), [context.transaction_id])
         self.assertEqual(store.get_transaction_status(context.transaction_id), "ROLLED_BACK")
         self.assertEqual(store.list(), [])
-        self.assertEqual(store.query(task_id="T001"), [])
+        self.assertEqual(
+            [event["event_type"] for event in store.query(
+                transaction_id=context.transaction_id
+            )],
+            [
+                "candidate_registered",
+                "execution_transaction_committed",
+                "execution_transaction_compensation_started",
+                "execution_transaction_rolled_back",
+            ],
+        )
         self.assertIsNone(store.get_artifact("crash-artifact"))
         self.assertFalse(committed_file.exists())
         self.assertEqual(
@@ -421,7 +449,7 @@ class DataIntegrityTransactionTests(unittest.TestCase):
         )
         payload = json.loads(marker.read_text(encoding="utf-8"))
         payload["status"] = "PREPARED"
-        payload.pop("heartbeat_monotonic", None)
+        self._mark_owner_dead(payload)
         marker.write_text(json.dumps(payload), encoding="utf-8")
 
         recovery = RecoveryManager(store)
@@ -460,8 +488,15 @@ class DataIntegrityTransactionTests(unittest.TestCase):
             self.root / "staging" / context.transaction_id / "metadata" / "commit.json"
         )
         payload = json.loads(marker.read_text(encoding="utf-8"))
-        # Owner is still in the commit->closure window: fresh heartbeat present.
-        self.assertIn("heartbeat_monotonic", payload)
+        # Owner is still in the commit->closure window with a durable lease.
+        for field in (
+            "heartbeat_at",
+            "owner_pid",
+            "owner_host",
+            "owner_instance_id",
+            "owner_process_identity",
+        ):
+            self.assertIn(field, payload)
 
         # Another worker starts and scans while owner A is still alive.
         other = RecoveryManager(store)
@@ -494,7 +529,7 @@ class DataIntegrityTransactionTests(unittest.TestCase):
         )
         payload = json.loads(marker.read_text(encoding="utf-8"))
         payload["status"] = "PREPARED"
-        payload.pop("heartbeat_monotonic", None)
+        self._mark_owner_dead(payload)
         marker.write_text(json.dumps(payload), encoding="utf-8")
 
         recovery = RecoveryManager(store)
@@ -582,7 +617,7 @@ class DataIntegrityTransactionTests(unittest.TestCase):
         temporary.write_text("TEMP", encoding="utf-8")
         marker = self.root / "staging" / "tx-recovery" / "metadata" / "commit.json"
         marker.parent.mkdir(parents=True)
-        marker.write_text(json.dumps({
+        payload = {
             "transaction_id": "tx-recovery",
             "status": "PREPARED",
             "artifacts": [{
@@ -590,7 +625,9 @@ class DataIntegrityTransactionTests(unittest.TestCase):
                 "path": str(destination),
                 "temporary": str(temporary),
             }],
-        }), encoding="utf-8")
+        }
+        self._mark_owner_dead(payload)
+        marker.write_text(json.dumps(payload), encoding="utf-8")
         malformed = self.root / "staging" / "tx-malformed" / "metadata" / "commit.json"
         malformed.parent.mkdir(parents=True)
         malformed.write_text('{"transaction_id":', encoding="utf-8")

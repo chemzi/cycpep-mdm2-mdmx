@@ -56,7 +56,7 @@ from execution.contracts import (  # noqa: E402
 from execution.action_registry import handler_for  # noqa: E402
 from execution.adapters import adapter_for  # noqa: E402
 from execution.commit_manager import CommitManager  # noqa: E402
-from execution.recovery import probe_orchestrator_state  # noqa: E402
+from execution.recovery import CLOSED, UNKNOWN, probe_orchestrator_state  # noqa: E402
 from execution.results import ExecutionActionResult  # noqa: E402
 from execution.staging import StagingArea  # noqa: E402
 from storage.base import Store  # noqa: E402
@@ -73,8 +73,15 @@ class RecoveryError(ExecutionFailure):
     def __init__(self, message: str, *, unresolved=(), marker_errors=()):
         super().__init__(message)
         self.code = "transaction_recovery_unresolved"
+        self.retryable = False
         self.unresolved = tuple(unresolved)
         self.marker_errors = tuple(marker_errors)
+
+
+class OrchestratorClosureUnresolved(RecoveryError):
+    """The completion call failed and its durable Orchestrator outcome is unknown."""
+
+    orchestrator_outcome_unknown = True
 
 
 def _assert_recovery_clean(recovery) -> None:
@@ -121,6 +128,7 @@ class ExecutionWorker:
             commit_result = self.commit_manager.commit(
                 context,
                 candidate_updates=result.candidate_updates,
+                candidate_patches=result.candidate_patches,
                 state_updates=result.state_updates,
                 state_appends=result.state_appends,
                 artifacts=result.artifacts,
@@ -136,16 +144,30 @@ class ExecutionWorker:
                 for role, path in result.outputs
             ))
         except BaseException as exc:
-            if context.status == TransactionStatus.ROLLED_BACK:
+            ambiguous_commit = context.status == TransactionStatus.COMMITTING
+            preserve_recovery_marker = context.status in {
+                TransactionStatus.COMMITTING,
+                TransactionStatus.COMMITTED,
+                TransactionStatus.COMPENSATION_CONFLICT,
+            }
+            if context.status in {TransactionStatus.STAGING, TransactionStatus.VALIDATING}:
                 context.transition(TransactionStatus.FAILED)
-            elif context.status in {TransactionStatus.STAGING, TransactionStatus.VALIDATING}:
-                context.transition(TransactionStatus.FAILED)
-            self.store.record_task_failure(
-                context=context.to_dict(),
-                error=ErrorInfo.from_exception(exc, component="execution.worker").to_dict(),
-            )
-            staging.discard()
-            self._staging.pop(context.transaction_id, None)
+            if not ambiguous_commit:
+                self.store.record_task_failure(
+                    context=context.to_dict(),
+                    error=ErrorInfo.from_exception(
+                        exc, component="execution.worker"
+                    ).to_dict(),
+                )
+            if not preserve_recovery_marker:
+                staging.discard()
+                self._staging.pop(context.transaction_id, None)
+            if ambiguous_commit:
+                raise RecoveryError(
+                    "transaction commit outcome is unresolved; recovery must "
+                    f"reconcile {context.transaction_id} before retry",
+                    unresolved=(context.transaction_id,),
+                ) from exc
             raise
 
     @staticmethod
@@ -178,6 +200,15 @@ class ExecutionWorker:
 
 
 def _validate_action_result(result: ExecutionActionResult) -> None:
+    patch_ids = [mutation.candidate_id for mutation in result.candidate_patches]
+    if any(not candidate_id for candidate_id in patch_ids):
+        raise ExecutionContractError(
+            "candidate_patch_invalid", "candidate patch requires candidate_id"
+        )
+    if len(patch_ids) != len(set(patch_ids)):
+        raise ExecutionContractError(
+            "candidate_patch_invalid", "candidate patches must target unique candidates"
+        )
     roles = [role for role, _ in result.outputs]
     if len(roles) != len(set(roles)):
         raise ExecutionContractError("task_output_contract_invalid", "output roles must be unique")
@@ -354,30 +385,64 @@ def _finalize_failure(
         "elapsed_seconds": elapsed_seconds,
         "gpu_minutes": gpu_minutes,
     }
+    closure_outcome_unknown = bool(
+        getattr(exc, "orchestrator_outcome_unknown", False)
+    )
+    if closure_outcome_unknown:
+        failure["status"] = "transaction_recovery_unresolved"
+        failure["integrity_unresolved"] = True
+    orchestrator_error = error_info
     if (
         transaction_worker is not None
         and transaction_context is not None
         and transaction_context.status == TransactionStatus.COMMITTED
         and not orchestrator_closed
+        and not closure_outcome_unknown
     ):
         try:
             transaction_worker.rollback(transaction_context)
         except BaseException as rollback_exc:
+            failure["original_error"] = error_info.to_dict()
             failure["compensation_error"] = {
                 "code": getattr(
                     rollback_exc, "code", rollback_exc.__class__.__name__
                 ),
                 "message": str(rollback_exc),
             }
+            orchestrator_error = ErrorInfo(
+                code="transaction_recovery_unresolved",
+                message=(
+                    "transaction compensation did not resolve cleanly; "
+                    "automatic retry is blocked"
+                ),
+                component="execution.transaction_recovery",
+                retryable=False,
+            )
+            failure.update(orchestrator_error.to_dict())
+            failure["integrity_unresolved"] = True
     atomic_json(task_dir / "execution_failure.json", failure)
-    if not orchestrator_closed:
+    if closure_outcome_unknown and transaction_worker and transaction_context:
+        try:
+            transaction_worker.store.record_task_failure(
+                context=transaction_context.to_dict(),
+                error=orchestrator_error.to_dict(),
+            )
+        except Exception as diagnostic_exc:
+            failure["transaction_diagnostic_error"] = {
+                "code": getattr(
+                    diagnostic_exc, "code", diagnostic_exc.__class__.__name__
+                ),
+                "message": str(diagnostic_exc),
+            }
+            atomic_json(task_dir / "execution_failure.json", failure)
+    if not orchestrator_closed and not closure_outcome_unknown:
         try:
             fail(
                 run_path=run_path,
                 task_id=task_id,
                 claim_token=token,
                 reason=f"{failure['code']}: {failure['message']}",
-                error_info=error_info,
+                error_info=orchestrator_error,
                 gpu_minutes=gpu_minutes,
             )
         except Exception as close_exc:
@@ -386,18 +451,19 @@ def _finalize_failure(
                 "message": str(close_exc),
             }
             atomic_json(task_dir / "execution_failure.json", failure)
-    try:
-        EvidenceLogger.log(
-            "execution", "execution_task_failed", failure,
-            phase=task["phase"] if task else "iterate",
-            trace_context=trace_context,
-        )
-    except BaseException as evidence_exc:
-        failure["failure_evidence_error"] = {
-            "code": getattr(evidence_exc, "code", evidence_exc.__class__.__name__),
-            "message": str(evidence_exc),
-        }
-        atomic_json(task_dir / "execution_failure.json", failure)
+    if not closure_outcome_unknown:
+        try:
+            EvidenceLogger.log(
+                "execution", "execution_task_failed", failure,
+                phase=task["phase"] if task else "iterate",
+                trace_context=trace_context,
+            )
+        except BaseException as evidence_exc:
+            failure["failure_evidence_error"] = {
+                "code": getattr(evidence_exc, "code", evidence_exc.__class__.__name__),
+                "message": str(evidence_exc),
+            }
+            atomic_json(task_dir / "execution_failure.json", failure)
 
 
 @dataclass
@@ -603,15 +669,34 @@ def _close_orchestrator(
         elapsed_seconds / 60.0
         if task["resource_request"]["class"] == "gpu" else None
     )
-    result = complete(
-        run_path=run_path,
-        task_id=task_id,
-        claim_token=claimed["claim_token"],
-        output_paths=output_values,
-        gpu_minutes=gpu_minutes,
-    )
+    completion_warnings: list[dict[str, str]] = []
+    try:
+        result = complete(
+            run_path=run_path,
+            task_id=task_id,
+            claim_token=claimed["claim_token"],
+            output_paths=output_values,
+            gpu_minutes=gpu_minutes,
+        )
+    except BaseException as exc:
+        verdict = probe_orchestrator_state(execution.transaction_context.to_dict())
+        if verdict == UNKNOWN:
+            raise OrchestratorClosureUnresolved(
+                "Orchestrator completion outcome is unknown; recovery must "
+                f"reconcile {execution.transaction_context.transaction_id} before retry",
+                unresolved=(execution.transaction_context.transaction_id,),
+            ) from exc
+        if verdict != CLOSED:
+            raise
+        result = {"run": status(run_path=run_path)["run"]}
+        completion_warnings.append({
+            "step": "completion_outcome_probe",
+            "code": getattr(exc, "code", exc.__class__.__name__),
+            "message": str(exc),
+        })
     execution.orchestrator_closed = True
-    return {
+    completion_warnings.extend(result.get("post_completion_warnings") or [])
+    receipt = {
         "execution_worker_version": EXECUTION_WORKER_VERSION,
         "status": TaskStatus.SUCCEEDED.value,
         "run_id": packet["run_id"],
@@ -631,6 +716,9 @@ def _close_orchestrator(
         "processes": list(outcome.processes),
         "orchestrator_status": result["run"]["status"],
     }
+    if completion_warnings:
+        receipt["orchestrator_completion_warnings"] = completion_warnings
+    return receipt
 
 
 def drain_run(

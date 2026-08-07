@@ -33,8 +33,26 @@ class StateAppendMutation:
 
 
 @dataclass(frozen=True)
+class CandidatePatchMutation:
+    """Patch one existing candidate row during the formal transaction commit."""
+
+    candidate_id: str
+    patch: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "patch", dict(self.patch))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "candidate_id": self.candidate_id,
+            "patch": dict(self.patch),
+        }
+
+
+@dataclass(frozen=True)
 class ExecutionActionResult:
     candidate_updates: tuple[Mapping[str, Any], ...] = ()
+    candidate_patches: tuple[CandidatePatchMutation, ...] = ()
     state_updates: Mapping[str, Any] | None = None
     state_appends: tuple[StateAppendMutation, ...] = ()
     artifacts: tuple[StagedArtifact, ...] = ()
@@ -44,6 +62,7 @@ class ExecutionActionResult:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "candidate_updates", tuple(self.candidate_updates))
+        object.__setattr__(self, "candidate_patches", tuple(self.candidate_patches))
         object.__setattr__(self, "state_updates", dict(self.state_updates or {}))
         object.__setattr__(self, "state_appends", tuple(self.state_appends))
         object.__setattr__(self, "artifacts", tuple(self.artifacts))

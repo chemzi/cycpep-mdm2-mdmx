@@ -320,6 +320,7 @@ class ExecutionTests(unittest.TestCase):
             patch("execution.worker.handler_for", return_value=Mock()),
             patch("execution.worker.adapter_for", return_value=adapter),
             patch("execution.worker.complete", side_effect=RuntimeError("complete failed")),
+            patch("execution.worker.probe_orchestrator_state", return_value="open"),
             patch("execution.worker.fail", fail_mock),
             patch("execution.worker.get_storage_backend", return_value=store),
             patch("execution.worker.refresh_projections"),
@@ -443,15 +444,22 @@ class ExecutionTests(unittest.TestCase):
         fail_mock.assert_called_once()
         self.assertEqual(evidence_mock.call_args_list[-1].args[1], "execution_task_failed")
 
-    def test_compensation_failure_still_closes_and_preserves_original_error(self):
+    def test_compensation_failure_is_non_retryable_and_preserves_original_error(self):
         store, fail_mock, evidence_mock, failure = self._complete_failure_case(
             rollback_error=RuntimeError("rollback failed")
         )
         self.assertTrue(store.get_state("execution_test")["committed_then_closed"])
-        self.assertEqual(failure["code"], "RuntimeError")
-        self.assertEqual(failure["message"], "complete failed")
+        self.assertEqual(failure["code"], "transaction_recovery_unresolved")
+        self.assertFalse(failure["retryable"])
+        self.assertTrue(failure["integrity_unresolved"])
+        self.assertEqual(failure["original_error"]["code"], "RuntimeError")
+        self.assertEqual(failure["original_error"]["message"], "complete failed")
         self.assertEqual(failure["compensation_error"]["message"], "rollback failed")
         fail_mock.assert_called_once()
+        self.assertEqual(
+            fail_mock.call_args.kwargs["error_info"].code,
+            "transaction_recovery_unresolved",
+        )
         self.assertEqual(evidence_mock.call_args_list[-1].args[1], "execution_task_failed")
 
     def test_recovery_requires_matching_succeeded_orchestrator_attempt(self):
