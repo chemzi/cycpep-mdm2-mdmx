@@ -13,14 +13,6 @@
       {
         "file": "prediction_pipeline/pipeline.py",
         "lines": 1463
-      },
-      {
-        "file": "test_design.py",
-        "lines": 1020
-      },
-      {
-        "file": "test_prediction_pipeline.py",
-        "lines": 1367
       }
     ],
     "function_length": [
@@ -41,12 +33,6 @@
         "function": "evaluate_battery",
         "line": 1137,
         "lines": 246
-      },
-      {
-        "file": "execution/contracts.py",
-        "function": "validate_task_parameters",
-        "line": 167,
-        "lines": 216
       },
       {
         "file": "execution/worker.py",
