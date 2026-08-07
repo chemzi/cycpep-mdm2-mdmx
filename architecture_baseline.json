@@ -35,12 +35,6 @@
         "lines": 204
       },
       {
-        "file": "prediction_pipeline/adapters.py",
-        "function": "load_artifact_bundle",
-        "line": 298,
-        "lines": 267
-      },
-      {
         "file": "prediction_pipeline/boltz_worker.py",
         "function": "run_boltz_prediction",
         "line": 107,

@@ -302,6 +302,24 @@ def load_artifact_bundle(
     sequence: str,
     required_targets: tuple[str, ...],
 ) -> ArtifactBundle:
+    raw, base = _load_bundle_raw(path, candidate_id, sequence)
+    global_artifacts = _load_global_artifacts(raw, base)
+    target_artifacts = _load_target_artifacts(raw, base, required_targets, sequence)
+    file_inventory = _build_bundle_file_inventory(global_artifacts, target_artifacts)
+    bundle_sha = file_sha256(path)
+    digest = object_sha256({"bundle": bundle_sha, "files": sorted(file_inventory)})
+    return ArtifactBundle(
+        path=path,
+        sha256=bundle_sha,
+        candidate_id=candidate_id,
+        sequence=sequence,
+        global_artifacts=global_artifacts,
+        target_artifacts=target_artifacts,
+        digest=digest,
+    )
+
+
+def _load_bundle_raw(path: str | Path, candidate_id: str, sequence: str) -> tuple[dict, Path]:
     path = Path(path).expanduser().resolve()
     if not path.is_file():
         raise ContractError("artifact_bundle_missing", f"artifact bundle not found: {path}")
@@ -351,7 +369,10 @@ def load_artifact_bundle(
                 "artifact_protocol_type",
                 "artifacts.json protocol name/version/sha256 must be strings",
             )
-    base = path.parent
+    return raw, path.parent
+
+
+def _load_global_artifacts(raw: dict, base: Path) -> dict:
     global_raw = raw.get("global") or {}
     if not isinstance(global_raw, dict):
         raise ContractError("artifact_global_type", "global artifacts must be an object")
@@ -380,7 +401,12 @@ def load_artifact_bundle(
             global_artifacts[key] = _materialize_file(
                 global_raw, key, base, f"global.{key}"
             )
+    return global_artifacts
 
+
+def _load_target_artifacts(
+    raw: dict, base: Path, required_targets: tuple[str, ...], sequence: str
+) -> dict[str, dict]:
     target_raw = raw.get("targets") or {}
     if not isinstance(target_raw, dict):
         raise ContractError("artifact_targets_type", "targets artifacts must be an object")
@@ -525,7 +551,10 @@ def load_artifact_bundle(
                     values, key, base, f"targets.{target_id}.{key}"
                 )
         target_artifacts[target_id] = result
+    return target_artifacts
 
+
+def _build_bundle_file_inventory(global_artifacts: dict, target_artifacts: dict) -> list[str]:
     file_inventory = []
     for entry in global_artifacts["monomer_predictions"]:
         file_inventory.extend(
@@ -551,17 +580,8 @@ def load_artifact_bundle(
             file_inventory.append(item["output"]["sha256"])
             if isinstance(item.get("metadata"), dict):
                 file_inventory.append(item["metadata"]["sha256"])
-    bundle_sha = file_sha256(path)
-    digest = object_sha256({"bundle": bundle_sha, "files": sorted(file_inventory)})
-    return ArtifactBundle(
-        path=path,
-        sha256=bundle_sha,
-        candidate_id=candidate_id,
-        sequence=sequence,
-        global_artifacts=global_artifacts,
-        target_artifacts=target_artifacts,
-        digest=digest,
-    )
+    return file_inventory
+
 
 
 def parse_metadata(path_entry: dict | None) -> dict:
