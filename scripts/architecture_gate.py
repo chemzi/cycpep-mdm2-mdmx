@@ -152,7 +152,11 @@ def _item_key(check: str, item: dict) -> tuple:
     if check in ("file_size", "bom"):
         return ("file", item["file"])
     if check == "function_length":
-        return ("file", item["file"], "function", item["function"])
+        # Line is part of the identity: same-named functions in one file
+        # (e.g. repeated __init__/run) must not share a baseline key, or a
+        # new oversized function could be absorbed by a stale (file, name)
+        # entry and slip through as "0 new" (P1-A).
+        return ("file", item["file"], "function", item["function"], "line", item["line"])
     if check == "action_handlers":
         return ("detail", item["detail"])
     return ("file", item["file"], "import", item["import"])

@@ -100,6 +100,50 @@ class ArchitectureGateTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("bigger.py", report)
 
+    def test_function_length_baseline_key_includes_line(self):
+        # P1-A: two same-named functions in one file must not share a
+        # baseline key. A new oversized def f() must not be absorbed by a
+        # baselined (file, f) entry at a different line, or the gate reports
+        # "0 new / OK" while a 200+ line function just landed.
+        self._write(
+            "mod.py",
+            "def f():\n"
+            "    return 1\n"
+            "\n"
+            "def f():\n"
+            + "    x = 1\n" * 201,
+        )
+        violations = check_function_lengths(self.root, max_lines=150)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0]["function"], "f")
+        self.assertGreater(violations[0]["lines"], 150)
+
+        baseline = {
+            "schema_version": 1,
+            "items": {
+                "file_size": [],
+                # stale entry tied to the 6-line def f() at line 1: the new
+                # 201-line def f() (line 4) must NOT match it.
+                "function_length": [
+                    {"file": "mod.py", "function": "f", "line": 1, "lines": 6},
+                ],
+                "action_handlers": [],
+                "private_imports": [],
+                "bom": [],
+            },
+        }
+        all_violations = {
+            "file_size": [],
+            "function_length": violations,
+            "action_handlers": [],
+            "private_imports": [],
+            "bom": [],
+        }
+        report, ok = format_report(all_violations, baseline, update=False)
+        self.assertFalse(ok)
+        self.assertIn("1 new", report)
+        self.assertIn("mod.py", report)
+
     def test_baseline_roundtrip(self):
         path = self.root / "baseline.json"
         violations = {"file_size": [{"file": "a.py", "lines": 1200}],
