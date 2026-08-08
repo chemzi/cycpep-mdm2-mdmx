@@ -18,7 +18,7 @@ import os
 import sys
 from pathlib import Path
 
-from agents.research import _default_thresholds
+from agents.research import default_thresholds
 from project_config import load_project_config, required_target_ids
 from threshold_calibration import (
     ControlDataError,
@@ -59,9 +59,9 @@ def main() -> int:
             )
         else:
             raw = json.load(sys.stdin)
-            from threshold_calibration import _coerce_dataset
+            from threshold_calibration import coerce_dataset
 
-            controls, metadata = _coerce_dataset(raw)
+            controls, metadata = coerce_dataset(raw)
             metadata = validate_control_metadata(
                 metadata,
                 project_id=config.get("project_id"),
@@ -74,7 +74,7 @@ def main() -> int:
         protocol_hash = metadata.get("protocol_hash") or expected_protocol_hash
         thresholds, audit = calibrate_thresholds(
             controls=controls,
-            thresholds=_default_thresholds(config),
+            thresholds=default_thresholds(config),
             target_ids=required_target_ids(config),
             protocol=protocol,
             protocol_hash=protocol_hash,
@@ -88,7 +88,7 @@ def main() -> int:
     except (ControlDataError, ValueError, json.JSONDecodeError) as exc:
         print(
             json.dumps(
-                {"thresholds": _default_thresholds(config), "_meta": {
+                {"thresholds": default_thresholds(config), "_meta": {
                     "status": "invalidated", "error": f"{type(exc).__name__}: {exc}"
                 }},
                 ensure_ascii=False,

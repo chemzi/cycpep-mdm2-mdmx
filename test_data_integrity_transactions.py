@@ -654,6 +654,19 @@ class DataIntegrityTransactionTests(unittest.TestCase):
         self.assertEqual(Path(one.staged_path).read_text(encoding="utf-8"), "FIRST")
         self.assertEqual(Path(two.staged_path).read_text(encoding="utf-8"), "SECOND")
 
+    def test_stage_artifact_rejects_dotdot_artifact_id(self):
+        # P2-3: "." / ".." would escape the artifacts subdirectory; they must
+        # be rejected even though no current caller produces them.
+        staging = StagingArea(self.root / "staging", "tx-dotdot").create()
+        source = self.root / "payload.txt"
+        source.write_text("PAYLOAD", encoding="utf-8")
+        for bad_id in (".", ".."):
+            with self.assertRaises(ValueError):
+                staging.stage_artifact(source, artifact_id=bad_id, artifact_type="pdb")
+        self.assertFalse(
+            (self.root / "staging" / "tx-dotdot" / "payload.txt").exists()
+        )
+
     def test_zero_candidate_batch_is_valid(self):
         batch = CandidateUpdateBatch(
             schema_version=CANDIDATE_UPDATE_SCHEMA_VERSION,

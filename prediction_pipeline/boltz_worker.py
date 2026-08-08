@@ -120,6 +120,58 @@ def run_boltz_prediction(
     no_kernels: bool = False,
 ) -> dict:
     """Run one pinned Boltz sample and normalize it to the Prediction contract."""
+    seed, diffusion_samples = _resolve_boltz_protocol_parameters(seed, diffusion_samples)
+    target_sequence = _validate_sequence(target_sequence, "target")
+    binder_sequence = _validate_sequence(binder_sequence, "binder")
+    target_chain = _validate_chain(target_chain, "target_chain")
+    binder_chain = _validate_chain(binder_chain, "binder_chain")
+
+    environment = _prepare_boltz_environment(
+        boltz_executable, cache_dir, checkpoint, output_dir,
+        target_sequence, binder_sequence, target_chain, binder_chain, timeout,
+    )
+    command = _build_boltz_command(
+        environment["executable"],
+        environment["input_path"],
+        environment["raw_dir"],
+        environment["cache"],
+        environment["checkpoint_path"],
+        diffusion_samples,
+        seed,
+        no_kernels,
+    )
+    process_env = os.environ.copy()
+    process_env["BOLTZ_CACHE"] = str(environment["cache"])
+    result = run_command(command, timeout=timeout, env=process_env)
+    (environment["destination"] / "stdout.log").write_text(result.stdout, encoding="utf-8")
+    (environment["destination"] / "stderr.log").write_text(result.stderr, encoding="utf-8")
+    if result.exit_code:
+        raise ContractError(
+            "boltz_failed",
+            f"Boltz exited {result.exit_code}; see {environment['destination'] / 'stderr.log'}",
+        )
+
+    outputs = _validate_boltz_outputs(
+        environment["destination"],
+        environment["raw_dir"],
+        target_sequence,
+        binder_sequence,
+        target_chain,
+        binder_chain,
+    )
+    return _finalize_boltz_result(
+        outputs,
+        environment=environment,
+        seed=seed,
+        binder_sequence=binder_sequence,
+        target_sequence=target_sequence,
+        target_chain=target_chain,
+        binder_chain=binder_chain,
+        command=command,
+    )
+
+
+def _resolve_boltz_protocol_parameters(seed, diffusion_samples) -> tuple[int, int]:
     if seed is None:
         # Fallback defaults come from the versioned protocol, not Magic Numbers.
         seed = PREDICTION_PROTOCOL["parameters"]["enrichment"]["seed_base"]
@@ -137,11 +189,20 @@ def run_boltz_prediction(
             "boltz_diffusion_samples_invalid",
             "diffusion_samples must be a positive integer",
         )
-    target_sequence = _validate_sequence(target_sequence, "target")
-    binder_sequence = _validate_sequence(binder_sequence, "binder")
-    target_chain = _validate_chain(target_chain, "target_chain")
-    binder_chain = _validate_chain(binder_chain, "binder_chain")
+    return seed, diffusion_samples
 
+
+def _prepare_boltz_environment(
+    boltz_executable: str | Path,
+    cache_dir: str | Path,
+    checkpoint: str | Path,
+    output_dir: str | Path,
+    target_sequence: str,
+    binder_sequence: str,
+    target_chain: str,
+    binder_chain: str,
+    timeout: int,
+) -> dict:
     executable = Path(boltz_executable).expanduser().resolve()
     cache = Path(cache_dir).expanduser().resolve()
     checkpoint_path = Path(checkpoint).expanduser().resolve()
@@ -181,6 +242,28 @@ def run_boltz_prediction(
         encoding="utf-8",
     )
     raw_dir = destination / "raw"
+    return {
+        "executable": executable,
+        "cache": cache,
+        "checkpoint_path": checkpoint_path,
+        "destination": destination,
+        "checkpoint_sha": checkpoint_sha,
+        "version": version,
+        "input_path": input_path,
+        "raw_dir": raw_dir,
+    }
+
+
+def _build_boltz_command(
+    executable: Path,
+    input_path: Path,
+    raw_dir: Path,
+    cache: Path,
+    checkpoint_path: Path,
+    diffusion_samples: int,
+    seed: int,
+    no_kernels: bool,
+) -> list[str]:
     command = [
         str(executable),
         "predict",
@@ -207,17 +290,17 @@ def run_boltz_prediction(
     ]
     if no_kernels:
         command.append("--no_kernels")
-    environment = os.environ.copy()
-    environment["BOLTZ_CACHE"] = str(cache)
-    result = run_command(command, timeout=timeout, env=environment)
-    (destination / "stdout.log").write_text(result.stdout, encoding="utf-8")
-    (destination / "stderr.log").write_text(result.stderr, encoding="utf-8")
-    if result.exit_code:
-        raise ContractError(
-            "boltz_failed",
-            f"Boltz exited {result.exit_code}; see {destination / 'stderr.log'}",
-        )
+    return command
 
+
+def _validate_boltz_outputs(
+    destination: Path,
+    raw_dir: Path,
+    target_sequence: str,
+    binder_sequence: str,
+    target_chain: str,
+    binder_chain: str,
+) -> dict:
     raw_pdb = _single_match(raw_dir, "input_model_0.pdb", "rank-0 PDB")
     raw_pae = _single_match(raw_dir, "pae_input_model_0.npz", "rank-0 PAE")
     raw_confidence = _single_match(
@@ -266,32 +349,52 @@ def run_boltz_prediction(
     iptm = float(iptm)
     if not np.isfinite(iptm) or not 0 <= iptm <= 1:
         raise ContractError("boltz_iptm_invalid", f"invalid Boltz ipTM: {iptm}")
+    return {
+        "pdb_path": pdb_path,
+        "pae_path": pae_path,
+        "structure": structure,
+        "closure_distance": closure_distance,
+        "iptm": iptm,
+        "confidence": confidence,
+    }
 
+
+def _finalize_boltz_result(
+    outputs: dict,
+    *,
+    environment: dict,
+    seed: int,
+    binder_sequence: str,
+    target_sequence: str,
+    target_chain: str,
+    binder_chain: str,
+    command: list[str],
+) -> dict:
     metadata = {
         "tool": "Boltz",
-        "tool_version": version,
+        "tool_version": environment["version"],
         "model_family": BOLTZ_MODEL_FAMILY,
         "model_id": BOLTZ_MODEL_ID,
         "seed": seed,
         "requested_sequence": binder_sequence,
-        "observed_sequence": structure.sequence(binder_chain),
+        "observed_sequence": outputs["structure"].sequence(binder_chain),
         "target_sequence": target_sequence,
         "target_chain": target_chain,
         "binder_chain": binder_chain,
-        "iptm": iptm,
-        "confidence": confidence,
+        "iptm": outputs["iptm"],
+        "confidence": outputs["confidence"],
         "msa_mode": "single_sequence_explicit_empty",
         "cyclic_conditioning": True,
         "explicit_head_to_tail_bond": {
             "atom1": [binder_chain, len(binder_sequence), "C"],
             "atom2": [binder_chain, 1, "N"],
         },
-        "terminal_c_to_n_distance_angstrom": closure_distance,
-        "checkpoint_sha256": checkpoint_sha,
-        "input_sha256": file_sha256(input_path),
+        "terminal_c_to_n_distance_angstrom": outputs["closure_distance"],
+        "checkpoint_sha256": environment["checkpoint_sha"],
+        "input_sha256": file_sha256(environment["input_path"]),
         "command": command,
     }
-    metadata_path = destination / "metadata.json"
+    metadata_path = environment["destination"] / "metadata.json"
     metadata_path.write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -299,11 +402,12 @@ def run_boltz_prediction(
         "predictor": "Boltz",
         "seed": seed,
         "primary": False,
-        "pdb": str(pdb_path),
-        "pdb_sha256": file_sha256(pdb_path),
-        "pae": str(pae_path),
-        "pae_sha256": file_sha256(pae_path),
+        "pdb": str(outputs["pdb_path"]),
+        "pdb_sha256": file_sha256(outputs["pdb_path"]),
+        "pae": str(outputs["pae_path"]),
+        "pae_sha256": file_sha256(outputs["pae_path"]),
         "metadata": str(metadata_path),
         "metadata_sha256": file_sha256(metadata_path),
         "binder_chain": binder_chain,
     }
+

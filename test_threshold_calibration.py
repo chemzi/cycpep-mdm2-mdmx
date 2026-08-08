@@ -87,7 +87,7 @@ class ThresholdCalibrationTests(unittest.TestCase):
     def test_batch_calibrates_global_and_target_specific_layers(self):
         thresholds, audit = calibrate_thresholds(
             controls=_control_set(),
-            thresholds=research._default_thresholds(research.PROJECT_CONFIG),
+            thresholds=research.default_thresholds(research.PROJECT_CONFIG),
             target_ids=("MDM2", "MDMX"),
             protocol={"tool": "same-protocol", "version": "test-1"},
         )
@@ -106,7 +106,7 @@ class ThresholdCalibrationTests(unittest.TestCase):
         self.assertIn("L3_dg:MDM2", audit["calibrated_keys"])
 
     def test_insufficient_controls_never_replace_provisional_thresholds(self):
-        original = research._default_thresholds(research.PROJECT_CONFIG)
+        original = research.default_thresholds(research.PROJECT_CONFIG)
         calibrated, audit = calibrate_thresholds(
             controls=_control_set(n_negative=2, n_positive=1),
             thresholds=original,
@@ -261,7 +261,7 @@ class ThresholdCalibrationTests(unittest.TestCase):
                  patch.object(data_layer, "LOG_PATH", evidence / "evidence_log.jsonl"), \
                  patch.object(research, "THRESHOLDS_CACHE", data / "_thresholds_cache.json"):
                 result, summary = research._apply_control_calibration(
-                    research._default_thresholds(config),
+                    research.default_thresholds(config),
                     config,
                 )
             self.assertEqual(summary["status"], "calibrated")

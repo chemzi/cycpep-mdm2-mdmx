@@ -237,6 +237,41 @@ def pose_convergence(
             "l6_predictions_insufficient",
             f"L6 needs {minimum_predictions} predictions; received {len(predictions)}",
         )
+    identities = _collect_predictor_identities(predictions)
+    _validate_predictor_diversity(identities, minimum_predictors)
+    matrix, cross_predictor = _compute_cross_predictor_matrix(
+        predictions, identities, target_chain, sequence
+    )
+    cluster_sizes = (matrix <= cluster_cutoff).sum(axis=1)
+    medoid = int(np.argmax(cluster_sizes))
+    seed_fraction = float(cluster_sizes[medoid] / len(predictions))
+    predictors = {item["tool"] for item in identities}
+    model_families = {item["model_family"] for item in identities}
+    return {
+        "pose_rmsd": float(np.median(cross_predictor)),
+        "seed_convergence": seed_fraction,
+        "pairwise_rmsd": matrix.round(6).tolist(),
+        "cluster_cutoff_angstrom": float(cluster_cutoff),
+        "cluster_medoid_index": medoid,
+        "prediction_count": len(predictions),
+        "predictors": sorted(predictors),
+        "model_families": sorted(model_families),
+        "predictor_identities": [
+            {
+                "tool": item["tool"],
+                "model_family": item["model_family"],
+                "model_id": item["model_id"],
+                "revision": item["revision"],
+                "seed": item["seed"],
+                "pdb_sha256": item["pdb_sha256"],
+            }
+            for item in identities
+        ],
+        "seeds": [item.get("seed") for item in predictions],
+    }
+
+
+def _collect_predictor_identities(predictions: list[dict]) -> list[dict]:
     identities = []
     for item in predictions:
         predictor = str(item.get("predictor") or "").strip()
@@ -292,7 +327,10 @@ def pose_convergence(
             "seed": metadata_seed,
             "pdb_sha256": item["pdb"]["sha256"],
         })
+    return identities
 
+
+def _validate_predictor_diversity(identities: list[dict], minimum_predictors: int) -> None:
     run_keys = [
         (item["tool_key"], item["model_id_key"], item["seed"])
         for item in identities
@@ -311,7 +349,6 @@ def pose_convergence(
             "identical PDB content was registered as multiple L6 predictions: "
             f"{duplicate_hashes}",
         )
-
     predictors = {item["tool"] for item in identities}
     model_families = {item["model_family"] for item in identities}
     if len({item["model_family_key"] for item in identities}) < minimum_predictors:
@@ -321,12 +358,18 @@ def pose_convergence(
             f"{sorted(model_families)} from tools {sorted(predictors)}",
         )
 
+
+def _compute_cross_predictor_matrix(
+    predictions: list[dict],
+    identities: list[dict],
+    target_chain: str,
+    sequence: str,
+) -> tuple[np.ndarray, list[float]]:
     for item in predictions:
         structure = item["structure"]
         item["binder_chain"] = item.get("binder_chain") or exact_sequence_chain(
             structure, sequence
         )
-
     matrix = np.zeros((len(predictions), len(predictions)), dtype=float)
     cross_predictor = []
     for i in range(len(predictions)):
@@ -348,29 +391,5 @@ def pose_convergence(
         raise ContractError(
             "l6_cross_predictor_missing", "no cross-model-family pose pair"
         )
+    return matrix, cross_predictor
 
-    cluster_sizes = (matrix <= cluster_cutoff).sum(axis=1)
-    medoid = int(np.argmax(cluster_sizes))
-    seed_fraction = float(cluster_sizes[medoid] / len(predictions))
-    return {
-        "pose_rmsd": float(np.median(cross_predictor)),
-        "seed_convergence": seed_fraction,
-        "pairwise_rmsd": matrix.round(6).tolist(),
-        "cluster_cutoff_angstrom": float(cluster_cutoff),
-        "cluster_medoid_index": medoid,
-        "prediction_count": len(predictions),
-        "predictors": sorted(predictors),
-        "model_families": sorted(model_families),
-        "predictor_identities": [
-            {
-                "tool": item["tool"],
-                "model_family": item["model_family"],
-                "model_id": item["model_id"],
-                "revision": item["revision"],
-                "seed": item["seed"],
-                "pdb_sha256": item["pdb_sha256"],
-            }
-            for item in identities
-        ],
-        "seeds": [item.get("seed") for item in predictions],
-    }

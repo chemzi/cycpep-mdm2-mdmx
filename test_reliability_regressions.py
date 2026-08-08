@@ -307,5 +307,63 @@ class DesignReliabilityTests(unittest.TestCase):
             )
 
 
+class GenericResearchStepTests(unittest.TestCase):
+    """PR8 review P1-1: the generic research interface step must not degrade
+    silently when compute_interface succeeds (regression: _step_generic_interface
+    missed the target_ids parameter and swallowed the resulting NameError)."""
+
+    def _run_script_factory(self, interface_ok: bool = True):
+        def fake_run_script(script_name, input_data=None, extra_args=None):
+            if script_name == "compute_interface.py":
+                if not interface_ok:
+                    raise OSError("simulated tool failure")
+                return {"n_with_interface": 3}, "", 0, 0.1, "h1"
+            if script_name == "aggregate_pockets.py":
+                return {"results_by_target": {"KEAP1": {}}, "counts_by_target": {"KEAP1": 3}}, "", 0, 0.1, "h2"
+            raise AssertionError(f"unexpected script: {script_name}")
+        return fake_run_script
+
+    def test_generic_interface_success_is_not_degraded(self):
+        import agents.research as research
+        from agents import research_steps
+        stage_status, stage_context, fallbacks = {}, {}, []
+        with patch.object(research, "_run_script", side_effect=self._run_script_factory()):
+            with patch("agents.research_steps.EvidenceLogger.log") as log:
+                aggregate = research_steps._step_generic_interface(
+                    stage_status, stage_context, fallbacks, {"x": 1}, ["KEAP1"]
+                )
+        self.assertEqual(stage_status["interface"], "complete")
+        self.assertEqual(stage_status["aggregate"], "complete")
+        self.assertNotIn("interface_aggregation_omitted", fallbacks)
+        self.assertTrue(aggregate.get("results_by_target"))
+
+    def test_generic_interface_tool_failure_still_degrades(self):
+        import agents.research as research
+        from agents import research_steps
+        stage_status, stage_context, fallbacks = {}, {}, []
+        with patch.object(research, "_run_script", side_effect=self._run_script_factory(interface_ok=False)):
+            with patch("agents.research_steps.EvidenceLogger.error") as err:
+                aggregate = research_steps._step_generic_interface(
+                    stage_status, stage_context, fallbacks, {"x": 1}, ["KEAP1"]
+                )
+        self.assertEqual(stage_status["interface"], "failed")
+        self.assertIn("interface_aggregation_omitted", fallbacks)
+        self.assertEqual(aggregate, {"results_by_target": {}, "counts_by_target": {}})
+
+    def test_programming_errors_are_not_swallowed(self):
+        import agents.research as research
+        from agents import research_steps
+
+        def boom(script_name, input_data=None, extra_args=None):
+            raise NameError("simulated programming bug")
+
+        stage_status, stage_context, fallbacks = {}, {}, []
+        with patch.object(research, "_run_script", side_effect=boom):
+            with self.assertRaises(NameError):
+                research_steps._step_generic_interface(
+                    stage_status, stage_context, fallbacks, {"x": 1}, ["KEAP1"]
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

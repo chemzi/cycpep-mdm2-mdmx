@@ -196,63 +196,8 @@ def _require_enrichment_protocol(args) -> None:
 
 
 def run(args) -> dict:
-    boltz_values = (args.boltz, args.boltz_cache, args.boltz_checkpoint)
-    if any(boltz_values) and not all(boltz_values):
-        raise ContractError(
-            "boltz_configuration_incomplete",
-            "--boltz, --boltz-cache and --boltz-checkpoint must be supplied together",
-        )
-    add_boltz = all(boltz_values)
-    add_rosetta = bool(args.rosetta_scripts or args.pyrosetta_python)
-    add_post_relax = bool(args.post_relax_python)
-    if args.rosetta_scripts and args.pyrosetta_python:
-        raise ContractError(
-            "rosetta_engine_invalid",
-            "--rosetta-scripts and --pyrosetta-python are mutually exclusive",
-        )
-    if args.prodigy and not add_boltz:
-        raise ContractError(
-            "prodigy_without_new_prediction",
-            "--prodigy is only used when this command adds a Boltz prediction",
-        )
-    if not add_boltz and not add_rosetta and not add_post_relax:
-        raise ContractError(
-            "enrichment_empty",
-            "configure Boltz, Rosetta interface scoring and/or PyRosetta post-relax",
-        )
-    _require_enrichment_protocol(args)
-    source_bundle = Path(args.source_bundle).expanduser().resolve()
-    try:
-        raw = json.loads(source_bundle.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ContractError("artifact_bundle_malformed", str(source_bundle)) from exc
-    preflight_bundle_protocol(source_bundle, raw)
-    candidate_id = str(raw.get("candidate_id") or "")
-    rows = [
-        row for row in CandidateIndex.load() if row.get("candidate_id") == candidate_id
-    ]
-    if len(rows) != 1:
-        raise ContractError(
-            "candidate_missing", f"expected one CandidateIndex row for {candidate_id}"
-        )
-    candidate = candidate_from_row(rows[0])
-    if candidate.design_reference_pdb is None:
-        raise ContractError(
-            "design_reference_missing_preflight",
-            f"{candidate.candidate_id} has no independent L7 Design reference; "
-            "regenerate it in Design before running Boltz/Rosetta/post-relax",
-        )
-    state = State.load()
-    project = state.get("project_config") or State._project_config
-    assert_project_approved(project)
-    required_targets = validate_project(project)
-    load_artifact_bundle(
-        source_bundle,
-        candidate_id=candidate.candidate_id,
-        sequence=candidate.sequence,
-        required_targets=required_targets,
-    )
-
+    add_boltz, add_rosetta, add_post_relax = _validate_enrichment_options(args)
+    raw, source_bundle, candidate, project, required_targets = _load_source_context(args)
     bundle = copy.deepcopy(raw)
     _absolutize_artifact_paths(bundle, source_bundle.parent)
     output_root = Path(args.output_root).expanduser().resolve()
@@ -265,126 +210,13 @@ def run(args) -> dict:
     target_by_id = {target["id"]: target for target in project["targets"]}
 
     if add_post_relax:
-        monomer_predictions = bundle["global"].get("monomer_predictions") or []
-        if not monomer_predictions:
-            raise ContractError(
-                "post_relax_input_missing", "source bundle has no monomer prediction"
-            )
-        primary_monomer = sorted(
-            monomer_predictions,
-            key=lambda item: (
-                not bool(item.get("primary")),
-                str(item.get("predictor") or ""),
-                int(item.get("seed") or 0),
-            ),
-        )[0]
-        monomer_pdb = Path(primary_monomer["pdb"]).expanduser().resolve()
-        relax_result = run_post_relax(
-            pyrosetta_python=args.post_relax_python,
-            monomer_pdb=monomer_pdb,
-            sequence=candidate.sequence,
-            cyclization_type=candidate.cyclization_type,
-            output_dir=candidate_dir / "post_relax",
-            seed=args.post_relax_seed,
-            repeats=args.post_relax_repeats,
-            coordinate_stdev_angstrom=args.post_relax_coordinate_stdev,
-            timeout=args.post_relax_timeout,
-        )
-        for key in (
-            "post_relax_pdb",
-            "post_relax_pdb_sha256",
-            "post_relax_metadata",
-            "post_relax_metadata_sha256",
-        ):
-            bundle["global"][key] = relax_result[key]
+        _apply_post_relax(args, candidate, bundle, candidate_dir)
 
     for target_id in required_targets:
-        _, target_chain, target_sequence = _target_coordinates(target_by_id[target_id])
-        target_values = bundle["targets"][target_id]
-        if str(target_values.get("target_chain") or target_chain) != target_chain:
-            raise ContractError(
-                "target_chain_mismatch", f"{target_id} source/config target chains differ"
-            )
-        if add_boltz:
-            boltz_dir = candidate_dir / "boltz_complex" / target_id / f"seed_{args.seed}"
-            boltz_prediction = run_boltz_prediction(
-                boltz_executable=args.boltz,
-                cache_dir=args.boltz_cache,
-                checkpoint=args.boltz_checkpoint,
-                target_sequence=target_sequence,
-                binder_sequence=candidate.sequence,
-                output_dir=boltz_dir,
-                target_chain=target_chain,
-                binder_chain=args.binder_chain,
-                seed=args.seed,
-                diffusion_samples=PREDICTION_PROTOCOL["parameters"]["boltz"]["diffusion_samples"],
-                timeout=args.timeout,
-                no_kernels=args.no_kernels,
-            )
-            target_values["complex_predictions"].append(boltz_prediction)
-
-            if not args.prodigy:
-                if target_values.get("prodigy_outputs"):
-                    raise ContractError(
-                        "prodigy_required_for_enrichment",
-                        "adding Boltz requires PRODIGY coverage for the new prediction",
-                    )
-            else:
-                existing_outputs = target_values.get("prodigy_outputs") or []
-                if target_values.pop("prodigy_output", None):
-                    existing_outputs = []
-                    target_values.pop("prodigy_output_sha256", None)
-                if not existing_outputs:
-                    predictions_to_score = target_values["complex_predictions"]
-                else:
-                    predictions_to_score = [boltz_prediction]
-                generated = []
-                for prediction in predictions_to_score:
-                    pdb, _, metadata = _prediction_paths(prediction, source_bundle.parent)
-                    safe_model = str(metadata.get("model_id") or "model").replace("/", "_")
-                    output = (
-                        candidate_dir / "prodigy" / target_id
-                        / f"{prediction['predictor']}_{safe_model}_seed_{prediction['seed']}.txt"
-                    )
-                    generated.append(_run_prodigy_for_prediction(
-                        executable=args.prodigy,
-                        prediction=prediction,
-                        source_base=source_bundle.parent,
-                        target_chain=target_chain,
-                        binder_sequence=candidate.sequence,
-                        output_path=output,
-                    ))
-                target_values["prodigy_outputs"] = existing_outputs + generated
-
-        if add_rosetta:
-            target_values.pop("rosetta_output", None)
-            target_values.pop("rosetta_output_sha256", None)
-            rosetta_outputs = []
-            for prediction in target_values["complex_predictions"]:
-                pdb, _, metadata = _prediction_paths(prediction, source_bundle.parent)
-                binder_chain = str(
-                    prediction.get("binder_chain")
-                    or metadata.get("binder_chain")
-                    or exact_sequence_chain(parse_pdb(pdb), candidate.sequence)
-                )
-                safe_model = str(metadata.get("model_id") or "model").replace("/", "_")
-                rosetta_outputs.append(run_rosetta_interface(
-                    executable=args.rosetta_scripts,
-                    pyrosetta_python=args.pyrosetta_python,
-                    complex_pdb=pdb,
-                    target_chain=target_chain,
-                    binder_chain=binder_chain,
-                    binder_sequence=candidate.sequence,
-                    predictor=prediction["predictor"],
-                    model_id=str(metadata.get("model_id") or ""),
-                    seed=prediction["seed"],
-                    output_dir=(
-                        candidate_dir / "rosetta_interface" / target_id
-                        / f"{prediction['predictor']}_{safe_model}_seed_{prediction['seed']}"
-                    ),
-                    timeout=args.rosetta_timeout,
-                ))
-            target_values["rosetta_outputs"] = rosetta_outputs
+        _enrich_target(
+            args, target_id, target_by_id, candidate, bundle, candidate_dir,
+            source_bundle, add_boltz, add_rosetta,
+        )
 
     # Write-back guard: preflight already validated the source bundle for
     # execution compatibility; re-validate the assembled bundle immediately
@@ -427,6 +259,203 @@ def run(args) -> dict:
         "post_relax_repeats": args.post_relax_repeats if add_post_relax else None,
     }
 
+
+def _validate_enrichment_options(args) -> tuple[bool, bool, bool]:
+    boltz_values = (args.boltz, args.boltz_cache, args.boltz_checkpoint)
+    if any(boltz_values) and not all(boltz_values):
+        raise ContractError(
+            "boltz_configuration_incomplete",
+            "--boltz, --boltz-cache and --boltz-checkpoint must be supplied together",
+        )
+    add_boltz = all(boltz_values)
+    add_rosetta = bool(args.rosetta_scripts or args.pyrosetta_python)
+    add_post_relax = bool(args.post_relax_python)
+    if args.rosetta_scripts and args.pyrosetta_python:
+        raise ContractError(
+            "rosetta_engine_invalid",
+            "--rosetta-scripts and --pyrosetta-python are mutually exclusive",
+        )
+    if args.prodigy and not add_boltz:
+        raise ContractError(
+            "prodigy_without_new_prediction",
+            "--prodigy is only used when this command adds a Boltz prediction",
+        )
+    if not add_boltz and not add_rosetta and not add_post_relax:
+        raise ContractError(
+            "enrichment_empty",
+            "configure Boltz, Rosetta interface scoring and/or PyRosetta post-relax",
+        )
+    _require_enrichment_protocol(args)
+    return add_boltz, add_rosetta, add_post_relax
+
+
+def _load_source_context(args) -> tuple[dict, Path, object, dict, list[str]]:
+    source_bundle = Path(args.source_bundle).expanduser().resolve()
+    try:
+        raw = json.loads(source_bundle.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ContractError("artifact_bundle_malformed", str(source_bundle)) from exc
+    preflight_bundle_protocol(source_bundle, raw)
+    candidate_id = str(raw.get("candidate_id") or "")
+    rows = [
+        row for row in CandidateIndex.load() if row.get("candidate_id") == candidate_id
+    ]
+    if len(rows) != 1:
+        raise ContractError(
+            "candidate_missing", f"expected one CandidateIndex row for {candidate_id}"
+        )
+    candidate = candidate_from_row(rows[0])
+    if candidate.design_reference_pdb is None:
+        raise ContractError(
+            "design_reference_missing_preflight",
+            f"{candidate.candidate_id} has no independent L7 Design reference; "
+            "regenerate it in Design before running Boltz/Rosetta/post-relax",
+        )
+    state = State.load()
+    project = state.get("project_config") or State._project_config
+    assert_project_approved(project)
+    required_targets = validate_project(project)
+    load_artifact_bundle(
+        source_bundle,
+        candidate_id=candidate.candidate_id,
+        sequence=candidate.sequence,
+        required_targets=required_targets,
+    )
+    return raw, source_bundle, candidate, project, required_targets
+
+
+def _apply_post_relax(args, candidate, bundle: dict, candidate_dir: Path) -> None:
+    monomer_predictions = bundle["global"].get("monomer_predictions") or []
+    if not monomer_predictions:
+        raise ContractError(
+            "post_relax_input_missing", "source bundle has no monomer prediction"
+        )
+    primary_monomer = sorted(
+        monomer_predictions,
+        key=lambda item: (
+            not bool(item.get("primary")),
+            str(item.get("predictor") or ""),
+            int(item.get("seed") or 0),
+        ),
+    )[0]
+    monomer_pdb = Path(primary_monomer["pdb"]).expanduser().resolve()
+    relax_result = run_post_relax(
+        pyrosetta_python=args.post_relax_python,
+        monomer_pdb=monomer_pdb,
+        sequence=candidate.sequence,
+        cyclization_type=candidate.cyclization_type,
+        output_dir=candidate_dir / "post_relax",
+        seed=args.post_relax_seed,
+        repeats=args.post_relax_repeats,
+        coordinate_stdev_angstrom=args.post_relax_coordinate_stdev,
+        timeout=args.post_relax_timeout,
+    )
+    for key in (
+        "post_relax_pdb",
+        "post_relax_pdb_sha256",
+        "post_relax_metadata",
+        "post_relax_metadata_sha256",
+    ):
+        bundle["global"][key] = relax_result[key]
+
+
+def _enrich_target(
+    args,
+    target_id: str,
+    target_by_id: dict,
+    candidate,
+    bundle: dict,
+    candidate_dir: Path,
+    source_bundle: Path,
+    add_boltz: bool,
+    add_rosetta: bool,
+) -> None:
+    _, target_chain, target_sequence = _target_coordinates(target_by_id[target_id])
+    target_values = bundle["targets"][target_id]
+    if str(target_values.get("target_chain") or target_chain) != target_chain:
+        raise ContractError(
+            "target_chain_mismatch", f"{target_id} source/config target chains differ"
+        )
+    if add_boltz:
+        boltz_dir = candidate_dir / "boltz_complex" / target_id / f"seed_{args.seed}"
+        boltz_prediction = run_boltz_prediction(
+            boltz_executable=args.boltz,
+            cache_dir=args.boltz_cache,
+            checkpoint=args.boltz_checkpoint,
+            target_sequence=target_sequence,
+            binder_sequence=candidate.sequence,
+            output_dir=boltz_dir,
+            target_chain=target_chain,
+            binder_chain=args.binder_chain,
+            seed=args.seed,
+            diffusion_samples=PREDICTION_PROTOCOL["parameters"]["boltz"]["diffusion_samples"],
+            timeout=args.timeout,
+            no_kernels=args.no_kernels,
+        )
+        target_values["complex_predictions"].append(boltz_prediction)
+
+        if not args.prodigy:
+            if target_values.get("prodigy_outputs"):
+                raise ContractError(
+                    "prodigy_required_for_enrichment",
+                    "adding Boltz requires PRODIGY coverage for the new prediction",
+                )
+        else:
+            existing_outputs = target_values.get("prodigy_outputs") or []
+            if target_values.pop("prodigy_output", None):
+                existing_outputs = []
+                target_values.pop("prodigy_output_sha256", None)
+            if not existing_outputs:
+                predictions_to_score = target_values["complex_predictions"]
+            else:
+                predictions_to_score = [boltz_prediction]
+            generated = []
+            for prediction in predictions_to_score:
+                pdb, _, metadata = _prediction_paths(prediction, source_bundle.parent)
+                safe_model = str(metadata.get("model_id") or "model").replace("/", "_")
+                output = (
+                    candidate_dir / "prodigy" / target_id
+                    / f"{prediction['predictor']}_{safe_model}_seed_{prediction['seed']}.txt"
+                )
+                generated.append(_run_prodigy_for_prediction(
+                    executable=args.prodigy,
+                    prediction=prediction,
+                    source_base=source_bundle.parent,
+                    target_chain=target_chain,
+                    binder_sequence=candidate.sequence,
+                    output_path=output,
+                ))
+            target_values["prodigy_outputs"] = existing_outputs + generated
+
+    if add_rosetta:
+        target_values.pop("rosetta_output", None)
+        target_values.pop("rosetta_output_sha256", None)
+        rosetta_outputs = []
+        for prediction in target_values["complex_predictions"]:
+            pdb, _, metadata = _prediction_paths(prediction, source_bundle.parent)
+            binder_chain = str(
+                prediction.get("binder_chain")
+                or metadata.get("binder_chain")
+                or exact_sequence_chain(parse_pdb(pdb), candidate.sequence)
+            )
+            safe_model = str(metadata.get("model_id") or "model").replace("/", "_")
+            rosetta_outputs.append(run_rosetta_interface(
+                executable=args.rosetta_scripts,
+                pyrosetta_python=args.pyrosetta_python,
+                complex_pdb=pdb,
+                target_chain=target_chain,
+                binder_chain=binder_chain,
+                binder_sequence=candidate.sequence,
+                predictor=prediction["predictor"],
+                model_id=str(metadata.get("model_id") or ""),
+                seed=prediction["seed"],
+                output_dir=(
+                    candidate_dir / "rosetta_interface" / target_id
+                    / f"{prediction['predictor']}_{safe_model}_seed_{prediction['seed']}"
+                ),
+                timeout=args.rosetta_timeout,
+            ))
+        target_values["rosetta_outputs"] = rosetta_outputs
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)

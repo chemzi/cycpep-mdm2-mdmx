@@ -25,11 +25,8 @@ from contracts.action import (
     EXECUTABLE_ACTION_TYPES,
     KNOWN_UNIMPLEMENTED_ACTION_TYPES,
     V2_RESERVED_ACTION_TYPES,
-    ActionSpec,
-    ActionType,
     get_action_spec,
 )
-from contracts.task import ExecutionTask, TaskStatus
 from contracts.trace import TraceContext
 
 
@@ -164,6 +161,173 @@ def _normalize_design_job(raw: Any, index: int) -> dict:
     }
 
 
+def _validate_iterate_design_parameters(parameters: dict, action: str) -> dict:
+    allowed = {
+        "strategy_directives",
+        "required_targets",
+        "route_budget_snapshot",
+        "design_jobs",
+        "project_config_digest",
+        "reuse_existing_prediction_evidence",
+    }
+    _require_exact_keys(parameters, allowed, "execution_parameters_invalid", action)
+    if set(parameters) != allowed:
+        raise ExecutionContractError(
+            "execution_parameters_invalid",
+            f"{action} parameters must contain {sorted(allowed)}",
+        )
+    jobs = [_normalize_design_job(item, index) for index, item in enumerate(
+        parameters.get("design_jobs") or []
+    )]
+    if not jobs:
+        raise ExecutionContractError("design_jobs_missing", "iterate_design has no jobs")
+    targets = _require_strings(
+        parameters.get("required_targets"),
+        "design_targets_invalid",
+        "required_targets",
+        pattern=TARGET_ID_RE,
+    )
+    if any(job["target_id"] not in targets for job in jobs):
+        raise ExecutionContractError(
+            "design_target_invalid", "a design job targets an unapproved target"
+        )
+    strategies = _require_strings(
+        parameters.get("strategy_directives"),
+        "design_strategy_invalid",
+        "strategy_directives",
+    )
+    budgets = _require_object(
+        parameters.get("route_budget_snapshot"),
+        "design_budget_invalid",
+        "route_budget_snapshot",
+    )
+    normalized_budgets = {
+        str(key): _require_int(value, "design_budget_invalid", str(key), maximum=10**9)
+        for key, value in budgets.items()
+    }
+    digest = str(parameters.get("project_config_digest") or "")
+    if not SHA256_RE.fullmatch(digest):
+        raise ExecutionContractError(
+            "project_config_digest_invalid", "project config digest must be SHA-256"
+        )
+    normalized = {
+        "strategy_directives": strategies,
+        "required_targets": targets,
+        "route_budget_snapshot": normalized_budgets,
+        "design_jobs": jobs,
+        "project_config_digest": digest,
+        "reuse_existing_prediction_evidence": _require_bool(
+            parameters.get("reuse_existing_prediction_evidence"),
+            "reuse_flag_invalid",
+            "reuse_existing_prediction_evidence",
+        ),
+    }
+    return normalized
+
+
+def _validate_evaluate_new_design_candidates_parameters(parameters: dict, action: str) -> dict:
+    allowed = {
+        "reuse_complete_evidence",
+        "evidence_mode",
+        "predictor_protocol",
+    }
+    _require_exact_keys(parameters, allowed, "execution_parameters_invalid", action)
+    if set(parameters) != allowed:
+        raise ExecutionContractError(
+            "execution_parameters_invalid",
+            f"{action} parameters must contain {sorted(allowed)}",
+        )
+    evidence_mode = str(parameters.get("evidence_mode") or "")
+    if evidence_mode not in {"reuse_or_generate_full", "ingest_existing"}:
+        raise ExecutionContractError(
+            "prediction_evidence_mode_invalid", f"unsupported mode {evidence_mode!r}"
+        )
+    protocol = parameters.get("predictor_protocol")
+    if not isinstance(protocol, dict):
+        raise ExecutionContractError(
+            "prediction_protocol_invalid",
+            "predictor_protocol must be a protocol identity object "
+            "{name, version, sha256}",
+        )
+    unknown = sorted(set(protocol) - {"name", "version", "sha256"})
+    if unknown:
+        raise ExecutionContractError(
+            "prediction_protocol_invalid",
+            f"predictor_protocol has unsupported fields: {unknown}",
+        )
+    if not all(
+        isinstance(protocol[key], str) and protocol[key]
+        for key in ("name", "version", "sha256")
+    ):
+        raise ExecutionContractError(
+            "prediction_protocol_invalid",
+            "predictor_protocol name/version/sha256 must be non-empty strings",
+        )
+    if not SHA256_RE.fullmatch(protocol["sha256"]):
+        raise ExecutionContractError(
+            "prediction_protocol_invalid",
+            "predictor_protocol sha256 must be a SHA-256 hex digest",
+        )
+    if protocol["name"] not in PREDICTOR_PROTOCOLS:
+        raise ExecutionContractError(
+            "prediction_protocol_invalid",
+            f"unsupported protocol {protocol['name']!r}",
+        )
+    if protocol != protocol_binding():
+        raise ExecutionContractError(
+            "prediction_protocol_invalid",
+            "predictor_protocol identity does not match the active "
+            "protocol; execution can only run the active protocol",
+        )
+    normalized = {
+        "reuse_complete_evidence": _require_bool(
+            parameters.get("reuse_complete_evidence"),
+            "reuse_flag_invalid",
+            "reuse_complete_evidence",
+        ),
+        "evidence_mode": evidence_mode,
+        "predictor_protocol": dict(protocol),
+    }
+    return normalized
+
+
+def _validate_review_prediction_handoff_parameters(parameters: dict, action: str) -> dict:
+    allowed = {"min_cohort", "low_diversity_similarity"}
+    _require_exact_keys(parameters, allowed, "execution_parameters_invalid", action)
+    min_cohort = parameters.get("min_cohort", 3)
+    similarity = parameters.get("low_diversity_similarity", 0.80)
+    _require_int(min_cohort, "critic_parameter_invalid", "min_cohort", minimum=1, maximum=10000)
+    try:
+        similarity_value = float(similarity)
+    except (TypeError, ValueError) as exc:
+        raise ExecutionContractError(
+            "critic_parameter_invalid", "low_diversity_similarity must be numeric"
+        ) from exc
+    if not math.isfinite(similarity_value) or not 0.0 <= similarity_value <= 1.0:
+        raise ExecutionContractError(
+            "critic_parameter_invalid", "low_diversity_similarity must be within [0, 1]"
+        )
+    normalized = {
+        "min_cohort": min_cohort,
+        "low_diversity_similarity": similarity_value,
+    }
+    return normalized
+
+
+def _validate_propose_threshold_calibration_parameters(parameters: dict, action: str) -> dict:
+    allowed = {"threshold_keys"}
+    _require_exact_keys(parameters, allowed, "execution_parameters_invalid", action)
+    normalized = {
+        "threshold_keys": _require_strings(
+            parameters.get("threshold_keys") or [],
+            "threshold_keys_invalid",
+            "threshold_keys",
+            allow_empty=True,
+        )
+    }
+    return normalized
+
+
 def validate_task_parameters(task: dict) -> dict:
     """Validate and normalize one Planner task without executing it."""
     task = _require_object(task, "execution_task_invalid", "task")
@@ -175,160 +339,13 @@ def validate_task_parameters(task: dict) -> dict:
     )
 
     if action == "iterate_design":
-        allowed = {
-            "strategy_directives",
-            "required_targets",
-            "route_budget_snapshot",
-            "design_jobs",
-            "project_config_digest",
-            "reuse_existing_prediction_evidence",
-        }
-        _require_exact_keys(parameters, allowed, "execution_parameters_invalid", action)
-        if set(parameters) != allowed:
-            raise ExecutionContractError(
-                "execution_parameters_invalid",
-                f"{action} parameters must contain {sorted(allowed)}",
-            )
-        jobs = [_normalize_design_job(item, index) for index, item in enumerate(
-            parameters.get("design_jobs") or []
-        )]
-        if not jobs:
-            raise ExecutionContractError("design_jobs_missing", "iterate_design has no jobs")
-        targets = _require_strings(
-            parameters.get("required_targets"),
-            "design_targets_invalid",
-            "required_targets",
-            pattern=TARGET_ID_RE,
-        )
-        if any(job["target_id"] not in targets for job in jobs):
-            raise ExecutionContractError(
-                "design_target_invalid", "a design job targets an unapproved target"
-            )
-        strategies = _require_strings(
-            parameters.get("strategy_directives"),
-            "design_strategy_invalid",
-            "strategy_directives",
-        )
-        budgets = _require_object(
-            parameters.get("route_budget_snapshot"),
-            "design_budget_invalid",
-            "route_budget_snapshot",
-        )
-        normalized_budgets = {
-            str(key): _require_int(value, "design_budget_invalid", str(key), maximum=10**9)
-            for key, value in budgets.items()
-        }
-        digest = str(parameters.get("project_config_digest") or "")
-        if not SHA256_RE.fullmatch(digest):
-            raise ExecutionContractError(
-                "project_config_digest_invalid", "project config digest must be SHA-256"
-            )
-        normalized = {
-            "strategy_directives": strategies,
-            "required_targets": targets,
-            "route_budget_snapshot": normalized_budgets,
-            "design_jobs": jobs,
-            "project_config_digest": digest,
-            "reuse_existing_prediction_evidence": _require_bool(
-                parameters.get("reuse_existing_prediction_evidence"),
-                "reuse_flag_invalid",
-                "reuse_existing_prediction_evidence",
-            ),
-        }
+        normalized = _validate_iterate_design_parameters(parameters, action)
     elif action == "evaluate_new_design_candidates":
-        allowed = {
-            "reuse_complete_evidence",
-            "evidence_mode",
-            "predictor_protocol",
-        }
-        _require_exact_keys(parameters, allowed, "execution_parameters_invalid", action)
-        if set(parameters) != allowed:
-            raise ExecutionContractError(
-                "execution_parameters_invalid",
-                f"{action} parameters must contain {sorted(allowed)}",
-            )
-        evidence_mode = str(parameters.get("evidence_mode") or "")
-        if evidence_mode not in {"reuse_or_generate_full", "ingest_existing"}:
-            raise ExecutionContractError(
-                "prediction_evidence_mode_invalid", f"unsupported mode {evidence_mode!r}"
-            )
-        protocol = parameters.get("predictor_protocol")
-        if not isinstance(protocol, dict):
-            raise ExecutionContractError(
-                "prediction_protocol_invalid",
-                "predictor_protocol must be a protocol identity object "
-                "{name, version, sha256}",
-            )
-        unknown = sorted(set(protocol) - {"name", "version", "sha256"})
-        if unknown:
-            raise ExecutionContractError(
-                "prediction_protocol_invalid",
-                f"predictor_protocol has unsupported fields: {unknown}",
-            )
-        if not all(
-            isinstance(protocol[key], str) and protocol[key]
-            for key in ("name", "version", "sha256")
-        ):
-            raise ExecutionContractError(
-                "prediction_protocol_invalid",
-                "predictor_protocol name/version/sha256 must be non-empty strings",
-            )
-        if not SHA256_RE.fullmatch(protocol["sha256"]):
-            raise ExecutionContractError(
-                "prediction_protocol_invalid",
-                "predictor_protocol sha256 must be a SHA-256 hex digest",
-            )
-        if protocol["name"] not in PREDICTOR_PROTOCOLS:
-            raise ExecutionContractError(
-                "prediction_protocol_invalid",
-                f"unsupported protocol {protocol['name']!r}",
-            )
-        if protocol != protocol_binding():
-            raise ExecutionContractError(
-                "prediction_protocol_invalid",
-                "predictor_protocol identity does not match the active "
-                "protocol; execution can only run the active protocol",
-            )
-        normalized = {
-            "reuse_complete_evidence": _require_bool(
-                parameters.get("reuse_complete_evidence"),
-                "reuse_flag_invalid",
-                "reuse_complete_evidence",
-            ),
-            "evidence_mode": evidence_mode,
-            "predictor_protocol": dict(protocol),
-        }
+        normalized = _validate_evaluate_new_design_candidates_parameters(parameters, action)
     elif action == "review_prediction_handoff":
-        allowed = {"min_cohort", "low_diversity_similarity"}
-        _require_exact_keys(parameters, allowed, "execution_parameters_invalid", action)
-        min_cohort = parameters.get("min_cohort", 3)
-        similarity = parameters.get("low_diversity_similarity", 0.80)
-        _require_int(min_cohort, "critic_parameter_invalid", "min_cohort", minimum=1, maximum=10000)
-        try:
-            similarity_value = float(similarity)
-        except (TypeError, ValueError) as exc:
-            raise ExecutionContractError(
-                "critic_parameter_invalid", "low_diversity_similarity must be numeric"
-            ) from exc
-        if not math.isfinite(similarity_value) or not 0.0 <= similarity_value <= 1.0:
-            raise ExecutionContractError(
-                "critic_parameter_invalid", "low_diversity_similarity must be within [0, 1]"
-            )
-        normalized = {
-            "min_cohort": min_cohort,
-            "low_diversity_similarity": similarity_value,
-        }
+        normalized = _validate_review_prediction_handoff_parameters(parameters, action)
     elif action == "propose_threshold_calibration":
-        allowed = {"threshold_keys"}
-        _require_exact_keys(parameters, allowed, "execution_parameters_invalid", action)
-        normalized = {
-            "threshold_keys": _require_strings(
-                parameters.get("threshold_keys") or [],
-                "threshold_keys_invalid",
-                "threshold_keys",
-                allow_empty=True,
-            )
-        }
+        normalized = _validate_propose_threshold_calibration_parameters(parameters, action)
     else:
         # Reserved and currently unimplemented actions retain an object payload
         # so their future schema can be versioned without accepting commands.

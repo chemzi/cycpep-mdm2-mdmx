@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "items": {
+    "file_size": [],
+    "function_length": [],
+    "action_handlers": [],
+    "private_imports": [],
+    "bom": []
+  }
+}

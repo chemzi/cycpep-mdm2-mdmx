@@ -325,8 +325,11 @@ def _post_commit_finalize(
         receipt["post_commit_warnings"] = warnings
         try:
             atomic_json(task_dir / "execution_receipt.json", receipt)
-        except BaseException:
-            pass
+        except BaseException as exc:
+            EvidenceLogger.error(
+                "execution", "receipt_persist_failed", str(exc),
+                recovery="post-commit warnings were not persisted",
+            )
 
 
 def _finalize_failure(
@@ -780,7 +783,7 @@ def main() -> int:
             result = drain_run(run_path=args.run, worker_id=args.worker)
         else:
             raise AssertionError(args.command)
-    except (ExecutionContractError, OrchestratorContractError, OSError) as exc:
+    except (ExecutionContractError, OrchestratorContractError, ExecutionFailure, OSError) as exc:
         print(json.dumps({
             "status": "error",
             "code": getattr(exc, "code", exc.__class__.__name__),

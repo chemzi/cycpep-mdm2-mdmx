@@ -219,7 +219,7 @@ class ResearchStateAndCacheTests(unittest.TestCase):
             "pocket_differences": research.POCKET_DIFFERENCES,
             "known_dual_binders": [],
             "known_binder_source": "none_found",
-            "thresholds": research._default_thresholds(research.PROJECT_CONFIG),
+            "thresholds": research.default_thresholds(research.PROJECT_CONFIG),
             "_pipeline_meta": {
                 "stage_status": {
                     "rcsb_search": "complete", "rcsb_enrich": "complete",
@@ -244,7 +244,7 @@ class ResearchStateAndCacheTests(unittest.TestCase):
         original_replace = os.replace
         with patch("agents.research.os.replace", wraps=original_replace) as replace:
             research._write_threshold_cache(
-                research._default_thresholds(research.PROJECT_CONFIG), research.PROJECT_CONFIG
+                research.default_thresholds(research.PROJECT_CONFIG), research.PROJECT_CONFIG
             )
         replace.assert_called_once()
         source, destination = map(Path, replace.call_args.args)
@@ -345,7 +345,7 @@ class ResearchStateAndCacheTests(unittest.TestCase):
             "id": "EGFR", "required": True,
             "binding_site": {"residues": [1, 2], "status": "user_reviewed"},
         }]
-        l5 = research._default_thresholds(config)["L5_hotspot_coverage"]
+        l5 = research.default_thresholds(config)["L5_hotspot_coverage"]
         self.assertIsNone(l5["value"])
         self.assertEqual(l5["evidence_grade"], "unavailable")
         self.assertEqual(l5["calibration_status"], "unavailable")
@@ -359,13 +359,13 @@ class ResearchStateAndCacheTests(unittest.TestCase):
                 "binding_site": {"residues": [1, 2], "status": "user_reviewed"},
             }],
         }
-        l5 = research._default_thresholds(config)["L5_hotspot_coverage"]
+        l5 = research.default_thresholds(config)["L5_hotspot_coverage"]
         self.assertEqual(l5["value"], 0.75)
         self.assertEqual(l5["evidence_grade"], "design_rule")
         self.assertEqual(l5["applicable_targets"], ["EGFR"])
 
     def test_null_threshold_is_safe_and_blocks_clearance(self):
-        thresholds = research._default_thresholds({
+        thresholds = research.default_thresholds({
             "project_id": "generic", "schema_version": 1,
             "targets": [{"id": "EGFR", "required": True}],
         })
