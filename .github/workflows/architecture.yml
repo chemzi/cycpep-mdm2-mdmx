@@ -1,4 +1,4 @@
-﻿name: Architecture Gate
+name: Architecture Gate
 
 on:
   pull_request:

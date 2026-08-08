@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import threading
 import unittest
@@ -123,6 +124,11 @@ class RecoveryHardeningTests(unittest.TestCase):
             **lease,
         }
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "owner-liveness identity proof requires Linux /proc; "
+        "other platforms degrade to safe OWNER_UNKNOWN",
+    )
     def test_prepared_window_live_owner_survives_concurrent_recovery(self):
         store = _LeaseStore()
         store.block_commit = True
@@ -161,6 +167,11 @@ class RecoveryHardeningTests(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertEqual(store.statuses[context.transaction_id], "COMMITTED")
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "owner-liveness identity proof requires Linux /proc; "
+        "other platforms degrade to safe OWNER_UNKNOWN",
+    )
     def test_committed_preclosure_live_owner_ignores_stale_heartbeat(self):
         store = _LeaseStore()
         context = self._context("committed")
@@ -204,6 +215,11 @@ class RecoveryHardeningTests(unittest.TestCase):
         owner_release.set()
         owner.join(timeout=10)
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "owner-liveness identity proof requires Linux /proc; "
+        "other platforms degrade to safe OWNER_UNKNOWN",
+    )
     def test_dead_owner_and_rebooted_owner_are_recoverable(self):
         for suffix, mutate_lease in (
             ("dead", lambda payload: None),
