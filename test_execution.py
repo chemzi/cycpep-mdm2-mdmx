@@ -21,7 +21,7 @@ from execution.contracts import (
     validate_task_parameters,
 )
 from execution.handlers import _artifact_bundle_complete
-from execution.supervisor import run_process
+from execution.supervisor import _terminate_group, run_process
 from execution.worker import _orchestrator_state_for_transaction, execute_task
 from execution.results import ExecutionActionResult
 from prediction_pipeline.contracts import object_sha256
@@ -187,6 +187,31 @@ class ExecutionTests(unittest.TestCase):
             }
             with self.assertRaisesRegex(ExecutionContractError, "reserved for v2"):
                 assert_action_executable(task)
+
+    def test_terminate_group_windows_branch_avoids_os_killpg(self):
+        # P2-1: os.killpg is POSIX-only; on Windows the timeout/interrupt
+        # path must use taskkill /T instead of raising AttributeError.
+        process = Mock()
+        process.poll.return_value = None
+        process.pid = 4242
+        process.wait.return_value = 0
+        with patch("execution.supervisor.os.name", "nt"), patch(
+            "execution.supervisor.subprocess.run"
+        ) as run:
+            _terminate_group(process, grace_seconds=1.0)
+        args = run.call_args.args[0]
+        self.assertEqual(args[:3], ["taskkill", "/F", "/T"])
+        self.assertEqual(args[-1], "4242")
+        process.wait.assert_called()
+
+    def test_terminate_group_returns_early_when_process_finished(self):
+        process = Mock()
+        process.poll.return_value = 0
+        with patch("execution.supervisor.os.name", "nt"), patch(
+            "execution.supervisor.subprocess.run"
+        ) as run:
+            _terminate_group(process, grace_seconds=1.0)
+        run.assert_not_called()
 
     def test_process_arguments_are_not_interpreted_by_a_shell(self):
         marker = self.root / "must_not_exist"

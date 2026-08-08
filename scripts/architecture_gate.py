@@ -73,9 +73,13 @@ def check_function_lengths(root: Path, max_lines: int) -> list[dict]:
     for path in iter_py_files(root):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8-sig"))
-        except (SyntaxError, UnicodeDecodeError):
-            # Syntax/encoding errors belong to the unit test suite; the gate
-            # focuses on structural debt and must stay green for parsing.
+        except (SyntaxError, UnicodeDecodeError) as exc:
+            # A file the gate cannot parse is invisible to AST checks (the
+            # BOM blind spot all over again); report it instead of skipping.
+            violations.append({
+                "file": path.relative_to(root).as_posix(),
+                "parse_error": f"{type(exc).__name__}: {exc}",
+            })
             continue
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -110,7 +114,11 @@ def check_private_imports(root: Path) -> list[dict]:
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8-sig"))
-        except (SyntaxError, UnicodeDecodeError):
+        except (SyntaxError, UnicodeDecodeError) as exc:
+            violations.append({
+                "file": rel.as_posix(),
+                "parse_error": f"{type(exc).__name__}: {exc}",
+            })
             continue
         for node in ast.walk(tree):
             if not isinstance(node, ast.ImportFrom) or node.module is None:
@@ -152,6 +160,8 @@ def _item_key(check: str, item: dict) -> tuple:
     if check in ("file_size", "bom"):
         return ("file", item["file"])
     if check == "function_length":
+        if "parse_error" in item:
+            return ("file", item["file"], "parse_error")
         # Line is part of the identity: same-named functions in one file
         # (e.g. repeated __init__/run) must not share a baseline key, or a
         # new oversized function could be absorbed by a stale (file, name)
@@ -159,6 +169,8 @@ def _item_key(check: str, item: dict) -> tuple:
         return ("file", item["file"], "function", item["function"], "line", item["line"])
     if check == "action_handlers":
         return ("detail", item["detail"])
+    if "parse_error" in item:
+        return ("file", item["file"], "parse_error")
     return ("file", item["file"], "import", item["import"])
 
 

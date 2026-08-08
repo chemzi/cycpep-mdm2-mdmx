@@ -144,6 +144,43 @@ class ArchitectureGateTests(unittest.TestCase):
         self.assertIn("1 new", report)
         self.assertIn("mod.py", report)
 
+    def test_parse_error_file_is_reported_not_skipped(self):
+        # P2-4: a file ast cannot parse must surface as a violation instead
+        # of silently disappearing from the AST-based checks.
+        self._write("broken.py", "def f(:\n    pass\n")
+        self._write("ok.py", "def f():\n    return 1\n")
+        violations = check_function_lengths(self.root, max_lines=150)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0]["file"], "broken.py")
+        self.assertIn("parse_error", violations[0])
+
+        priv = check_private_imports(self.root)
+        self.assertEqual(len(priv), 1)
+        self.assertEqual(priv[0]["file"], "broken.py")
+        self.assertIn("parse_error", priv[0])
+
+        all_v = {
+            "file_size": [],
+            "function_length": violations,
+            "action_handlers": [],
+            "private_imports": priv,
+            "bom": [],
+        }
+        baseline = {
+            "schema_version": 1,
+            "items": {
+                "file_size": [],
+                "function_length": [],
+                "action_handlers": [],
+                "private_imports": [],
+                "bom": [],
+            },
+        }
+        report, ok = format_report(all_v, baseline, update=False)
+        self.assertFalse(ok)
+        self.assertIn("broken.py", report)
+        self.assertIn("parse_error", report)
+
     def test_baseline_roundtrip(self):
         path = self.root / "baseline.json"
         violations = {"file_size": [{"file": "a.py", "lines": 1200}],

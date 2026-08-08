@@ -44,9 +44,16 @@ class StagingArea:
         source_path = Path(source)
         if not source_path.is_file():
             raise ValueError(f"artifact does not exist: {source_path}")
-        if not artifact_id or "/" in artifact_id or "\\" in artifact_id:
+        if (
+            not artifact_id
+            or "/" in artifact_id
+            or "\\" in artifact_id
+            or artifact_id in {".", ".."}
+        ):
             raise ValueError("artifact_id must be one path-safe segment")
         destination = self.artifacts_path / artifact_id / source_path.name
+        if self.artifacts_path.resolve() not in destination.resolve().parents:
+            raise ValueError("artifact_id must stay inside the staging artifacts directory")
         destination.parent.mkdir(parents=True, exist_ok=True)
         if destination.exists():
             raise ValueError(f"artifact already staged: {artifact_id}")

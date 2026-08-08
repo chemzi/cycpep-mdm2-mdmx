@@ -56,22 +56,46 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _signal_group(process: subprocess.Popen, sig: int) -> None:
+    """Send a signal to the whole process group (POSIX only)."""
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        pass
+
+
 def _terminate_group(process: subprocess.Popen, grace_seconds: float = 10.0) -> None:
     if process.poll() is not None:
         return
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
+    if os.name == "nt":
+        # os.killpg is POSIX-only; on Windows take down the whole process
+        # tree with taskkill so grandchildren cannot outlive the timeout
+        # or interrupt (P2-1). taskkill is a separate binary here, not the
+        # launched job, so shell=False discipline is preserved.
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=max(1.0, grace_seconds),
+            )
+        except (OSError, subprocess.SubprocessError):
+            try:
+                process.kill()
+            except OSError:
+                pass
+        try:
+            process.wait(timeout=max(1.0, grace_seconds))
+        except subprocess.TimeoutExpired:
+            pass
         return
+    _signal_group(process, signal.SIGTERM)
     try:
         process.wait(timeout=grace_seconds)
         return
     except subprocess.TimeoutExpired:
         pass
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        return
+    _signal_group(process, signal.SIGKILL)
     process.wait(timeout=max(1.0, grace_seconds))
 
 
