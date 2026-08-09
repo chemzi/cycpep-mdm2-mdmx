@@ -5,18 +5,8 @@ Public names are re-exported so existing imports keep working.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[2]
-# Import-time sys.path bootstrap shared by all agent packages: legacy single-file
-# entrypoints may import the package before the repository root is on sys.path.
-# It registers the root only and performs no project/IO side effects.
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from .errors import PlannerContractError  # noqa: E402
-from .config import (  # noqa: E402
+from .errors import PlannerContractError
+from .config import (
     APPROVAL_SCHEMA_VERSION,
     DESIGN_ITERATION_ACTIONS,
     LEGACY_PLAN_SCHEMA_VERSION,
@@ -30,10 +20,10 @@ from .config import (  # noqa: E402
     SEVERITY_RANK,
     PlannerConfig,
 )
-from .service import adjust, build_plan, plan, run  # noqa: E402
-from .approval import record_approval  # noqa: E402
-from contracts.plan import validate_plan_for_approval, validate_sha256  # noqa: E402
-from .cli import build_parser, main  # noqa: E402
+from .service import adjust, build_plan, plan, run
+from .approval import record_approval
+from contracts.plan import validate_plan_for_approval, validate_sha256
+from .cli import build_parser, main
 
 __all__ = [
     "PlannerContractError",

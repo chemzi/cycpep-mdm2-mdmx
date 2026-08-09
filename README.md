@@ -216,8 +216,10 @@ python scripts/architecture_gate.py --baseline architecture_baseline.json
 
 Enforced in CI (`.github/workflows/architecture.yml`): python files > 1000 lines,
 functions > 150 lines, executable planner actions without a real Execution
-handler, and absolute cross-package imports of private (`_name`) symbols from
-non-test code all fail the gate. Existing violations are tracked in
+handler, absolute cross-package imports of private (`_name`) symbols from
+non-test code, and package initializers that mutate Python's import search path
+all fail the gate.
+Existing violations are tracked in
 `architecture_baseline.json` and must only shrink; any NEW violation blocks the
 PR. Maintainers regenerate the baseline with
 `python scripts/architecture_gate.py --update-baseline`.

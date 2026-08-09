@@ -1,0 +1,58 @@
+schema: spec-driven
+
+context: |
+  cycpep-mdm2-mdmx is a Python workflow for in-silico cyclic-peptide design
+  and evaluation. Its main flow is Research -> Design -> Prediction -> Critic
+  -> Planner -> Orchestrator -> Execution Worker -> registered Action Handler.
+
+  ENGINEERING_STANDARD.md is mandatory. README.md and the relevant docs under
+  docs/ describe the current architecture; verify claims against implementation
+  and tests before relying on them.
+
+  Architectural invariants:
+  - Agents communicate through public contracts; do not import private symbols
+    across package boundaries or introduce duplicate shared contracts.
+  - Planner executable actions form a closed world with execution/action_registry.py.
+    An action without a real handler must not be ready for execution.
+  - Orchestrator owns workflow coordination; Execution Worker only runs approved,
+    registered actions and returns typed results.
+  - State, CandidateIndex, and Evidence have distinct responsibilities and use
+    the shared data/store boundaries. Do not add shadow state or bypass those
+    boundaries.
+  - Execution and persistence changes must preserve transaction ownership and
+    must not expose partially committed formal state after failure.
+  - Project-scoped behavior uses explicit ProjectContext injection; do not add
+    import-time project globals.
+  - Scientific parameters belong in versioned protocol/configuration, not as
+    handler-local magic values.
+
+  Prefer characterization tests and incremental migration over broad rewrites.
+  Public interface or data-format changes require explicit compatibility and
+  migration decisions. Base validation uses unittest; the architecture gate is
+  scripts/architecture_gate.py with architecture_baseline.json.
+
+rules:
+  proposal:
+    - State the single architectural purpose, affected boundaries, and non-goals.
+    - Declare behavior, public-interface, data-format, and migration impact explicitly.
+    - Identify any legacy path or bypass that will remain after the change.
+  specs:
+    - Express observable requirements and failure behavior, including transaction and recovery semantics when relevant.
+    - Preserve the Planner-to-Execution closed world and shared contract invariants unless the change explicitly replaces them.
+  design:
+    - Reference the current implementation and tests that establish the behavior baseline.
+    - Define dependency direction, ownership, compatibility, rollout, and rollback boundaries where relevant.
+    - Avoid big-bang rewrites and do not mix unrelated agent or scientific-algorithm changes.
+  tasks:
+    - Include focused tests, applicable regression tests, the architecture gate, and documentation synchronization.
+    - Do not create a parallel task list or progress tracker outside the OpenSpec change.
+
+operations:
+  apply:
+    guidance:
+      - Read ENGINEERING_STANDARD.md and the affected modules and tests before editing.
+      - Keep changes within the approved artifacts and report newly discovered debt separately.
+      - Run focused validation first, then the broader applicable suite and architecture gate.
+  archive:
+    guidance:
+      - Verify implementation, tests, documentation, and OpenSpec artifacts agree before archiving.
