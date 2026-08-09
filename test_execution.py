@@ -258,6 +258,36 @@ class ExecutionTests(unittest.TestCase):
         )
         self.assertEqual(jobs[0]["lengths"], [8, 9])
 
+    def test_design_cli_forwards_lengths_into_design_config(self):
+        # P1-1 输出端回归：Execution 传的 --lengths 必须真正进入
+        # design_config，否则官告“显式参数优先”但实际被
+        # route_a 内部的 apply_experience_preference 二次覆盖（重复记账）。
+        from agents.design import cli
+
+        captured = {}
+
+        class _FakeDesign:
+            def __init__(self):
+                pass
+
+            def design_rfpeptides(self, target_spec=None, design_config=None):
+                captured["design_config"] = dict(design_config or {})
+                return []
+
+        updates = self.root / "cli-updates.json"
+        with patch("agents.design.cli.Design", _FakeDesign):
+            rc = cli.main([
+                "--route", "A",
+                "--target", "MDM2",
+                "--n", "1",
+                "--lengths", "12",
+                "--seed", "42",
+                "--candidate-updates-path", str(updates),
+            ])
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured["design_config"].get("lengths"), [12])
+
+
     def test_reserved_v2_actions_have_no_v1_handler(self):
         for action in V2_RESERVED_ACTIONS:
             task = {

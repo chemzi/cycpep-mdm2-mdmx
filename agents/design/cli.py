@@ -47,6 +47,8 @@ def main(argv=None) -> int:
     if args.hotspots:
         target_spec["hotspots"] = args.hotspots
     design_config = {"n": args.n, "seed": args.seed}
+    if lengths:
+        design_config["lengths"] = lengths
 
     # Context-aware entry point (Engineering Standard P1-1).  The default
     # context derives from the approved project config at call time.
