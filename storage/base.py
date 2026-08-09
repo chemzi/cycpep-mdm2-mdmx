@@ -56,6 +56,22 @@ class TransactionStore(ABC):
     @abstractmethod
     def get_artifact(self, artifact_id: str) -> dict[str, Any] | None: ...
 
+    def list_artifacts(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def get_transaction(self, transaction_id: str) -> dict[str, Any] | None:
+        raise NotImplementedError
+
+    def list_transactions(
+        self,
+        *,
+        workflow_id: str | None = None,
+        run_id: str | None = None,
+        task_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
     @abstractmethod
     def get_transaction_status(self, transaction_id: str) -> str | None: ...
 

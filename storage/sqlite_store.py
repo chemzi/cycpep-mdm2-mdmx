@@ -383,8 +383,9 @@ class SQLiteStore(Store):
         return [json.loads(row["payload_json"]) for row in rows]
 
     def append(self, event: Mapping[str, Any]) -> str:
+        value = _mapping(event)
         with self._write() as connection:
-            return self._append_event(connection, event)
+            return self._append_event(connection, value)
 
     @staticmethod
     def _append_event(connection: sqlite3.Connection, event: Mapping[str, Any]) -> str:
@@ -429,6 +430,15 @@ class SQLiteStore(Store):
     def query(self, **filters: Any) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
+        if filters.get("project_id") is not None:
+            if str(filters["project_id"]) != self.project_id:
+                return []
+            clauses.append(
+                "(json_extract(payload_json, '$.project_id') = ? OR transaction_id IN ("
+                "SELECT transaction_id FROM execution_transactions "
+                "WHERE json_extract(payload_json, '$.metadata.project_id') = ?))"
+            )
+            params.extend([filters["project_id"], filters["project_id"]])
         for key in (
             "transaction_id", "workflow_id", "run_id", "task_id", "candidate_id",
             "agent", "event_type",
@@ -501,6 +511,37 @@ class SQLiteStore(Store):
                 "SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,)
             ).fetchone()
         return dict(row) if row else None
+
+    def list_artifacts(self) -> list[dict[str, Any]]:
+        transactions = self.list_transactions()
+        linkage: dict[str, dict[str, Any]] = {}
+        for transaction in transactions:
+            for artifact_id in transaction.get("artifact_ids") or ():
+                linkage.setdefault(str(artifact_id), transaction)
+        if not linkage:
+            return []
+
+        with self._read() as connection:
+            rows = connection.execute(
+                "SELECT * FROM artifacts ORDER BY created_at, artifact_id"
+            ).fetchall()
+        artifacts = []
+        for row in rows:
+            artifact = dict(row)
+            transaction = linkage.get(str(artifact["artifact_id"]))
+            if transaction is None:
+                continue
+            artifact.update({
+                "project_id": transaction["project_id"],
+                "transaction_id": transaction["transaction_id"],
+                "workflow_id": transaction.get("workflow_id"),
+                "run_id": transaction.get("run_id"),
+                "task_id": transaction.get("task_id"),
+                "attempt_id": transaction.get("attempt_id"),
+                "metadata": dict(transaction.get("metadata") or {}),
+            })
+            artifacts.append(artifact)
+        return artifacts
 
     def commit_transaction(
         self,
@@ -699,6 +740,65 @@ class SQLiteStore(Store):
                 (transaction_id,),
             ).fetchone()
         return str(row["status"]) if row else None
+
+    def get_transaction(self, transaction_id: str) -> dict[str, Any] | None:
+        with self._read() as connection:
+            row = connection.execute(
+                "SELECT * FROM execution_transactions WHERE transaction_id = ?",
+                (transaction_id,),
+            ).fetchone()
+        transaction = self._transaction_record(row) if row else None
+        if transaction is None or transaction.get("project_id") != self.project_id:
+            return None
+        return transaction
+
+    def list_transactions(
+        self,
+        *,
+        workflow_id: str | None = None,
+        run_id: str | None = None,
+        task_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        filters = {
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "task_id": task_id,
+            "attempt_id": attempt_id,
+        }
+        with self._read() as connection:
+            rows = connection.execute(
+                "SELECT * FROM execution_transactions ORDER BY created_at, transaction_id"
+            ).fetchall()
+        transactions = []
+        for row in rows:
+            transaction = self._transaction_record(row)
+            if transaction.get("project_id") != self.project_id:
+                continue
+            if any(
+                expected is not None and transaction.get(key) != expected
+                for key, expected in filters.items()
+            ):
+                continue
+            transactions.append(transaction)
+        return transactions
+
+    @staticmethod
+    def _transaction_record(row: sqlite3.Row) -> dict[str, Any]:
+        transaction = dict(json.loads(row["payload_json"]))
+        metadata = transaction.get("metadata")
+        metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
+        transaction.update({
+            "transaction_id": str(row["transaction_id"]),
+            "task_id": str(row["task_id"]),
+            "attempt_id": str(row["attempt_id"]),
+            "status": str(row["status"]),
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+            "metadata": metadata,
+            "project_id": metadata.get("project_id"),
+        })
+        return transaction
 
     def _delete_transaction_effects(
         self, connection: sqlite3.Connection, payload: Mapping[str, Any]

@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from data_layer import CandidateIndex, EvidenceLogger, State  # noqa: E402
+from data_layer import CandidateIndex, EvidenceLogger, State, get_storage_backend  # noqa: E402
 from target_bootstrap import (  # noqa: E402
     BootstrapError,
     ReviewRequiredError,
@@ -33,6 +33,7 @@ from target_bootstrap import (  # noqa: E402
     approve_draft,
     edit_target_draft,
 )
+from web_api.workbench import WorkbenchReader  # noqa: E402
 
 STORE = Path(os.environ.get("CYCPEP_WEB_STORE", ROOT / "data" / "web_api"))
 DRAFTS = STORE / "drafts"
@@ -314,6 +315,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, projects)
             if path == "/api/v1/snapshot":
                 return self._json(200, local_snapshot())
+            if path == "/api/v2/workbench":
+                store = getattr(self.server, "workbench_store", None)
+                if store is None:
+                    return self._json(503, error={
+                        "code": "workbench_unavailable",
+                        "message": "Workbench read model is unavailable",
+                    })
+                return self._json(200, WorkbenchReader(store).read())
             artifact_match = re.fullmatch(r"/api/v1/artifacts/(art_[a-f0-9]{24})/coordinates", path)
             if artifact_match:
                 artifact = ARTIFACTS.get(artifact_match.group(1))
@@ -400,7 +409,9 @@ def main() -> None:
             "binding outside loopback requires explicit CYCPEP_ALLOW_INSECURE_REMOTE=1; "
             "the adapter has no authentication layer"
         )
-    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server.workbench_store = get_storage_backend()
+    server.serve_forever()
 
 
 if __name__ == "__main__":
