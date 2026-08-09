@@ -1,0 +1,88 @@
+{
+  "schema_version": 2,
+  "manifest_kind": "keap1_positive_controls",
+  "benchmark_id": "keap1_jacs_2021_canonical_cyclic_series",
+  "target_id": "KEAP1",
+  "target_uniprot": "Q14145",
+  "source_manifest": "benchmarks/keap1/runtime_manifest.json",
+  "controls": [
+    {
+      "control_id": "keap1-7K2E-positive",
+      "label": "positive",
+      "role": "experimental_positive_control",
+      "sequence": "GDEETGE",
+      "source": {
+        "pdb_id": "7K2E",
+        "doi": "10.1021/jacs.0c09799",
+        "reference_ligand_pdb": "structures/reference/7K2E_cyclic_peptide_B.pdb",
+        "reference_complex_pdb": "structures/reference/7K2E_complex_AB.pdb",
+        "method": "experimental structure from published cyclic-peptide series"
+      }
+    },
+    {
+      "control_id": "keap1-7K2F-positive",
+      "label": "positive",
+      "role": "experimental_positive_control",
+      "sequence": "GAEETGE",
+      "source": {
+        "pdb_id": "7K2F",
+        "doi": "10.1021/jacs.0c09799",
+        "reference_ligand_pdb": "structures/reference/7K2F_cyclic_peptide_B.pdb",
+        "reference_complex_pdb": "structures/reference/7K2F_complex_AB.pdb",
+        "method": "experimental structure from published cyclic-peptide series"
+      }
+    },
+    {
+      "control_id": "keap1-7K2G-positive",
+      "label": "positive",
+      "role": "experimental_positive_control",
+      "sequence": "GDEEAGE",
+      "source": {
+        "pdb_id": "7K2G",
+        "doi": "10.1021/jacs.0c09799",
+        "reference_ligand_pdb": "structures/reference/7K2G_cyclic_peptide_B.pdb",
+        "reference_complex_pdb": "structures/reference/7K2G_complex_AB.pdb",
+        "method": "experimental structure from published cyclic-peptide series"
+      }
+    },
+    {
+      "control_id": "keap1-7K2H-positive",
+      "label": "positive",
+      "role": "experimental_positive_control",
+      "sequence": "GDPETGE",
+      "source": {
+        "pdb_id": "7K2H",
+        "doi": "10.1021/jacs.0c09799",
+        "reference_ligand_pdb": "structures/reference/7K2H_cyclic_peptide_B.pdb",
+        "reference_complex_pdb": "structures/reference/7K2H_complex_AB.pdb",
+        "method": "experimental structure from published cyclic-peptide series"
+      }
+    },
+    {
+      "control_id": "keap1-7K2I-positive",
+      "label": "positive",
+      "role": "experimental_positive_control",
+      "sequence": "GAPETGE",
+      "source": {
+        "pdb_id": "7K2I",
+        "doi": "10.1021/jacs.0c09799",
+        "reference_ligand_pdb": "structures/reference/7K2I_cyclic_peptide_B.pdb",
+        "reference_complex_pdb": "structures/reference/7K2I_complex_AB.pdb",
+        "method": "experimental structure from published cyclic-peptide series"
+      }
+    },
+    {
+      "control_id": "keap1-7K2M-positive",
+      "label": "positive",
+      "role": "experimental_positive_control",
+      "sequence": "GEPETGE",
+      "source": {
+        "pdb_id": "7K2M",
+        "doi": "10.1021/jacs.0c09799",
+        "reference_ligand_pdb": "structures/reference/7K2M_cyclic_peptide_B.pdb",
+        "reference_complex_pdb": "structures/reference/7K2M_complex_AB.pdb",
+        "method": "experimental structure from published cyclic-peptide series"
+      }
+    }
+  ]
+}

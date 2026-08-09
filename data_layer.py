@@ -358,6 +358,16 @@ class State:
         _project_state_file(backend)
 
     @classmethod
+    def register_artifact(cls, artifact: dict) -> str:
+        """Register a research/calibration artifact in the formal store.
+
+        The row is identified by ``artifact_id``; no hash/sha256 is computed
+        (repository rule against hash machinery).
+        """
+        backend = get_storage_backend()
+        return backend.register_artifact(artifact)
+
+    @classmethod
     def sync_project_config(cls, config: dict) -> dict:
         """Make the approved config authoritative for target identity in state."""
         state = cls.load()

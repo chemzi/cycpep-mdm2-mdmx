@@ -1,4 +1,19 @@
-"""Canonical Research threshold contract and evidence-aware merge helpers."""
+"""Canonical Research threshold contract and evidence-aware merge helpers.
+
+``calibration_status`` semantics (v3 P0-C D4):
+
+- ``calibrated``: value replaced by same-protocol positive/negative control
+  calibration and recorded in the formal store.
+- ``pending``: value comes from literature/team evidence; control calibration
+  has not (yet) produced a replacement.
+- ``unavailable``: no value exists; the metric cannot gate anything.
+- ``not_separated``: controls did not separate at the required recall/FPR;
+  the existing value is retained and must not be presented as calibrated.
+
+Only ``calibrated`` (or the historical ``validated``/``complete``) counts as a
+hard clearance guarantee by itself; other statuses need a credible
+``evidence_grade`` (e.g. ``paper_explicit``) to be justification-eligible.
+"""
 
 from __future__ import annotations
 
