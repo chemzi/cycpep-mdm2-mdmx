@@ -13,18 +13,12 @@ parameters-only identity SHA-256 are shared with Design via
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# ROOT must be on sys.path before core.protocol can be imported when this
-# package is loaded outside the repo root (scripts/tests add it themselves,
-# but direct imports should not depend on the caller).
 ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
-from core.protocol import (  # noqa: E402
+from core.protocol import (
     ProtocolError,
     canonical_parameters_sha256,
     load_protocol,

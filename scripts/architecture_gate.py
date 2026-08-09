@@ -12,7 +12,8 @@ Checks (all pure-stdlib AST + file scans, no external dependencies):
                       never silently couple to a private name of a sibling
                       (relative imports stay exempt: they stay inside the
                       package boundary by construction)
-5. bom              -- UTF-8 BOM files are rejected: ast.parse chokes on the
+5. package_import_paths -- package initializers must not mutate ``sys.path``
+6. bom              -- UTF-8 BOM files are rejected: ast.parse chokes on the
                       BOM byte, so a BOM would silently disable the
                       function-length and private-import checks for that file
 
@@ -134,7 +135,79 @@ def check_private_imports(root: Path) -> list[dict]:
     return violations
 
 
-CHECK_ORDER = ["file_size", "function_length", "action_handlers", "private_imports", "bom"]
+_SYS_PATH_MUTATORS = {
+    "append", "clear", "extend", "insert", "pop", "remove", "reverse", "sort",
+}
+
+
+def _is_sys_path(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "path"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "sys"
+    )
+
+
+def _is_sys_path_target(node: ast.AST) -> bool:
+    return _is_sys_path(node) or (
+        isinstance(node, ast.Subscript) and _is_sys_path(node.value)
+    )
+
+
+def check_package_import_paths(root: Path) -> list[dict]:
+    """Reject direct ``sys.path`` mutation from package initializers."""
+    violations = []
+    for path in iter_py_files(root):
+        if path.name != "__init__.py":
+            continue
+        rel = path.relative_to(root)
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        except (SyntaxError, UnicodeDecodeError) as exc:
+            violations.append({
+                "file": rel.as_posix(),
+                "parse_error": f"{type(exc).__name__}: {exc}",
+            })
+            continue
+        for node in ast.walk(tree):
+            mutation = None
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _SYS_PATH_MUTATORS
+                and _is_sys_path(node.func.value)
+            ):
+                mutation = f"sys.path.{node.func.attr}"
+            elif isinstance(node, ast.Assign) and any(
+                _is_sys_path_target(target) for target in node.targets
+            ):
+                mutation = "sys.path assignment"
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and _is_sys_path_target(
+                node.target
+            ):
+                mutation = "sys.path assignment"
+            elif isinstance(node, ast.Delete) and any(
+                _is_sys_path_target(target) for target in node.targets
+            ):
+                mutation = "sys.path deletion"
+            if mutation is not None:
+                violations.append({
+                    "file": rel.as_posix(),
+                    "line": node.lineno,
+                    "mutation": mutation,
+                })
+    return violations
+
+
+CHECK_ORDER = [
+    "file_size",
+    "function_length",
+    "action_handlers",
+    "private_imports",
+    "package_import_paths",
+    "bom",
+]
 
 
 def check_bom(root: Path) -> list[dict]:
@@ -152,6 +225,7 @@ def run_checks(root: Path, max_file_lines: int, max_function_lines: int) -> dict
         "function_length": check_function_lengths(root, max_function_lines),
         "action_handlers": check_action_handlers(),
         "private_imports": check_private_imports(root),
+        "package_import_paths": check_package_import_paths(root),
         "bom": check_bom(root),
     }
 
@@ -171,6 +245,11 @@ def _item_key(check: str, item: dict) -> tuple:
         return ("detail", item["detail"])
     if "parse_error" in item:
         return ("file", item["file"], "parse_error")
+    if check == "package_import_paths":
+        return (
+            "file", item["file"], "line", item["line"],
+            "mutation", item["mutation"],
+        )
     return ("file", item["file"], "import", item["import"])
 
 

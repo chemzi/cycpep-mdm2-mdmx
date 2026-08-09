@@ -5,15 +5,8 @@ Public names are re-exported so existing imports keep working.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from .errors import CriticContractError  # noqa: E402
-from .config import (  # noqa: E402
+from .errors import CriticContractError
+from .config import (
     ACTION_DEFAULTS,
     ALLOWED_STATUSES,
     CRITIC_VERSION,
@@ -24,8 +17,8 @@ from .config import (  # noqa: E402
     SEVERITY_RANK,
     CriticConfig,
 )
-from .report import review, run  # noqa: E402
-from .cli import build_parser, main  # noqa: E402
+from .report import review, run
+from .cli import build_parser, main
 
 __all__ = [
     "CriticContractError",
