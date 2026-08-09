@@ -498,10 +498,13 @@ def _select_current_best(candidate_rows: list[dict] | None) -> dict | None:
     if not rows:
         return None
 
+    def is_truthy(value: object) -> bool:
+        return str(value or "").strip().lower() in {"true", "1", "yes"}
+
     best = next(
         (
             row for row in rows
-            if bool(row.get("all_layers_pass"))
+            if is_truthy(row.get("all_layers_pass"))
             or str(row.get("final_status") or "").lower() in {"finalized", "passed", "clear"}
             or str(row.get("status") or "").lower() in {"finalized", "passed", "clear"}
         ),
@@ -510,7 +513,7 @@ def _select_current_best(candidate_rows: list[dict] | None) -> dict | None:
     return {
         "candidate_id": _candidate_identifier(best),
         "status": best.get("final_status") or best.get("status"),
-        "all_layers_pass": bool(best.get("all_layers_pass")),
+        "all_layers_pass": is_truthy(best.get("all_layers_pass")),
     }
 
 
