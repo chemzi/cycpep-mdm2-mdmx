@@ -25,6 +25,7 @@ def _control_set(n_negative=20, n_positive=4):
         records.append({
             "control_id": f"N{index:02d}",
             "label": "negative",
+            "role": "negative_control",
             "source": {"pdb_id": "7K2E", "method": "negative-control"},
             "metrics": {
                 "global": {
@@ -50,6 +51,7 @@ def _control_set(n_negative=20, n_positive=4):
         records.append({
             "control_id": f"P{index:02d}",
             "label": "positive",
+            "role": "positive_control",
             "source": {"pdb_id": "7K2E", "doi": "10.1021/jacs.0c09799", "method": "positive-control"},
             "metrics": {
                 "global": {
@@ -112,6 +114,19 @@ class ThresholdCalibrationTests(unittest.TestCase):
             "calibrated",
         )
         self.assertIn("L5_hotspot_coverage:MDM2", audit["calibrated_keys"])
+
+    def test_metric_keys_as_single_string_calibrates_only_that_key(self):
+        thresholds, audit = calibrate_thresholds(
+            controls=_control_set(),
+            thresholds=research.default_thresholds(research.PROJECT_CONFIG),
+            target_ids=("MDM2", "MDMX"),
+            protocol={"tool": "same-protocol", "version": "test-1"},
+            metric_keys="L7_scrmsd",
+        )
+        self.assertIn("L7_scrmsd", audit["calibrated_keys"])
+        self.assertEqual(thresholds["L7_scrmsd"]["calibration_status"], "calibrated")
+        self.assertIn("L2_ipsae", audit["excluded_keys"])
+        self.assertNotIn("L2_ipsae", audit["calibrated_keys"])
 
     def test_insufficient_controls_never_replace_provisional_thresholds(self):
         original = research.default_thresholds(research.PROJECT_CONFIG)
@@ -437,7 +452,7 @@ class ControlManifestTests(unittest.TestCase):
             all(item["role"] for item in first["controls"] if item["label"] == "negative")
         )
 
-    def test_v2_dataset_missing_role_is_rejected(self):
+    def test_v2_dataset_missing_label_is_rejected(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "controls_v2_norole.json"
             records = [dict(item) for item in _control_set(2, 1)]
@@ -454,7 +469,34 @@ class ControlManifestTests(unittest.TestCase):
                 },
                 "controls": records,
             }), encoding="utf-8")
-            with self.assertRaisesRegex(ControlDataError, "role positive/negative"):
+            with self.assertRaisesRegex(ControlDataError, "label positive/negative"):
+                load_control_dataset(
+                    path,
+                    project_id=research.PROJECT_CONFIG["project_id"],
+                    approved_digest=(research.PROJECT_CONFIG.get("review") or {}).get(
+                        "approved_digest"
+                    ),
+                    protocol={"tool": "same-protocol", "version": "test-1"},
+                )
+
+    def test_v2_dataset_missing_role_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "controls_v2_norole.json"
+            records = [dict(item) for item in _control_set(2, 1)]
+            for record in records:
+                record.pop("role", None)
+            path.write_text(json.dumps({
+                "metadata": {
+                    "project_id": research.PROJECT_CONFIG["project_id"],
+                    "approved_digest": (research.PROJECT_CONFIG.get("review") or {}).get(
+                        "approved_digest"
+                    ),
+                    "schema_version": CALIBRATION_SCHEMA_VERSION,
+                    "protocol": {"tool": "same-protocol", "version": "test-1"},
+                },
+                "controls": records,
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(ControlDataError, "requires per-record role"):
                 load_control_dataset(
                     path,
                     project_id=research.PROJECT_CONFIG["project_id"],

@@ -90,10 +90,6 @@ class SoftDesirabilityTests(unittest.TestCase):
         after = evaluate_battery(candidate, thresholds=thresholds, required_targets=("KEAP1",))
         self.assertEqual(battery, after)
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_non_finite_values_never_fabricate_scores(self):
         thresholds = {
             "L7_scrmsd": {"value": 2.0, "operator": "<=", "source": "team"},
@@ -133,3 +129,6 @@ if __name__ == "__main__":
         self.assertEqual(view["metrics"]["L2_ipsae"]["reason"], "missing_target_ids")
         self.assertIn("L2_ipsae", view["soft_only_metrics"])
 
+
+if __name__ == "__main__":
+    unittest.main()

@@ -30,7 +30,7 @@ P0-C「阈值标定与科学可信度」来自 v3 冲刺方案：正式 threshol
 ## Impact
 
 - 实现：`threshold_calibration.py`、`agents/research.py`、`data_layer.py`、`scripts/calibrate_thresholds.py`、新增对照评分脚本、`benchmarks/keap1`。
-- 公开接口：`calibrate_thresholds` / `load_control_dataset` 保持兼容；control dataset schema 版本递增；`calibrate_thresholds` 新增可选参数 `metric_keys`（默认核心 5 指标）。默认标定范围收敛为核心指标属受控行为变更，无 **BREAKING** 变更。
+- 公开接口：`calibrate_thresholds` 保持兼容，新增可选参数 `metric_keys`（默认核心 5 指标）；control dataset schema 版本递增。默认标定范围收敛为核心指标属受控行为变更。**显式 BREAKING（§9 声明）**：`load_control_dataset` / `validate_control_metadata` 删除公开参数 `schema_version`（改为以数据集内声明的 `schema_version` 为准，仓库内调用方已全部更新）。
 - 数据格式：control dataset schema 新版本要求 provenance 字段；阈值条目字段保持兼容。
 - 遗留路径：`state.json` 是 SQLite 的持久化投影；`_thresholds_cache.json` 是 Research 层 durable 阈值恢复源；`_threshold_calibration.json` 是注册为 artifact 的标定审计产物。
 - 非目标：不实现 P0-E 的完整 Pareto/tournament；不重写预测/评分算法；不在本 change 内跑 GPU 对照评分（真实标定值由服务端产出）；不新增 hash/SHA256 机制。

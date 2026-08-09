@@ -321,16 +321,22 @@ def validate_control_provenance(controls, *, version=None) -> None:
     """Reject v2 control records that lack per-record provenance.
 
     v1 datasets keep their legacy behaviour.  For v2, every record must declare
-    a role and a source reference (``pdb_id`` and/or ``doi``); missing provenance
-    makes the dataset unsafe to use as an audited threshold override.
+    a label (``positive``/``negative``), a role, and a source reference
+    (``pdb_id`` and/or ``doi``); missing provenance makes the dataset unsafe to
+    use as an audited threshold override.
     """
     if str(version or CALIBRATION_SCHEMA_VERSION) != "2":
         return
     for index, control in enumerate(controls):
         if _control_label(control) is None:
             raise ControlDataError(
-                "control dataset v2 requires role positive/negative; "
+                "control dataset v2 requires label positive/negative; "
                 f"missing or invalid on {_control_id(control, index)}"
+            )
+        if not str(control.get("role") or "").strip():
+            raise ControlDataError(
+                "control dataset v2 requires per-record role; "
+                f"missing on {_control_id(control, index)}"
             )
         source = control.get("source") if isinstance(control.get("source"), dict) else {}
         reference = source.get("pdb_id") or source.get("doi")
@@ -415,6 +421,10 @@ def calibrate_thresholds(
     )
     _, invalid, positives, negatives = _label_control_records(records, audit)
     expected_protocol_hash = audit["protocol_hash"]
+    if isinstance(metric_keys, str):
+        # A bare string iterates character-by-character and would silently
+        # disable every metric; treat it as a single metric key instead.
+        metric_keys = (metric_keys,)
     eligible_keys = frozenset(
         str(key).strip()
         for key in (metric_keys if metric_keys is not None else CALIBRATION_METRIC_KEYS)

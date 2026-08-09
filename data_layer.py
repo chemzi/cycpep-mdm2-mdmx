@@ -820,6 +820,9 @@ from battery_evaluation import (  # noqa: E402
     compute_pareto_front,
     evaluate_battery,
 )
+# soft_desirability is re-exported here for the same reason: the production
+# entry point (data_layer.soft_desirability) stays stable without pulling the
+# soft-view module into the top-of-file import chain.
 from soft_desirability import (  # noqa: E402
     soft_desirability,
 )

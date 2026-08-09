@@ -14,7 +14,7 @@ Current implementation baseline (see proposal.md for motivation and specs for re
 
 **Goals:**
 - Land D1–D4 as additive, backwards-compatible engineering: control dataset contract v2 with per-record provenance, KEAP1 positive manifest and negative scaffold, control scoring script, explicit core calibration scope, formal-store persistence of calibration output, and a read-only soft desirability view.
-- Keep `calibrate_thresholds` / `load_control_dataset` call-compatible so existing callers and tests keep working.
+- Keep `calibrate_thresholds` call-compatible so existing callers and tests keep working. The removed `schema_version` parameter on `load_control_dataset` / `validate_control_metadata` is a declared breaking change for external callers (§9).
 
 **Non-Goals:**
 - No P0-E Pareto/tournament; the soft view is read-only and minimal.
