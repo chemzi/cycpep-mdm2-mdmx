@@ -5,7 +5,9 @@ The current browser adapter exposes a legacy snapshot centered on `State.phase`,
 ## What Changes
 
 - Add a versioned, browser-facing observability read model for the current project and its current workflow/run, including task and typed-action availability, execution/transaction status, candidates, evidence, artifacts, protocol provenance, trace identifiers, and explicit blockers.
+- Fix collection scope in that read model: project identity is current-project scoped; workflow, run, task, execution, and transaction data is current-run scoped; project-scoped scientific records retain formal trace linkage and an explicit relationship to the current run.
 - Add a minimal read-only HTTP endpoint that returns this read model through opaque identifiers and stable error/status codes without exposing server paths or raw persistence records.
+- Require observation to be side-effect free: a workbench read does not initialize formal state, refresh projections, register artifacts, create evidence, mutate run/task state, or change transaction lifecycle.
 - Add the smallest Store read operations needed to query formal artifact and transaction metadata through the existing Store seam; SQLite remains the authority and JSON/CSV/JSONL files remain one-way compatibility projections.
 - Derive task and run status from the public Orchestrator status interface, executable capability from the canonical Action Catalog and Action Registry, and scientific provenance from existing protocol and trace contracts. The adapter will not infer workflow state from `State.phase`, log text, or a fixed Agent sequence.
 - Preserve all existing `/api/v1` routes as compatibility interfaces. Frontend V2 will not treat `/api/v1/snapshot` as its workflow authority.
