@@ -1,0 +1,202 @@
+"""Failure experience store (B 组: 失败经验库闭环).
+
+聚合 evidence_log 中的 ``battery_evaluated`` 淘汰原因，输出可执行的生成偏好。
+设计上保持保守：证据不足时不输出任何建议；Design 每轮最多应用一条偏好，
+且只在调用方未显式指定对应参数时生效。
+"""
+from __future__ import annotations
+
+from data_layer import EvidenceLogger
+
+EVENT_BATTERY = "battery_evaluated"
+EVENT_EXPERIENCE = "experience_applied"
+
+_LAYER_PREFIX = {
+    "L1": "l1_pass",
+    "L2": "l2_pass",
+    "L3": "l3_pass",
+    "L4": "l4_pass",
+    "L5": "l5_pass",
+    "L6": "l6_pass",
+    "L7": "l7_pass",
+}
+
+
+def _as_float(value):
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _median(values):
+    ordered = sorted(values)
+    n = len(ordered)
+    if n == 0:
+        return None
+    if n % 2 == 1:
+        return ordered[n // 2]
+    return (ordered[n // 2 - 1] + ordered[n // 2]) / 2.0
+
+
+def _layer_of_metric(metric_key):
+    for prefix, layer in _LAYER_PREFIX.items():
+        if metric_key.startswith(f"{prefix}_"):
+            return layer
+    return None
+
+
+def _battery_events(events=None):
+    """Return ``battery_evaluated`` rows; never raises on a missing backend."""
+    if events is not None:
+        return [e for e in events if e.get("event_type") == EVENT_BATTERY]
+    get_all = getattr(EvidenceLogger, "get_all", None)
+    if get_all is None:
+        return []
+    return [e for e in get_all() if e.get("event_type") == EVENT_BATTERY]
+
+
+def summarize_failures(events=None) -> dict:
+    """Aggregate battery verdicts into per-layer / per-length / per-metric stats.
+
+    返回结构:
+      n_evaluated / n_passed / n_failed
+      failed_layers: {layer_key: count}
+      triage_status: {status: count}
+      lengths: {str(length): {"n": int, "failed": int}}
+      metrics: {metric_key: {"layer": str, "n_failed": int, "n_passed": int,
+                             "median_failed": float|None, "median_passed": float|None}}
+    """
+    rows = _battery_events(events)
+    n_passed = 0
+    n_failed = 0
+    layer_counts = {}
+    triage_counts = {}
+    length_stats = {}
+    metric_failed = {}
+    metric_passed = {}
+    for row in rows:
+        raw = row.get("payload")
+        payload = raw if isinstance(raw, dict) else row
+        passed = bool(payload.get("passed"))
+        if passed:
+            n_passed += 1
+        else:
+            n_failed += 1
+        status = payload.get("triage_status")
+        triage_counts[status] = triage_counts.get(status, 0) + 1
+
+        length = payload.get("length")
+        if length is not None:
+            key = str(length)
+            stat = length_stats.setdefault(key, {"n": 0, "failed": 0})
+            stat["n"] += 1
+            if not passed:
+                stat["failed"] += 1
+
+        failed_layers = payload.get("failed_layers") or []
+        for layer in failed_layers:
+            layer_counts[layer] = layer_counts.get(layer, 0) + 1
+
+        layer_values = payload.get("layer_values") or {}
+        for metric_key, raw in layer_values.items():
+            value = _as_float(raw)
+            if value is None:
+                continue
+            layer = _layer_of_metric(metric_key)
+            if layer is None:
+                continue
+            if layer in failed_layers:
+                metric_failed.setdefault(metric_key, []).append(value)
+            else:
+                metric_passed.setdefault(metric_key, []).append(value)
+
+    metrics = {}
+    for key in sorted(set(metric_failed) | set(metric_passed)):
+        metrics[key] = {
+            "layer": _layer_of_metric(key),
+            "n_failed": len(metric_failed.get(key, [])),
+            "n_passed": len(metric_passed.get(key, [])),
+            "median_failed": _median(metric_failed.get(key, [])),
+            "median_passed": _median(metric_passed.get(key, [])),
+        }
+
+    return {
+        "n_evaluated": len(rows),
+        "n_passed": n_passed,
+        "n_failed": n_failed,
+        "failed_layers": layer_counts,
+        "triage_status": triage_counts,
+        "lengths": length_stats,
+        "metrics": metrics,
+    }
+
+
+def suggest_length_preference(summary: dict, min_failures: int = 5) -> dict | None:
+    """Emit a conservative length preference from failure statistics.
+
+    规则：仅考虑评估数 >= min_failures 的长度；若最差长度失败率 >= 70% 且
+    存在失败率 <= 30% 的更好长度，则建议迁移到更好长度；否则返回 None。
+    """
+    stats = summary.get("lengths") or {}
+    rated = []
+    for key, stat in stats.items():
+        if stat["n"] >= min_failures:
+            rated.append((key, stat["failed"] / stat["n"]))
+    if len(rated) < 2:
+        return None
+    best_key, best_rate = min(rated, key=lambda item: item[1])
+    worst_key, worst_rate = max(rated, key=lambda item: item[1])
+    if best_key == worst_key or best_rate == worst_rate:
+        return None
+    if worst_rate >= 0.7 and best_rate <= 0.3:
+        reason = (
+            f"length {worst_key} failed {worst_rate:.0%} of evaluated candidates "
+            f"while {best_key} failed only {best_rate:.0%}; shift generation to {best_key}"
+        )
+        return {"lengths": [int(best_key)], "reason": reason}
+    return None
+
+
+def _record_applied(old_lengths, hint, summary):
+    logger = getattr(EvidenceLogger, "log", None)
+    if logger is None:
+        return
+    try:
+        logger(
+            "design", EVENT_EXPERIENCE, {
+                "preference": "lengths",
+                "old_lengths": old_lengths,
+                "new_lengths": hint["lengths"],
+                "reason": hint["reason"],
+                "evidence": {
+                    "n_evaluated": summary["n_evaluated"],
+                    "n_failed": summary["n_failed"],
+                },
+            },
+            phase="design",
+        )
+    except Exception:
+        # 证据不可写时降级为不记录，不阻断生成（有意降级）
+        pass
+
+
+def apply_experience_preference(design_config=None, min_failures: int = 5):
+    """Return (design_config, hint) for the Design entry point.
+
+    只在调用方未显式指定 lengths 且证据充分时调整；应用后记录一条
+    ``experience_applied`` 事件，保证闭环可审计。证据不足或环境缺失时
+    原样返回，不改变行为。
+    """
+    dc = dict(design_config or {})
+    if dc.get("lengths"):
+        return dc, None
+    summary = summarize_failures()
+    hint = suggest_length_preference(summary, min_failures=min_failures)
+    if hint is None:
+        return dc, None
+    dc["lengths"] = hint["lengths"]
+    _record_applied((design_config or {}).get("lengths"), hint, summary)
+    return dc, hint

@@ -44,7 +44,8 @@ VALID_EVENT_TYPES = frozenset({
     "route_c_under_target", "mdm_legacy_defaults_active",
     "ligandmpnn_multiple_fasta", "ligandmpnn_fasta_no_id_marker",
     "pdb_insertion_code_detected", "benchmark_reference_candidate_registered",
-    "candidate_finalized", "error", "test",
+    "candidate_finalized", "battery_evaluated", "experience_applied",
+    "error", "test",
 })
 
 EVENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
