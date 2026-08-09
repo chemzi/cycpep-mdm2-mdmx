@@ -7,6 +7,8 @@ Give browser clients a truthful, read-only view of the current project and execu
 ### Requirement: Browser observability uses a versioned read model
 The system SHALL expose a versioned read-only workbench response for the current project containing project identity, current workflow and run identity, tasks, typed actions, executions and transactions, candidates, evidence, artifacts, protocol provenance, trace identifiers, and blockers when those records exist.
 
+The `project` view SHALL be current-project scoped. The `workflow`, `run`, `tasks`, `executions`, and `transactions` views SHALL be scoped only to the validated current workflow/run. Project-scoped `candidates`, `evidence`, and `artifacts` SHALL preserve their available formal trace linkage and SHALL distinguish current-run records from historical-run or unlinked project records. Every bounded collection SHALL report `total` as the number of matching formal records before limiting, `returned` as the number of returned items, and `truncated` as whether `returned` is less than `total`.
+
 #### Scenario: A current run exists
 - **WHEN** a browser requests the Frontend V2 workbench read model for a project with a current Orchestrator run
 - **THEN** the response identifies the project, workflow, run, tasks, actions, observable executions and transactions, candidates, evidence, artifacts, protocol bindings, trace relationships, and blockers using opaque identifiers
@@ -14,6 +16,14 @@ The system SHALL expose a versioned read-only workbench response for the current
 #### Scenario: No current run exists
 - **WHEN** a browser requests the workbench read model for a valid current project that has no current Orchestrator run
 - **THEN** the response returns the project and available Store-backed collections with an explicit no-current-run state and does not synthesize a workflow stage
+
+#### Scenario: Project history spans multiple runs
+- **WHEN** project-scoped candidates, evidence, or artifacts include records from the current run, historical runs, or records without a formal run link
+- **THEN** each record preserves its available trace identifiers and is identified as current-run, historical-run, or unlinked without being merged into current workflow/run state
+
+#### Scenario: A bounded collection reaches its response limit
+- **WHEN** a bounded workbench collection has more matching formal records than its response limit
+- **THEN** `total` reports the pre-limit count, `returned` reports the item count in the response, and `truncated` is true exactly when `returned` is less than `total`
 
 ### Requirement: Workflow and task state comes from formal execution contracts
 The workbench response SHALL derive run and task status from the validated Orchestrator run, task definitions from the bound Planner plan, and action capability from the canonical Action Catalog and Action Registry.
@@ -80,7 +90,14 @@ The read model SHALL expose stable blocker and failure codes with display-safe s
 
 #### Scenario: Internal read binding is invalid
 - **WHEN** the current run cannot be validated against its bound plan or project
-- **THEN** the endpoint returns a stable error envelope without exposing an internal path or serving an unvalidated partial workflow view
+- **THEN** the endpoint returns HTTP 200 in the normal success envelope with trustworthy current-project and project-scoped Store data, null `workflow` and `run`, empty current-run task, execution, and transaction collections, and a structured `workflow_binding_invalid` blocker without exposing an internal path or serving unvalidated workflow data
+
+### Requirement: Workbench observation is side-effect free
+`GET /api/v2/workbench` SHALL be a read-only observation and SHALL NOT write formal state, initialize missing state, refresh a projection, register an artifact, create evidence, mutate a run or task, or alter transaction lifecycle or recovery state.
+
+#### Scenario: A client observes the workbench
+- **WHEN** a client calls `GET /api/v2/workbench`, including when no run exists or the current binding is invalid
+- **THEN** database records, compatibility projections, artifact registrations, evidence, run/task state, and transaction records and lifecycle remain unchanged after the response
 
 ### Requirement: Existing interfaces remain compatible and no controls are added
 The change SHALL preserve existing `/api/v1` routes and SHALL NOT add browser start, retry, cancel, direct handler invocation, project creation expansion, scheduler control, or transaction mutation behavior.
