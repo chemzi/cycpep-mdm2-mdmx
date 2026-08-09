@@ -1,13 +1,23 @@
-# CycPep Studio Web GUI：当前实现与真实环境接入
+# CycPep Studio Web GUI：兼容实现与 Frontend V2 接入边界
 
-更新时间：2026-07-31
+更新时间：2026-08-09
+
+> 本轮是 backend-first 的可观测性变更，`web-gui/` production code 保持不变。PR #26 仅作为
+> workbench、项目上下文、候选、结构、证据、artifact 和可观测性 UX/product 参考；其代码、
+> controller、workflow state 与 API 假设都不是实现依赖或基线。
 
 ## 1. 结论与真实性边界
 
-Web GUI 现在是以真实结构为中心的 AI Drug Discovery Workbench。左侧呈现 Agent
+现有 Web GUI 是以真实结构为中心的 AI Drug Discovery Workbench。左侧呈现 Agent
 Workflow 和候选，中间保留最大空间给真实三维结构，右侧呈现七层评分、证据、结构化决策记录
 和只读参数，底部呈现运行日志、GPU 队列与 Artifact。它不再内置 MDM2/MDMX 项目、候选、
 阶段进度、证据或示例三维模型。后端不可达时，界面只显示“未连接真实工作环境”。
+
+这仍是 `/api/v1` 兼容界面，不代表当前后端执行模型。当前执行是 Planner typed-task graph →
+Orchestrator → Action Registry → ExecutionWorker → transaction/Store；任务可包含依赖、审批、
+不可用 action、失败和未解决恢复状态，而不是固定四阶段 Agent 流水线。Frontend V2 后续应以
+只读 `GET /api/v2/workbench` 为 workflow authority，直接呈现 task graph、action availability、
+正式 transaction 状态和 structured blockers。
 
 当前可以真实完成的操作：
 
@@ -28,7 +38,11 @@ SSH 模式当前是严格只读；远端项目创建、审核修改和任务启�
 - SSH 远端坐标 artifact 转发。
 - 持久化的用户、权限、审计主体和 SSH 连接配置。
 
-## 2. 数据源映射
+## 2. 现有 v1 兼容界面的数据源映射
+
+下表只描述尚未迁移的现有 GUI，不是 Frontend V2 的 workflow read contract。即使这些兼容
+projection 可用于旧界面展示，也不得用 `State.phase`、evidence 数量、日志文本或固定 Agent
+顺序推导当前 run/task/transaction 状态。
 
 | UI 信息 | 唯一数据源 | 禁止行为 |
 |---|---|---|
@@ -45,17 +59,19 @@ SSH 模式当前是严格只读；远端项目创建、审核修改和任务启�
 
 ```mermaid
 flowchart LR
-  UI[Web GUI] -->|JSON / opaque IDs| API[web_api/server.py]
-  API --> DL[data_layer.py]
-  DL --> S[state.json]
-  DL --> C[candidate_index.csv]
-  DL --> E[evidence_log.jsonl]
+  V2[Frontend V2] -->|GET /api/v2/workbench| API[web_api/server.py]
+  API --> RM[Browser observability read model]
+  RM --> O[Orchestrator public status + validated Plan]
+  RM --> A[Action Catalog + Action Registry]
+  RM --> ST[Project Store]
+  LEGACY[Existing GUI] -->|/api/v1 compatibility routes| API
   API --> TB[target_bootstrap.py]
-  API -->|BatchMode + strict host key| SSH[Remote compute host]
-  SSH --> RS[remote state / candidates / evidence]
+  API -->|Legacy read-only SSH snapshot| SSH[Remote compute host]
 ```
 
 浏览器不读取文件系统、不启动 Python、不执行 SSH，也不接收私钥。`web_api/server.py` 是安全边界：本地模式调用正式数据层；SSH 模式使用参数数组启动系统 SSH，不经过 shell 拼接。
+Frontend V2 的候选、证据、artifact 和 transaction 元数据来自正式 Store seam；JSON/CSV/JSONL
+是单向兼容 projection，不是第二份 authority，也不能用于补全或覆盖工作流状态。
 
 ## 4. 两种部署方式
 
@@ -83,7 +99,7 @@ flowchart LR
 |---|---|---|
 | GET | `/api/v1/health` | 已实现 |
 | GET | `/api/v1/projects` | 已实现，列出运行态与服务端草稿 |
-| GET | `/api/v1/snapshot` | 已实现，同机真实数据快照 |
+| GET | `/api/v1/snapshot` | 已实现；仅兼容旧客户端，不是 Frontend V2 workflow authority |
 | POST | `/api/v1/connections/ssh` | 已实现，测试 SSH 并返回快照与临时 connection ID |
 | POST | `/api/v1/connections/ssh/snapshot` | 已实现，刷新临时 SSH 连接 |
 | POST | `/api/v1/project-drafts` | 已实现 |
@@ -91,7 +107,15 @@ flowchart LR
 | PATCH | `/api/v1/project-drafts/{draft_id}/targets/{target_id}` | 已实现 |
 | POST | `/api/v1/project-drafts/{draft_id}/approve` | 已实现 |
 | GET | `/api/v1/artifacts/{artifact_id}/coordinates` | 已实现；仅返回七层全清且 manifest/hash 验证通过的本地坐标 |
+| GET | `/api/v2/workbench` | Frontend V2 只读聚合；当前项目与经校验的当前 run/task graph |
 | POST/GET | run queue endpoints | 未实现 |
+
+`/api/v2/workbench` 使用 opaque identifiers，并返回 `project`、`workflow`、`run`、`tasks`、
+`executions`、`transactions`、`candidates`、`evidence`、`artifacts`、`protocols`、`trace` 与
+`blockers`。项目科学记录可包含当前 run、历史 run 或未关联记录；当前-run collections 不能混入
+历史状态。有界 collection 用 `total`、`returned`、`truncated` 和 `items` 明示截断。该接口
+没有 start/retry/cancel/dispatch 等 mutation，也不会因读取而初始化或刷新任何正式状态或兼容
+projection。
 
 ## 6. 结构可视化接入要求
 
