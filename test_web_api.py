@@ -61,6 +61,44 @@ class WebApiTrustBoundaryTests(unittest.TestCase):
         self.assertEqual(payload["data"]["schema_version"], "frontend.workbench.v2")
         self.assertEqual(payload["data"]["project"]["project_id"], "project-1")
 
+    def test_v2_exposes_only_the_exploration_shortlist_payload_contract(self):
+        shortlist_payload = {
+            "k": 2,
+            "n_evaluated": 12,
+            "n_passed": 4,
+            "shortlist": [{"candidate_id": "C1"}, {"candidate_id": "C2"}],
+            "calibration": {"status": "calibrated"},
+            "source_event_ids": ["evt-source-1"],
+            "unmapped_metrics": ["novel_metric"],
+        }
+        evidence = [
+            {
+                "event_id": "evt-shortlist",
+                "event_type": "exploration_shortlist",
+                "project_id": "project-1",
+                **shortlist_payload,
+            },
+            {
+                "event_id": "evt-other",
+                "event_type": "other_event",
+                "project_id": "project-1",
+                **shortlist_payload,
+            },
+        ]
+
+        status, payload = self._request(
+            "GET",
+            "/api/v2/workbench",
+            store=FakeStore(state={"project_id": "project-1"}, evidence=evidence),
+        )
+
+        self.assertEqual(status, 200)
+        items = {item["event_id"]: item for item in payload["data"]["evidence"]["items"]}
+        for key, value in shortlist_payload.items():
+            self.assertEqual(items["evt-shortlist"][key], value)
+        self.assertNotIn("shortlist", items["evt-other"])
+        self.assertNotIn("unmapped_metrics", items["evt-other"])
+
     def test_v2_invalid_binding_has_one_partial_response_contract(self):
         with tempfile.TemporaryDirectory() as root_dir:
             store = SQLiteStore(Path(root_dir) / "store.db", project_id="project-1")
