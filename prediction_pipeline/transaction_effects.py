@@ -112,6 +112,35 @@ class PredictionPersistence:
             event["candidate_id"] = candidate_id
         self.evidence_events.append(event)
 
+    def record_battery_evaluated(self, candidate_snapshot: dict, battery: dict) -> None:
+        """Record the structured seven-layer verdict for the experience loop.
+
+        Mirrors ``EvidenceLogger.battery_evaluated`` but flows through the
+        transaction boundary (PR41) so the event is committed atomically with
+        the prediction record instead of being dropped in transaction mode.
+        """
+        sequence = str(candidate_snapshot.get("sequence") or "")
+        payload = {
+            "candidate_id": candidate_snapshot.get("candidate_id"),
+            "sequence": sequence,
+            "length": len(sequence) if sequence else None,
+            "route": candidate_snapshot.get("source_route"),
+            "passed": bool(battery.get("all_layers_pass")),
+            "competition_clearance": bool(battery.get("competition_clearance")),
+            "failed_layers": battery.get("failed_layers") or [],
+            "hard_failures": battery.get("hard_failures") or [],
+            "missing_thresholds": battery.get("missing_thresholds") or [],
+            "triage_status": battery.get("triage_status"),
+            "layer_values": battery.get("layer_values") or {},
+            "target_pass": battery.get("target_pass") or {},
+            "protocol_identity": protocol_binding(),
+        }
+        self.record_event(
+            "battery_evaluated",
+            payload,
+            candidate_id=candidate_snapshot.get("candidate_id"),
+        )
+
     def record_scoring_events(
         self,
         *,

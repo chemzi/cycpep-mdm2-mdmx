@@ -64,7 +64,11 @@ def _signal_group(process: subprocess.Popen, sig: int) -> None:
         pass
 
 
-def _terminate_group(process: subprocess.Popen, grace_seconds: float = 10.0) -> None:
+def _terminate_group(
+    process: subprocess.Popen,
+    grace_seconds: float = 10.0,
+    diagnostics_path: Path | None = None,
+) -> None:
     if process.poll() is not None:
         return
     if os.name == "nt":
@@ -72,18 +76,32 @@ def _terminate_group(process: subprocess.Popen, grace_seconds: float = 10.0) -> 
         # tree with taskkill so grandchildren cannot outlive the timeout
         # or interrupt (P2-1). taskkill is a separate binary here, not the
         # launched job, so shell=False discipline is preserved.
+        kill_error = None
         try:
-            subprocess.run(
+            completed = subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(process.pid)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
                 timeout=max(1.0, grace_seconds),
             )
-        except (OSError, subprocess.SubprocessError):
+            if completed.returncode != 0:
+                kill_error = (completed.stderr or completed.stdout).strip() or (
+                    f"taskkill exit {completed.returncode}"
+                )
+        except (OSError, subprocess.SubprocessError) as exc:
+            kill_error = f"{type(exc).__name__}: {exc}"
+        if kill_error:
             try:
                 process.kill()
             except OSError:
                 pass
+            if diagnostics_path is not None:
+                try:
+                    diagnostics_path.write_text(
+                        f"taskkill failed: {kill_error}\n", encoding="utf-8"
+                    )
+                except OSError:
+                    pass
         try:
             process.wait(timeout=max(1.0, grace_seconds))
         except subprocess.TimeoutExpired:
@@ -167,11 +185,15 @@ def run_process(
             returncode = process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             timed_out = True
-            _terminate_group(process)
+            _terminate_group(
+                process, diagnostics_path=logs_dir / "terminate_diagnostics.txt"
+            )
             returncode = process.returncode
         except BaseException:
             interrupted = True
-            _terminate_group(process)
+            _terminate_group(
+                process, diagnostics_path=logs_dir / "terminate_diagnostics.txt"
+            )
             raise
         finally:
             elapsed = max(0.0, time.monotonic() - started_monotonic)

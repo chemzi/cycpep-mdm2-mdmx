@@ -313,6 +313,47 @@ class PredictionTransactionalTests(unittest.TestCase):
         for event in effects["evidence_events"]:
             self.assertEqual(event["protocol_identity"], protocol_binding())
 
+    def test_transactional_prediction_emits_battery_evaluated_evidence(self):
+        # P1-1: 事务模式（defer_formal_writes=True）也必须把 battery_evaluated
+        # 收集进 effects，由 Execution 原子提交，而不是静默丢弃。
+        root = self.root / "battery-tx"
+        pipeline = PredictionPipeline(
+            candidate_rows=[self.row],
+            project=self.project,
+            thresholds={},
+            artifacts_root=root / "missing-artifacts",
+            run_root=root / "runs",
+            run_id="prediction_battery_tx",
+            defer_formal_writes=True,
+            artifact_id_prefix="tx-battery",
+        )
+        with patch(
+            "prediction_pipeline.transaction_effects.State.update",
+            side_effect=AssertionError("State.update called"),
+        ), patch(
+            "prediction_pipeline.transaction_effects.State.append_history",
+            side_effect=AssertionError("State.append_history called"),
+        ), patch(
+            "prediction_pipeline.transaction_effects.CandidateIndex.update_score",
+            side_effect=AssertionError("CandidateIndex.update_score called"),
+        ), patch(
+            "prediction_pipeline.transaction_effects.CandidateIndex.update_status",
+            side_effect=AssertionError("CandidateIndex.update_status called"),
+        ), patch(
+            "prediction_pipeline.transaction_effects.EvidenceLogger.log",
+            side_effect=AssertionError("EvidenceLogger.log called"),
+        ):
+            pipeline.run()
+        events = pipeline.transaction_effects()["evidence_events"]
+        battery = [
+            event for event in events
+            if event.get("event_type") == "battery_evaluated"
+        ]
+        self.assertEqual(len(battery), 1)
+        self.assertEqual(battery[0]["candidate_id"], self.row["candidate_id"])
+        self.assertEqual(battery[0]["targets"], ["MDM2"])
+        self.assertIn("failed_layers", battery[0])
+
     def test_real_handler_and_agent_cli_emit_typed_effects(self):
         root = self.root / "real-handler"
         existing = root / "prediction_artifacts" / "C0001"

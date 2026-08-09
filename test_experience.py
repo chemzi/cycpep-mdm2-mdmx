@@ -1,140 +1,271 @@
-"""B 组闭环测试：battery_evaluated 事件 → 经验汇总 → Design 偏好调整"""
-import os, sys, tempfile
+"""B 组闭环测试：battery_evaluated 事件 → 经验汇总 → Design 偏好调整。"""
+from __future__ import annotations
+
+import shutil
+import tempfile
+import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-TEST_ROOT = Path(tempfile.mkdtemp(prefix="cycpep-experience-test-"))
-os.environ["CYCPEP_DATA_DIR"] = str(TEST_ROOT / "data")
-os.environ["CYCPEP_EVIDENCE_DIR"] = str(TEST_ROOT / "evidence")
-
-import data_layer  # noqa: E402
-from data_layer import EvidenceLogger  # noqa: E402
-import experience  # noqa: E402
-from experience import (  # noqa: E402
-    EVENT_BATTERY, EVENT_EXPERIENCE,
-    summarize_failures, suggest_length_preference, apply_experience_preference,
+import data_layer
+from data_layer import EvidenceLogger
+import experience
+from experience import (
+    EVENT_BATTERY,
+    EVENT_EXPERIENCE,
+    apply_experience_preference,
+    consume_experience_preference,
+    record_applied_preference,
+    suggest_length_preference,
+    summarize_failures,
 )
 
-passed = 0
-failed = 0
 
-def check(desc, condition):
-    global passed, failed
-    if condition:
-        passed += 1
-        print(f"  [PASS] {desc}")
-    else:
-        failed += 1
-        print(f"  [FAIL] {desc}")
+class _BatteryFixtures:
+    @staticmethod
+    def make_battery(failed_layers, layer_values, length, triage_status, targets=("MDM2",)):
+        return {
+            "all_layers_pass": not failed_layers,
+            "competition_clearance": not failed_layers,
+            "failed_layers": failed_layers,
+            "hard_failures": [],
+            "missing_thresholds": [],
+            "triage_status": triage_status,
+            "layer_values": layer_values,
+            "target_pass": {},
+            "required_targets": list(targets),
+        }
 
-def section(title):
-    print(f"\n{'='*60}")
-    print(f"  {title}")
-    print(f"{'='*60}")
+    @staticmethod
+    def make_candidate(candidate_id, sequence, route="route_A"):
+        return {
+            "candidate_id": candidate_id,
+            "sequence": sequence,
+            "source_route": route,
+        }
 
-def make_battery(failed_layers, layer_values, length, triage_status):
-    return {
-        "all_layers_pass": not failed_layers,
-        "competition_clearance": not failed_layers,
-        "failed_layers": failed_layers,
-        "hard_failures": [],
-        "missing_thresholds": [],
-        "triage_status": triage_status,
-        "layer_values": layer_values,
-        "target_pass": {},
-        "required_targets": ["MDM2"],
-    }
+    def seed_mdm2_evidence(self):
+        for index in range(6):
+            EvidenceLogger.battery_evaluated(
+                self.make_candidate(f"C01{index}", "ABCDEFGHIJ"),
+                self.make_battery(
+                    ["l4_pass"],
+                    {"L4_nc_distance_post": 3.0 + index * 0.1},
+                    10,
+                    "needs_optimization",
+                ),
+            )
+        for index in range(6):
+            EvidenceLogger.battery_evaluated(
+                self.make_candidate(f"C02{index}", "ABCDEFGHIJKL"),
+                self.make_battery(
+                    [], {"L4_nc_distance_post": 1.1 + index * 0.1}, 12, "shortlisted"
+                ),
+            )
 
-def make_candidate(cid, sequence, route="route_A"):
-    return {
-        "candidate_id": cid,
-        "sequence": sequence,
-        "source_route": route,
-    }
 
-# ============================================================
-section("1. B1: battery_evaluated 结构化事件")
-# ============================================================
-EvidenceLogger.battery_evaluated(
-    make_candidate("C0100", "ABCDEFGHIJ"),
-    make_battery(["l4_pass"], {"L4_nc_distance_post": 3.5}, 10, "needs_optimization"),
-)
-rows = [e for e in EvidenceLogger.get_all() if e.get("event_type") == EVENT_BATTERY]
-check("battery_evaluated 事件已入库", len(rows) == 1)
-payload = rows[0]
-check("事件带 candidate_id", payload["candidate_id"] == "C0100")
-check("事件带 length", payload["length"] == 10)
-check("事件带 failed_layers", payload["failed_layers"] == ["l4_pass"])
-check("事件带 layer_values", payload["layer_values"]["L4_nc_distance_post"] == 3.5)
-check("事件带 passed=False", payload["passed"] is False)
-check("事件带 route", payload["route"] == "route_A")
+class ExperienceTests(_BatteryFixtures, unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="experience-test-"))
+        self.original_paths = (
+            data_layer.DATA_DIR,
+            data_layer.EVIDENCE_DIR,
+            data_layer.STATE_PATH,
+            data_layer.LOG_PATH,
+            data_layer.INDEX_PATH,
+        )
+        data_layer.DATA_DIR = self.root / "data"
+        data_layer.EVIDENCE_DIR = self.root / "evidence"
+        data_layer.STATE_PATH = data_layer.DATA_DIR / "state.json"
+        data_layer.LOG_PATH = data_layer.EVIDENCE_DIR / "evidence_log.jsonl"
+        data_layer.INDEX_PATH = data_layer.DATA_DIR / "candidate_index.csv"
 
-# ============================================================
-section("2. B2: summarize_failures 聚合")
-# ============================================================
-for i in range(6):
-    EvidenceLogger.battery_evaluated(
-        make_candidate(f"C01{i}", "ABCDEFGHIJ"),
-        make_battery(["l4_pass"], {"L4_nc_distance_post": 3.0 + i * 0.1}, 10, "needs_optimization"),
-    )
-for i in range(6):
-    EvidenceLogger.battery_evaluated(
-        make_candidate(f"C02{i}", "ABCDEFGHIJKL"),
-        make_battery([], {"L4_nc_distance_post": 1.1 + i * 0.1}, 12, "shortlisted"),
-    )
+    def tearDown(self):
+        (
+            data_layer.DATA_DIR,
+            data_layer.EVIDENCE_DIR,
+            data_layer.STATE_PATH,
+            data_layer.LOG_PATH,
+            data_layer.INDEX_PATH,
+        ) = self.original_paths
+        shutil.rmtree(self.root, ignore_errors=True)
 
-summary = summarize_failures()
-check("n_evaluated=13", summary["n_evaluated"] == 13)
-check("n_failed=7 / n_passed=6", summary["n_failed"] == 7 and summary["n_passed"] == 6)
-check("failed_layers 统计 l4_pass=7", summary["failed_layers"].get("l4_pass") == 7)
-check("length 10: n=7 failed=7",
-      summary["lengths"]["10"]["n"] == 7 and summary["lengths"]["10"]["failed"] == 7)
-check("length 12: n=6 failed=0",
-      summary["lengths"]["12"]["n"] == 6 and summary["lengths"]["12"]["failed"] == 0)
-check("metrics L4 median_failed=3.3", summary["metrics"]["L4_nc_distance_post"]["median_failed"] == 3.3)
-check("metrics L4 median_passed=1.35", summary["metrics"]["L4_nc_distance_post"]["median_passed"] == 1.35)
-check("metrics 归属层 l4_pass", summary["metrics"]["L4_nc_distance_post"]["layer"] == "l4_pass")
+    def test_battery_evaluated_event_structure(self):
+        EvidenceLogger.battery_evaluated(
+            self.make_candidate("C0100", "ABCDEFGHIJ"),
+            self.make_battery(
+                ["l4_pass"], {"L4_nc_distance_post": 3.5}, 10, "needs_optimization"
+            ),
+        )
+        rows = [e for e in EvidenceLogger.get_all() if e.get("event_type") == EVENT_BATTERY]
+        self.assertEqual(len(rows), 1)
+        payload = rows[0]
+        self.assertEqual(payload["candidate_id"], "C0100")
+        self.assertEqual(payload["length"], 10)
+        self.assertEqual(payload["failed_layers"], ["l4_pass"])
+        self.assertEqual(payload["layer_values"]["L4_nc_distance_post"], 3.5)
+        self.assertFalse(payload["passed"])
+        self.assertEqual(payload["route"], "route_A")
 
-# ============================================================
-section("3. B2: suggest_length_preference 保守规则")
-# ============================================================
-hint = suggest_length_preference(summary)
-check("强证据输出长度偏好", hint is not None and hint["lengths"] == [12])
-check("偏好带 reason", hint is not None and "reason" in hint)
-check("无证据返回 None", suggest_length_preference(summarize_failures([])) is None)
-few = {"lengths": {"10": {"n": 3, "failed": 3}, "12": {"n": 3, "failed": 0}}}
-check("证据不足(<min_failures)返回 None", suggest_length_preference(few) is None)
-tie = {"lengths": {"10": {"n": 6, "failed": 3}, "12": {"n": 6, "failed": 3}}}
-check("无明确更优长度返回 None", suggest_length_preference(tie) is None)
-mixed = {"lengths": {"10": {"n": 6, "failed": 3}, "12": {"n": 6, "failed": 4}}}
-check("最差未达 70% 返回 None", suggest_length_preference(mixed) is None)
+    def test_summarize_failures_aggregates(self):
+        self.seed_mdm2_evidence()
+        summary = summarize_failures()
+        self.assertEqual(summary["n_evaluated"], 12)
+        self.assertEqual(summary["n_failed"], 6)
+        self.assertEqual(summary["n_passed"], 6)
+        self.assertEqual(summary["failed_layers"].get("l4_pass"), 6)
+        self.assertEqual(summary["lengths"]["10"]["n"], 6)
+        self.assertEqual(summary["lengths"]["10"]["failed"], 6)
+        self.assertEqual(summary["lengths"]["12"]["failed"], 0)
+        self.assertEqual(summary["metrics"]["L4_nc_distance_post"]["median_failed"], 3.25)
+        self.assertEqual(summary["metrics"]["L4_nc_distance_post"]["median_passed"], 1.35)
+        self.assertEqual(summary["metrics"]["L4_nc_distance_post"]["layer"], "l4_pass")
+    def test_suggest_length_preference_conservative(self):
+        summary = {
+            "lengths": {"10": {"n": 6, "failed": 6}, "12": {"n": 6, "failed": 0}}
+        }
+        hint = suggest_length_preference(summary)
+        self.assertIsNotNone(hint)
+        self.assertEqual(hint["lengths"], [12])
+        self.assertIn("reason", hint)
+        self.assertIsNone(suggest_length_preference({}))
+        few = {"lengths": {"10": {"n": 3, "failed": 3}, "12": {"n": 3, "failed": 0}}}
+        self.assertIsNone(suggest_length_preference(few))
+        tie = {"lengths": {"10": {"n": 6, "failed": 3}, "12": {"n": 6, "failed": 3}}}
+        self.assertIsNone(suggest_length_preference(tie))
+        mixed = {"lengths": {"10": {"n": 6, "failed": 3}, "12": {"n": 6, "failed": 4}}}
+        self.assertIsNone(suggest_length_preference(mixed))
 
-# ============================================================
-section("4. B3: apply_experience_preference 消费经验")
-# ============================================================
-dc_explicit = {"lengths": [8], "n": 5}
-updated, hint = apply_experience_preference(dc_explicit)
-check("用户显式 lengths 不被覆盖", updated["lengths"] == [8] and hint is None)
-updated, hint = apply_experience_preference({})
-check("空 design_config（无显式 lengths）应用偏好", hint is not None and updated["lengths"] == [12])
-updated, hint = apply_experience_preference({"n": 5})
-check("强证据应用长度偏好", hint is not None and updated["lengths"] == [12])
-applied = [e for e in EvidenceLogger.get_all() if e.get("event_type") == EVENT_EXPERIENCE]
-check("experience_applied 事件已记录", len(applied) == 2)
-latest = applied[-1]
-check("experience_applied 记录新旧长度",
-      latest["old_lengths"] is None and latest["new_lengths"] == [12])
-check("experience_applied 记录 reason", bool(latest["reason"]))
+    def test_apply_never_overrides_explicit_lengths(self):
+        self.seed_mdm2_evidence()
+        updated, hint = apply_experience_preference({"lengths": [8], "n": 5})
+        self.assertEqual(updated["lengths"], [8])
+        self.assertIsNone(hint)
+        updated, hint = apply_experience_preference(
+            {"n": 5}, target_spec={"target_name": "MDM2", "lengths": [9]}
+        )
+        self.assertIsNone(hint)
+        self.assertNotIn("lengths", updated)
 
-# ============================================================
-section("结果汇总")
-# ============================================================
-total = passed + failed
-print(f"\n  总计: {total} 项测试")
-print(f"  通过: {passed} ({100*passed//total}%)")
-print(f"  失败: {failed}")
+    def test_apply_applies_when_no_explicit_lengths(self):
+        self.seed_mdm2_evidence()
+        updated, hint = apply_experience_preference({})
+        self.assertIsNotNone(hint)
+        self.assertEqual(updated["lengths"], [12])
 
-if failed > 0:
-    print("\n  [WARNING] 存在失败测试，请检查！")
-    sys.exit(1)
-else:
-    print("\n  全部通过，B 组闭环可交付。")
+    def test_record_applied_preference_after_merge(self):
+        self.seed_mdm2_evidence()
+        summary = summarize_failures()
+        hint = suggest_length_preference(summary)
+        record_applied_preference(None, hint, summary=summary, targets=["MDM2"])
+        applied = [
+            e for e in EvidenceLogger.get_all() if e.get("event_type") == EVENT_EXPERIENCE
+        ]
+        self.assertEqual(len(applied), 1)
+        self.assertIsNone(applied[0]["old_lengths"])
+        self.assertEqual(applied[0]["new_lengths"], [12])
+        self.assertEqual(list(applied[0]["targets"]), ["MDM2"])
+
+    def test_nan_inf_layer_values_are_rejected(self):
+        events = [
+            {
+                "event_type": EVENT_BATTERY,
+                "payload": {
+                    "passed": False,
+                    "length": 10,
+                    "failed_layers": ["l4_pass"],
+                    "triage_status": "needs_optimization",
+                    "layer_values": {
+                        "L4_nc_distance_post": float("nan"),
+                        "L5_ring_closure": float("inf"),
+                    },
+                },
+            },
+        ]
+        summary = summarize_failures(events)
+        self.assertIsNone(summary["metrics"].get("L4_nc_distance_post"))
+        self.assertIsNone(summary["metrics"].get("L5_ring_closure"))
+        self.assertEqual(summary["n_failed"], 1)
+
+    def test_float_length_key_does_not_crash(self):
+        events = []
+        for _ in range(6):
+            events.append({
+                "event_type": EVENT_BATTERY,
+                "payload": {
+                    "passed": True,
+                    "length": 10.0,
+                    "failed_layers": [],
+                    "triage_status": "shortlisted",
+                    "layer_values": {},
+                },
+            })
+        for _ in range(6):
+            events.append({
+                "event_type": EVENT_BATTERY,
+                "payload": {
+                    "passed": False,
+                    "length": 12.0,
+                    "failed_layers": ["l4_pass"],
+                    "triage_status": "needs_optimization",
+                    "layer_values": {},
+                },
+            })
+        summary = summarize_failures(events)
+        self.assertIn("10", summary["lengths"])
+        self.assertIn("12", summary["lengths"])
+        hint = suggest_length_preference(summary)  # must not raise int("10.0")
+        self.assertIsNotNone(hint)
+        self.assertEqual(hint["lengths"], [10])
+    def test_out_of_range_length_is_never_applied(self):
+        for index in range(6):
+            EvidenceLogger.battery_evaluated(
+                self.make_candidate(f"E{index:04d}", "ABCDEFGHIJKL"),
+                self.make_battery(["l4_pass"], {}, 12, "needs_optimization"),
+            )
+        for index in range(6):
+            EvidenceLogger.battery_evaluated(
+                self.make_candidate(f"F{index:04d}", "ABC"),
+                self.make_battery([], {}, 3, "shortlisted"),
+            )
+        updated, hint = apply_experience_preference({})
+        self.assertIsNone(hint)
+        self.assertNotIn("lengths", updated)
+
+    def test_summarize_filters_by_target(self):
+        self.seed_mdm2_evidence()
+        for index in range(6):
+            EvidenceLogger.battery_evaluated(
+                self.make_candidate(f"K01{index}", "ABCDEFGHIJ"),
+                self.make_battery(
+                    ["l4_pass"], {}, 10, "needs_optimization", targets=("K2",)
+                ),
+            )
+        self.assertEqual(summarize_failures()["n_evaluated"], 18)
+        self.assertEqual(summarize_failures(targets=["MDM2"])["n_evaluated"], 12)
+        self.assertEqual(summarize_failures(targets=["K2"])["n_evaluated"], 6)
+        updated, hint = apply_experience_preference(
+            {}, target_spec={"target_name": "K2"}
+        )
+        self.assertIsNone(hint)
+
+    def test_consume_experience_preference(self):
+        self.seed_mdm2_evidence()
+        lengths, hint = consume_experience_preference(targets=["MDM2"])
+        self.assertEqual(lengths, [12])
+        self.assertIsNotNone(hint)
+
+    def test_missing_backend_never_raises(self):
+        with patch.object(
+            EvidenceLogger, "get_all", side_effect=RuntimeError("db down")
+        ):
+            summary = summarize_failures()
+            self.assertEqual(summary["n_evaluated"], 0)
+            self.assertIsNone(suggest_length_preference(summary))
+            updated, hint = apply_experience_preference({})
+            self.assertEqual(updated, {})
+            self.assertIsNone(hint)
+
+
+if __name__ == "__main__":
+    unittest.main()

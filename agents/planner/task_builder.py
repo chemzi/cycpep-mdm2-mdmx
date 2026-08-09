@@ -107,7 +107,20 @@ def _materialize_design_jobs(
         if count < 1:
             continue
         design = (target_values.get(target_id) or {}).get("design") or {}
-        lengths = design.get("lengths") or [8, 10, 12]
+        lengths = design.get("lengths")
+        experience_hint = None
+        if not lengths:
+            # B3: 失败经验库闭环——无显式长度配置时消费上一轮淘汰原因的经验
+            # 偏好；证据不足或后端不可读时保持默认长度。显式配置永远优先。
+            try:
+                from experience import consume_experience_preference
+                lengths, experience_hint = consume_experience_preference(
+                    targets=[target_id]
+                )
+            except Exception:
+                lengths, experience_hint = None, None
+            if not lengths:
+                lengths = [8, 10, 12]
         normalized_lengths = sorted({int(value) for value in lengths})
         if not normalized_lengths or any(value < 5 or value > 30 for value in normalized_lengths):
             raise PlannerContractError(
@@ -120,6 +133,13 @@ def _materialize_design_jobs(
             "proposal_count": count,
             "seed": (seed_base + index) % (2**31),
         })
+        if experience_hint is not None:
+            # 任务构造成功后才记账（P2-5）：偏好已进入本轮 design job
+            try:
+                from experience import record_applied_preference
+                record_applied_preference(None, experience_hint, targets=[target_id])
+            except Exception:
+                pass
     return jobs
 
 def _require_executable_handler(action_spec) -> str:

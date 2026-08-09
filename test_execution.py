@@ -176,6 +176,88 @@ class ExecutionTests(unittest.TestCase):
             task["resource_request"]["proposal_count"],
         )
 
+    def test_materialized_design_job_consumes_experience_length_preference(self):
+        # P1-1 输出侧：无显式长度配置时，Planner 任务构造消费失败经验偏好
+        from agents.planner.task_builder import _materialize_design_jobs
+
+        def battery(passed, failed_layers):
+            return {
+                "all_layers_pass": passed,
+                "competition_clearance": passed,
+                "failed_layers": [] if passed else failed_layers,
+                "hard_failures": [],
+                "missing_thresholds": [],
+                "triage_status": "shortlisted" if passed else "needs_optimization",
+                "layer_values": {"L4_nc_distance_post": 1.2 if passed else 3.4},
+                "target_pass": {},
+                "required_targets": ["MDM2"],
+            }
+
+        for index in range(6):
+            data_layer.EvidenceLogger.battery_evaluated(
+                {"candidate_id": f"E10{index:03d}", "sequence": "ABCDEFGHIJ",
+                 "source_route": "route_A"},
+                battery(False, ["l4_pass"]),
+            )
+        for index in range(6):
+            data_layer.EvidenceLogger.battery_evaluated(
+                {"candidate_id": f"E12{index:03d}", "sequence": "ABCDEFGHIJKL",
+                 "source_route": "route_A"},
+                battery(True, []),
+            )
+        state = {
+            "round": 1,
+            "project_config": {
+                "project_id": "execution_test",
+                "targets": [{"id": "MDM2", "required": True, "design": {}}],
+            },
+        }
+        jobs = _materialize_design_jobs(
+            state=state,
+            required_targets=["MDM2"],
+            budgets={"route_A_mdm2": 10},
+            requested=10,
+            seed_material="experience-length-test",
+        )
+        self.assertEqual([job["lengths"] for job in jobs], [[12]])
+        applied = [
+            event for event in data_layer.EvidenceLogger.get_all()
+            if event.get("event_type") == "experience_applied"
+        ]
+        self.assertTrue(any(event.get("new_lengths") == [12] for event in applied))
+
+    def test_materialized_design_job_explicit_lengths_win_over_experience(self):
+        # P2-1：显式长度配置永远优先于经验偏好
+        from agents.planner.task_builder import _materialize_design_jobs
+
+        data_layer.EvidenceLogger.battery_evaluated(
+            {"candidate_id": "E1000", "sequence": "ABCDEFGHIJ",
+             "source_route": "route_A"},
+            {"all_layers_pass": False, "competition_clearance": False,
+             "failed_layers": ["l4_pass"], "hard_failures": [],
+             "missing_thresholds": [], "triage_status": "needs_optimization",
+             "layer_values": {}, "target_pass": {},
+             "required_targets": ["MDM2"]},
+        )
+        state = {
+            "round": 1,
+            "project_config": {
+                "project_id": "execution_test",
+                "targets": [{
+                    "id": "MDM2", "required": True,
+                    "design": {"lengths": [8, 9]},
+                }],
+            },
+        }
+        jobs = _materialize_design_jobs(
+            state=state,
+            required_targets=["MDM2"],
+            budgets={"route_A_mdm2": 10},
+            requested=10,
+            seed_material="explicit-lengths-win",
+        )
+        self.assertEqual(jobs[0]["lengths"], [8, 9])
+
     def test_reserved_v2_actions_have_no_v1_handler(self):
         for action in V2_RESERVED_ACTIONS:
             task = {

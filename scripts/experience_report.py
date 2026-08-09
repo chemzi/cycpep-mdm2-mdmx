@@ -26,6 +26,14 @@ import experience
 from experience import summarize_failures, suggest_length_preference
 
 
+def _length_sort_key(item):
+    """Sort length stats numerically; unparseable keys sort last."""
+    try:
+        return int(float(item[0]))
+    except (TypeError, ValueError):
+        return 10**9
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--min-failures", type=int, default=5,
@@ -51,7 +59,7 @@ def main() -> int:
     print()
     print("按长度失败率:")
     if summary["lengths"]:
-        for length, stat in sorted(summary["lengths"].items(), key=lambda item: int(item[0])):
+        for length, stat in sorted(summary["lengths"].items(), key=_length_sort_key):
             rate = stat["failed"] / stat["n"] if stat["n"] else 0
             print(f"  length {length}: {stat['failed']}/{stat['n']} 失败 ({rate:.0%})")
     else:
