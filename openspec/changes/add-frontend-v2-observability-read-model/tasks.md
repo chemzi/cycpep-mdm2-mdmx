@@ -17,7 +17,7 @@
 - [x] 3.3 Join Store-backed candidates, evidence, artifacts, and recorded transactions to workflow/run/task/attempt trace identifiers, representing missing transaction records as `not_yet_recorded` rather than inferred state.
 - [x] 3.4 Sanitize every browser view so internal database, project, plan, run, dispatch, staging, artifact, task-directory, and SSH workspace paths are not serialized.
 - [x] 3.5 Preserve producing protocol identities and artifact/evidence provenance without relabeling historical records or assuming a fixed Agent sequence.
-- [x] 3.6 Add focused read-model tests for no-run, ready, awaiting-approval, dependency-blocked, unavailable-action, failed-task, committed-transaction, unresolved-recovery, collection scope and `total`/`returned`/`truncated` semantics, and the specified trustworthy partial response for invalid run/plan binding.
+- [x] 3.6 Add focused read-model tests for no-run, ready, awaiting-approval, dependency-blocked, unavailable-action, failed-task, committed-transaction, unresolved-recovery, collection scope and `total`/`returned`/`truncated` semantics, the specified trustworthy partial response for invalid run/plan binding, and the allowlisted `exploration_shortlist` evidence payload.
 
 ## 4. Expose and Document the V2 Read Interface
 
