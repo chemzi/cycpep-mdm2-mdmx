@@ -81,6 +81,8 @@ Artifact views expose opaque ID, type/role, integrity identity required by the e
 
 Protocol identity is copied from the producing record. The read model must not relabel historical evidence with the currently active protocol. This leaves clean extension points for threshold calibration cohorts, real-sample provenance, Tournament/Pareto decision evidence, and demo presentation without defining those capabilities now.
 
+Evidence payload remains allowlisted rather than generically serialized. For the established `exploration_shortlist` event contract only, the browser view preserves `k`, `n_evaluated`, `n_passed`, `shortlist`, `calibration`, `source_event_ids`, and the additive `unmapped_metrics` field. Other event types do not inherit this payload surface.
+
 ### 7. Preserve v1 and isolate rollout
 
 No existing `/api/v1` route changes semantics. Frontend V2 will later switch its read path to `/api/v2/workbench` in a separate approved change. Rollback consists of removing the additive v2 route/read-model module and Store read methods; all existing runtime, persistence, and v1 behavior remains available.
