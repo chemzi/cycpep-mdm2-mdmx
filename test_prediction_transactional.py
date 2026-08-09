@@ -15,6 +15,7 @@ from execution.adapters import adapter_for
 from execution.config import ExecutionConfig
 from execution.contracts import ExecutionContractError
 from execution.handlers import HandlerContext, evaluate_new_design_candidates
+from execution.prediction_effects import load_prediction_transaction_effects
 from execution.results import (
     CandidatePatchMutation,
     ExecutionActionResult,
@@ -312,6 +313,79 @@ class PredictionTransactionalTests(unittest.TestCase):
         self.assertNotIn("record_path", metrics["prediction"])
         for event in effects["evidence_events"]:
             self.assertEqual(event["protocol_identity"], protocol_binding())
+
+    def test_transactional_prediction_emits_battery_evaluated_evidence(self):
+        # P1-1: 事务模式（defer_formal_writes=True）也必须把 battery_evaluated
+        # 收集进 effects，由 Execution 原子提交，而不是静默丢弃。
+        root = self.root / "battery-tx"
+        pipeline = PredictionPipeline(
+            candidate_rows=[self.row],
+            project=self.project,
+            thresholds={},
+            artifacts_root=root / "missing-artifacts",
+            run_root=root / "runs",
+            run_id="prediction_battery_tx",
+            defer_formal_writes=True,
+            artifact_id_prefix="tx-battery",
+        )
+        with patch(
+            "prediction_pipeline.transaction_effects.State.update",
+            side_effect=AssertionError("State.update called"),
+        ), patch(
+            "prediction_pipeline.transaction_effects.State.append_history",
+            side_effect=AssertionError("State.append_history called"),
+        ), patch(
+            "prediction_pipeline.transaction_effects.CandidateIndex.update_score",
+            side_effect=AssertionError("CandidateIndex.update_score called"),
+        ), patch(
+            "prediction_pipeline.transaction_effects.CandidateIndex.update_status",
+            side_effect=AssertionError("CandidateIndex.update_status called"),
+        ), patch(
+            "prediction_pipeline.transaction_effects.EvidenceLogger.log",
+            side_effect=AssertionError("EvidenceLogger.log called"),
+        ):
+            pipeline.run()
+        events = pipeline.transaction_effects()["evidence_events"]
+        battery = [
+            event for event in events
+            if event.get("event_type") == "battery_evaluated"
+        ]
+        self.assertEqual(len(battery), 1)
+        self.assertEqual(battery[0]["candidate_id"], self.row["candidate_id"])
+        self.assertEqual(battery[0]["targets"], ["MDM2"])
+        self.assertIn("failed_layers", battery[0])
+
+    def test_battery_evaluated_passes_transaction_scope_validation(self):
+        # PR44 回归：battery_evaluated 事件必须通过 Execution 边界
+        # _evidence_proposals 的证据类型白名单校验，否则含 battery 的
+        # 事务预测会在 Execution 侧被误拒（CI ubuntu 实测失败）。
+        root = self.root / "battery-tx-scope"
+        pipeline = PredictionPipeline(
+            candidate_rows=[self.row],
+            project=self.project,
+            thresholds={},
+            artifacts_root=root / "missing-artifacts",
+            run_root=root / "runs",
+            run_id="prediction_battery_scope",
+            defer_formal_writes=True,
+            artifact_id_prefix="tx-battery-scope",
+        )
+        pipeline.run()
+        effects_path = root / "effects.json"
+        effects_path.write_text(
+            json.dumps(pipeline.transaction_effects()), encoding="utf-8"
+        )
+        effects = load_prediction_transaction_effects(
+            path=effects_path,
+            candidate_ids=["C0001"],
+            run_id="prediction_battery_scope",
+            transaction_id="tx-battery-scope",
+            expected_protocol=protocol_binding(),
+        )
+        self.assertTrue(any(
+            event.get("event_type") == "battery_evaluated"
+            for event in effects["evidence_events"]
+        ))
 
     def test_real_handler_and_agent_cli_emit_typed_effects(self):
         root = self.root / "real-handler"

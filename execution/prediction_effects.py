@@ -36,8 +36,13 @@ _STATUSES = frozenset({
 _EVIDENCE_TYPES = frozenset({
     "candidate_scored", "prediction_recorded", "candidate_finalized",
     "prediction_run_started", "prediction_handoff_ready",
+    "battery_evaluated",
 })
 _CANDIDATE_EVIDENCE_TYPES = frozenset({
+    "candidate_scored", "prediction_recorded", "candidate_finalized",
+    "battery_evaluated",
+})
+_RECORD_EVIDENCE_TYPES = frozenset({
     "candidate_scored", "prediction_recorded", "candidate_finalized",
 })
 
@@ -330,7 +335,7 @@ def _evidence_proposals(
                 "prediction_effects_scope_mismatch",
                 "Prediction evidence exceeds the approved candidate/protocol scope",
             )
-        if candidate_id and (
+        if event_type in _RECORD_EVIDENCE_TYPES and candidate_id and (
             event.get("record_artifact_id") != records[candidate_id]["artifact_id"]
         ):
             raise ExecutionContractError(

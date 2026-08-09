@@ -25,7 +25,7 @@ def main(argv=None) -> int:
         help="configured target ID or PDB ID; defaults to the first approved target",
     )
     parser.add_argument("--n", type=int, default=10)
-    parser.add_argument("--lengths", default="10,12,14")
+    parser.add_argument("--lengths", default=None)
     parser.add_argument("--hotspots", default=None)
     parser.add_argument(
         "--chain",
@@ -38,7 +38,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     configure_candidate_updates(args.candidate_updates_path)
 
-    lengths = [int(value) for value in args.lengths.split(",")]
+    lengths = [int(value) for value in args.lengths.split(",")] if args.lengths else None
     target_spec = {}
     if args.chain:
         target_spec["chain"] = args.chain
@@ -46,7 +46,9 @@ def main(argv=None) -> int:
         target_spec["target_name"] = args.target
     if args.hotspots:
         target_spec["hotspots"] = args.hotspots
-    design_config = {"n": args.n, "lengths": lengths, "seed": args.seed}
+    design_config = {"n": args.n, "seed": args.seed}
+    if lengths:
+        design_config["lengths"] = lengths
 
     # Context-aware entry point (Engineering Standard P1-1).  The default
     # context derives from the approved project config at call time.
