@@ -81,6 +81,10 @@ The response SHALL expose protocol identity, trace identifiers, evidence relatio
 - **WHEN** evidence carries workflow, run, task, attempt, transaction, candidate, or artifact trace fields
 - **THEN** the response preserves those identifiers so the browser can present provenance without parsing message text
 
+#### Scenario: Exploration shortlist evidence is presented
+- **WHEN** an `exploration_shortlist` evidence event is returned to the browser
+- **THEN** its `k`, `n_evaluated`, `n_passed`, `shortlist`, `calibration`, `source_event_ids`, and additive `unmapped_metrics` fields are preserved so the browser can render the scientific shortlist, while payload fields from other evidence event types are not generically exposed
+
 ### Requirement: Blockers and failures are structured
 The read model SHALL expose stable blocker and failure codes with display-safe summaries for unavailable actions, failed tasks, unresolved transactions, missing current runs, and read-model integrity failures.
 
