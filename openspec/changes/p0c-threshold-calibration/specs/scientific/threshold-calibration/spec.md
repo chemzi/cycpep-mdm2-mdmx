@@ -34,19 +34,19 @@ The system SHALL restrict positive/negative replacement to the declared core cal
 - **THEN** the non-core threshold keeps its existing literature/team value and its calibration status remains unchanged
 
 ### Requirement: Calibration persistence through the formal store
-The system SHALL persist calibration results through the formal store: the calibration output SHALL be registered in the artifact registry, calibration evidence SHALL be recorded as formal evidence events, and threshold state SHALL be updated through the store transaction-compatible state path. JSON cache files SHALL be treated as projections or compatibility surfaces and MUST NOT be the formal write entry.
+The system SHALL persist calibration results through formal records: the calibration audit record (`_threshold_calibration.json`) SHALL be registered in the artifact registry, calibration evidence SHALL be recorded as formal evidence events, and threshold state SHALL be updated through the store transaction-compatible state path (`sync_thresholds_from_cache` → SQLite `replace_state`). The Research threshold cache (`_thresholds_cache.json`) SHALL be the durable recovery source for threshold state, with `state.json` as its persisted SQLite projection; a JSON cache file alone SHALL NOT constitute a formal calibration record.
 
 #### Scenario: Calibration output is registered as an artifact
 - **WHEN** a calibration run completes successfully
-- **THEN** the calibration output is registered in the artifact registry and a formal evidence event records the calibration summary
+- **THEN** the calibration audit record is registered in the artifact registry and a formal evidence event records the calibration summary
 
 #### Scenario: Threshold state update goes through the store
 - **WHEN** calibrated thresholds are applied to project state
-- **THEN** the update is written through the store state path and the JSON projection is rebuilt from the store
+- **THEN** the update is written through the store state path (`sync_thresholds_from_cache` → SQLite `replace_state`), and `state.json` is the persisted projection of the durable threshold cache
 
-#### Scenario: JSON cache cannot replace the formal write entry
-- **WHEN** a JSON calibration cache file is present without a corresponding store artifact and evidence record
-- **THEN** the file is treated only as a projection or compatibility surface and is not accepted as a formal calibration write
+#### Scenario: JSON cache alone is not a formal calibration record
+- **WHEN** a JSON calibration cache file is present without a corresponding artifact and evidence record
+- **THEN** the file alone is not accepted as a formal calibration record; the formal record requires the artifact row and the evidence event alongside the store state update
 
 ### Requirement: Uncalibrated metrics distinguished from hard clearance
 The system SHALL assign every threshold an explicit calibration status (`calibrated`, `pending`, `unavailable`, or `not_separated`). A metric that is not calibrated SHALL NOT contribute to hard scientific clearance. The system SHALL expose uncalibrated metrics through a read-only soft desirability / relative-ranking view that is clearly separate from hard clearance results.

@@ -17,7 +17,7 @@
 
 - [x] 3.1 Add `State.register_artifact(...)` in `data_layer.py` delegating to `SQLiteStore.register_artifact`
 - [x] 3.2 Register `_threshold_calibration.json` as artifact type `threshold_calibration` in `agents/research.py::_apply_control_calibration` after successful calibration, alongside the existing evidence event
-- [x] 3.3 Document that JSON caches (`_threshold_calibration.json`, `_threshold_cache.json`) are projections/compatibility surfaces, not the formal write entry
+- [x] 3.3 Document the persistence semantics: `_thresholds_cache.json` is the durable Research threshold recovery source, `state.json` is its SQLite projection, and `_threshold_calibration.json` is the registered calibration audit artifact
 - [x] 3.4 Add tests: successful calibration registers an artifact, records formal evidence, and state thresholds update through the store
 
 ## 4. Status semantics and soft desirability (D4)

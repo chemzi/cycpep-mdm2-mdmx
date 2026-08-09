@@ -36,7 +36,7 @@ Current implementation baseline (see proposal.md for motivation and specs for re
 
 **D3: Formal-store persistence**
 - Add `State.register_artifact(...)` in `data_layer.py` delegating to `SQLiteStore.register_artifact`; `_apply_control_calibration` registers `_threshold_calibration.json` as artifact type `threshold_calibration` after a successful calibration, alongside the existing formal `threshold_calibration` evidence event.
-- Threshold state keeps flowing through `sync_thresholds_from_cache` → SQLite `replace_state`; the JSON cache files remain projections/compatibility surfaces and are documented as such. No change to execution transaction ownership.
+- Threshold state keeps flowing through `sync_thresholds_from_cache` → SQLite `replace_state`; `_thresholds_cache.json` is the durable Research threshold recovery source and `state.json` is its persisted SQLite projection. `_threshold_calibration.json` is the calibration audit artifact registered in the artifact registry. No change to execution transaction ownership.
 - Rationale: uses the existing artifact/evidence/state boundaries (architectural invariants) without a new table or bypass. Alternative (dedicated `thresholds` table) rejected: it would duplicate the state projection and add migration cost with no behavioral gain now.
 
 **D4: Status semantics and soft desirability view**
