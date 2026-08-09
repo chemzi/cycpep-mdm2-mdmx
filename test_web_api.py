@@ -64,12 +64,33 @@ class WebApiTrustBoundaryTests(unittest.TestCase):
     def test_v2_exposes_only_the_exploration_shortlist_payload_contract(self):
         shortlist_payload = {
             "k": 2,
-            "n_evaluated": 12,
-            "n_passed": 4,
-            "shortlist": [{"candidate_id": "C1"}, {"candidate_id": "C2"}],
-            "calibration": {"status": "calibrated"},
-            "source_event_ids": ["evt-source-1"],
-            "unmapped_metrics": ["novel_metric"],
+            "n_evaluated": 6,
+            "n_passed": 0,
+            "shortlist": [
+                {
+                    "candidate_id": "C0001",
+                    "passed": False,
+                    "desirability": 0.25,
+                    "pareto_front": True,
+                    "reason": "pareto_front",
+                    "top_margin_metric": "L2_ipsae_mdm2",
+                },
+                {
+                    "candidate_id": "C0002",
+                    "passed": False,
+                    "desirability": None,
+                    "pareto_front": False,
+                    "reason": "partial_evidence",
+                    "top_margin_metric": None,
+                },
+            ],
+            "calibration": {
+                "calibrated": 1,
+                "provisional": 1,
+                "unavailable": 1,
+            },
+            "source_event_ids": ["evt-battery-1", "evt-battery-2"],
+            "unmapped_metrics": ["totally_unknown"],
         }
         evidence = [
             {
@@ -96,8 +117,7 @@ class WebApiTrustBoundaryTests(unittest.TestCase):
         items = {item["event_id"]: item for item in payload["data"]["evidence"]["items"]}
         for key, value in shortlist_payload.items():
             self.assertEqual(items["evt-shortlist"][key], value)
-        self.assertNotIn("shortlist", items["evt-other"])
-        self.assertNotIn("unmapped_metrics", items["evt-other"])
+            self.assertNotIn(key, items["evt-other"])
 
     def test_v2_invalid_binding_has_one_partial_response_contract(self):
         with tempfile.TemporaryDirectory() as root_dir:
