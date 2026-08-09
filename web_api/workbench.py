@@ -132,6 +132,15 @@ def _evidence_view(value: Mapping[str, Any], current_run_id: str | None) -> dict
         )
         if value.get(key) is not None
     }
+    if value.get("event_type") == "exploration_shortlist":
+        result.update({
+            key: value[key]
+            for key in (
+                "k", "n_evaluated", "n_passed", "shortlist", "calibration",
+                "source_event_ids", "unmapped_metrics",
+            )
+            if key in value
+        })
     if value.get("message") is not None:
         result["message"] = _display_text(
             value["message"], "Evidence includes an internal-only detail."
