@@ -556,6 +556,29 @@ class EvidenceLogger:
         }, phase="evaluate")
 
     @classmethod
+    def battery_evaluated(cls, candidate: dict, battery: dict):
+        """Record one structured seven-layer verdict for the experience loop.
+
+        payload 保留 failed_layers 与每层实际值，供 experience.summarize_failures()
+        聚合为下一轮生成偏好（失败经验库闭环）。candidate 来自 CandidateInput.snapshot()。
+        """
+        sequence = str(candidate.get("sequence") or "")
+        return cls.log("prediction", "battery_evaluated", {
+            "candidate_id": candidate.get("candidate_id"),
+            "sequence": sequence,
+            "length": len(sequence) if sequence else None,
+            "route": candidate.get("source_route"),
+            "passed": bool(battery.get("all_layers_pass")),
+            "competition_clearance": bool(battery.get("competition_clearance")),
+            "failed_layers": battery.get("failed_layers") or [],
+            "hard_failures": battery.get("hard_failures") or [],
+            "missing_thresholds": battery.get("missing_thresholds") or [],
+            "triage_status": battery.get("triage_status"),
+            "layer_values": battery.get("layer_values") or {},
+            "target_pass": battery.get("target_pass") or {},
+        }, targets=list(battery.get("required_targets") or []), phase="evaluate")
+
+    @classmethod
     def evaluate_layer_complete(cls, layer: int, n_in: int, n_pass: int, n_fail: int):
         cls.log("prediction", "evaluate_layer_complete", {
             "layer": layer, "n_in": n_in, "n_pass": n_pass, "n_fail": n_fail,

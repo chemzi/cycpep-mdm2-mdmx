@@ -698,6 +698,10 @@ class PredictionPipeline(MetricCollectorsMixin):
             self.thresholds,
             required_targets=self.required_targets,
         )
+        # B1: 结构化淘汰原因入库（失败经验库闭环的原始事件）。
+        # 事务模式不直接写证据——由 Execution 统一提交 effects（PR41 不变量）。
+        if not self.defer_formal_writes:
+            data_layer.EvidenceLogger.battery_evaluated(candidate.snapshot(), battery)
         status = self._status_from_battery(battery)
         record = {
             "schema_version": RECORD_SCHEMA_VERSION,

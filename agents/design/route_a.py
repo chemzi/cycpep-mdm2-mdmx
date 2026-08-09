@@ -91,6 +91,9 @@ def _route_a_generate_backbones(config, batch_dir):
 def design_rfpeptides(target_spec=None, design_config=None, context=None):
     """RFpeptides \u2192 LigandMPNN \u2192 AfCycDesign refold"""
     ctx = context if context is not None else DesignContext.default()
+    # B3: 失败经验库闭环——上一轮淘汰原因驱动本轮长度偏好（证据不足时不调整）
+    from experience import apply_experience_preference  # noqa: E402
+    design_config, _hint = apply_experience_preference(design_config)
     config = _merge_config(target_spec, design_config, project_config=ctx.project_config)
     route_name = f"route_A_{target_slug(config['target_id'])}"
     batch_id = f"batch_rfpep_{config['target_name']}_s{config['seed']}"
