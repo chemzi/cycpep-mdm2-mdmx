@@ -45,6 +45,7 @@ VALID_EVENT_TYPES = frozenset({
     "ligandmpnn_multiple_fasta", "ligandmpnn_fasta_no_id_marker",
     "pdb_insertion_code_detected", "benchmark_reference_candidate_registered",
     "candidate_finalized", "battery_evaluated", "experience_applied",
+    "exploration_shortlist",
     "error", "test",
 })
 
