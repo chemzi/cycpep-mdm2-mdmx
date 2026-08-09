@@ -477,8 +477,12 @@ class SQLiteStore(Store):
         artifact_id = str(value.get("artifact_id") or uuid.uuid4())
         with self._write() as connection:
             connection.execute(
-                "INSERT OR IGNORE INTO artifacts(artifact_id, artifact_type, path, size_bytes, sha256, producer_task_id, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO artifacts(artifact_id, artifact_type, path, size_bytes, sha256, producer_task_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(artifact_id) DO UPDATE SET "
+                "artifact_type=excluded.artifact_type, path=excluded.path, "
+                "size_bytes=excluded.size_bytes, sha256=excluded.sha256, "
+                "producer_task_id=excluded.producer_task_id",
                 (
                     artifact_id,
                     value.get("artifact_type"),

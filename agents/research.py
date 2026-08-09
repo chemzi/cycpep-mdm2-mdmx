@@ -518,7 +518,6 @@ def _apply_control_calibration(thresholds: dict, config: dict) -> tuple[dict, di
             approved_digest=(config.get("review") or {}).get("approved_digest"),
             protocol=expected_protocol,
             protocol_hash=expected_protocol_hash,
-            schema_version=CONTROL_CALIBRATION_SCHEMA_VERSION,
         )
         calibrated, audit = calibrate_thresholds(
             controls=controls,
@@ -549,7 +548,25 @@ def _apply_control_calibration(thresholds: dict, config: dict) -> tuple[dict, di
             "source_metadata": metadata,
             "audit": summary,
         }
-        _atomic_write_json(_module_attr("DATA_DIR") / "_threshold_calibration.json", artifact)
+        calibration_path = _module_attr("DATA_DIR") / "_threshold_calibration.json"
+        _atomic_write_json(calibration_path, artifact)
+        try:
+            # Deterministic artifact id makes re-runs idempotent (INSERT OR
+            # IGNORE dedupes); the JSON file is the projection, the artifact
+            # row + evidence + state update are the formal records.
+            State.register_artifact({
+                "artifact_id": "threshold_calibration-" + str(calibration_path),
+                "artifact_type": "threshold_calibration",
+                "path": str(calibration_path),
+                "size_bytes": calibration_path.stat().st_size,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as exc:  # registration is additive; never fail calibration
+            EvidenceLogger.error(
+                "research", "threshold_calibration_artifact_failed",
+                f"{type(exc).__name__}: {str(exc)[:160]}",
+                recovery="calibration thresholds still applied; artifact row missing",
+            )
         EvidenceLogger.log(
             "research", "threshold_calibration", summary,
             targets=list(required_target_ids(config)), phase="research",

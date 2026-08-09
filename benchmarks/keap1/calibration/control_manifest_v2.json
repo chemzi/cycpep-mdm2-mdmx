@@ -1,0 +1,287 @@
+{
+  "schema_version": 2,
+  "manifest_kind": "keap1_control_manifest",
+  "benchmark_id": "keap1_jacs_2021_canonical_cyclic_series",
+  "target_id": "KEAP1",
+  "target_uniprot": "Q14145",
+  "negatives_per_positive": 3,
+  "seed": 20260809,
+  "controls": [
+    {
+      "control_id": "keap1-7K2E-positive",
+      "label": "positive",
+      "role": "experimental_positive_control",
+      "sequence": "GDEETGE",
+      "source": {
+        "pdb_id": "7K2E",
+        "doi": "10.1021/jacs.0c09799",
+        "reference_ligand_pdb": "structures/reference/7K2E_cyclic_peptide_B.pdb",
+        "reference_complex_pdb": "structures/reference/7K2E_complex_AB.pdb",
+        "method": "experimental structure from published cyclic-peptide series"
+      }
+    },
+    {
+      "control_id": "keap1-7K2E-positive-negative-1",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "DEGGEET",
+      "source": {
+        "pdb_id": "7K2E",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2E-positive-negative-2",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "EGDGEET",
+      "source": {
+        "pdb_id": "7K2E",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2E-positive-negative-3",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "EGTGEED",
+      "source": {
+        "pdb_id": "7K2E",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2F-positive",
+      "label": "positive",
+      "role": "experimental_positive_control",
+      "sequence": "GAEETGE",
+      "source": {
+        "pdb_id": "7K2F",
+        "doi": "10.1021/jacs.0c09799",
+        "reference_ligand_pdb": "structures/reference/7K2F_cyclic_peptide_B.pdb",
+        "reference_complex_pdb": "structures/reference/7K2F_complex_AB.pdb",
+        "method": "experimental structure from published cyclic-peptide series"
+      }
+    },
+    {
+      "control_id": "keap1-7K2F-positive-negative-1",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "ETGGEEA",
+      "source": {
+        "pdb_id": "7K2F",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2F-positive-negative-2",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "EGATEEG",
+      "source": {
+        "pdb_id": "7K2F",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2F-positive-negative-3",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "EEGGAET",
+      "source": {
+        "pdb_id": "7K2F",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2G-positive",
+      "label": "positive",
+      "role": "experimental_positive_control",
+      "sequence": "GDEEAGE",
+      "source": {
+        "pdb_id": "7K2G",
+        "doi": "10.1021/jacs.0c09799",
+        "reference_ligand_pdb": "structures/reference/7K2G_cyclic_peptide_B.pdb",
+        "reference_complex_pdb": "structures/reference/7K2G_complex_AB.pdb",
+        "method": "experimental structure from published cyclic-peptide series"
+      }
+    },
+    {
+      "control_id": "keap1-7K2G-positive-negative-1",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "EGDGEEA",
+      "source": {
+        "pdb_id": "7K2G",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2G-positive-negative-2",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "EEDGEAG",
+      "source": {
+        "pdb_id": "7K2G",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2G-positive-negative-3",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "EEGDEAG",
+      "source": {
+        "pdb_id": "7K2G",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2H-positive",
+      "label": "positive",
+      "role": "experimental_positive_control",
+      "sequence": "GDPETGE",
+      "source": {
+        "pdb_id": "7K2H",
+        "doi": "10.1021/jacs.0c09799",
+        "reference_ligand_pdb": "structures/reference/7K2H_cyclic_peptide_B.pdb",
+        "reference_complex_pdb": "structures/reference/7K2H_complex_AB.pdb",
+        "method": "experimental structure from published cyclic-peptide series"
+      }
+    },
+    {
+      "control_id": "keap1-7K2H-positive-negative-1",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "DGGPEET",
+      "source": {
+        "pdb_id": "7K2H",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2H-positive-negative-2",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "DTGGEEP",
+      "source": {
+        "pdb_id": "7K2H",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2H-positive-negative-3",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "PETDGEG",
+      "source": {
+        "pdb_id": "7K2H",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2I-positive",
+      "label": "positive",
+      "role": "experimental_positive_control",
+      "sequence": "GAPETGE",
+      "source": {
+        "pdb_id": "7K2I",
+        "doi": "10.1021/jacs.0c09799",
+        "reference_ligand_pdb": "structures/reference/7K2I_cyclic_peptide_B.pdb",
+        "reference_complex_pdb": "structures/reference/7K2I_complex_AB.pdb",
+        "method": "experimental structure from published cyclic-peptide series"
+      }
+    },
+    {
+      "control_id": "keap1-7K2I-positive-negative-1",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "PETGAEG",
+      "source": {
+        "pdb_id": "7K2I",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2I-positive-negative-2",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "TPEGGEA",
+      "source": {
+        "pdb_id": "7K2I",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2I-positive-negative-3",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "PEGGEAT",
+      "source": {
+        "pdb_id": "7K2I",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2M-positive",
+      "label": "positive",
+      "role": "experimental_positive_control",
+      "sequence": "GEPETGE",
+      "source": {
+        "pdb_id": "7K2M",
+        "doi": "10.1021/jacs.0c09799",
+        "reference_ligand_pdb": "structures/reference/7K2M_cyclic_peptide_B.pdb",
+        "reference_complex_pdb": "structures/reference/7K2M_complex_AB.pdb",
+        "method": "experimental structure from published cyclic-peptide series"
+      }
+    },
+    {
+      "control_id": "keap1-7K2M-positive-negative-1",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "EPGGEET",
+      "source": {
+        "pdb_id": "7K2M",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2M-positive-negative-2",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "EPETGEG",
+      "source": {
+        "pdb_id": "7K2M",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    },
+    {
+      "control_id": "keap1-7K2M-positive-negative-3",
+      "label": "negative",
+      "role": "in_silico_sequence_negative_control",
+      "sequence": "EPETGEG",
+      "source": {
+        "pdb_id": "7K2M",
+        "method": "deterministic in-silico sequence permutation",
+        "note": "not experimentally validated as non-binder; team must confirm"
+      }
+    }
+  ]
+}

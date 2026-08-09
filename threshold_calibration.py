@@ -23,9 +23,23 @@ from typing import Any, Iterable
 from project_config import global_value, target_value
 
 
-CALIBRATION_SCHEMA_VERSION = 1
+CALIBRATION_SCHEMA_VERSION = 2
 DEFAULT_MIN_NEGATIVE_CONTROLS = 10
 DEFAULT_MIN_POSITIVE_CONTROLS = 3
+
+# Schema versions accepted when loading a control dataset. v1 is legacy and
+# loads without per-record provenance; v2 (current) requires provenance.
+_SUPPORTED_CALIBRATION_SCHEMA_VERSIONS = {"1", "2"}
+
+# Metrics that controls may calibrate. Everything else keeps its
+# literature/team value regardless of control separation (v3 D2).
+CALIBRATION_METRIC_KEYS = (
+    "L2_ipsae",
+    "L4_nc_term_dist",
+    "L5_hotspot_coverage",
+    "L6_pose_rmsd",
+    "L7_scrmsd",
+)
 
 # The score direction is part of the contract.  ``scope=target`` means that
 # MDM2 and MDMX (or arbitrary approved targets) get independent cutoffs.
@@ -260,9 +274,14 @@ def validate_control_metadata(
     approved_digest: str | None = None,
     protocol: Any | None = None,
     protocol_hash: str | None = None,
-    schema_version: int | str = CALIBRATION_SCHEMA_VERSION,
 ) -> dict:
-    """Validate and normalize the binding metadata for a control payload."""
+    """Validate and normalize the binding metadata for a control payload.
+
+    Schema policy (explicit, not caller-negotiable): the file's declared
+    ``schema_version`` must be one of ``_SUPPORTED_CALIBRATION_SCHEMA_VERSIONS``.
+    v1 is legacy and loads without per-record provenance; v2 (current) requires
+    provenance (enforced separately by :func:`validate_control_provenance`).
+    """
     metadata = dict(metadata or {})
     missing = [
         key for key in ("project_id", "approved_digest", "schema_version")
@@ -283,7 +302,7 @@ def validate_control_metadata(
         raise ControlDataError("control dataset project_id does not match approved project")
     if metadata["approved_digest"] != approved_digest:
         raise ControlDataError("control dataset approved_digest does not match approved project")
-    if str(metadata["schema_version"]) != str(schema_version):
+    if str(metadata["schema_version"]) not in _SUPPORTED_CALIBRATION_SCHEMA_VERSIONS:
         raise ControlDataError("control dataset schema_version is not supported")
     observed_hash = metadata.get("protocol_hash") or _protocol_hash(metadata.get("protocol"))
     declared_hash = _protocol_hash(metadata.get("protocol"))
@@ -298,6 +317,36 @@ def validate_control_metadata(
     return metadata
 
 
+def validate_control_provenance(controls, *, version=None) -> None:
+    """Reject v2 control records that lack per-record provenance.
+
+    v1 datasets keep their legacy behaviour.  For v2, every record must declare
+    a label (``positive``/``negative``), a role, and a source reference
+    (``pdb_id`` and/or ``doi``); missing provenance makes the dataset unsafe to
+    use as an audited threshold override.
+    """
+    if str(version or CALIBRATION_SCHEMA_VERSION) != "2":
+        return
+    for index, control in enumerate(controls):
+        if _control_label(control) is None:
+            raise ControlDataError(
+                "control dataset v2 requires label positive/negative; "
+                f"missing or invalid on {_control_id(control, index)}"
+            )
+        if not str(control.get("role") or "").strip():
+            raise ControlDataError(
+                "control dataset v2 requires per-record role; "
+                f"missing on {_control_id(control, index)}"
+            )
+        source = control.get("source") if isinstance(control.get("source"), dict) else {}
+        reference = source.get("pdb_id") or source.get("doi")
+        if not reference:
+            raise ControlDataError(
+                "control dataset v2 requires per-record provenance "
+                f"(source.pdb_id or source.doi); missing on {_control_id(control, index)}"
+            )
+
+
 def load_control_dataset(
     path: str | Path,
     *,
@@ -305,7 +354,6 @@ def load_control_dataset(
     approved_digest: str | None = None,
     protocol: Any | None = None,
     protocol_hash: str | None = None,
-    schema_version: int | str = CALIBRATION_SCHEMA_VERSION,
 ) -> tuple[list[dict], dict]:
     """Load a control dataset only when its production binding is complete.
 
@@ -330,8 +378,8 @@ def load_control_dataset(
         approved_digest=approved_digest,
         protocol=protocol,
         protocol_hash=protocol_hash,
-        schema_version=schema_version,
     )
+    validate_control_provenance(controls, version=metadata.get("schema_version"))
     if not controls:
         raise ControlDataError("control dataset contains no control records")
     return controls, metadata
@@ -348,6 +396,7 @@ def calibrate_thresholds(
     min_positive_recall: float = 0.50,
     min_negative_controls: int = DEFAULT_MIN_NEGATIVE_CONTROLS,
     min_positive_controls: int = DEFAULT_MIN_POSITIVE_CONTROLS,
+    metric_keys: Iterable[str] | None = None,
 ) -> tuple[dict, dict]:
     """Calibrate the seven-layer battery from labelled control records.
 
@@ -355,6 +404,10 @@ def calibrate_thresholds(
     Research exactly which metrics were calibrated, skipped, or missing.  For
     target-scoped metrics, cutoffs are stored under the existing ``targets``
     override field so ``threshold_for_target`` remains the single resolver.
+
+    Only metrics listed in ``metric_keys`` (default: ``CALIBRATION_METRIC_KEYS``)
+    may be replaced by control calibration; other metrics are reported in
+    ``audit["excluded_keys"]`` and keep their existing values.
     """
     records, dataset_meta, target_ids = _normalize_calibration_inputs(
         controls, target_ids, min_negative_controls, min_positive_controls,
@@ -368,8 +421,24 @@ def calibrate_thresholds(
     )
     _, invalid, positives, negatives = _label_control_records(records, audit)
     expected_protocol_hash = audit["protocol_hash"]
+    if isinstance(metric_keys, str):
+        # A bare string iterates character-by-character and would silently
+        # disable every metric; treat it as a single metric key instead.
+        metric_keys = (metric_keys,)
+    eligible_keys = frozenset(
+        str(key).strip()
+        for key in (metric_keys if metric_keys is not None else CALIBRATION_METRIC_KEYS)
+        if str(key).strip()
+    )
 
     for key, spec in METRIC_SPECS.items():
+        if key not in eligible_keys:
+            audit["metrics"][key] = {
+                "status": "not_calibration_eligible",
+                "reason": "metric outside core calibration scope",
+            }
+            audit["excluded_keys"].append(key)
+            continue
         scopes = target_ids if spec["scope"] == "target" else [None]
         if spec["scope"] == "target" and not scopes:
             audit["metrics"][key] = {
@@ -437,6 +506,7 @@ def _build_calibration_audit(
         "metrics": {},
         "calibrated_keys": [],
         "skipped_keys": [],
+        "excluded_keys": [],
     }
 
 
