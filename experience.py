@@ -195,6 +195,8 @@ def suggest_length_preference(summary: dict, min_failures: int = 5) -> dict | No
     规则：仅考虑评估数 >= min_failures 的长度；若最差长度失败率 >= 70% 且
     存在失败率 <= 30% 的更好长度，则建议迁移到更好长度；否则返回 None。
     """
+    if min_failures < 1:
+        raise ValueError("min_failures must be >= 1")
     stats = summary.get("lengths") or {}
     rated = []
     for key, stat in stats.items():
@@ -239,9 +241,55 @@ def _validated_lengths(lengths):
     return sorted(set(result))
 
 
+def _freeze(value):
+    """Normalize JSON-ish values for idempotency fingerprint comparison."""
+    if isinstance(value, list):
+        return tuple(_freeze(item) for item in value)
+    if isinstance(value, dict):
+        return tuple(sorted((key, _freeze(item)) for key, item in value.items()))
+    return value
+
+
+def _already_applied(old_lengths, hint, targets):
+    """True when the ledger already records this exact preference application.
+
+    Repeated runs (retries / re-materialization of the same design job) must
+    not double-count ``experience_applied`` audit events (P2-1).
+    """
+    get_all = getattr(EvidenceLogger, "get_all", None)
+    if get_all is None:
+        return False
+    try:
+        rows = get_all()
+    except Exception:
+        return False
+    fingerprint = (
+        "lengths",
+        _freeze(old_lengths),
+        _freeze(hint.get("lengths")),
+        hint.get("reason"),
+        _freeze(targets or ()),
+    )
+    for row in rows:
+        if row.get("event_type") != EVENT_EXPERIENCE:
+            continue
+        payload = _row_payload(row)
+        if (
+            payload.get("preference") == fingerprint[0]
+            and _freeze(payload.get("old_lengths")) == fingerprint[1]
+            and _freeze(payload.get("new_lengths")) == fingerprint[2]
+            and payload.get("reason") == fingerprint[3]
+            and _freeze(_row_targets(row, payload)) == fingerprint[4]
+        ):
+            return True
+    return False
+
+
 def _record_applied(old_lengths, hint, summary, targets=None):
     logger = getattr(EvidenceLogger, "log", None)
     if logger is None:
+        return
+    if _already_applied(old_lengths, hint, targets):
         return
     try:
         logger(
@@ -299,7 +347,7 @@ def apply_experience_preference(design_config=None, target_spec=None,
     """
     dc = dict(design_config or {})
     ts = target_spec or {}
-    if dc.get("lengths") or ts.get("lengths"):
+    if "lengths" in dc or "lengths" in ts:
         return dc, None
     if targets is None and ts.get("target_name"):
         targets = [ts["target_name"]]

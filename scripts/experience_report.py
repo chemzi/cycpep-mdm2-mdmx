@@ -34,9 +34,16 @@ def _length_sort_key(item):
         return 10**9
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("--min-failures must be >= 1")
+    return parsed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--min-failures", type=int, default=5,
+    parser.add_argument("--min-failures", type=_positive_int, default=5,
                         help="minimum evaluated samples per length before a hint is emitted")
     parser.add_argument("--json", action="store_true", help="print raw summary as JSON")
     args = parser.parse_args()

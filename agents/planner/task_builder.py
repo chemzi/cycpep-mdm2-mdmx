@@ -117,7 +117,13 @@ def _materialize_design_jobs(
                 lengths, experience_hint = consume_experience_preference(
                     targets=[target_id]
                 )
-            except Exception:
+            except Exception as exc:
+                # 经验模块对“证据后端不可读”已内部降级；此处兜底并把异常
+                # 打印出来，避免静默吞掉真实 bug（P2-3）。
+                print(
+                    f"[planner] experience preference unavailable, fall back to "
+                    f"default lengths: {exc}"
+                )
                 lengths, experience_hint = None, None
             if not lengths:
                 lengths = [8, 10, 12]

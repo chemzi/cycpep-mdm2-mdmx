@@ -266,6 +266,85 @@ class ExperienceTests(_BatteryFixtures, unittest.TestCase):
             self.assertEqual(updated, {})
             self.assertIsNone(hint)
 
+    def test_record_applied_preference_is_idempotent(self):
+        # P2-1：同一偏好应用（同一靶标、同一新旧长度、同一原因）只记一条
+        # experience_applied，重复 run / 重复物化不重复记账。
+        self.seed_mdm2_evidence()
+        summary = summarize_failures()
+        hint = suggest_length_preference(summary)
+        record_applied_preference(None, hint, summary=summary, targets=["MDM2"])
+        record_applied_preference(None, hint, summary=summary, targets=["MDM2"])
+        applied = [
+            e for e in EvidenceLogger.get_all() if e.get("event_type") == EVENT_EXPERIENCE
+        ]
+        self.assertEqual(len(applied), 1)
+
+    def test_empty_explicit_lengths_list_is_not_overridden(self):
+        # P2-2：lengths=[] 是显式指定（尽管为空），不得被经验偏好覆盖。
+        self.seed_mdm2_evidence()
+        updated, hint = apply_experience_preference({"lengths": []})
+        self.assertIsNone(hint)
+        self.assertEqual(updated.get("lengths"), [])
+        updated, hint = apply_experience_preference(
+            {}, target_spec={"target_name": "MDM2", "lengths": []}
+        )
+        self.assertIsNone(hint)
+        self.assertNotIn("lengths", updated)
+
+    def test_min_failures_must_be_positive(self):
+        summary = {
+            "lengths": {"10": {"n": 6, "failed": 6}, "12": {"n": 6, "failed": 0}}
+        }
+        with self.assertRaises(ValueError):
+            suggest_length_preference(summary, min_failures=0)
+        hint = suggest_length_preference(summary, min_failures=1)
+        self.assertIsNotNone(hint)
+
+    def test_route_a_scopes_experience_to_resolved_target(self):
+        # P1-1：CLI 不带 --target 时 target_spec 无 target_name，route_a 必须
+        # 先解析出本靶标再消费经验，避免全靶标证据污染。
+        import agents.design.route_a as route_a
+
+        captured = {}
+
+        def fake_apply(design_config, target_spec=None, targets=None, min_failures=5):
+            captured["targets"] = targets
+            return dict(design_config or {}), None
+
+        def fake_resolve_target(project, target_spec, design_config):
+            return {"id": "MDM2"}
+
+        def fake_merge(target_spec, design_config, project_config=None):
+            return {
+                "target_id": "MDM2",
+                "target_name": "MDM2",
+                "seed": 1,
+                "lengths": [12],
+                "n": 1,
+            }
+
+        class _FakeContext:
+            project_config = {"project_id": "p", "targets": [{"id": "MDM2"}]}
+            output_dir = str(self.root)
+
+        with patch.object(route_a, "_resolve_target", fake_resolve_target), patch.object(
+            route_a, "_merge_config", fake_merge
+        ), patch.object(
+            route_a, "_route_a_generate_backbones", lambda config, batch_dir: ([], 0)
+        ), patch.object(route_a, "_load_existing_sequences", lambda: set()), patch.object(
+            route_a, "_collect_raw_sequences", lambda entries: ({}, {})
+        ), patch.object(
+            route_a,
+            "_cheap_filter_sequences",
+            lambda seqs, seen_seqs=None, top_k=None: [],
+        ), patch.object(route_a, "EvidenceLogger"), patch(
+            "experience.apply_experience_preference", fake_apply
+        ):
+            route_a.design_rfpeptides(
+                target_spec={}, design_config={}, context=_FakeContext()
+            )
+        self.assertEqual(captured["targets"], ["MDM2"])
+
 
 if __name__ == "__main__":
     unittest.main()
