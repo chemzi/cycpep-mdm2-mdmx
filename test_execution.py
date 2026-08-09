@@ -274,15 +274,18 @@ class ExecutionTests(unittest.TestCase):
                 captured["design_config"] = dict(design_config or {})
                 return []
 
-        updates = self.root / "cli-updates.json"
-        with patch("agents.design.cli.Design", _FakeDesign):
+        with patch("agents.design.cli.Design", _FakeDesign), patch(
+            "agents.design.cli.configure_candidate_updates"
+        ), patch(
+            "agents.design.cli.flush_candidate_updates"
+        ):
             rc = cli.main([
                 "--route", "A",
                 "--target", "MDM2",
                 "--n", "1",
                 "--lengths", "12",
                 "--seed", "42",
-                "--candidate-updates-path", str(updates),
+                "--candidate-updates-path", str(self.root / "cli-updates.json"),
             ])
         self.assertEqual(rc, 0)
         self.assertEqual(captured["design_config"].get("lengths"), [12])
