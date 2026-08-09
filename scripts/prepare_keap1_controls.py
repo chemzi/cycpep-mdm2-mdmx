@@ -25,17 +25,22 @@ NEGATIVE_ROLE = "in_silico_sequence_negative_control"
 DEFAULT_SEED = 20260809
 
 
-def _scramble(sequence: str, rng: random.Random, attempts: int = 50) -> str:
-    """Return a permutation of ``sequence`` that differs in every position."""
+def _scramble(sequence: str, rng: random.Random, attempts: int = 50) -> str | None:
+    """Return a permutation of ``sequence`` that differs in every position.
+
+    Returns None when no such permutation is found (short or fully repeated
+    sequences); callers skip the negative instead of emitting a near-identical
+    decoy.
+    """
     letters = list(sequence)
     if len(letters) < 2:
-        return sequence
+        return None
     for _ in range(attempts):
         candidate = letters[:]
         rng.shuffle(candidate)
         if all(a != b for a, b in zip(letters, candidate)):
             return "".join(candidate)
-    return "".join(candidate)
+    return None
 
 
 def build_manifest(
@@ -57,7 +62,7 @@ def build_manifest(
         origin_pdb = source.get("pdb_id")
         for index in range(negatives_per_positive):
             scrambled = _scramble(sequence, rng)
-            if scrambled == sequence:
+            if not scrambled:
                 continue
             controls.append({
                 "control_id": f"{positive.get('control_id')}-negative-{index + 1}",

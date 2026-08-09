@@ -518,7 +518,6 @@ def _apply_control_calibration(thresholds: dict, config: dict) -> tuple[dict, di
             approved_digest=(config.get("review") or {}).get("approved_digest"),
             protocol=expected_protocol,
             protocol_hash=expected_protocol_hash,
-            schema_version=CONTROL_CALIBRATION_SCHEMA_VERSION,
         )
         calibrated, audit = calibrate_thresholds(
             controls=controls,
@@ -552,7 +551,11 @@ def _apply_control_calibration(thresholds: dict, config: dict) -> tuple[dict, di
         calibration_path = _module_attr("DATA_DIR") / "_threshold_calibration.json"
         _atomic_write_json(calibration_path, artifact)
         try:
+            # Deterministic artifact id makes re-runs idempotent (INSERT OR
+            # IGNORE dedupes); the JSON file is the projection, the artifact
+            # row + evidence + state update are the formal records.
             State.register_artifact({
+                "artifact_id": "threshold_calibration-" + str(calibration_path),
                 "artifact_type": "threshold_calibration",
                 "path": str(calibration_path),
                 "size_bytes": calibration_path.stat().st_size,

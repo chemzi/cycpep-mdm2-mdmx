@@ -55,7 +55,6 @@ def main() -> int:
                 approved_digest=(config.get("review") or {}).get("approved_digest"),
                 protocol=expected_protocol,
                 protocol_hash=expected_protocol_hash,
-                schema_version=CALIBRATION_SCHEMA_VERSION,
             )
         else:
             raw = json.load(sys.stdin)
@@ -68,7 +67,6 @@ def main() -> int:
                 approved_digest=(config.get("review") or {}).get("approved_digest"),
                 protocol=expected_protocol,
                 protocol_hash=expected_protocol_hash,
-                schema_version=CALIBRATION_SCHEMA_VERSION,
             )
         protocol = expected_protocol or metadata.get("protocol")
         protocol_hash = metadata.get("protocol_hash") or expected_protocol_hash

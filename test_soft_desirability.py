@@ -1,5 +1,8 @@
 import unittest
 
+import math
+
+import data_layer
 from battery_evaluation import evaluate_battery
 from soft_desirability import soft_desirability
 
@@ -90,3 +93,43 @@ class SoftDesirabilityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_non_finite_values_never_fabricate_scores(self):
+        thresholds = {
+            "L7_scrmsd": {"value": 2.0, "operator": "<=", "source": "team"},
+            "L1_plddt": {
+                "value": 0.7, "operator": ">=", "source": "team",
+                "evidence_grade": "paper_explicit",
+            },
+        }
+        candidate = _candidate(metrics={**_candidate()["metrics"], "global": {
+            **_candidate()["metrics"]["global"],
+            "plddt": float("nan"),
+            "scrmsd": float("inf"),
+        }})
+        view = soft_desirability(candidate, thresholds, target_ids=("KEAP1",))
+        self.assertIsNone(view["metrics"]["L1_plddt"]["desirability"])
+        self.assertIsNone(view["metrics"]["L7_scrmsd"]["desirability"])
+        self.assertNotEqual(view["metrics"]["L1_plddt"]["desirability"], 1.0)
+        # production entry point via data_layer re-export
+        public_view = data_layer.soft_desirability(candidate, thresholds, target_ids=("KEAP1",))
+        self.assertIsNone(public_view["metrics"]["L7_scrmsd"]["desirability"])
+
+    def test_non_finite_guard_returns_none(self):
+        from soft_desirability import _desirability
+        self.assertIsNone(_desirability(float("nan"), 5.0, "maximize"))
+        self.assertIsNone(_desirability(float("inf"), 2.0, "minimize"))
+        self.assertIsNone(_desirability(float("-inf"), 1.0, "maximize"))
+        self.assertTrue(math.isfinite(_desirability(1.0, 2.0, "minimize")))
+
+    def test_target_scoped_metrics_without_target_ids_are_unavailable(self):
+        thresholds = {}
+        view = soft_desirability(_candidate(), thresholds, target_ids=())
+        self.assertIn("L2_ipsae", view["metrics"])
+        self.assertIn("L5_hotspot_coverage", view["metrics"])
+        self.assertIn("L6_pose_rmsd", view["metrics"])
+        self.assertFalse(view["metrics"]["L2_ipsae"]["hard_eligible"])
+        self.assertIsNone(view["metrics"]["L2_ipsae"]["desirability"])
+        self.assertEqual(view["metrics"]["L2_ipsae"]["reason"], "missing_target_ids")
+        self.assertIn("L2_ipsae", view["soft_only_metrics"])
+

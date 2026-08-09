@@ -437,3 +437,98 @@ class ControlManifestTests(unittest.TestCase):
             all(item["role"] for item in first["controls"] if item["label"] == "negative")
         )
 
+    def test_v2_dataset_missing_role_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "controls_v2_norole.json"
+            records = [dict(item) for item in _control_set(2, 1)]
+            for record in records:
+                record.pop("label", None)
+            path.write_text(json.dumps({
+                "metadata": {
+                    "project_id": research.PROJECT_CONFIG["project_id"],
+                    "approved_digest": (research.PROJECT_CONFIG.get("review") or {}).get(
+                        "approved_digest"
+                    ),
+                    "schema_version": CALIBRATION_SCHEMA_VERSION,
+                    "protocol": {"tool": "same-protocol", "version": "test-1"},
+                },
+                "controls": records,
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(ControlDataError, "role positive/negative"):
+                load_control_dataset(
+                    path,
+                    project_id=research.PROJECT_CONFIG["project_id"],
+                    approved_digest=(research.PROJECT_CONFIG.get("review") or {}).get(
+                        "approved_digest"
+                    ),
+                    protocol={"tool": "same-protocol", "version": "test-1"},
+                )
+
+    def test_unsupported_schema_version_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "controls_v3.json"
+            path.write_text(json.dumps({
+                "metadata": {
+                    "project_id": research.PROJECT_CONFIG["project_id"],
+                    "approved_digest": (research.PROJECT_CONFIG.get("review") or {}).get(
+                        "approved_digest"
+                    ),
+                    "schema_version": 3,
+                    "protocol": {"tool": "same-protocol", "version": "test-1"},
+                },
+                "controls": _control_set(2, 1),
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(ControlDataError, "schema_version is not supported"):
+                load_control_dataset(
+                    path,
+                    project_id=research.PROJECT_CONFIG["project_id"],
+                    approved_digest=(research.PROJECT_CONFIG.get("review") or {}).get(
+                        "approved_digest"
+                    ),
+                    protocol={"tool": "same-protocol", "version": "test-1"},
+                )
+
+    def test_calibration_artifact_registration_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            data = root / "data"
+            evidence = root / "evidence"
+            controls = root / "controls.json"
+            controls.write_text(json.dumps({
+                "metadata": {
+                    "project_id": research.PROJECT_CONFIG["project_id"],
+                    "approved_digest": (research.PROJECT_CONFIG.get("review") or {}).get(
+                        "approved_digest"
+                    ),
+                    "schema_version": CALIBRATION_SCHEMA_VERSION,
+                    "protocol": {"tool": "same-protocol", "version": "test-1"},
+                },
+                "controls": _control_set(),
+            }), encoding="utf-8")
+            config = deepcopy(research.PROJECT_CONFIG)
+            config["selection"] = {
+                **(config.get("selection") or {}),
+                "calibration_protocol": {"tool": "same-protocol", "version": "test-1"},
+            }
+            with patch.dict("os.environ", {"CYCPEP_CONTROL_DATA": str(controls)}, clear=False), \
+                 patch.object(research, "DATA_DIR", data), \
+                 patch.object(research, "EVIDENCE_DIR", evidence), \
+                 patch.object(data_layer, "DATA_DIR", data), \
+                 patch.object(data_layer, "EVIDENCE_DIR", evidence), \
+                 patch.object(data_layer, "LOG_PATH", evidence / "evidence_log.jsonl"), \
+                 patch.object(research, "THRESHOLDS_CACHE", data / "_thresholds_cache.json"):
+                research._apply_control_calibration(
+                    research.default_thresholds(config), config,
+                )
+                research._apply_control_calibration(
+                    research.default_thresholds(config), config,
+                )
+            connection = sqlite3.connect(data / "store.db")
+            try:
+                rows = connection.execute(
+                    "SELECT artifact_id FROM artifacts WHERE artifact_type='threshold_calibration'"
+                ).fetchall()
+            finally:
+                connection.close()
+            self.assertEqual(len(rows), 1)
+

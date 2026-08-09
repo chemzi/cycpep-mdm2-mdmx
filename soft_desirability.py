@@ -10,6 +10,7 @@ battery's justification rules.  It never changes ``evaluate_battery`` or
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from project_config import target_value, threshold_for_target
@@ -52,6 +53,8 @@ def _desirability(value: Any, threshold: Any, direction: str) -> float | None:
         cutoff = float(threshold)
     except (TypeError, ValueError):
         return None
+    if not (math.isfinite(number) and math.isfinite(cutoff)):
+        return None
     if direction == "maximize":
         if cutoff <= 0:
             return None
@@ -89,6 +92,15 @@ def soft_desirability(
     targets = tuple(str(item) for item in target_ids)
     view: dict[str, dict[str, Any]] = {}
     for key, spec in METRIC_SPECS.items():
+        if spec["scope"] == "target" and not targets:
+            view[key] = {
+                "value": None,
+                "desirability": None,
+                "calibration_status": "unavailable",
+                "hard_eligible": False,
+                "reason": "missing_target_ids",
+            }
+            continue
         scopes = targets if spec["scope"] == "target" else (None,)
         for scope in scopes:
             entry = threshold_for_target(thresholds, key, scope)

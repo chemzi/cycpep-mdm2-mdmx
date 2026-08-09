@@ -820,3 +820,6 @@ from battery_evaluation import (  # noqa: E402
     compute_pareto_front,
     evaluate_battery,
 )
+from soft_desirability import (  # noqa: E402
+    soft_desirability,
+)

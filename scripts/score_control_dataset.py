@@ -38,7 +38,9 @@ from project_config import load_project_config, required_target_ids
 
 def _control_metrics(control: dict, scores: dict) -> dict:
     """Extract the metric payload for one control from the scores map."""
-    control_id = control["control_id"]
+    control_id = control.get("control_id")
+    if not control_id:
+        raise ValueError("control manifest record is missing control_id")
     if control_id not in scores:
         raise ValueError(f"no scores for control {control_id!r}")
     metrics = scores[control_id]

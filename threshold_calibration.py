@@ -274,9 +274,14 @@ def validate_control_metadata(
     approved_digest: str | None = None,
     protocol: Any | None = None,
     protocol_hash: str | None = None,
-    schema_version: int | str = CALIBRATION_SCHEMA_VERSION,
 ) -> dict:
-    """Validate and normalize the binding metadata for a control payload."""
+    """Validate and normalize the binding metadata for a control payload.
+
+    Schema policy (explicit, not caller-negotiable): the file's declared
+    ``schema_version`` must be one of ``_SUPPORTED_CALIBRATION_SCHEMA_VERSIONS``.
+    v1 is legacy and loads without per-record provenance; v2 (current) requires
+    provenance (enforced separately by :func:`validate_control_provenance`).
+    """
     metadata = dict(metadata or {})
     missing = [
         key for key in ("project_id", "approved_digest", "schema_version")
@@ -322,6 +327,11 @@ def validate_control_provenance(controls, *, version=None) -> None:
     if str(version or CALIBRATION_SCHEMA_VERSION) != "2":
         return
     for index, control in enumerate(controls):
+        if _control_label(control) is None:
+            raise ControlDataError(
+                "control dataset v2 requires role positive/negative; "
+                f"missing or invalid on {_control_id(control, index)}"
+            )
         source = control.get("source") if isinstance(control.get("source"), dict) else {}
         reference = source.get("pdb_id") or source.get("doi")
         if not reference:
@@ -338,7 +348,6 @@ def load_control_dataset(
     approved_digest: str | None = None,
     protocol: Any | None = None,
     protocol_hash: str | None = None,
-    schema_version: int | str = CALIBRATION_SCHEMA_VERSION,
 ) -> tuple[list[dict], dict]:
     """Load a control dataset only when its production binding is complete.
 
@@ -363,7 +372,6 @@ def load_control_dataset(
         approved_digest=approved_digest,
         protocol=protocol,
         protocol_hash=protocol_hash,
-        schema_version=schema_version,
     )
     validate_control_provenance(controls, version=metadata.get("schema_version"))
     if not controls:
