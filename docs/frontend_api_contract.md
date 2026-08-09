@@ -1,13 +1,17 @@
-# 前端 API Contract：Target Bootstrap 与运行闸门
+# 前端 API Contract：Target Bootstrap 与 Workbench 可观测性
 
-本文定义 UI 与未来 HTTP adapter 的稳定边界。现有业务逻辑位于
-`target_bootstrap.py`、`structure_resolution.py`、`agents/research.py` 和
-`agents/design/`（CLI 入口仍为 `agents/design.py` shim）；HTTP 路由尚未实现。前端应只依赖本 contract，而不依赖
-JSON 文件路径、CLI 文本输出或 Python 异常字符串。
+本文定义 UI 与 HTTP adapter 的稳定边界。Target Bootstrap 与审核继续使用现有
+`/api/v1` 兼容接口；Frontend V2 通过只读的 `GET /api/v2/workbench` 观察当前项目和
+当前执行图。前端应只依赖这些 HTTP contract，而不依赖 JSON/CSV/JSONL 文件路径、
+CLI 文本输出、进程日志或 Python 异常字符串。
+
+> 历史说明：第 5、6 节记录了早期独立 Research/Design run adapter 及线性前端状态机
+> 方案。它们不是当前执行模型，也不是 Frontend V2 的 API 或控制器实现基线。
 
 ## 1. 约定
 
-- Base URL：`/api/v1`
+- Target Bootstrap 兼容 Base URL：`/api/v1`
+- Frontend V2 可观测性 Base URL：`/api/v2`
 - JSON：`Content-Type: application/json; charset=utf-8`
 - 标识符均由服务端生成，前端将 `draft_id`、`project_id`、`run_id` 当作 opaque string。
 - `PATCH` 使用 RFC 7396 JSON Merge Patch；数组是整体替换，不是按元素合并。靶点编辑
@@ -15,6 +19,41 @@ JSON 文件路径、CLI 文本输出或 Python 异常字符串。
 - 所有时间为 ISO-8601 UTC；所有枚举值使用 snake_case。
 - `x_backend_status` 标明该路由是否已有业务实现：`implemented` 表示可直接用现有
   Python 函数包装；`adapter_required` 表示 UI contract 已冻结，但需增加异步任务 adapter。
+
+### 当前执行模型与 Frontend V2 读取边界
+
+当前后端不是固定的 Research → Design → Prediction → Critic 流水线。Planner 生成带依赖的
+immutable typed-task plan；Orchestrator 的公开 status 接口校验绑定的 plan/run 并给出 run 与
+task 状态；Action Catalog 和 Action Registry 共同决定 action 是否可执行；ExecutionWorker
+负责 claim、dispatch、staging，并通过事务与 Store 提交结果。失败、回滚和未解决的恢复状态
+必须保留其正式状态，不能折叠成前端阶段标签。
+
+`GET /api/v2/workbench` 返回现有成功 envelope 中的版本化只读聚合，包含 `project`、
+`workflow`、`run`、`tasks`、`executions`、`transactions`、`candidates`、`evidence`、
+`artifacts`、`protocols`、`trace` 和 `blockers`。其中：
+
+- `project` 是当前项目范围；`workflow`、`run`、`tasks`、`executions`、`transactions`
+  只属于经过校验的当前 run。
+- `candidates`、`evidence`、`artifacts` 是项目范围，并通过正式 trace 字段区分当前 run、
+  历史 run 和未关联记录。
+- 有界 collection 统一返回 `total`、`returned`、`truncated` 和 `items`；标识符保持 opaque，
+  响应不暴露服务器路径。
+- 无当前 run 时明确返回 no-current-run blocker，不合成 workflow stage。当前 plan/run/project
+  绑定无效时，只保留可信的项目范围数据，`workflow`、`run` 为 `null`，当前-run collection
+  为空，并返回 `workflow_binding_invalid` blocker。
+- 已 claim/running 但尚无正式 transaction record 的 task 使用 `not_yet_recorded`，不得从
+  staging 文件、日志文本、运行时长或 worker 进程猜测 transaction 状态。
+
+工作流与 task 状态只来自经校验的 Orchestrator/Plan contract；action capability 只来自
+Action Catalog 与 Action Registry；candidate、evidence、artifact 和 transaction 元数据只通过
+正式 Store seam 读取。JSON/CSV/JSONL 仅是单向兼容 projection，不能作为独立 authority，
+也不能与 Store 合并或反向同步。浏览器不得根据 `State.phase`、evidence 数量、日志文本或固定
+Agent 顺序推导 workflow 状态。
+
+该 endpoint 纯观察：不会初始化 State、刷新 projection、注册 artifact、创建 evidence、修改
+run/task 或推进 transaction/recovery。它不提供 start、retry、cancel、claim、dispatch 或任何
+transaction mutation。现有 `/api/v1` 方法、envelope 与行为保持兼容；其中
+`/api/v1/snapshot` 只服务旧客户端，不是 Frontend V2 的 workflow authority。
 
 ## 2. 通用响应与错误
 
@@ -372,7 +411,11 @@ binding site、natural partners、known binders、off-targets 和 research queri
 }
 ```
 
-## 5. Research 与 Design run contract
+## 5. 历史方案：Research 与 Design run contract（未实现）
+
+> 本节是早期 adapter 设计记录，仅用于解释旧界面预期。当前执行由 Planner typed tasks、
+> Orchestrator、Action Registry、ExecutionWorker 和 Store transaction contract 驱动；不得实现
+> 本节路由来替代该执行链，也不得把它作为 Frontend V2 的控制器或 API 基线。
 
 这些路由需要一个小型异步 adapter：创建任务、持久化 `Run`，并为每个 run 启动隔离的
 Python worker。现有 Research/Design 模块在 import 时加载项目配置，因此 persistent worker
@@ -442,7 +485,11 @@ adapter 必须先生成并返回 `effective_plan.counts_by_length`，各值之�
 轮询建议：queued/running 每 2 秒一次；completed/degraded/failed/cancelled 后停止。任务
 事件流以后可替换为 SSE/WebSocket，响应模型不变。
 
-## 6. 前端状态机
+## 6. 历史方案：前端状态机（不再作为 workflow authority）
+
+> 下图和按钮表只描述早期 Target Bootstrap/独立 run UX。Frontend V2 必须渲染
+> `/api/v2/workbench` 返回的 task graph、action availability 和 structured blockers，不能用
+> 这套线性状态机推导后端工作流状态。
 
 ```mermaid
 stateDiagram-v2
