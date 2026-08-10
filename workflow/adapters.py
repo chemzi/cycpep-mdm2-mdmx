@@ -144,10 +144,25 @@ class DefaultWorkflowRuntime:
         recovery = inspect_transaction_recovery(
             run_id=orchestrator.references.get("run_id")
         )
-        if recovery.skipped_active:
-            from .boundaries import FormalBoundary
+        from .boundaries import FormalBoundary
 
-            active = tuple(str(value) for value in recovery.skipped_active)
+        active = tuple(str(value) for value in recovery.skipped_active)
+        unresolved = tuple(str(value) for value in recovery.unresolved)
+        if unresolved or recovery.marker_errors:
+            transaction_id = (
+                unresolved[0] if unresolved else active[0] if active else None
+            )
+            return FormalBoundary.blocked(
+                "transaction",
+                "transaction_recovery_unresolved",
+                "formal transaction recovery requires operator action",
+                transaction_id=transaction_id,
+                transaction_ids=unresolved,
+                marker_error_count=len(recovery.marker_errors),
+                live_owner=bool(active),
+                active_transaction_ids=active,
+            )
+        if active:
             return FormalBoundary(
                 status="active",
                 boundary="transaction",
@@ -158,19 +173,11 @@ class DefaultWorkflowRuntime:
                 },
             )
         if recovery.clean:
-            from .boundaries import FormalBoundary
-
             return FormalBoundary.completed("transaction")
-        from .boundaries import FormalBoundary
-
-        transaction_id = recovery.unresolved[0] if recovery.unresolved else None
         return FormalBoundary.blocked(
             "transaction",
             "transaction_recovery_unresolved",
             "formal transaction recovery requires operator action",
-            transaction_id=transaction_id,
-            transaction_ids=recovery.unresolved,
-            marker_error_count=len(recovery.marker_errors),
         )
 
     @staticmethod

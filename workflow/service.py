@@ -399,6 +399,9 @@ def _gate_transaction_recovery(
     report = _observe(report, "orchestrator", orchestrator)
     transaction = runtime.inspect_transaction_recovery(orchestrator)
     if transaction.references.get("live_owner") is True:
+        if transaction.status == "blocked":
+            report = _merge_transaction_trace(report, transaction)
+            return report, orchestrator, _block(session, report, transaction)
         report = _merge_transaction_trace(report, transaction).with_observation(
             current_boundary="transaction",
             last_known_formal_status="running",

@@ -13,7 +13,7 @@ from execution.supervisor import durable_atomic_json
 
 from .errors import DiagnosticContractError
 from .locking import exclusive_file_lock
-from .models import DiagnosticReport
+from .models import DiagnosticReport, RuntimeLocatorBinding
 
 
 _LAUNCHER_RUN_ID_RE = re.compile(r"^launcher_[0-9a-f]{32}$")
@@ -27,9 +27,6 @@ def resolve_diagnostics_root(
     configured = environment.get("CYCPEP_LAUNCHER_DIAGNOSTICS")
     if configured:
         return Path(configured).expanduser()
-    np_data = environment.get("NP_DATA")
-    if np_data:
-        return Path(np_data).expanduser() / "launcher_diagnostics"
     base = Path(repository_root) if repository_root is not None else Path(__file__).resolve().parents[1]
     return base / "data" / "launcher_diagnostics"
 
@@ -52,6 +49,9 @@ class DiagnosticStore:
 
     def _lock_path(self, launcher_run_id: str) -> Path:
         return self.root / f".{validate_launcher_run_id(launcher_run_id)}.lock"
+
+    def _binding_path(self, launcher_run_id: str) -> Path:
+        return self.root / f"{validate_launcher_run_id(launcher_run_id)}.runtime-locator.json"
 
     @contextmanager
     def exclusive(self, launcher_run_id: str) -> Iterator[None]:
@@ -76,10 +76,15 @@ class DiagnosticStore:
 
     def create(self, report: DiagnosticReport) -> DiagnosticReport:
         path = self._path(report.launcher_run_id)
+        binding_path = self._binding_path(report.launcher_run_id)
         with self.exclusive(report.launcher_run_id):
-            if path.exists():
+            if path.exists() or binding_path.exists():
                 raise DiagnosticContractError(
                     "launcher_diagnostic_already_exists", "Launcher diagnostic already exists."
+                )
+            if report.runtime_locator_binding is not None:
+                self._persist_value(
+                    binding_path, report.runtime_locator_binding.to_dict()
                 )
             self._persist(path, report)
         return report
@@ -91,6 +96,9 @@ class DiagnosticStore:
                 raise DiagnosticContractError(
                     "launcher_diagnostic_not_found", "Launcher diagnostic was not found."
                 )
+            self._read_unlocked(report.launcher_run_id)
+            self._validate_runtime_binding(report)
+            self._require_runtime_binding(report)
             self._persist(path, report)
         return report
 
@@ -114,6 +122,7 @@ class DiagnosticStore:
             raise DiagnosticContractError(
                 "launcher_diagnostic_binding_mismatch", "Launcher diagnostic binding is invalid."
             )
+        self._validate_runtime_binding(report)
         return report
 
     def _write_unlocked(self, report: DiagnosticReport) -> DiagnosticReport:
@@ -122,12 +131,50 @@ class DiagnosticStore:
             raise DiagnosticContractError(
                 "launcher_diagnostic_not_found", "Launcher diagnostic was not found."
             )
+        self._read_unlocked(report.launcher_run_id)
+        self._validate_runtime_binding(report)
+        self._require_runtime_binding(report)
         self._persist(path, report)
         return report
 
-    def _persist(self, path: Path, report: DiagnosticReport) -> None:
+    @staticmethod
+    def _require_runtime_binding(report: DiagnosticReport) -> None:
+        if report.runtime_locator_binding is None:
+            raise DiagnosticContractError(
+                "launcher_runtime_locator_unavailable",
+                "The original Launcher runtime locator is unavailable.",
+            )
+
+    def _validate_runtime_binding(self, report: DiagnosticReport) -> None:
+        binding_path = self._binding_path(report.launcher_run_id)
+        report_binding = report.runtime_locator_binding
+        if report_binding is None and not binding_path.exists():
+            return
+        if report_binding is None or not binding_path.is_file():
+            raise DiagnosticContractError(
+                "launcher_runtime_locator_unavailable",
+                "The original Launcher runtime locator is unavailable.",
+            )
         try:
-            self._durable_writer(path, report.to_dict())
+            value = json.loads(binding_path.read_text(encoding="utf-8"))
+            stored_binding = RuntimeLocatorBinding.from_dict(value)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError, KeyError) as error:
+            raise DiagnosticContractError(
+                "launcher_runtime_locator_unavailable",
+                "The original Launcher runtime locator is unavailable.",
+            ) from error
+        if stored_binding != report_binding:
+            raise DiagnosticContractError(
+                "launcher_runtime_locator_conflict",
+                "The Launcher runtime locator conflicts with this diagnostic.",
+            )
+
+    def _persist(self, path: Path, report: DiagnosticReport) -> None:
+        self._persist_value(path, report.to_dict())
+
+    def _persist_value(self, path: Path, value: dict) -> None:
+        try:
+            self._durable_writer(path, value)
         except OSError as error:
             raise DiagnosticContractError(
                 "launcher_diagnostic_persistence_failed", "Launcher diagnostic could not be persisted."

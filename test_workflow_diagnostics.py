@@ -16,6 +16,7 @@ from workflow.models import (
     LauncherCommandResult,
     OpaqueReference,
     PredictionRunLocator,
+    RuntimeLocatorBinding,
     StructuredError,
 )
 
@@ -29,6 +30,22 @@ def _report() -> DiagnosticReport:
         project_id="project-1",
         approved_content_binding="approval-1",
         project_locator="C:/internal/projects/approved-project.json",
+    )
+
+
+def _bound_report(root: Path) -> DiagnosticReport:
+    project = (root / "approved-project.json").resolve()
+    return DiagnosticReport.initial(
+        launcher_run_id=LAUNCHER_RUN_ID,
+        project_id="project-1",
+        approved_content_binding="approval-1",
+        project_locator=str(project),
+        runtime_locator_binding=RuntimeLocatorBinding(
+            project_locator=str(project),
+            data_dir=str((root / "runtime" / "data").resolve()),
+            evidence_dir=str((root / "runtime" / "evidence").resolve()),
+            database_path=str((root / "runtime" / "formal" / "store.db").resolve()),
+        ),
     )
 
 
@@ -101,12 +118,116 @@ class DiagnosticStoreTests(unittest.TestCase):
         )
         self.assertEqual(
             resolve_diagnostics_root(env={"NP_DATA": "E:/np"}, repository_root=repository_root),
-            Path("E:/np/launcher_diagnostics"),
+            repository_root / "data" / "launcher_diagnostics",
         )
         self.assertEqual(
             resolve_diagnostics_root(env={}, repository_root=repository_root),
             repository_root / "data" / "launcher_diagnostics",
         )
+
+    def test_default_root_is_stable_across_formal_runtime_selector_drift(self):
+        repository_root = Path("C:/repo")
+
+        launch_root = resolve_diagnostics_root(
+            env={"NP_DATA": "D:/runtime-a", "CYCPEP_DB_PATH": "D:/runtime-a/store.db"},
+            repository_root=repository_root,
+        )
+        later_command_root = resolve_diagnostics_root(
+            env={"NP_DATA": "E:/runtime-b", "CYCPEP_DB_PATH": "E:/runtime-b/store.db"},
+            repository_root=repository_root,
+        )
+
+        self.assertEqual(launch_root, repository_root / "data" / "launcher_diagnostics")
+        self.assertEqual(later_command_root, launch_root)
+
+    def test_create_persists_write_once_runtime_locator_before_journal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            writes = []
+
+            def record_write(path: Path, value: dict) -> None:
+                writes.append((path.name, value))
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(value), encoding="utf-8")
+
+            store = DiagnosticStore(root, durable_writer=record_write)
+            report = _bound_report(root)
+
+            store.create(report)
+
+            self.assertEqual(
+                [name for name, _value in writes],
+                [
+                    f"{LAUNCHER_RUN_ID}.runtime-locator.json",
+                    f"{LAUNCHER_RUN_ID}.json",
+                ],
+            )
+            self.assertEqual(writes[0][1], report.runtime_locator_binding.to_dict())
+            self.assertEqual(store.read(LAUNCHER_RUN_ID), report)
+
+    def test_missing_or_invalid_sidecar_fails_closed_for_bound_journal(self):
+        for case in ("missing", "invalid"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                store = DiagnosticStore(root)
+                report = _bound_report(root)
+                store.create(report)
+                sidecar = root / f"{LAUNCHER_RUN_ID}.runtime-locator.json"
+                if case == "missing":
+                    sidecar.unlink()
+                else:
+                    sidecar.write_text('{"database_path":"relative.db"}', encoding="utf-8")
+
+                with self.assertRaises(DiagnosticContractError) as caught:
+                    store.read(LAUNCHER_RUN_ID)
+
+                self.assertEqual(caught.exception.code, "launcher_runtime_locator_unavailable")
+
+    def test_journal_cannot_redirect_to_another_valid_absolute_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = DiagnosticStore(root)
+            report = _bound_report(root)
+            store.create(report)
+            journal = root / f"{LAUNCHER_RUN_ID}.json"
+            raw = json.loads(journal.read_text(encoding="utf-8"))
+            raw["runtime_locator_binding"]["database_path"] = str(
+                (root / "other-runtime" / "formal" / "store.db").resolve()
+            )
+            journal.write_text(json.dumps(raw), encoding="utf-8")
+
+            with self.assertRaises(DiagnosticContractError) as caught:
+                store.read(LAUNCHER_RUN_ID)
+
+            self.assertEqual(caught.exception.code, "launcher_runtime_locator_conflict")
+
+    def test_write_revalidates_sidecar_before_persisting_journal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = DiagnosticStore(root)
+            report = _bound_report(root)
+            store.create(report)
+            sidecar = root / f"{LAUNCHER_RUN_ID}.runtime-locator.json"
+            raw = json.loads(sidecar.read_text(encoding="utf-8"))
+            raw["database_path"] = str((root / "other" / "store.db").resolve())
+            sidecar.write_text(json.dumps(raw), encoding="utf-8")
+
+            with self.assertRaises(DiagnosticContractError) as caught:
+                store.write(report.with_observation(current_boundary="design"))
+
+            self.assertEqual(caught.exception.code, "launcher_runtime_locator_conflict")
+
+    def test_legacy_draft_without_locator_sidecar_remains_readable_but_not_writable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = DiagnosticStore(root)
+            report = _report()
+            store.create(report)
+
+            self.assertEqual(store.read(LAUNCHER_RUN_ID), report)
+            with self.assertRaises(DiagnosticContractError) as caught:
+                store.write(report.with_observation(current_boundary="design"))
+            self.assertEqual(caught.exception.code, "launcher_runtime_locator_unavailable")
 
     def test_direct_validated_lookup_and_durable_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -154,8 +275,9 @@ class DiagnosticStoreTests(unittest.TestCase):
 
     def test_locked_session_updates_only_its_bound_run_without_relocking(self):
         with tempfile.TemporaryDirectory() as tmp:
-            store = DiagnosticStore(Path(tmp))
-            store.create(_report())
+            root = Path(tmp)
+            store = DiagnosticStore(root)
+            store.create(_bound_report(root))
 
             with store.locked(LAUNCHER_RUN_ID) as session:
                 updated = session.read().with_observation(current_boundary="design")

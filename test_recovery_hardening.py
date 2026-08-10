@@ -182,6 +182,55 @@ class RecoveryHardeningTests(unittest.TestCase):
         self.assertTrue(result.clean)
         self.assertEqual(result.skipped_active, (transaction_id,))
 
+    def test_read_only_inspection_preserves_live_and_stale_unresolved_ids(self):
+        store = _LeaseStore()
+        store.transactions.append({
+            "transaction_id": "TX-STALE",
+            "run_id": "run-current",
+            "status": "COMPENSATION_CONFLICT",
+        })
+        self._write_marker(
+            "TX-LIVE",
+            {
+                "transaction_id": "TX-LIVE",
+                "context": {"run_id": "run-current"},
+                "status": "PREPARED",
+                **owner_lease(
+                    worker_id="live-worker", instance_id="live-instance"
+                ),
+            },
+        )
+
+        result = RecoveryManager(store).inspect_pending(
+            self.staging_root, run_id="run-current"
+        )
+
+        self.assertFalse(result.clean)
+        self.assertEqual(result.unresolved, ("TX-STALE",))
+        self.assertEqual(result.skipped_active, ("TX-LIVE",))
+
+    def test_read_only_inspection_preserves_live_id_with_marker_error(self):
+        store = _LeaseStore()
+        self._write_marker(
+            "TX-LIVE",
+            {
+                "transaction_id": "TX-LIVE",
+                "status": "PREPARED",
+                **owner_lease(
+                    worker_id="live-worker", instance_id="live-instance"
+                ),
+            },
+        )
+        broken = self._marker_path("TX-BROKEN")
+        broken.parent.mkdir(parents=True, exist_ok=True)
+        broken.write_text("not-json", encoding="utf-8")
+
+        result = RecoveryManager(store).inspect_pending(self.staging_root)
+
+        self.assertFalse(result.clean)
+        self.assertEqual(result.skipped_active, ("TX-LIVE",))
+        self.assertEqual(len(result.marker_errors), 1)
+
     def test_read_only_inspection_accepts_formally_closed_committed_marker(self):
         store = _LeaseStore()
         transaction_id = "TX-CLOSED"

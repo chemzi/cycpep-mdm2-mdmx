@@ -62,6 +62,58 @@ def _tracing_dependencies(root, world):
 
 
 class WorkflowMergeBlockerCharacterizationTests(unittest.TestCase):
+    def test_adapter_blocks_live_owner_with_stale_unresolved_transaction(self):
+        recovery = RecoveryResult(
+            unresolved=("TX-stale",),
+            skipped_active=("TX-live",),
+        )
+        orchestrator = FormalBoundary.completed("orchestrator", run_id="run-1")
+
+        with patch(
+            "execution.inspect_transaction_recovery", return_value=recovery
+        ):
+            transaction = DefaultWorkflowRuntime.inspect_transaction_recovery(
+                orchestrator
+            )
+
+        self.assertEqual(transaction.status, "blocked")
+        self.assertEqual(
+            transaction.blocker_code, "transaction_recovery_unresolved"
+        )
+        self.assertTrue(transaction.references.get("live_owner"))
+        self.assertEqual(transaction.references.get("transaction_id"), "TX-stale")
+        self.assertEqual(
+            transaction.references.get("transaction_ids"), ("TX-stale",)
+        )
+        self.assertEqual(
+            transaction.references.get("active_transaction_ids"), ("TX-live",)
+        )
+
+    def test_adapter_blocks_live_owner_with_marker_error(self):
+        recovery = RecoveryResult(
+            marker_errors=({"code": "invalid_json", "path": "internal"},),
+            skipped_active=("TX-live",),
+        )
+        orchestrator = FormalBoundary.completed("orchestrator", run_id="run-1")
+
+        with patch(
+            "execution.inspect_transaction_recovery", return_value=recovery
+        ):
+            transaction = DefaultWorkflowRuntime.inspect_transaction_recovery(
+                orchestrator
+            )
+
+        self.assertEqual(transaction.status, "blocked")
+        self.assertEqual(
+            transaction.blocker_code, "transaction_recovery_unresolved"
+        )
+        self.assertEqual(transaction.references.get("marker_error_count"), 1)
+        self.assertTrue(transaction.references.get("live_owner"))
+        self.assertEqual(transaction.references.get("transaction_id"), "TX-live")
+        self.assertEqual(
+            transaction.references.get("active_transaction_ids"), ("TX-live",)
+        )
+
     def test_adapter_projects_skipped_active_as_explicit_live_owner(self):
         recovery = RecoveryResult(skipped_active=("TX-live",))
         orchestrator = FormalBoundary.completed("orchestrator", run_id="run-1")
@@ -110,6 +162,46 @@ class WorkflowMergeBlockerCharacterizationTests(unittest.TestCase):
             self.assertEqual(result.payload.formal_trace.transaction_id, "TX-live")
             self.assertNotIn("recover_transactions", world.calls)
             self.assertNotIn("execution", world.calls)
+
+    def test_mixed_live_owner_blocker_performs_no_recovery_or_worker_action(self):
+        for command in (status_launcher_run, resume_launcher_run):
+            with (
+                self.subTest(command=command.__name__),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                world = _World()
+                deps = _dependencies(tmp, world)
+                launch_project(project_path="approved.json", dependencies=deps)
+                world.statuses["orchestrator"] = "completed"
+                world.orchestrator_status = "running"
+                world.transaction = FormalBoundary.blocked(
+                    "transaction",
+                    "transaction_recovery_unresolved",
+                    "stale work exists beside a live owner",
+                    live_owner=True,
+                    transaction_id="TX-stale",
+                    transaction_ids=("TX-stale",),
+                    active_transaction_ids=("TX-live",),
+                )
+                runtime = _TransactionRecoveryRuntime(world)
+                deps = LauncherServiceDependencies(
+                    **{**deps.__dict__, "runtime_factory": lambda *_args: runtime}
+                )
+                world.calls.clear()
+
+                result = command(
+                    launcher_run_id=LAUNCHER_ID, dependencies=deps
+                )
+
+                self.assertEqual(result.exit_code, 3)
+                self.assertEqual(
+                    result.payload.error.code, "transaction_recovery_unresolved"
+                )
+                self.assertEqual(
+                    result.payload.formal_trace.transaction_id, "TX-stale"
+                )
+                self.assertNotIn("recover_transactions", world.calls)
+                self.assertNotIn("execution", world.calls)
 
     def test_initial_clean_inspection_rereads_orchestrator_before_drain(self):
         with tempfile.TemporaryDirectory() as tmp:

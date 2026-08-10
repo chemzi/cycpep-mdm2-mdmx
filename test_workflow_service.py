@@ -452,7 +452,8 @@ class WorkflowServiceAcceptanceTests(unittest.TestCase):
                 })
 
     def test_formal_completion_survives_following_diagnostic_write_failure(self):
-        for boundary, failed_write in (("research", 2), ("design", 3), ("prediction", 4)):
+        # Initial creation writes the runtime-locator sidecar before the journal.
+        for boundary, failed_write in (("research", 3), ("design", 4), ("prediction", 5)):
             with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as tmp:
                 writes = [0]
 

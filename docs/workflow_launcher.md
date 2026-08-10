@@ -79,12 +79,22 @@ later plan may legitimately return `awaiting_approval` again.
 The internal diagnostic root is selected in this order:
 
 1. `CYCPEP_LAUNCHER_DIAGNOSTICS`, when set;
-2. `<NP_DATA>/launcher_diagnostics`, when `NP_DATA` is set;
-3. `<repository>/data/launcher_diagnostics`.
+2. `<repository>/data/launcher_diagnostics`.
+
+Formal-runtime selectors such as `NP_DATA`, `CYCPEP_DATA_DIR`,
+`CYCPEP_EVIDENCE_DIR`, and `CYCPEP_DB_PATH` do not select the diagnostic root.
+Changing them between `launch`, `status`, and `resume` therefore cannot hide an
+existing launcher run when the explicit diagnostics setting is unchanged.
 
 Each report is stored as `<root>/<launcher_run_id>.json` and is updated atomically
-under a per-run lock. There is no automatic expiry or cleanup policy. Retain the
-file for the required operational recovery and audit period, then remove it only
+under a per-run lock. Initial creation first writes a directly addressed,
+write-once `<root>/<launcher_run_id>.runtime-locator.json` sidecar under the same
+lock. The sidecar contains internal location metadata only; it has no workflow
+status or transition fields. Every later journal read or write requires the
+journal's locator mirror to match this sidecar exactly. A missing, invalid, or
+conflicting sidecar blocks continuation instead of falling back to ambient
+runtime paths. There is no automatic expiry or cleanup policy. Retain both files
+for the required operational recovery and audit period, then remove them only
 under the site's normal retention policy.
 
 Removing or editing a diagnostic cannot delete, roll back, complete, or otherwise
@@ -92,6 +102,10 @@ change formal workflow data. It can, however, make Launcher `status` or `resume`
 fail when the safe project/formal locators can no longer be recovered. Keep
 diagnostics access-controlled because the internal report contains local
 locators and observations intended for operators, not browsers.
+
+Draft diagnostics created before the sidecar contract remain readable for
+troubleshooting, but they cannot be updated or used to resume formal work until
+their original runtime locator is available through the supported contract.
 
 The journal is diagnostic only. Fields such as `last_completed_boundary`,
 `last_known_formal_status`, mirrored locator metadata, and failure observations
