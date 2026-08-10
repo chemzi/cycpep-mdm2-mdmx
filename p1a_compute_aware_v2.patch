@@ -1,0 +1,751 @@
+diff --git a/agents/planner/config.py b/agents/planner/config.py
+--- a/agents/planner/config.py
++++ b/agents/planner/config.py
+@@
+-from __future__ import annotations
++from __future__ import annotations
++
++import math
+@@
+ class PlannerConfig:
+@@
+     max_prediction_candidates_per_task: int = 48
++    max_rounds: int = 5
++    task_timeout_seconds: int = 3600
++    max_gpu_minutes: float = 600.0
+@@
+             "max_prediction_candidates_per_task",
++            "max_rounds",
++            "task_timeout_seconds",
+         ):
+@@
+                 raise PlannerContractError(
+                     "planner_config_invalid", f"{name} must be positive"
+                 )
++        try:
++            gpu_minutes = float(self.max_gpu_minutes)
++        except (TypeError, ValueError) as exc:
++            raise PlannerContractError(
++                "planner_config_invalid", "max_gpu_minutes must be numeric"
++            ) from exc
++        if not math.isfinite(gpu_minutes) or gpu_minutes <= 0:
++            raise PlannerContractError(
++                "planner_config_invalid",
++                "max_gpu_minutes must be finite and positive",
++            )
+
+diff --git a/agents/planner/budget.py b/agents/planner/budget.py
+--- a/agents/planner/budget.py
++++ b/agents/planner/budget.py
+@@
+ from __future__ import annotations
+
++import math
++
+ from .errors import PlannerContractError
++
++def _finite_non_negative(value, *, code: str, label: str) -> float:
++    try:
++        number = float(value)
++    except (TypeError, ValueError) as exc:
++        raise PlannerContractError(code, f"{label} must be numeric") from exc
++    if not math.isfinite(number) or number < 0:
++        raise PlannerContractError(code, f"{label} must be finite and non-negative")
++    return number
++
++def round_budget_status(state: dict, max_rounds: int) -> dict:
++    try:
++        current_round = int(state.get("round") or 1)
++        limit = int(max_rounds)
++    except (TypeError, ValueError) as exc:
++        raise PlannerContractError(
++            "planner_round_budget_invalid",
++            "round and max_rounds must be positive integers",
++        ) from exc
++    if current_round < 1 or limit < 1:
++        raise PlannerContractError(
++            "planner_round_budget_invalid",
++            "round and max_rounds must be positive integers",
++        )
++    exhausted = current_round >= limit
++    return {
++        "current_round": current_round,
++        "max_rounds": limit,
++        "exhausted": exhausted,
++        "reason": "max_rounds_exhausted" if exhausted else None,
++    }
++
++def compute_budget_status(
++    state: dict,
++    *,
++    default_max_gpu_minutes: float,
++    requested_gpu_minutes: float,
++) -> dict:
++    raw = state.get("compute_budget") or {}
++    if not isinstance(raw, dict):
++        raise PlannerContractError(
++            "compute_budget_invalid", "State compute_budget must be an object"
++        )
++    configured = _finite_non_negative(
++        raw.get("max_gpu_minutes", default_max_gpu_minutes),
++        code="compute_budget_invalid",
++        label="max_gpu_minutes",
++    )
++    if configured <= 0:
++        raise PlannerContractError(
++            "compute_budget_invalid", "max_gpu_minutes must be positive"
++        )
++    if raw.get("remaining_gpu_minutes") is not None:
++        remaining = _finite_non_negative(
++            raw["remaining_gpu_minutes"],
++            code="compute_budget_invalid",
++            label="remaining_gpu_minutes",
++        )
++    else:
++        consumed = _finite_non_negative(
++            raw.get("consumed_gpu_minutes", 0.0),
++            code="compute_budget_invalid",
++            label="consumed_gpu_minutes",
++        )
++        remaining = max(configured - consumed, 0.0)
++    requested = _finite_non_negative(
++        requested_gpu_minutes,
++        code="compute_budget_invalid",
++        label="requested_gpu_minutes",
++    )
++    exhausted = remaining <= 0 or requested > remaining
++    return {
++        "max_gpu_minutes": round(configured, 3),
++        "remaining_gpu_minutes": round(remaining, 3),
++        "requested_gpu_minutes": round(requested, 3),
++        "projected_remaining_gpu_minutes": round(max(remaining - requested, 0.0), 3),
++        "exhausted": exhausted,
++        "reason": "global_compute_budget_exhausted" if exhausted else None,
++    }
++
++def retain_recovery_tasks(tasks: list[dict], *, exhausted: bool) -> list[dict]:
++    if not exhausted:
++        return list(tasks)
++    return [task for task in tasks if task.get("disposition") == "recovery"]
++
++def select_current_best(candidate_rows: list[dict] | None) -> dict | None:
++    rows = [row for row in (candidate_rows or []) if isinstance(row, dict)]
++    if not rows:
++        return None
++    def truthy(value) -> bool:
++        return value is True or str(value).strip().casefold() in {"true", "1", "yes"}
++    finalized_clear = [
++        row for row in rows
++        if truthy(row.get("all_layers_pass"))
++        and str(row.get("final_status") or "").casefold() == "finalized"
++    ]
++    clear = [row for row in rows if truthy(row.get("all_layers_pass"))]
++    ranked = sorted(
++        (row for row in rows if str(row.get("final_rank") or "").strip().isdigit()),
++        key=lambda row: int(row["final_rank"]),
++    )
++    best = finalized_clear[0] if finalized_clear else clear[0] if clear else ranked[0] if ranked else rows[0]
++    return {
++        "candidate_id": best.get("candidate_id"),
++        "final_status": best.get("final_status"),
++        "final_rank": best.get("final_rank"),
++        "all_layers_pass": truthy(best.get("all_layers_pass")),
++    }
+@@
+-        if number < 0 or float(value) != number:
++        if number < 0:
+             raise PlannerContractError(
+                 "design_budget_invalid", f"budget {name} must be a non-negative integer"
+             )
++        numeric = _finite_non_negative(
++            value, code="design_budget_invalid", label=f"budget {name}"
++        )
++        if not numeric.is_integer():
++            raise PlannerContractError(
++                "design_budget_invalid",
++                f"budget {name} must be a non-negative integer",
++            )
+
+diff --git a/protocols/planner_compute_cost_v1.json b/protocols/planner_compute_cost_v1.json
+new file mode 100644
+--- /dev/null
++++ b/protocols/planner_compute_cost_v1.json
+@@
++{
++  "protocol_id": "planner_compute_cost_v1",
++  "description": "Deterministic P1-A planning estimates; not runtime accounting.",
++  "resource_profiles": {
++    "gpu": {"gpu_job_slots": 1},
++    "cpu": {"gpu_job_slots": 0}
++  },
++  "route_duration_minutes_per_proposal": {
++    "A": 2.0,
++    "B": 5.0,
++    "C": 10.0
++  },
++  "default_gpu_duration_minutes_per_proposal": 5.0,
++  "default_prediction_duration_minutes_per_candidate": 30.0
++}
+
+diff --git a/agents/planner/task_builder.py b/agents/planner/task_builder.py
+--- a/agents/planner/task_builder.py
++++ b/agents/planner/task_builder.py
+@@
+ from __future__ import annotations
+
++import json
++import math
++from functools import lru_cache
++from pathlib import Path
++
+ from contracts.action import get_action_spec
+-from prediction_pipeline.contracts import object_sha256
++from prediction_pipeline.contracts import file_sha256, object_sha256
+@@
+ from .approval import _approval
+ from .errors import PlannerContractError
++
++_COMPUTE_COST_PROTOCOL_PATH = (
++    Path(__file__).resolve().parents[2] / "protocols" / "planner_compute_cost_v1.json"
++)
++
++@lru_cache(maxsize=1)
++def _compute_cost_protocol() -> tuple[dict, str]:
++    try:
++        payload = json.loads(_COMPUTE_COST_PROTOCOL_PATH.read_text(encoding="utf-8"))
++    except (OSError, json.JSONDecodeError) as exc:
++        raise PlannerContractError(
++            "compute_cost_protocol_invalid",
++            f"cannot load compute cost protocol: {_COMPUTE_COST_PROTOCOL_PATH}",
++        ) from exc
++    if not isinstance(payload, dict) or not payload.get("protocol_id"):
++        raise PlannerContractError(
++            "compute_cost_protocol_invalid", "compute cost protocol requires protocol_id"
++        )
++    return payload, file_sha256(_COMPUTE_COST_PROTOCOL_PATH)
++
++def _finite_non_negative(value, *, label: str) -> float:
++    try:
++        number = float(value)
++    except (TypeError, ValueError) as exc:
++        raise PlannerContractError(
++            "compute_cost_protocol_invalid", f"{label} must be numeric"
++        ) from exc
++    if not math.isfinite(number) or number < 0:
++        raise PlannerContractError(
++            "compute_cost_protocol_invalid",
++            f"{label} must be finite and non-negative",
++        )
++    return number
++
++def _estimate_duration_minutes(
++    *,
++    resource_class: str,
++    parameters: dict,
++    proposal_count: int,
++    candidate_limit: int,
++) -> tuple[float, int, str, str]:
++    protocol, protocol_sha256 = _compute_cost_protocol()
++    profile = (protocol.get("resource_profiles") or {}).get(resource_class) or {}
++    gpu_slots = int(profile.get("gpu_job_slots", 1 if resource_class == "gpu" else 0))
++    if gpu_slots < 0:
++        raise PlannerContractError(
++            "compute_cost_protocol_invalid", "gpu_job_slots must be non-negative"
++        )
++    if resource_class != "gpu":
++        return 0.0, gpu_slots, str(protocol["protocol_id"]), protocol_sha256
++    route_rates = protocol.get("route_duration_minutes_per_proposal") or {}
++    default_proposal = _finite_non_negative(
++        protocol.get("default_gpu_duration_minutes_per_proposal"),
++        label="default_gpu_duration_minutes_per_proposal",
++    )
++    default_prediction = _finite_non_negative(
++        protocol.get("default_prediction_duration_minutes_per_candidate"),
++        label="default_prediction_duration_minutes_per_candidate",
++    )
++    design_jobs = parameters.get("design_jobs")
++    if isinstance(design_jobs, list) and design_jobs:
++        duration = 0.0
++        for job in design_jobs:
++            if not isinstance(job, dict):
++                continue
++            route = str(job.get("route") or "").upper()
++            rate = _finite_non_negative(
++                route_rates.get(route, default_proposal),
++                label=f"route {route or 'default'} duration",
++            )
++            count = int(job.get("proposal_count") or 0)
++            if count < 0:
++                raise PlannerContractError(
++                    "compute_cost_input_invalid",
++                    "design job proposal_count must be non-negative",
++                )
++            duration += count * rate
++    elif candidate_limit > 0:
++        duration = int(candidate_limit) * default_prediction
++    else:
++        duration = max(int(proposal_count), 1) * default_proposal
++    return round(duration, 3), gpu_slots, str(protocol["protocol_id"]), protocol_sha256
+@@
+-def _resource_request(action_spec, proposal_count: int, candidate_limit: int) -> dict:
++def _resource_request(
++    action_spec,
++    proposal_count: int,
++    candidate_limit: int,
++    *,
++    parameters: dict | None = None,
++    timeout_seconds: int = 3600,
++) -> dict:
+     """Build the immutable resource request for one task."""
+     resource_class = action_spec.resource_class
++    duration, gpu_slots, protocol_id, protocol_sha256 = _estimate_duration_minutes(
++        resource_class=resource_class,
++        parameters=dict(parameters or {}),
++        proposal_count=int(proposal_count),
++        candidate_limit=int(candidate_limit),
++    )
++    timeout = int(timeout_seconds)
++    if timeout < 1:
++        raise PlannerContractError(
++            "planner_task_timeout_invalid", "timeout_seconds must be positive"
++        )
+     return {
+         "class": resource_class,
+-        "gpu_job_slots": 1 if resource_class == "gpu" else 0,
++        "gpu_job_slots": gpu_slots,
+         "proposal_count": int(proposal_count),
+         "candidate_limit": int(candidate_limit),
+-        "estimated_gpu_minutes": None,
+-        "estimate_status": (
+-            "benchmark_required" if resource_class == "gpu" else "not_applicable"
+-        ),
++        "estimated_duration_minutes": duration,
++        "estimated_gpu_minutes": round(gpu_slots * duration, 3),
++        "timeout_seconds": timeout,
++        "estimate_status": "estimated" if resource_class == "gpu" else "not_applicable",
++        "estimate_protocol": protocol_id,
++        "estimate_protocol_sha256": protocol_sha256,
+     }
+@@
+-    value = {
++    normalized_parameters = dict(parameters or {})
++    value = {
+@@
+-        "parameters": dict(parameters or {}),
++        "parameters": normalized_parameters,
+         "resource_request": _resource_request(
+-            action_spec, proposal_count, candidate_limit
++            action_spec, proposal_count, candidate_limit, parameters=normalized_parameters
+         ),
+
+diff --git a/agents/planner/plan_builder.py b/agents/planner/plan_builder.py
+--- a/agents/planner/plan_builder.py
++++ b/agents/planner/plan_builder.py
+@@
+-from .budget import _budget_snapshot
++from .budget import (
++    _budget_snapshot,
++    compute_budget_status,
++    retain_recovery_tasks,
++    round_budget_status,
++)
+@@
+     _recommendation_tasks(tasks, report, issues_by_code, config)
+     _add_reporter_task(tasks, report)
++    for task in tasks:
++        task["resource_request"]["timeout_seconds"] = config.task_timeout_seconds
++    requested_gpu_minutes_before_guard = round(sum(
++        float(task["resource_request"].get("estimated_gpu_minutes") or 0.0)
++        for task in tasks
++        if task["disposition"] != "optional"
++    ), 3)
++    round_budget = round_budget_status(state, config.max_rounds)
++    compute_budget = compute_budget_status(
++        state,
++        default_max_gpu_minutes=config.max_gpu_minutes,
++        requested_gpu_minutes=requested_gpu_minutes_before_guard,
++    )
++    graceful_stop = (
++        (round_budget["exhausted"] or compute_budget["exhausted"])
++        and report["verdict"] != "clear"
++    )
++    if graceful_stop:
++        tasks[:] = retain_recovery_tasks(tasks, exhausted=True)
+     _apply_blocker_freeze(tasks, report["verdict"])
+@@
+         budgets=budgets,
+         total_design_budget=total_design_budget,
++        compute_budget={
++            "round": round_budget,
++            "compute": compute_budget,
++            "requested_gpu_minutes_before_guard": requested_gpu_minutes_before_guard,
++            "graceful_stop": graceful_stop,
++            "stop_reason": (
++                round_budget["reason"] if round_budget["exhausted"]
++                else compute_budget["reason"] if compute_budget["exhausted"]
++                else None
++            ),
++        },
+     )
+@@
+-def _plan_budget_request(
+-    tasks: list[dict], budgets: dict, total_design_budget: int
++def _plan_budget_request(
++    tasks: list[dict], budgets: dict, total_design_budget: int, compute_budget: dict
+ ) -> dict:
+@@
+-        "gpu_minutes": None,
+-        "gpu_minutes_status": "benchmark_required",
++        "gpu_minutes": round(sum(
++            float(task["resource_request"].get("estimated_gpu_minutes") or 0.0)
++            for task in tasks if task["disposition"] != "optional"
++        ), 3),
++        "gpu_minutes_status": "estimated",
++        "compute_budget": compute_budget,
+         "reservation_status": "not_reserved",
+@@
+     budgets: dict,
+     total_design_budget: int,
++    compute_budget: dict,
+ ) -> dict:
+@@
+     summary = (
+@@
+     )
++    if compute_budget.get("graceful_stop"):
++        summary += (
++            " Further scientific iteration was stopped by compute policy "
++            f"({compute_budget.get('stop_reason')}); recovery tasks were preserved."
++        )
+@@
+-        "budget_request": _plan_budget_request(tasks, budgets, total_design_budget),
++        "budget_request": _plan_budget_request(
++            tasks, budgets, total_design_budget, compute_budget
++        ),
+
+diff --git a/agents/planner/service.py b/agents/planner/service.py
+--- a/agents/planner/service.py
++++ b/agents/planner/service.py
+@@
+ from .config import PLANNER_VERSION, PlannerConfig
++from .budget import compute_budget_status, round_budget_status, select_current_best
+@@
+     """Build, persist, and idempotently register a Planner execution plan."""
+     state = dict(state if state is not None else State.load())
++    config = config or PlannerConfig()
+@@
+     plan = build_plan(
+@@
+     )
++    candidate_rows = CandidateIndex.load()
++    decision_metadata = {
++        "compute_budget": plan["budget_request"].get("compute_budget") or {},
++        "estimated_gpu_minutes": plan["budget_request"].get("gpu_minutes"),
++        "estimated_gpu_hours": round(
++            float(plan["budget_request"].get("gpu_minutes") or 0.0) / 60.0, 3
++        ),
++        "resource_requests": [
++            {
++                "task_id": task["task_id"],
++                "agent": task["agent"],
++                "action": task["action"],
++                "parameters": task.get("parameters") or {},
++                "resource_request": task["resource_request"],
++            }
++            for task in plan["tasks"]
++        ],
++        "best_effort": None,
++    }
++    if decision_metadata["compute_budget"].get("graceful_stop"):
++        decision_metadata["best_effort"] = {
++            "reason": decision_metadata["compute_budget"].get("stop_reason"),
++            "candidate": select_current_best(candidate_rows),
++            "message": (
++                "Compute policy stopped further scientific iteration; "
++                "returning the current best available candidate."
++            ),
++        }
+@@
+         "required_approval_task_ids": plan["approval_request"]["required_task_ids"],
++        "decision_metadata": decision_metadata,
+@@
+             task_count=len(plan["tasks"]),
+             required_approval_task_ids=plan["approval_request"]["required_task_ids"],
++            planner_metadata=decision_metadata,
+@@
+-    return {"plan": plan, "plan_path": str(output_path), "plan_sha256": plan_sha}
++    return {
++        "plan": plan,
++        "plan_path": str(output_path),
++        "plan_sha256": plan_sha,
++        "decision_metadata": decision_metadata,
++    }
+@@
+ def plan(
+@@
+     candidate_rows: list[dict] | None = None,
+     project_config: dict | None = None,
++    config: PlannerConfig | None = None,
+ ) -> list[dict]:
+@@
+     candidate_rows = list(
+         candidate_rows if candidate_rows is not None else CandidateIndex.load()
+     )
++    config = config or PlannerConfig()
++    round_budget = round_budget_status(state, config.max_rounds)
++    compute_budget = compute_budget_status(
++        state,
++        default_max_gpu_minutes=config.max_gpu_minutes,
++        requested_gpu_minutes=0.0,
++    )
++    if round_budget["exhausted"] or compute_budget["remaining_gpu_minutes"] <= 0:
++        reason = round_budget["reason"] if round_budget["exhausted"] else "global_compute_budget_exhausted"
++        return [{
++            "agent": "planner",
++            "action": "build_from_critic",
++            "phase": "report",
++            "reason": reason,
++            "execution_allowed": False,
++            "best_candidate": select_current_best(candidate_rows),
++            "message": (
++                "Compute policy stopped further iteration; "
++                "return the current best available candidate."
++            ),
++        }]
+@@
+ def adjust(
+     report: str | Path,
+     state: dict | None = None,
+     project_config: dict | None = None,
++    config: PlannerConfig | None = None,
+ ) -> dict:
+@@
+         critic_report_path=report,
+         state=state,
++        config=config,
+         project_config=project_config,
+     )
+
+diff --git a/data_layer.py b/data_layer.py
+--- a/data_layer.py
++++ b/data_layer.py
+@@
+ def planner_plan(cls, plan_id: str, plan_path: str, plan_sha256: str,
+                  critic_report_id: str, status: str, task_count: int,
+                  required_approval_task_ids: list,
+                  critic_report_path: str | None = None,
+                  critic_report_sha256: str | None = None,
++                 planner_metadata: dict | None = None,
+                  trace_context: TraceContext | dict | None = None):
+@@
+         "required_approval_task_ids": required_approval_task_ids,
+     }
++    if planner_metadata is not None:
++        if not isinstance(planner_metadata, dict):
++            raise TypeError("planner_metadata must be a dictionary")
++        payload["planner_metadata"] = dict(planner_metadata)
+
+diff --git a/web_api/server.py b/web_api/server.py
+--- a/web_api/server.py
++++ b/web_api/server.py
+@@
+ def _candidate_payload(row: dict, *, allow_artifacts: bool = True) -> dict:
+@@
+     }
++
++def _planner_cost_payload(events: list[dict]) -> list[dict]:
++    results = []
++    for event in events:
++        if not isinstance(event, dict) or event.get("event_type") != "planner_plan":
++            continue
++        metadata = event.get("planner_metadata")
++        if not isinstance(metadata, dict):
++            payload = event.get("payload")
++            metadata = payload.get("planner_metadata") if isinstance(payload, dict) else None
++        if not isinstance(metadata, dict):
++            continue
++        tasks = []
++        for item in metadata.get("resource_requests") or []:
++            if not isinstance(item, dict):
++                continue
++            request = item.get("resource_request") or {}
++            parameters = item.get("parameters") or {}
++            routes = sorted({
++                str(job.get("route"))
++                for job in (parameters.get("design_jobs") or [])
++                if isinstance(job, dict) and job.get("route")
++            })
++            minutes = request.get("estimated_gpu_minutes")
++            tasks.append({
++                "task_id": item.get("task_id"),
++                "agent": item.get("agent"),
++                "action": item.get("action"),
++                "routes": routes,
++                "resource_class": request.get("class"),
++                "gpu_job_slots": request.get("gpu_job_slots"),
++                "estimated_duration_minutes": request.get("estimated_duration_minutes"),
++                "estimated_gpu_minutes": minutes,
++                "estimated_gpu_hours": round(float(minutes) / 60.0, 3) if minutes is not None else None,
++                "timeout_seconds": request.get("timeout_seconds"),
++                "estimate_status": request.get("estimate_status"),
++            })
++        total_minutes = metadata.get("estimated_gpu_minutes")
++        results.append({
++            "event_id": event.get("event_id"),
++            "timestamp": event.get("timestamp"),
++            "plan_id": event.get("plan_id"),
++            "estimated_gpu_minutes": total_minutes,
++            "estimated_gpu_hours": round(float(total_minutes) / 60.0, 3) if total_minutes is not None else None,
++            "compute_budget": metadata.get("compute_budget") or {},
++            "best_effort": metadata.get("best_effort"),
++            "tasks": tasks,
++        })
++    return results
+@@
+         "candidates": [_candidate_payload(row) for row in rows],
+         "recent_evidence": evidence[-100:],
++        "planner_costs": _planner_cost_payload(evidence[-100:]),
+         "integrity_warnings": warnings,
+@@
+-        "recent_evidence": payload["events"], "integrity_warnings": warnings,
++        "recent_evidence": payload["events"],
++        "planner_costs": _planner_cost_payload(payload["events"]),
++        "integrity_warnings": warnings,
+
+diff --git a/agents/planner_plan.schema.json b/agents/planner_plan.schema.json
+--- a/agents/planner_plan.schema.json
++++ b/agents/planner_plan.schema.json
+@@
+           "estimated_gpu_minutes": {
+             "type": ["number", "null"],
+             "minimum": 0
+           },
++          "estimated_duration_minutes": {"type": "number", "minimum": 0},
++          "timeout_seconds": {"type": "integer", "minimum": 1},
++          "estimate_protocol": {"type": "string", "minLength": 1},
++          "estimate_protocol_sha256": {
++            "type": "string",
++            "pattern": "^[0-9a-f]{64}$"
++          },
+@@
+       "gpu_minutes_status": {
+         "type": "string"
+       },
++      "compute_budget": {"type": "object"},
+
+diff --git a/test_planner.py b/test_planner.py
+--- a/test_planner.py
++++ b/test_planner.py
+@@
+ class PlannerTests(_PlannerFixtures, unittest.TestCase):
++    def test_resource_estimate_has_resource_duration_cost_and_timeout(self):
++        report_path = self._report([
++            self._issue("l2_interface_confidence_low", "iterate_interface_design")
++        ])
++        result = build_plan(
++            critic_report_path=report_path,
++            state=self._state(),
++            config=PlannerConfig(task_timeout_seconds=900),
++        )
++        request = result["tasks"][0]["resource_request"]
++        self.assertEqual(request["class"], "gpu")
++        self.assertEqual(request["gpu_job_slots"], 1)
++        self.assertGreater(request["estimated_duration_minutes"], 0)
++        self.assertEqual(
++            request["estimated_gpu_minutes"],
++            request["gpu_job_slots"] * request["estimated_duration_minutes"],
++        )
++        self.assertEqual(request["timeout_seconds"], 900)
++
++    def test_global_budget_exhaustion_stops_scientific_iteration(self):
++        state = self._state()
++        state["compute_budget"] = {
++            "max_gpu_minutes": 60,
++            "remaining_gpu_minutes": 1,
++        }
++        report_path = self._report([
++            self._issue("l2_interface_confidence_low", "iterate_interface_design")
++        ])
++        result = build_plan(
++            critic_report_path=report_path,
++            state=state,
++            config=PlannerConfig(max_gpu_minutes=60),
++        )
++        decision = result["budget_request"]["compute_budget"]
++        self.assertTrue(decision["graceful_stop"])
++        self.assertEqual(decision["stop_reason"], "global_compute_budget_exhausted")
++
++    def test_plan_returns_current_best_when_round_budget_exhausted(self):
++        state = self._state()
++        state["round"] = 5
++        rows = [
++            {"candidate_id": "C0001", "all_layers_pass": "False", "final_status": "pending"},
++            {"candidate_id": "C0002", "all_layers_pass": "True", "final_status": "finalized"},
++        ]
++        result = plan(
++            state=state,
++            candidate_rows=rows,
++            config=PlannerConfig(max_rounds=5),
++        )
++        self.assertEqual(len(result), 1)
++        self.assertFalse(result[0]["execution_allowed"])
++        self.assertEqual(result[0]["best_candidate"]["candidate_id"], "C0002")
+
+diff --git a/web-gui/app/page.tsx b/web-gui/app/page.tsx
+--- a/web-gui/app/page.tsx
++++ b/web-gui/app/page.tsx
+@@
+ type Candidate = { candidate_id: string; sequence: string; source_route?: string; final_status?: string; layers: boolean[]; all_layers_pass: boolean; artifact_id?: string; last_updated?: string };
+ type Evidence = { event_id?: string; timestamp?: string; agent?: string; event_type?: string; phase?: string; candidate_id?: string; [key: string]: unknown };
+-type Snapshot = { source: { mode: "local" | "ssh"; connected: boolean; host?: string }; project: { project_id?: string; name?: string; targets: string[] }; state: { phase?: string; round?: number; candidate_count?: number; iteration_history: unknown[]; thresholds_ready: boolean }; stats: { total_candidates?: number; all_layers_pass?: number; finalized?: number }; candidates: Candidate[]; recent_evidence: Evidence[]; integrity_warnings: string[] };
++type PlannerCostTask = { task_id?: string; agent?: string; action?: string; routes: string[]; resource_class?: string; gpu_job_slots?: number; estimated_duration_minutes?: number | null; estimated_gpu_minutes?: number | null; estimated_gpu_hours?: number | null; timeout_seconds?: number | null; estimate_status?: string };
++type PlannerCost = { event_id?: string; timestamp?: string; plan_id?: string; estimated_gpu_minutes?: number | null; estimated_gpu_hours?: number | null; compute_budget?: { round?: { current_round?: number; max_rounds?: number; exhausted?: boolean; reason?: string | null }; compute?: { max_gpu_minutes?: number; remaining_gpu_minutes?: number; requested_gpu_minutes?: number; projected_remaining_gpu_minutes?: number; exhausted?: boolean; reason?: string | null }; graceful_stop?: boolean; stop_reason?: string | null }; best_effort?: { reason?: string; candidate?: { candidate_id?: string } | null; message?: string } | null; tasks: PlannerCostTask[] };
++type Snapshot = { source: { mode: "local" | "ssh"; connected: boolean; host?: string }; project: { project_id?: string; name?: string; targets: string[] }; state: { phase?: string; round?: number; candidate_count?: number; iteration_history: unknown[]; thresholds_ready: boolean }; stats: { total_candidates?: number; all_layers_pass?: number; finalized?: number }; candidates: Candidate[]; recent_evidence: Evidence[]; planner_costs?: PlannerCost[]; integrity_warnings: string[] };
+@@
+-  if (tab === "决策记录") { const decisions = snapshot?.recent_evidence.filter(event => ["critic", "planner"].includes(String(event.agent)) || String(event.event_type).includes("error")).slice(-20).reverse() || []; return <div className="inspector-body"><div className="reasoning-note"><b>DECISION TRACE</b><p>仅展示工具、证据、判定与恢复动作，不展示模型隐藏思维链。</p></div><div className="decision-list">{decisions.map((event, index) => <article key={event.event_id || index}><span>{event.agent}</span><b>{event.event_type}</b><small>{event.timestamp || "无时间"}</small></article>)}{!decisions.length && <p className="empty-copy">EvidenceLogger 中没有 Critic / Planner 决策</p>}</div></div>; }
++  if (tab === "决策记录") { const decisions = snapshot?.recent_evidence.filter(event => ["critic", "planner"].includes(String(event.agent)) || String(event.event_type).includes("error")).slice(-20).reverse() || []; const costs = [...(snapshot?.planner_costs || [])].slice(-8).reverse(); return <div className="inspector-body"><div className="reasoning-note"><b>DECISION TRACE</b><p>展示 Planner 在决策前的资源、时长、成本与预算判断；不展示模型隐藏思维链。</p></div>{costs.map((plan, index) => <div className="decision-list" key={plan.event_id || plan.plan_id || index}><article><span>{plan.plan_id || "planner"}</span><b>{plan.estimated_gpu_hours != null ? `计划预估 ${plan.estimated_gpu_hours.toFixed(2)} GPU·h` : "成本未记录"}</b><small>{plan.compute_budget?.round?.max_rounds != null ? `Round ${plan.compute_budget.round.current_round ?? "?"}/${plan.compute_budget.round.max_rounds}` : "Round —"} · {plan.compute_budget?.compute?.remaining_gpu_minutes != null ? `预算剩余 ${(plan.compute_budget.compute.remaining_gpu_minutes / 60).toFixed(2)} GPU·h` : "预算未记录"}</small>{plan.compute_budget?.graceful_stop ? <small>GRACEFUL STOP · {plan.compute_budget.stop_reason || "budget exhausted"} · best {plan.best_effort?.candidate?.candidate_id || "none"}</small> : null}{plan.tasks.map((task, taskIndex) => <small key={task.task_id || taskIndex}>{task.routes.length ? `Route ${task.routes.join("/")}` : task.action || task.task_id} · {task.resource_class === "gpu" ? `${task.gpu_job_slots ?? 1} GPU` : task.resource_class || "resource"} · {task.estimated_duration_minutes != null ? `约 ${task.estimated_duration_minutes.toFixed(1)} min` : "时长未估算"} · {task.estimated_gpu_hours != null ? `预估 ${task.estimated_gpu_hours.toFixed(2)} GPU·h` : "0 GPU·h"}{task.timeout_seconds ? ` · timeout ${task.timeout_seconds}s` : ""}</small>)}</article></div>)}<div className="decision-list">{decisions.map((event, index) => <article key={event.event_id || index}><span>{event.agent}</span><b>{event.event_type}</b><small>{event.timestamp || "无时间"}</small></article>)}{!decisions.length && <p className="empty-copy">EvidenceLogger 中没有 Critic / Planner 决策</p>}</div></div>; }
+
+diff --git a/test_web_api.py b/test_web_api.py
+--- a/test_web_api.py
++++ b/test_web_api.py
+@@
++    def test_snapshot_exposes_planner_resource_duration_cost_and_budget(self):
++        EvidenceLogger.log(
++            "planner",
++            "planner_plan",
++            {
++                "plan_id": "planner_123456789abc",
++                "planner_metadata": {
++                    "estimated_gpu_minutes": 30.0,
++                    "compute_budget": {
++                        "round": {"current_round": 2, "max_rounds": 5, "exhausted": False, "reason": None},
++                        "compute": {"max_gpu_minutes": 120.0, "remaining_gpu_minutes": 90.0, "requested_gpu_minutes": 30.0, "projected_remaining_gpu_minutes": 60.0, "exhausted": False, "reason": None},
++                        "requested_gpu_minutes_before_guard": 30.0,
++                        "graceful_stop": False,
++                        "stop_reason": None,
++                    },
++                    "best_effort": None,
++                    "resource_requests": [{
++                        "task_id": "T001",
++                        "agent": "design",
++                        "action": "iterate_design",
++                        "parameters": {"design_jobs": [{"route": "A", "proposal_count": 3}]},
++                        "resource_request": {
++                            "class": "gpu",
++                            "gpu_job_slots": 1,
++                            "estimated_duration_minutes": 30.0,
++                            "estimated_gpu_minutes": 30.0,
++                            "timeout_seconds": 900,
++                            "estimate_status": "estimated",
++                        },
++                    }],
++                },
++            },
++            phase="iterate",
++        )
++        snapshot = server.local_snapshot()
++        cost = snapshot["planner_costs"][0]
++        self.assertEqual(cost["tasks"][0]["routes"], ["A"])
++        self.assertEqual(cost["tasks"][0]["estimated_duration_minutes"], 30.0)
++        self.assertEqual(cost["tasks"][0]["estimated_gpu_hours"], 0.5)
++        self.assertEqual(cost["compute_budget"]["compute"]["remaining_gpu_minutes"], 90.0)
