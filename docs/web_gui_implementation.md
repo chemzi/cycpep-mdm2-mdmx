@@ -22,29 +22,30 @@ The legacy `/api/v1/snapshot` routes remain backend compatibility interfaces for
 app/page.tsx
   → workbench/workbench-page.tsx
       → client.ts + use-workbench.ts
-      → WorkbenchShell
-          → Project / Run + structured blockers
-          → TaskGraph + ExecutionTransactionDetail
-          → CandidateWorkspace
-          → ExplorationShortlist
-          → EvidenceProvenance
-          → ArtifactTraceInspector + StructureViewer
+      → WorkbenchWorkspace
+          → WorkbenchTopBar
+          → WorkbenchNavigator
+          → PrimaryWorkspace
+          → WorkbenchInspector
+          → WorkbenchHistory
+              → existing Task / Candidate / Evidence / Artifact renderers
 ```
 
 `page.tsx` is only the root composition entry. The HTTP client validates the required `frontend.workbench.v2` envelope and bounded collections. Components receive typed domain views; they do not fetch backend state or infer task transitions.
 
-Frontend-local state is limited to selected candidate/Evidence/artifact, expanded views, request lifecycle, and the auto-refresh preference. Request lifecycle values (`initial-loading`, `ready`, `refreshing`, `stale-after-error`, `failed-before-data`) describe the HTTP observation, not workflow state.
+Frontend-local state is limited to one identity-only `WorkbenchSelection`, auxiliary-panel presentation, request lifecycle, and the auto-refresh preference. Selection contains only an opaque returned task/candidate/Evidence/artifact identity; every detail is resolved again from the latest bounded response. Request lifecycle values (`initial-loading`, `ready`, `refreshing`, `stale-after-error`, `failed-before-data`) describe the HTTP observation, not workflow state.
 
 ## 3. Information architecture
 
-- Header: current project, workflow/run identifiers, returned run status, refresh/stale state.
-- Blocker band: structured code, scope, related opaque identity, and safe summary.
-- Collection coverage: `returned / total / truncated` for every bounded collection.
-- Task/Action graph: returned task order and explicit dependencies, action executability, handler availability, approval, execution gate, reason codes, and blockers.
-- Execution/transaction detail: exact task/attempt correlation, `not_yet_recorded`, structured failure, formal transaction status, rollback, and unresolved recovery.
-- Candidate workspace: identity, sequence, returned metrics/status, and `current_run`/`historical_run`/`unlinked` provenance.
-- Scientific results: passed count and Exploration shortlist as separate semantics.
-- Provenance: structured Evidence timeline/detail and Artifact/Protocol/Trace inspection.
+- Compact context bar: current project, workflow/run identifiers, returned run status, refresh/stale state, and attention count.
+- Navigator: returned-order Tasks, Candidates, and Evidence with their own `returned / total / truncated` coverage and one selected subject.
+- Primary workspace: the selected task, candidate, Evidence item, artifact, or truthful overview; it does not render all collections as one long page.
+- Inspector: formal identity, protocol, trace linkage, content availability, and full structured blocker detail for the current context.
+- History dock: returned timestamped Evidence/transaction records plus a separately labelled untimed lane for attempts or transactions without formal timestamps.
+
+At 1920×1080 and 1440×900, the application frame is viewport-height and its panes scroll internally. At the narrower desktop target, navigator/inspector/history space is reduced before the primary scientific workspace is compressed. Below the desktop threshold, auxiliary panes become reachable stacked regions without horizontal page overflow.
+
+The default presentation is a light cool-neutral scientific workspace. Product and scientific identity use a locally bundled serif; controls and dense data use local sans/mono faces. The cyclic-peptide/paired-target mark, fonts, and license notices are local assets and introduce no runtime font CDN dependency.
 
 ## 4. Scientific truthfulness
 
@@ -83,7 +84,7 @@ Frontend V2 does not provide start/retry/cancel, approval mutation, workflow dis
 
 ## 8. Verification
 
-Frontend fixtures freeze both a full response and an invalid-binding partial response. Tests cover typed parsing, the exact V2 endpoint, request lifecycle, dynamic tasks, execution/transaction correlation, candidate trace associations, structured Evidence, zero-passed shortlist semantics, missing source events, and explicit artifact content links.
+Frontend fixtures freeze both a full response and an invalid-binding partial response. Tests cover typed parsing, the exact V2 endpoint, request lifecycle, dynamic tasks, execution/transaction correlation, candidate trace associations, structured Evidence, zero-passed shortlist semantics, missing source events, explicit artifact content links, identity-only selection, panel controls, and the 1920×1080 / 1440×900 workspace contracts.
 
 Run:
 

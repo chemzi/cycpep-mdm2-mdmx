@@ -34,20 +34,24 @@ export function correlateTaskAttempts(
     }));
 }
 
-function transactionBlockers(
+export function selectTaskLifecycle(
   taskId: string,
   transactions: TransactionView[],
   blockers: BlockerView[],
-): BlockerView[] {
+): { transactions: TransactionView[]; blockers: BlockerView[] } {
+  const taskTransactions = transactions.filter((transaction) => transaction.task_id === taskId);
   const transactionIds = new Set(
-    transactions
+    taskTransactions
       .map((transaction) => transaction.transaction_id)
       .filter((identity): identity is string => Boolean(identity)),
   );
-  return blockers.filter((blocker) =>
-    blocker.task_id === taskId ||
-    (Boolean(blocker.transaction_id) && transactionIds.has(blocker.transaction_id as string))
-  );
+  return {
+    transactions: taskTransactions,
+    blockers: blockers.filter((blocker) =>
+      blocker.task_id === taskId ||
+      (Boolean(blocker.transaction_id) && transactionIds.has(blocker.transaction_id as string))
+    ),
+  };
 }
 
 function StructuredFailure({
@@ -67,7 +71,10 @@ function StructuredFailure({
 }
 
 function TransactionRecord({ transaction }: { transaction: TransactionView }) {
-  return <article className="transaction-record">
+  return <article
+    className="transaction-record"
+    data-lifecycle-status={transaction.status ?? "unavailable"}
+  >
     <h4>Transaction {transaction.transaction_id ?? "Unavailable"}</h4>
     <dl>
       <div><dt>Status</dt><dd>{transaction.status ?? "Unavailable"}</dd></div>
@@ -87,8 +94,7 @@ export function ExecutionTransactionDetail({
 }: ExecutionTransactionDetailProps) {
   const taskId = task.task_id ?? "";
   const attempts = correlateTaskAttempts(taskId, executions, transactions);
-  const taskTransactions = transactions.filter((transaction) => transaction.task_id === taskId);
-  const relatedBlockers = transactionBlockers(taskId, taskTransactions, blockers);
+  const lifecycle = selectTaskLifecycle(taskId, transactions, blockers);
 
   return <section className="execution-transaction-detail" aria-labelledby="execution-detail-title">
     <h3 id="execution-detail-title">Execution / transaction · {taskId || "Unavailable task"}</h3>
@@ -96,7 +102,11 @@ export function ExecutionTransactionDetail({
       title="No execution recorded"
       detail="The formal current-run response contains no execution for this task."
     /> : attempts.map(({ execution, transactions: matchingTransactions }, index) =>
-      <article className="execution-attempt" key={`${execution.attempt_id ?? "attempt"}-${index}`}>
+      <article
+        className="execution-attempt"
+        data-lifecycle-status={execution.transaction_visibility}
+        key={`${execution.attempt_id ?? "attempt"}-${index}`}
+      >
         <h4>Attempt {execution.attempt_id ?? String(execution.attempts)}</h4>
         <dl>
           <div><dt>Execution status</dt><dd>{execution.status ?? "Unavailable"}</dd></div>
@@ -116,8 +126,8 @@ export function ExecutionTransactionDetail({
     )}
     <section className="transaction-history" aria-labelledby="transaction-history-title">
       <h4 id="transaction-history-title">Transaction history</h4>
-      {taskTransactions.length > 0
-        ? taskTransactions.map((transaction, transactionIndex) =>
+      {lifecycle.transactions.length > 0
+        ? lifecycle.transactions.map((transaction, transactionIndex) =>
             <TransactionRecord
               key={transaction.transaction_id ?? `${transaction.attempt_id}-${transactionIndex}`}
               transaction={transaction}
@@ -125,9 +135,10 @@ export function ExecutionTransactionDetail({
         : <p>No transaction history is returned for this task.</p>}
     </section>
     <BlockerList
-      blockers={relatedBlockers}
+      blockers={lifecycle.blockers}
       headingId="execution-recovery-blockers-title"
       title="Execution and recovery blockers"
+      compact
     />
   </section>;
 }

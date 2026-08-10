@@ -28,18 +28,27 @@ export function BlockerList({
   blockers,
   headingId,
   title = "Structured blockers",
+  compact = false,
 }: {
   blockers: BlockerView[];
   headingId: string;
   title?: string;
+  compact?: boolean;
 }) {
   if (blockers.length === 0) return null;
-  return <section className="workbench-blockers" aria-labelledby={headingId}>
+  return <section
+    className={`workbench-blockers${compact ? " is-compact" : ""}`}
+    aria-labelledby={headingId}
+  >
     <h2 id={headingId}>{title}</h2>
     <ul>
       {blockers.map((blocker, index) => {
         const identity = blocker.transaction_id ?? blocker.task_id ?? blocker.run_id ?? blocker.workflow_id;
-        return <li key={`${blocker.code}-${identity ?? index}`}>
+        return <li
+          data-blocker-code={blocker.code}
+          data-blocker-scope={blocker.scope}
+          key={`${blocker.code}-${identity ?? index}`}
+        >
           <code>{blocker.code}</code>
           <span>{blocker.scope}{identity ? ` · ${identity}` : ""}</span>
           <p>{blocker.summary}</p>
