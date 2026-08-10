@@ -1,0 +1,30 @@
+{
+  "request_id": "req_workbench_partial",
+  "data": {
+    "schema_version": "frontend.workbench.v2",
+    "project": {"project_id": "project-1", "name": "MDM2 campaign", "targets": ["MDM2"]},
+    "workflow": null,
+    "run": null,
+    "tasks": {"scope": "current_run", "total": 0, "returned": 0, "truncated": false, "items": []},
+    "executions": {"scope": "current_run", "total": 0, "returned": 0, "truncated": false, "items": []},
+    "transactions": {"scope": "current_run", "total": 0, "returned": 0, "truncated": false, "items": []},
+    "candidates": {
+      "scope": "project",
+      "total": 1,
+      "returned": 1,
+      "truncated": false,
+      "items": [{"candidate_id": "C-old", "sequence": "ACDC", "metrics": {}, "trace": {"project_id": "project-1", "run_id": "old-run", "candidate_id": "C-old"}, "run_relation": "historical_run"}]
+    },
+    "evidence": {"scope": "project", "total": 0, "returned": 0, "truncated": false, "items": []},
+    "artifacts": {"scope": "project", "total": 0, "returned": 0, "truncated": false, "items": []},
+    "protocols": {"scope": "project", "total": 0, "returned": 0, "truncated": false, "items": []},
+    "trace": {"project_id": "project-1", "workflow_id": null, "run_id": null},
+    "blockers": {
+      "scope": "workbench",
+      "total": 1,
+      "returned": 1,
+      "truncated": false,
+      "items": [{"code": "workflow_binding_invalid", "scope": "workflow", "summary": "The current workflow binding is invalid; project data remains available."}]
+    }
+  }
+}

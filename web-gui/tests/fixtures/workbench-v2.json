@@ -1,0 +1,328 @@
+{
+  "request_id": "req_workbench_full",
+  "data": {
+    "schema_version": "frontend.workbench.v2",
+    "project": {
+      "project_id": "project-1",
+      "name": "MDM2 / MDMX cyclic peptide campaign",
+      "targets": ["MDM2", "MDMX"]
+    },
+    "workflow": {
+      "workflow_id": "workflow-1",
+      "plan_id": "plan-1",
+      "status": "running"
+    },
+    "run": {
+      "run_id": "run-1",
+      "workflow_id": "workflow-1",
+      "plan_id": "plan-1",
+      "status": "running",
+      "created_at": "2026-08-10T01:00:00Z",
+      "updated_at": "2026-08-10T01:10:00Z"
+    },
+    "tasks": {
+      "scope": "current_run",
+      "total": 3,
+      "returned": 3,
+      "truncated": false,
+      "items": [
+        {
+          "task_id": "T001",
+          "agent": "design",
+          "kind": "scientific",
+          "disposition": "required",
+          "depends_on": [],
+          "status": "complete",
+          "action": {
+            "name": "iterate_design",
+            "executable": true,
+            "handler_available": true,
+            "resource_class": "cpu",
+            "output_roles": ["candidate_set"]
+          },
+          "availability": {"available": true, "reason_codes": []},
+          "approval": {"required": false, "state": "satisfied_or_not_required"},
+          "execution_gate": {"status": "approved"},
+          "protocol": {
+            "name": "design",
+            "version": "2.1",
+            "integrity_identity": "protocol-design-v2.1"
+          }
+        },
+        {
+          "task_id": "T002",
+          "agent": "prediction",
+          "kind": "scientific",
+          "disposition": "required",
+          "depends_on": ["T001"],
+          "status": "claimed",
+          "action": {
+            "name": "predict_structures",
+            "executable": true,
+            "handler_available": true,
+            "resource_class": "gpu",
+            "output_roles": ["prediction"]
+          },
+          "availability": {"available": true, "reason_codes": []},
+          "approval": {"required": false, "state": "satisfied_or_not_required"},
+          "execution_gate": {"status": "approved"}
+        },
+        {
+          "task_id": "T003",
+          "agent": "critic",
+          "kind": "review",
+          "disposition": "optional",
+          "depends_on": ["T001"],
+          "status": "awaiting_approval",
+          "action": {
+            "name": "review_prediction_handoff",
+            "executable": true,
+            "handler_available": true,
+            "resource_class": "cpu",
+            "output_roles": []
+          },
+          "availability": {"available": false, "reason_codes": ["approval_required"]},
+          "approval": {"required": true, "state": "awaiting"},
+          "execution_gate": {"status": "blocked"}
+        }
+      ]
+    },
+    "executions": {
+      "scope": "current_run",
+      "total": 3,
+      "returned": 3,
+      "truncated": false,
+      "items": [
+        {
+          "task_id": "T001",
+          "status": "complete",
+          "attempts": 1,
+          "attempt_id": "T001-A01",
+          "worker_id": "worker-1",
+          "transaction_visibility": "COMMITTED",
+          "error": null
+        },
+        {
+          "task_id": "T002",
+          "status": "claimed",
+          "attempts": 1,
+          "attempt_id": "T002-A01",
+          "worker_id": "worker-2",
+          "transaction_visibility": "not_yet_recorded",
+          "error": null
+        },
+        {
+          "task_id": "T003",
+          "status": "failed",
+          "attempts": 1,
+          "attempt_id": "T003-A01",
+          "worker_id": "worker-1",
+          "transaction_visibility": "FAILED",
+          "error": {
+            "code": "scientific_input_invalid",
+            "message": "Input was rejected",
+            "component": "execution",
+            "retryable": false
+          }
+        }
+      ]
+    },
+    "transactions": {
+      "scope": "current_run",
+      "total": 2,
+      "returned": 2,
+      "truncated": false,
+      "items": [
+        {
+          "transaction_id": "tx-1",
+          "status": "COMMITTED",
+          "created_at": "2026-08-10T01:01:00Z",
+          "updated_at": "2026-08-10T01:02:00Z",
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "run_id": "run-1",
+          "task_id": "T001",
+          "attempt_id": "T001-A01"
+        },
+        {
+          "transaction_id": "tx-3",
+          "status": "COMPENSATION_CONFLICT",
+          "created_at": "2026-08-10T01:08:00Z",
+          "updated_at": "2026-08-10T01:09:00Z",
+          "project_id": "project-1",
+          "workflow_id": "workflow-1",
+          "run_id": "run-1",
+          "task_id": "T003",
+          "attempt_id": "T003-A01",
+          "error": {
+            "code": "transaction_recovery_unresolved",
+            "message": "Compensation requires resolution",
+            "component": "transaction",
+            "retryable": false
+          }
+        }
+      ]
+    },
+    "candidates": {
+      "scope": "project",
+      "total": 4,
+      "returned": 3,
+      "truncated": true,
+      "items": [
+        {
+          "candidate_id": "C0001",
+          "sequence": "ACDC",
+          "status": "evaluated",
+          "metrics": {"L2_ipsae_mdm2": 0.63},
+          "trace": {"project_id": "project-1", "run_id": "run-1", "candidate_id": "C0001"},
+          "run_relation": "current_run"
+        },
+        {
+          "candidate_id": "C0002",
+          "sequence": "CAAC",
+          "status": "evaluated",
+          "metrics": {"L2_ipsae_mdm2": 0.41},
+          "trace": {"project_id": "project-1", "run_id": "old-run", "candidate_id": "C0002"},
+          "run_relation": "historical_run"
+        },
+        {
+          "candidate_id": "C0003",
+          "sequence": "CPPC",
+          "status": "proposed",
+          "metrics": {},
+          "trace": {"project_id": "project-1", "candidate_id": "C0003"},
+          "run_relation": "unlinked"
+        }
+      ]
+    },
+    "evidence": {
+      "scope": "project",
+      "total": 4,
+      "returned": 3,
+      "truncated": true,
+      "items": [
+        {
+          "event_id": "evt-shortlist",
+          "timestamp": "2026-08-10T01:06:00Z",
+          "agent": "critic",
+          "event_type": "exploration_shortlist",
+          "round": 2,
+          "targets": ["MDM2", "MDMX"],
+          "message": "Exploration candidates retained for follow-up.",
+          "k": 2,
+          "n_evaluated": 6,
+          "n_passed": 0,
+          "shortlist": [
+            {
+              "candidate_id": "C0001",
+              "passed": false,
+              "desirability": 0.25,
+              "pareto_front": true,
+              "reason": "pareto_front",
+              "top_margin_metric": "L2_ipsae_mdm2"
+            },
+            {
+              "candidate_id": "C0002",
+              "passed": false,
+              "desirability": null,
+              "pareto_front": false,
+              "reason": "partial_evidence",
+              "top_margin_metric": null
+            }
+          ],
+          "calibration": {"calibrated": 1, "provisional": 1, "unavailable": 1},
+          "source_event_ids": ["evt-battery-1", "evt-battery-2"],
+          "unmapped_metrics": ["totally_unknown"],
+          "trace": {
+            "project_id": "project-1",
+            "workflow_id": "workflow-1",
+            "run_id": "run-1",
+            "task_id": "T003",
+            "attempt_id": "T003-A01",
+            "parent_event_id": "evt-battery-2"
+          },
+          "run_relation": "current_run",
+          "protocol": {"name": "exploration", "version": "1.0", "integrity_identity": "protocol-exploration-v1"}
+        },
+        {
+          "event_id": "evt-battery-1",
+          "timestamp": "2026-08-10T01:04:00Z",
+          "agent": "prediction",
+          "event_type": "metric_battery",
+          "round": 2,
+          "targets": ["MDM2"],
+          "trace": {"project_id": "project-1", "run_id": "run-1", "candidate_id": "C0001"},
+          "run_relation": "current_run"
+        },
+        {
+          "event_id": "evt-old",
+          "timestamp": "2026-08-09T23:00:00Z",
+          "agent": "prediction",
+          "event_type": "prediction_complete",
+          "trace": {"project_id": "project-1", "run_id": "old-run", "candidate_id": "C0002"},
+          "run_relation": "historical_run"
+        }
+      ]
+    },
+    "artifacts": {
+      "scope": "project",
+      "total": 2,
+      "returned": 2,
+      "truncated": false,
+      "items": [
+        {
+          "artifact_id": "artifact-1",
+          "artifact_type": "structure",
+          "role": "prediction",
+          "size_bytes": 2048,
+          "sha256": "existing-integrity-identity",
+          "schema_version": "artifact.v1",
+          "created_at": "2026-08-10T01:03:00Z",
+          "producer_task_id": "T002",
+          "input_artifact_ids": ["artifact-input-1"],
+          "content_link": "/api/v2/artifacts/artifact-1/content",
+          "trace": {
+            "project_id": "project-1",
+            "workflow_id": "workflow-1",
+            "run_id": "run-1",
+            "task_id": "T002",
+            "attempt_id": "T002-A01",
+            "candidate_id": "C0001",
+            "artifact_id": "artifact-1"
+          },
+          "run_relation": "current_run",
+          "protocol": {"name": "prediction", "version": "1.4", "integrity_identity": "protocol-prediction-v1.4"}
+        },
+        {
+          "artifact_id": "artifact-2",
+          "artifact_type": "report",
+          "role": "evidence",
+          "trace": {"project_id": "project-1", "candidate_id": "C0003", "artifact_id": "artifact-2"},
+          "run_relation": "unlinked"
+        }
+      ]
+    },
+    "protocols": {
+      "scope": "project",
+      "total": 2,
+      "returned": 2,
+      "truncated": false,
+      "items": [
+        {"name": "design", "version": "2.1", "integrity_identity": "protocol-design-v2.1"},
+        {"name": "prediction", "version": "1.4", "integrity_identity": "protocol-prediction-v1.4"}
+      ]
+    },
+    "trace": {"project_id": "project-1", "workflow_id": "workflow-1", "run_id": "run-1"},
+    "blockers": {
+      "scope": "workbench",
+      "total": 3,
+      "returned": 3,
+      "truncated": false,
+      "items": [
+        {"code": "approval_required", "scope": "task", "task_id": "T003", "summary": "Task action is not currently available."},
+        {"code": "scientific_input_invalid", "scope": "task", "task_id": "T003", "summary": "Input was rejected"},
+        {"code": "transaction_compensation_unresolved", "scope": "transaction", "transaction_id": "tx-3", "summary": "Transaction compensation requires resolution."}
+      ]
+    }
+  }
+}
