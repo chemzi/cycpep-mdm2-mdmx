@@ -240,6 +240,60 @@ def _plan_execution(tasks: list[dict], blocked_tasks: list[str]) -> dict:
     }
 
 
+def _compute_plan_metadata(tasks: list[dict], budgets: dict, config: PlannerConfig, state: dict) -> dict:
+    """Attach lightweight compute-aware estimates directly to the assembled plan."""
+    total_estimated_gpu_minutes = 0.0
+    for task in tasks:
+        resource = task.get("resource_request") or {}
+        resource_class = resource.get("class")
+        if resource_class == "gpu":
+            proposals = int(resource.get("proposal_count") or 0)
+            candidates = int(resource.get("candidate_limit") or 0)
+            estimated_minutes = proposals * 5.0 + candidates * 1.25
+            estimated_cost = round(estimated_minutes * 0.02, 4)
+            resource["estimated_gpu_minutes"] = float(estimated_minutes)
+            resource["estimated_cost_usd"] = float(estimated_cost)
+            resource["estimate_status"] = "estimated"
+            total_estimated_gpu_minutes += estimated_minutes
+        else:
+            resource["estimated_gpu_minutes"] = None
+            resource["estimated_cost_usd"] = 0.0
+            resource["estimate_status"] = "not_applicable"
+        task["resource_request"] = resource
+
+    route_resource_estimate = {
+        key: int(value)
+        for key, value in sorted((budgets or {}).items())
+        if key.startswith("route_")
+    }
+
+    global_budget_minutes = None
+    for candidate in (
+        state.get("compute_budget", {}).get("global_budget_minutes"),
+        state.get("planning_constraints", {}).get("global_budget_minutes"),
+        config.global_budget_minutes,
+    ):
+        if candidate is None:
+            continue
+        try:
+            global_budget_minutes = float(candidate)
+        except (TypeError, ValueError):
+            continue
+        break
+
+    return {
+        "route_resource_estimate": route_resource_estimate,
+        "max_rounds": int(config.max_rounds),
+        "task_timeout_minutes": int(config.task_timeout_minutes),
+        "global_budget_minutes": (
+            float(global_budget_minutes) if global_budget_minutes is not None else None
+        ),
+        "on_budget_exhausted": config.on_budget_exhausted,
+        "total_estimated_gpu_minutes": float(total_estimated_gpu_minutes),
+        "estimator_version": "simple-v1",
+    }
+
+
 def _assemble_plan(
     tasks: list[dict],
     *,
@@ -298,4 +352,5 @@ def _assemble_plan(
         ),
         "execution": _plan_execution(tasks, blocked_tasks),
         "tasks": tasks,
+        "decision_metadata": _compute_plan_metadata(tasks, budgets, config, state),
     }

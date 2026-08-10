@@ -74,6 +74,10 @@ class PlannerConfig:
     optional_design_batch_size: int = 3
     max_design_proposals_per_plan: int = 48
     max_prediction_candidates_per_task: int = 48
+    max_rounds: int = 3
+    task_timeout_minutes: int = 120
+    global_budget_minutes: float | None = None
+    on_budget_exhausted: str = "graceful_stop_return_current_best"
 
     def __post_init__(self) -> None:
         for name in (
@@ -81,6 +85,8 @@ class PlannerConfig:
             "optional_design_batch_size",
             "max_design_proposals_per_plan",
             "max_prediction_candidates_per_task",
+            "max_rounds",
+            "task_timeout_minutes",
         ):
             if int(getattr(self, name)) < 1:
                 raise PlannerContractError(
@@ -96,3 +102,9 @@ class PlannerConfig:
                 "planner_config_invalid",
                 "optional_design_batch_size exceeds max_design_proposals_per_plan",
             )
+        if self.global_budget_minutes is not None:
+            budget_minutes = float(self.global_budget_minutes)
+            if budget_minutes < 0:
+                raise PlannerContractError(
+                    "planner_config_invalid", "global_budget_minutes must be non-negative"
+                )
