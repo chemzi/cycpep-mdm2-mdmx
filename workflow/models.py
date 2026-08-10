@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping
+
+from core.context import ProjectContext, ProjectPaths
 
 
 DIAGNOSTIC_SCHEMA_VERSION = 1
@@ -119,6 +122,70 @@ class PredictionRunLocator:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "PredictionRunLocator":
         return cls(root=value.get("root"), run_id=value.get("run_id"))
+
+
+@dataclass(frozen=True)
+class RuntimeLocatorBinding:
+    """Internal-only locations needed to reopen the original formal stores.
+
+    The binding selects where owner contracts are queried.  It deliberately
+    has no workflow status or transition API and is never browser-projected.
+    """
+
+    project_locator: str
+    data_dir: str
+    evidence_dir: str
+    database_path: str
+
+    def __post_init__(self) -> None:
+        for name in ("project_locator", "data_dir", "evidence_dir", "database_path"):
+            value = _optional_text(getattr(self, name), name)
+            if value is None or not Path(value).expanduser().is_absolute():
+                raise ValueError(f"{name} must be an absolute path")
+
+    @classmethod
+    def from_context(
+        cls, context: ProjectContext, project_locator: str | Path
+    ) -> "RuntimeLocatorBinding":
+        resolved = context.resolve_paths()
+        if (
+            resolved.data_dir is None
+            or resolved.evidence_dir is None
+            or resolved.database_path is None
+        ):
+            raise ValueError("ProjectContext must resolve all formal runtime paths")
+        return cls(
+            project_locator=str(Path(project_locator).expanduser().resolve()),
+            data_dir=str(Path(resolved.data_dir).expanduser().resolve()),
+            evidence_dir=str(Path(resolved.evidence_dir).expanduser().resolve()),
+            database_path=str(Path(resolved.database_path).expanduser().resolve()),
+        )
+
+    def project_paths(self) -> ProjectPaths:
+        return ProjectPaths(
+            data_dir=Path(self.data_dir),
+            evidence_dir=Path(self.evidence_dir),
+            database_path=Path(self.database_path),
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "project_locator": self.project_locator,
+            "data_dir": self.data_dir,
+            "evidence_dir": self.evidence_dir,
+            "database_path": self.database_path,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "RuntimeLocatorBinding":
+        if not isinstance(value, Mapping):
+            raise ValueError("runtime locator binding must be an object")
+        return cls(
+            project_locator=value.get("project_locator"),
+            data_dir=value.get("data_dir"),
+            evidence_dir=value.get("evidence_dir"),
+            database_path=value.get("database_path"),
+        )
 
 
 @dataclass(frozen=True)
@@ -238,6 +305,7 @@ class DiagnosticReport:
     project_id: str
     approved_content_binding: str
     project_locator: str
+    runtime_locator_binding: RuntimeLocatorBinding | None
     created_at: str
     updated_at: str
     current_boundary: str | None = None
@@ -266,6 +334,10 @@ class DiagnosticReport:
             _optional_text(getattr(self, name), name)
         if not isinstance(self.formal_trace, FormalTrace):
             raise TypeError("formal_trace must be FormalTrace")
+        if self.runtime_locator_binding is not None and not isinstance(
+            self.runtime_locator_binding, RuntimeLocatorBinding
+        ):
+            raise TypeError("runtime_locator_binding must be RuntimeLocatorBinding or None")
         if self.failure is not None and not isinstance(self.failure, StructuredError):
             raise TypeError("failure must be StructuredError")
 
@@ -277,6 +349,7 @@ class DiagnosticReport:
         project_id: str,
         approved_content_binding: str,
         project_locator: str,
+        runtime_locator_binding: RuntimeLocatorBinding | None = None,
     ) -> "DiagnosticReport":
         now = _utcnow()
         return cls(
@@ -284,6 +357,7 @@ class DiagnosticReport:
             project_id=project_id,
             approved_content_binding=approved_content_binding,
             project_locator=project_locator,
+            runtime_locator_binding=runtime_locator_binding,
             created_at=now,
             updated_at=now,
             current_boundary="research",
@@ -351,6 +425,11 @@ class DiagnosticReport:
             "project_id": self.project_id,
             "approved_content_binding": self.approved_content_binding,
             "project_locator": self.project_locator,
+            "runtime_locator_binding": (
+                None
+                if self.runtime_locator_binding is None
+                else self.runtime_locator_binding.to_dict()
+            ),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "current_boundary": self.current_boundary,
@@ -376,6 +455,7 @@ class DiagnosticReport:
         if value.get("schema_version") != DIAGNOSTIC_SCHEMA_VERSION:
             raise ValueError("unsupported launcher diagnostic schema version")
         locator = value.get("prediction_run_locator")
+        runtime_locator = value.get("runtime_locator_binding")
         failure = value.get("failure")
         return cls(
             schema_version=value["schema_version"],
@@ -383,6 +463,11 @@ class DiagnosticReport:
             project_id=value.get("project_id"),
             approved_content_binding=value.get("approved_content_binding"),
             project_locator=value.get("project_locator"),
+            runtime_locator_binding=(
+                None
+                if runtime_locator is None
+                else RuntimeLocatorBinding.from_dict(runtime_locator)
+            ),
             created_at=value.get("created_at"),
             updated_at=value.get("updated_at"),
             current_boundary=value.get("current_boundary"),
@@ -405,5 +490,5 @@ class DiagnosticReport:
 __all__ = [
     "BrowserResult", "CallObservation", "DIAGNOSTIC_SCHEMA_VERSION",
     "DiagnosticReport", "FormalTrace", "LauncherCommandResult", "OpaqueReference",
-    "PredictionRunLocator", "StructuredError",
+    "PredictionRunLocator", "RuntimeLocatorBinding", "StructuredError",
 ]

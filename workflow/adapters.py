@@ -144,6 +144,19 @@ class DefaultWorkflowRuntime:
         recovery = inspect_transaction_recovery(
             run_id=orchestrator.references.get("run_id")
         )
+        if recovery.skipped_active:
+            from .boundaries import FormalBoundary
+
+            active = tuple(str(value) for value in recovery.skipped_active)
+            return FormalBoundary(
+                status="active",
+                boundary="transaction",
+                references={
+                    "live_owner": True,
+                    "transaction_id": active[0],
+                    "transaction_ids": active,
+                },
+            )
         if recovery.clean:
             from .boundaries import FormalBoundary
 

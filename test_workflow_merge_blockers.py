@@ -5,8 +5,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
 
+from execution.recovery import RecoveryResult
 from test_workflow_service import LAUNCHER_ID, _Runtime, _World, _dependencies
+from workflow.adapters import DefaultWorkflowRuntime
 from workflow.boundaries import FormalBoundary
 from workflow.errors import StructuredError
 from workflow.models import DiagnosticReport, FormalTrace
@@ -33,6 +36,21 @@ class _TracingRuntime(_Runtime):
         return self.world.transaction
 
 
+class _TransactionRecoveryRuntime(_TracingRuntime):
+    def __init__(self, world, recover=None):
+        super().__init__(world)
+        self._recover = recover
+
+    def inspect_orchestrator(self, plan):
+        self.world.calls.append("inspect_orchestrator")
+        return super().inspect_orchestrator(plan)
+
+    def recover_transactions(self):
+        self.world.calls.append("recover_transactions")
+        if self._recover is not None:
+            self._recover()
+
+
 def _tracing_dependencies(root, world):
     deps = _dependencies(root, world)
     return LauncherServiceDependencies(
@@ -44,6 +62,243 @@ def _tracing_dependencies(root, world):
 
 
 class WorkflowMergeBlockerCharacterizationTests(unittest.TestCase):
+    def test_adapter_projects_skipped_active_as_explicit_live_owner(self):
+        recovery = RecoveryResult(skipped_active=("TX-live",))
+        orchestrator = FormalBoundary.completed("orchestrator", run_id="run-1")
+
+        with patch(
+            "execution.inspect_transaction_recovery", return_value=recovery
+        ):
+            transaction = DefaultWorkflowRuntime.inspect_transaction_recovery(
+                orchestrator
+            )
+
+        self.assertEqual(transaction.status, "active")
+        self.assertTrue(transaction.references.get("live_owner"))
+        self.assertEqual(transaction.references.get("transaction_id"), "TX-live")
+        self.assertEqual(
+            transaction.references.get("transaction_ids"), ("TX-live",)
+        )
+
+    def test_live_owner_projects_running_even_when_orchestrator_reports_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            world = _World()
+            deps = _dependencies(tmp, world)
+            launch_project(project_path="approved.json", dependencies=deps)
+            world.statuses["orchestrator"] = "completed"
+            world.orchestrator_status = "ready"
+            world.transaction = FormalBoundary(
+                status="active",
+                boundary="transaction",
+                references={
+                    "live_owner": True,
+                    "transaction_id": "TX-live",
+                    "transaction_ids": ("TX-live",),
+                },
+            )
+            runtime = _TransactionRecoveryRuntime(world)
+            deps = LauncherServiceDependencies(
+                **{**deps.__dict__, "runtime_factory": lambda *_args: runtime}
+            )
+            world.calls.clear()
+
+            result = resume_launcher_run(
+                launcher_run_id=LAUNCHER_ID, dependencies=deps
+            )
+
+            self.assertEqual(result.payload.status, "running")
+            self.assertEqual(result.payload.formal_trace.transaction_id, "TX-live")
+            self.assertNotIn("recover_transactions", world.calls)
+            self.assertNotIn("execution", world.calls)
+
+    def test_initial_clean_inspection_rereads_orchestrator_before_drain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            world = _World()
+            deps = _dependencies(tmp, world)
+            launch_project(project_path="approved.json", dependencies=deps)
+            world.statuses["orchestrator"] = "completed"
+            world.orchestrator_status = "ready"
+            runtime = _TransactionRecoveryRuntime(world)
+            deps = LauncherServiceDependencies(
+                **{**deps.__dict__, "runtime_factory": lambda *_args: runtime}
+            )
+            world.calls.clear()
+
+            result = resume_launcher_run(
+                launcher_run_id=LAUNCHER_ID, dependencies=deps
+            )
+
+            inspection = world.calls.index("inspect_transaction_recovery")
+            reread = world.calls.index("inspect_orchestrator", inspection + 1)
+            drain = world.calls.index("execution")
+            self.assertEqual(result.payload.status, "completed")
+            self.assertLess(inspection, reread)
+            self.assertLess(reread, drain)
+
+    def test_resume_inspects_transactions_before_every_active_orchestrator_state(self):
+        for formal_status in ("ready", "running", "pending"):
+            with (
+                self.subTest(formal_status=formal_status),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                world = _World()
+                deps = _dependencies(tmp, world)
+                launch_project(project_path="approved.json", dependencies=deps)
+                world.statuses["orchestrator"] = "completed"
+                world.orchestrator_status = formal_status
+                runtime = _TransactionRecoveryRuntime(world)
+                deps = LauncherServiceDependencies(
+                    **{**deps.__dict__, "runtime_factory": lambda *_args: runtime}
+                )
+                world.calls.clear()
+
+                result = resume_launcher_run(
+                    launcher_run_id=LAUNCHER_ID, dependencies=deps
+                )
+
+                expected = "completed" if formal_status == "ready" else formal_status
+                self.assertEqual(result.payload.status, expected)
+                self.assertIn("inspect_transaction_recovery", world.calls)
+                self.assertNotIn("recover_transactions", world.calls)
+                inspection = world.calls.index("inspect_transaction_recovery")
+                if "execution" in world.calls:
+                    self.assertLess(inspection, world.calls.index("execution"))
+                if formal_status in {"running", "pending"}:
+                    self.assertNotIn("execution", world.calls)
+
+    def test_stale_transaction_recovery_rereads_orchestrator_before_drain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            world = _World()
+            deps = _dependencies(tmp, world)
+            launch_project(project_path="approved.json", dependencies=deps)
+            world.statuses["orchestrator"] = "completed"
+            world.orchestrator_status = "running"
+            world.transaction = FormalBoundary.blocked(
+                "transaction",
+                "transaction_recovery_unresolved",
+                "stale owner requires recovery",
+                transaction_id="TX-stale",
+            )
+
+            def recover():
+                world.transaction = FormalBoundary.completed("transaction")
+                world.orchestrator_status = "ready"
+
+            runtime = _TransactionRecoveryRuntime(world, recover=recover)
+            deps = LauncherServiceDependencies(
+                **{**deps.__dict__, "runtime_factory": lambda *_args: runtime}
+            )
+            world.calls.clear()
+
+            result = resume_launcher_run(
+                launcher_run_id=LAUNCHER_ID, dependencies=deps
+            )
+
+            self.assertEqual(result.payload.status, "completed")
+            first_inspection = world.calls.index("inspect_transaction_recovery")
+            recovery = world.calls.index("recover_transactions")
+            reread = world.calls.index("inspect_orchestrator", recovery + 1)
+            second_inspection = world.calls.index(
+                "inspect_transaction_recovery", first_inspection + 1
+            )
+            drain = world.calls.index("execution")
+            self.assertLess(first_inspection, recovery)
+            self.assertLess(recovery, reread)
+            self.assertLess(reread, second_inspection)
+            self.assertLess(second_inspection, drain)
+            self.assertEqual(world.calls.count("execution"), 1)
+
+    def test_unresolved_recovery_blocks_without_claim_or_scientific_action(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            world = _World()
+            deps = _dependencies(tmp, world)
+            launch_project(project_path="approved.json", dependencies=deps)
+            world.statuses["orchestrator"] = "completed"
+            world.orchestrator_status = "pending"
+            world.transaction = FormalBoundary.blocked(
+                "transaction",
+                "transaction_recovery_unresolved",
+                "recovery remains unresolved",
+                transaction_id="TX-unresolved",
+            )
+            runtime = _TransactionRecoveryRuntime(world)
+            deps = LauncherServiceDependencies(
+                **{**deps.__dict__, "runtime_factory": lambda *_args: runtime}
+            )
+            world.calls.clear()
+
+            result = resume_launcher_run(
+                launcher_run_id=LAUNCHER_ID, dependencies=deps
+            )
+
+            self.assertEqual(result.exit_code, 3)
+            self.assertEqual(
+                result.payload.error.code, "transaction_recovery_unresolved"
+            )
+            self.assertEqual(result.payload.formal_trace.transaction_id, "TX-unresolved")
+            self.assertIn("recover_transactions", world.calls)
+            self.assertGreaterEqual(world.calls.count("inspect_orchestrator"), 2)
+            self.assertGreaterEqual(
+                world.calls.count("inspect_transaction_recovery"), 2
+            )
+            self.assertNotIn("execution", world.calls)
+
+    def test_formal_clean_clears_only_matching_transaction_blocker_and_merges_trace(self):
+        for failure_code, clears in (
+            ("transaction_recovery_unresolved", True),
+            ("transaction_operator_hold", False),
+        ):
+            with (
+                self.subTest(failure_code=failure_code),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                world = _World()
+                deps = _dependencies(tmp, world)
+                launch_project(project_path="approved.json", dependencies=deps)
+                report = deps.diagnostics.read(LAUNCHER_ID)
+                report = replace(
+                    report,
+                    formal_trace=FormalTrace(
+                        workflow_id="old-workflow",
+                        run_id="old-run",
+                        plan_id="old-plan",
+                        task_id="task-1",
+                        attempt_id="attempt-1",
+                        transaction_id="TX-old",
+                    ),
+                ).with_failure(
+                    boundary="transaction",
+                    error=StructuredError(
+                        code=failure_code,
+                        component="transaction",
+                        message="prior transaction diagnostic",
+                    ),
+                )
+                deps.diagnostics.write(report)
+                world.statuses["orchestrator"] = "completed"
+                world.orchestrator_status = "running"
+                runtime = _TransactionRecoveryRuntime(world)
+                deps = LauncherServiceDependencies(
+                    **{**deps.__dict__, "runtime_factory": lambda *_args: runtime}
+                )
+
+                result = resume_launcher_run(
+                    launcher_run_id=LAUNCHER_ID, dependencies=deps
+                )
+                persisted = deps.diagnostics.read(LAUNCHER_ID)
+
+                self.assertEqual(result.payload.status, "running")
+                self.assertEqual(persisted.formal_trace.workflow_id, "workflow-1")
+                self.assertEqual(persisted.formal_trace.run_id, "run-1")
+                self.assertEqual(persisted.formal_trace.plan_id, "plan-1")
+                self.assertEqual(persisted.formal_trace.task_id, "task-1")
+                self.assertEqual(persisted.formal_trace.attempt_id, "attempt-1")
+                self.assertEqual(persisted.formal_trace.transaction_id, "TX-old")
+                if clears:
+                    self.assertIsNone(persisted.failure)
+                else:
+                    self.assertEqual(persisted.failure.code, failure_code)
+
     def test_diagnostic_update_failure_emits_bounded_operational_log(self):
         with tempfile.TemporaryDirectory() as tmp:
             writes = [0]

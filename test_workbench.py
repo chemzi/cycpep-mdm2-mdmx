@@ -368,6 +368,12 @@ class WorkbenchReaderTests(unittest.TestCase):
                     "root": "C:/internal/prediction/root",
                     "run_id": "prediction-run-1",
                 },
+                "runtime_locator_binding": {
+                    "project_locator": "C:/internal/project.json",
+                    "data_dir": "C:/internal/data",
+                    "evidence_dir": "C:/internal/evidence",
+                    "database_path": "C:/internal/formal/store.db",
+                },
             }],
         )
 
@@ -376,6 +382,7 @@ class WorkbenchReaderTests(unittest.TestCase):
         self.assertEqual(evidence["event_type"], "prediction_invocation_started")
         self.assertNotIn("prediction_run_root", evidence)
         self.assertNotIn("prediction_run_locator", evidence)
+        self.assertNotIn("runtime_locator_binding", evidence)
         self.assertNotIn("C:/internal", str(evidence))
 
 

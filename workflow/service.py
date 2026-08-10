@@ -19,6 +19,7 @@ from .models import (
     BrowserResult,
     DiagnosticReport,
     LauncherCommandResult,
+    RuntimeLocatorBinding,
     StructuredError,
 )
 from .observations import (
@@ -27,6 +28,11 @@ from .observations import (
     with_plan_trace as _with_plan_trace,
 )
 from .runtime_context import bind_project_context
+from .runtime_locator import (
+    ContextRestorer,
+    require_runtime_locator,
+    restore_project_context,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,6 +46,7 @@ class LauncherServiceDependencies:
     bind_context: Callable[[ProjectContext], AbstractContextManager]
     runtime_factory: Callable[[ProjectContext, str], Any]
     launcher_id: Callable[[], str]
+    restore_context: ContextRestorer | None = None
 
 
 def launch_project(
@@ -52,11 +59,14 @@ def launch_project(
         deps.validate_project(dict(context.config))
         binding = _approved_binding(context)
         launcher_run_id = deps.launcher_id()
+        project_locator = str(Path(project_path).expanduser().resolve())
+        runtime_locator = RuntimeLocatorBinding.from_context(context, project_locator)
         report = DiagnosticReport.initial(
             launcher_run_id=launcher_run_id,
             project_id=context.project_id,
             approved_content_binding=binding,
-            project_locator=str(Path(project_path).expanduser().resolve()),
+            project_locator=project_locator,
+            runtime_locator_binding=runtime_locator,
         )
         # This durable create is deliberately before Data Layer binding and
         # before constructing an Agent runtime that could perform side effects.
@@ -101,7 +111,8 @@ def _coordinate_locked(
     with deps.diagnostics.locked(launcher_run_id) as session:
         report = session.read()
         try:
-            context = deps.load_context(report.project_locator)
+            binding = require_runtime_locator(report)
+            context = _restore_bound_context(deps, binding)
             deps.validate_project(dict(context.config))
             _validate_resume_binding(report, context)
             with deps.bind_context(context):
@@ -351,12 +362,13 @@ def _drive_orchestrator(
     execute: bool,
 ) -> LauncherCommandResult:
     formal_status = str(orchestrator.references.get("formal_status") or "pending")
-    if not execute and formal_status in {"ready", "running", "pending"}:
-        outcome = _read_only_recovery_outcome(
-            runtime, report, session, orchestrator
+    if formal_status in {"ready", "running", "pending"}:
+        report, orchestrator, outcome = _gate_transaction_recovery(
+            runtime, report, session, orchestrator, plan, execute=execute
         )
         if outcome is not None:
             return outcome
+        formal_status = str(orchestrator.references.get("formal_status") or "pending")
     drained = False
     if formal_status == "ready" and execute:
         report, orchestrator, outcome = _drain_ready_run(
@@ -381,43 +393,77 @@ def _drive_orchestrator(
     return _formal_outcome(report, formal_status, orchestrator, plan)
 
 
-def _read_only_recovery_outcome(runtime, report, session, orchestrator):
+def _gate_transaction_recovery(
+    runtime, report, session, orchestrator, plan, *, execute
+):
+    report = _observe(report, "orchestrator", orchestrator)
     transaction = runtime.inspect_transaction_recovery(orchestrator)
+    if transaction.references.get("live_owner") is True:
+        report = _merge_transaction_trace(report, transaction).with_observation(
+            current_boundary="transaction",
+            last_known_formal_status="running",
+        )
+        if execute:
+            session.write(report)
+        return report, orchestrator, _formal_outcome(
+            report, "running", orchestrator, plan
+        )
+    if transaction.status == "completed":
+        report = _clear_transaction_recovery_failure(report)
+        if not execute:
+            return report, orchestrator, None
+        orchestrator = runtime.inspect_orchestrator(plan)
+        if orchestrator.status != "completed":
+            return report, orchestrator, _block_or_invalid(
+                session, report, orchestrator, "orchestrator"
+            )
+        report = _observe(report, "orchestrator", orchestrator)
+        return report, orchestrator, None
     if transaction.status != "blocked":
-        return None
-    transaction_id = transaction.references.get("transaction_id")
-    if transaction_id:
-        report = report.with_observation(formal_trace=replace(
-            report.formal_trace, transaction_id=str(transaction_id)
-        ))
-    return _block(session, report, transaction)
+        return report, orchestrator, _block_or_invalid(
+            session, report, transaction, "transaction"
+        )
+    report = _merge_transaction_trace(report, transaction)
+    if not execute:
+        return report, orchestrator, _block(session, report, transaction)
+    try:
+        runtime.recover_transactions()
+    except Exception as error:
+        if getattr(error, "code", None) == "transaction_recovery_unresolved":
+            blocker = _transaction_recovery_blocker(error)
+            report = _merge_transaction_trace(report, blocker)
+            return report, orchestrator, _block(session, report, blocker)
+        return report, orchestrator, _record_failure(
+            session, report, error, "transaction"
+        )
+
+    orchestrator = runtime.inspect_orchestrator(plan)
+    if orchestrator.status != "completed":
+        return report, orchestrator, _block_or_invalid(
+            session, report, orchestrator, "orchestrator"
+        )
+    report = _observe(report, "orchestrator", orchestrator)
+    transaction = runtime.inspect_transaction_recovery(orchestrator)
+    if transaction.status == "blocked":
+        report = _merge_transaction_trace(report, transaction)
+        return report, orchestrator, _block(session, report, transaction)
+    if transaction.status != "completed":
+        return report, orchestrator, _block_or_invalid(
+            session, report, transaction, "transaction"
+        )
+    return _clear_transaction_recovery_failure(report), orchestrator, None
 
 
 def _drain_ready_run(runtime, report, session, orchestrator, plan):
     try:
-        runtime.recover_transactions()
         runtime.drain(orchestrator.references["run_path"])
     except Exception as error:
         if getattr(error, "code", None) != "transaction_recovery_unresolved":
             return report, orchestrator, _worker_failure(
                 runtime, session, report, orchestrator, plan, error
             )
-        unresolved = tuple(
-            str(value)
-            for value in (getattr(error, "unresolved", ()) or ())
-            if value
-        )
-        if unresolved:
-            report = report.with_observation(formal_trace=replace(
-                report.formal_trace, transaction_id=unresolved[0]
-            ))
-        blocker = FormalBoundary.blocked(
-            "transaction",
-            "transaction_recovery_unresolved",
-            "formal transaction recovery requires operator action",
-            transaction_id=unresolved[0] if unresolved else None,
-            transaction_ids=unresolved,
-        )
+        blocker = _transaction_recovery_blocker(error)
+        report = _merge_transaction_trace(report, blocker)
         return report, orchestrator, _block(session, report, blocker)
     orchestrator = runtime.inspect_orchestrator(plan)
     if orchestrator.status != "completed":
@@ -427,6 +473,41 @@ def _drain_ready_run(runtime, report, session, orchestrator, plan):
     report = _observe(report, "execution", orchestrator)
     session.write(report)
     return report, orchestrator, None
+
+
+def _transaction_recovery_blocker(error):
+    unresolved = tuple(
+        str(value)
+        for value in (getattr(error, "unresolved", ()) or ())
+        if value
+    )
+    return FormalBoundary.blocked(
+        "transaction",
+        "transaction_recovery_unresolved",
+        "formal transaction recovery requires operator action",
+        transaction_id=unresolved[0] if unresolved else None,
+        transaction_ids=unresolved,
+    )
+
+
+def _merge_transaction_trace(report, transaction):
+    transaction_id = transaction.references.get("transaction_id")
+    if not transaction_id:
+        return report
+    return report.with_observation(formal_trace=replace(
+        report.formal_trace, transaction_id=str(transaction_id)
+    ))
+
+
+def _clear_transaction_recovery_failure(report):
+    failure = report.failure
+    if (
+        report.failed_boundary == "transaction"
+        and failure is not None
+        and failure.code == "transaction_recovery_unresolved"
+    ):
+        return report.clear_failure()
+    return report
 
 
 def _worker_failure(runtime, session, report, orchestrator, plan, error):
@@ -655,6 +736,24 @@ def _validate_resume_binding(report: DiagnosticReport, context: ProjectContext) 
         )
 
 
+def _restore_bound_context(
+    deps: LauncherServiceDependencies, binding: RuntimeLocatorBinding
+) -> ProjectContext:
+    if deps.restore_context is not None:
+        try:
+            return deps.restore_context(binding)
+        except DiagnosticContractError:
+            raise
+        except (OSError, TypeError, ValueError) as error:
+            raise DiagnosticContractError(
+                "launcher_runtime_locator_unavailable",
+                "The original Launcher runtime locator cannot be restored.",
+            ) from error
+    # Compatibility for dependency-injected callers predating the durable
+    # locator seam.  Formal paths still come exclusively from the binding.
+    return restore_project_context(binding, loader=deps.load_context)
+
+
 def _default_dependencies() -> LauncherServiceDependencies:
     from .adapters import DefaultWorkflowRuntime
 
@@ -669,6 +768,7 @@ def _default_dependencies() -> LauncherServiceDependencies:
             context, launcher_run_id
         ),
         launcher_id=lambda: f"launcher_{uuid.uuid4().hex}",
+        restore_context=restore_project_context,
     )
 
 

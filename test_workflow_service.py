@@ -376,6 +376,12 @@ class WorkflowServiceAcceptanceTests(unittest.TestCase):
             world = _World()
             deps = _dependencies(tmp, world)
             launch_project(project_path="approved.json", dependencies=deps)
+            world.transaction = FormalBoundary.blocked(
+                "transaction",
+                "transaction_recovery_unresolved",
+                "formal transaction recovery requires operator action",
+                transaction_id="transaction-recovery-1",
+            )
             runtime = _Runtime(world)
             runtime.recover_transactions = lambda: (_ for _ in ()).throw(
                 RecoveryBlocked("blocked")
