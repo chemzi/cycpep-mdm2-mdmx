@@ -48,6 +48,8 @@
 - NaN/Inf 指标不伪造分数：`_desirability` 对非有限值返回 `None`（desirability 不会是 1.0）。
 - `target_ids=()` 时，target-scoped 指标（L2/L5/L6）显式标记
   `unavailable` + `missing_target_ids`，不会从视图消失。
+- 命名区分：本视图是 per-指标「metric soft view」（0..1 比率）；P0-E shortlist
+  的 per-候选「exploration desirability」（-1..1 边距）语义不同，前端展示请区分命名。
 
 ## 5. 对照评分与接入流程
 
