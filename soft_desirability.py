@@ -6,6 +6,11 @@ soft view: a 0..1 desirability relative to the current threshold, the
 ``calibration_status``, and whether the metric is hard-eligible under the
 battery's justification rules.  It never changes ``evaluate_battery`` or
 ``competition_clearance``.
+
+Naming: this per-metric soft view (metric soft view, 0..1 ratio) is a
+different concept from the per-candidate exploration desirability used by the
+P0-E shortlist (a -1..1 margin score).  Keep the two names distinct in
+frontend/review material.
 """
 
 from __future__ import annotations
