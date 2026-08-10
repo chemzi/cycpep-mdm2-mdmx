@@ -505,6 +505,22 @@ def ensure_transaction_recovery_clean(
     return recovery
 
 
+def inspect_transaction_recovery(
+    *, config: ExecutionConfig | None = None
+):
+    """Inspect formal recovery markers without reconciling or mutating them."""
+
+    config = config or ExecutionConfig.from_environment()
+    transaction_worker = ExecutionWorker(
+        get_storage_backend(),
+        config.execution_root / ".staging",
+        config.execution_root / "artifacts",
+    )
+    return transaction_worker.commit_manager.recovery.inspect_pending(
+        config.execution_root / ".staging"
+    )
+
+
 def execute_task(
     *,
     run_path: str | Path,

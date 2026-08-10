@@ -502,13 +502,18 @@ class EvidenceLogger:
         return entry["event_id"]
 
     @classmethod
-    def research_complete(cls, hotspot_analysis: dict, known_binders: list, refs: list):
-        return cls.log("research", "research_targets", {
+    def research_complete(cls, hotspot_analysis: dict, known_binders: list, refs: list,
+                          project_id: str = ""):
+        payload = {
             "pdb_complexes": hotspot_analysis.get("pdb_list", []),
             "hotspot_analysis": hotspot_analysis,
             "known_binders": known_binders,
             "literature_refs": refs
-        }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
+        }
+        if project_id:
+            payload["project_id"] = project_id
+        return cls.log("research", "research_targets", payload,
+                targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
                 phase="research", round_num=1)
 
     @classmethod
@@ -600,7 +605,8 @@ class EvidenceLogger:
     def critic_review(cls, issues: list, passed: bool, summary: str,
                       recommendation: str, metrics: dict,
                       report_id: str = "", report_path: str = "",
-                      report_sha256: str = ""):
+                      report_sha256: str = "",
+                      prediction_run_id: str = ""):
         payload = {
             "issues": issues, "pass": passed,
             "summary": summary, "recommendation": recommendation,
@@ -612,6 +618,8 @@ class EvidenceLogger:
             payload["report_path"] = report_path
         if report_sha256:
             payload["report_sha256"] = report_sha256
+        if prediction_run_id:
+            payload["prediction_run_id"] = prediction_run_id
         return cls.log("critic", "critic_review", payload,
                 targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
                 phase="critic")

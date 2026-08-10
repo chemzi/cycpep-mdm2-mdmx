@@ -257,6 +257,28 @@ The `formal_trace.run_id` field always means Orchestrator run identity. Predicti
 
 After initialization, Launcher never determines success from receipt count or absence of ready tasks. It calls Orchestrator `status` and returns the formal run status (`completed`, `completed_required`, `failed`, `blocked`, `awaiting_approval`, `ready`, `running`, or `pending`) plus the existing task-status counts. `drain_run` is called only for a formally ready run. A later approval requirement is surfaced as `awaiting_approval` and is not auto-approved.
 
+### 10. Recovery authority is ordered upstream-first
+
+Pre-Orchestrator continuation is resolved in causal order, not by searching for the furthest downstream artifact. Launcher first invokes the Prediction-owned validator for the deterministic launcher correlation. A blocked, conflicting, or `started_without_completion` result returns immediately and Critic and Planner are neither inspected nor invoked. A `not_started` result permits only Research/Design/Prediction recovery followed by a fresh Prediction validation. Critic becomes observable only after Prediction is formally `completed`, and Planner becomes observable only after Critic is formally `completed`. This ordering makes upstream ambiguity authoritative over stale downstream history.
+
+### 11. Diagnostic updates are non-destructive observations
+
+`DiagnosticReport.with_observation` merges observations into the report and preserves the existing `failure` and `failed_boundary`. Formal trace helpers merge with the accumulated `FormalTrace` rather than constructing a partial replacement, so run/task/attempt/transaction identifiers survive later plan observations. A separate explicit `clear_failure` operation is available only to the application service after the relevant owner-side validator proves the formerly failed boundary is resolved. Ordinary status reads and diagnostic repair never clear failure implicitly.
+
+### 12. Status uses an owner-side read-only recovery inspector
+
+Transaction/Store infrastructure exposes the minimum public read-only inspection needed to report whether recovery is clean for the referenced formal run. It reads existing transaction, marker, compensation, and owner-liveness state without invoking `recover_pending`, claiming a task, writing a marker, or changing transaction state. `status` uses this inspector and returns `transaction_recovery_unresolved` with available transaction identifiers when unresolved. `resume` may use the existing formal mutating recovery contract immediately before Worker continuation; Launcher does not duplicate transaction policy.
+
+### 13. Critic and Research correlation is filtered before artifact validation
+
+New `critic_review` Evidence binds the source `prediction_run_id`. The formal boundary inspector filters explicit current-run events before opening any report artifact. Legacy events without this field remain compatible: they are considered only when the referenced report can be uniquely and safely validated as sourced from the current Prediction run. Unrelated legacy history, including broken artifacts, cannot poison the current run; a legacy record that might belong to the current run but cannot be verified fails closed. Multiple or broken explicit records for the current run also fail closed.
+
+Research validation queries Evidence with the expected `project_id`, agent, and event type and accepts referenced Research Evidence IDs only from that same project-scoped set. A completion receipt cannot borrow `research_targets` or other formal Research Evidence from another project.
+
+### 14. Runtime paths come from one explicit ProjectContext contract
+
+Launcher constructs or loads the same official `ProjectContext` and resolved `ProjectPaths` used by Data Layer and Agent execution. The resolved data, Evidence, and database paths are supplied through that context once and temporarily bound only through the existing process-scoped compatibility adapter, which restores prior globals on every exit. Launcher does not independently parse environment variables, infer paths from the current directory, or silently fall back to repository data. Conflicting explicit runtime inputs fail before formal writes.
+
 ## Risks / Trade-offs
 
 - **[Pre-Planner stages are not all transaction-owned]** → Add immutable correlated receipts and fail closed on partial ambiguity; do not claim transactional guarantees those Agents do not currently provide.

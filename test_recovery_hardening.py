@@ -124,6 +124,27 @@ class RecoveryHardeningTests(unittest.TestCase):
             **lease,
         }
 
+    def test_read_only_inspection_reports_pending_marker_without_mutation(self):
+        store = _LeaseStore()
+        transaction_id = "TX123"
+        marker = self._write_marker(
+            transaction_id,
+            {
+                "transaction_id": transaction_id,
+                "status": "RECOVERY_UNRESOLVED",
+                "compensation_error": {"code": "operator_required"},
+            },
+        )
+        before = marker.read_bytes()
+
+        result = RecoveryManager(store).inspect_pending(self.staging_root)
+
+        self.assertFalse(result.clean)
+        self.assertEqual(result.unresolved, (transaction_id,))
+        self.assertEqual(result.marker_errors, ())
+        self.assertEqual(marker.read_bytes(), before)
+        self.assertEqual(store.rollback_calls, [])
+
     @unittest.skipUnless(
         sys.platform.startswith("linux"),
         "owner-liveness identity proof requires Linux /proc; "

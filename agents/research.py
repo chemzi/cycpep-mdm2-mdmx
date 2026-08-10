@@ -742,6 +742,7 @@ def _run_impl(
             },
             known_binders=result["known_binders"],
             refs=pipeline_result.get("literature_refs", []),
+            project_id=_cfg()["project_id"],
         )
         if receipt_evidence_ids is not None:
             receipt_evidence_ids.append(research_event_id)
@@ -782,6 +783,7 @@ def _run_impl(
         hotspot_analysis=hotspot_analysis,
         known_binders=result["known_dual_binders"],
         refs=LITERATURE_REFS,
+        project_id=_cfg()["project_id"],
     )
     if receipt_evidence_ids is not None:
         receipt_evidence_ids.append(research_event_id)

@@ -59,3 +59,26 @@
 - [x] 6.2 Run the full applicable Python test suite, configured lint/type checks, and `scripts/architecture_gate.py`; resolve regressions within scope and report unrelated failures separately.
 - [x] 6.3 Run strict OpenSpec validation and `$openspec-verify-change` against the approved artifacts.
 - [x] 6.4 Run the repository `code-review` skill against the integration merge base and the mandatory Strict Code Review, address in-scope findings, report the Standards and Spec results, and require the Strict Code Review score to be at least 85 before merge.
+
+## 7. Merge-blocker characterization and remediation
+
+- [x] 7.1 Add characterization tests on the current PR head for Prediction-first recovery ordering and the contradictory-state matrix; record that blocked/partial Prediction currently permits forbidden downstream inspection or continuation before changing production code.
+- [x] 7.2 Add characterization tests for diagnostic failure/trace preservation and explicit owner-proven failure clearing, including repeated Worker-failed status/resume calls.
+- [x] 7.3 Add characterization tests for read-only status transaction recovery, proving unresolved transaction identifiers are retained and no mutating recovery, task claim, or Worker drain occurs.
+- [x] 7.4 Add characterization tests for current-run Critic correlation and legacy compatibility: unrelated broken legacy history, broken explicit current report, and conflicting current records.
+- [x] 7.5 Add characterization tests rejecting cross-project Research Evidence references.
+- [x] 7.6 Audit the official Data Layer/ProjectContext path contract and add characterization tests for custom data/Evidence/database paths plus restoration after exceptions, without Launcher-owned environment parsing or path guessing.
+- [x] 7.7 Implement Prediction-first causal boundary ordering and the unified contradictory-state recovery matrix without consulting downstream authority while upstream state is incomplete or ambiguous.
+- [x] 7.8 Make diagnostic observations and plan-trace enrichment merge non-destructively, and add an explicit failure-clear seam guarded by formal owner validation.
+- [x] 7.9 Add and use the minimal public read-only transaction/recovery inspector for `status`; retain the existing mutating recovery seam only for explicit resume/Worker continuation.
+- [x] 7.10 Add `prediction_run_id` to new Critic review Evidence and implement current-run-first filtering with safe legacy validation and fail-closed current ambiguity.
+- [x] 7.11 Scope Research receipt Evidence lookup and reference validation to the expected project.
+- [x] 7.12 Make Launcher runtime binding consume one official resolved ProjectContext/ProjectPaths contract across Agents and Store, fail closed on conflicting inputs, and restore legacy globals on every exit.
+- [x] 7.13 Add the complete adversarial recovery matrix covering Prediction/downstream contradictions, unresolved transactions, terminal Worker failure, current versus historical Critic corruption, diagnostic/formal disagreement, owner-proven recovery, and cross-project Research references.
+
+## 8. Remediation verification and independent review
+
+- [x] 8.1 Run all new regression tests plus focused Launcher, Research, Design, Prediction, Critic, Planner, Orchestrator, Execution, transaction, recovery, Store, and Workbench V2 tests.
+- [x] 8.2 Run the full applicable suite, configured lint/type checks, Architecture Gate, and `git diff --check`.
+- [ ] 8.3 Run `openspec validate add-autonomous-workflow-launcher --strict` and `$openspec-verify-change`; reconcile tasks and artifacts with the implemented contracts.
+- [ ] 8.4 Run fresh independent Spec, Standards, and Strict Code Reviews from the integration merge base, require a new score of at least 85 with no P0/P1, and keep PR #62 Draft without merging.

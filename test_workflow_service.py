@@ -175,6 +175,9 @@ class _Runtime:
     def recover_transactions(self):
         return None
 
+    def inspect_transaction_recovery(self):
+        return self.world.transaction
+
     def drain(self, run_path):
         self.world.calls.append("execution")
         if self.world.fail_at == "execution":

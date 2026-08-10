@@ -293,7 +293,17 @@ class DiagnosticReport:
     def with_observation(self, **updates: Any) -> "DiagnosticReport":
         """Return an updated observation; this never authorizes formal work."""
 
-        return replace(self, updated_at=_utcnow(), failure=None, failed_boundary=None, **updates)
+        return replace(self, updated_at=_utcnow(), **updates)
+
+    def clear_failure(self) -> "DiagnosticReport":
+        """Clear a diagnostic failure after its formal owner proves recovery."""
+
+        return replace(
+            self,
+            updated_at=_utcnow(),
+            failure=None,
+            failed_boundary=None,
+        )
 
     def with_failure(
         self, *, boundary: str, error: StructuredError, formal_status: str | None = None

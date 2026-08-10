@@ -305,6 +305,44 @@ class RecoveryManager:
             skipped_active=tuple(skipped_active),
         )
 
+    def inspect_pending(self, staging_root: str | Path) -> RecoveryResult:
+        """Read pending recovery markers without changing formal state."""
+
+        unresolved: list[str] = []
+        marker_errors: list[dict[str, str]] = []
+        pending_statuses = {
+            "PREPARED",
+            "COMMITTED",
+            "RECOVERY_UNRESOLVED",
+            "COMPENSATING",
+            "COMPENSATION_FAILED",
+            "COMPENSATION_CONFLICT",
+            "COMPENSATION_UNRESOLVED",
+        }
+        for marker in Path(staging_root).glob("*/metadata/commit.json"):
+            try:
+                payload = json.loads(marker.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("marker must be a JSON object")
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                marker_errors.append(
+                    {"path": str(marker), "code": exc.__class__.__name__}
+                )
+                continue
+            if payload.get("status") not in pending_statuses:
+                continue
+            transaction_id = payload.get("transaction_id")
+            if transaction_id:
+                unresolved.append(str(transaction_id))
+            else:
+                marker_errors.append(
+                    {"path": str(marker), "code": "missing_transaction_id"}
+                )
+        return RecoveryResult(
+            unresolved=tuple(dict.fromkeys(unresolved)),
+            marker_errors=tuple(marker_errors),
+        )
+
     def _recover_marker(
         self,
         marker: Path,

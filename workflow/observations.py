@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -83,10 +84,10 @@ def mirror_prediction_identity(
 def with_plan_trace(
     report: DiagnosticReport, plan: Mapping[str, Any]
 ) -> DiagnosticReport:
-    return report.with_observation(formal_trace=FormalTrace(
-        workflow_id=plan.get("workflow_id"),
-        plan_id=plan.get("plan_id"),
-        run_id=report.formal_trace.run_id,
+    return report.with_observation(formal_trace=replace(
+        report.formal_trace,
+        workflow_id=plan.get("workflow_id") or report.formal_trace.workflow_id,
+        plan_id=plan.get("plan_id") or report.formal_trace.plan_id,
     ))
 
 

@@ -138,6 +138,27 @@ class DefaultWorkflowRuntime:
         )
 
     @staticmethod
+    def inspect_transaction_recovery():
+        from execution import inspect_transaction_recovery
+
+        recovery = inspect_transaction_recovery()
+        if recovery.clean:
+            from .boundaries import FormalBoundary
+
+            return FormalBoundary.completed("transaction")
+        from .boundaries import FormalBoundary
+
+        transaction_id = recovery.unresolved[0] if recovery.unresolved else None
+        return FormalBoundary.blocked(
+            "transaction",
+            "transaction_recovery_unresolved",
+            "formal transaction recovery requires operator action",
+            transaction_id=transaction_id,
+            transaction_ids=recovery.unresolved,
+            marker_error_count=len(recovery.marker_errors),
+        )
+
+    @staticmethod
     def recover_transactions():
         from execution import ensure_transaction_recovery_clean
 

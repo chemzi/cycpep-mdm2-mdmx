@@ -202,7 +202,9 @@ def validate_research_invocation(
 
     completion = completions[0]
     evidence_ids = completion.get("research_evidence_ids")
-    if not _valid_research_evidence(backend, evidence_ids):
+    if not _valid_research_evidence(
+        backend, evidence_ids, project_id=expected.project_id
+    ):
         return ResearchInvocationStatus(
             status="conflicting",
             start_event_id=start["event_id"],
@@ -235,7 +237,9 @@ def _binding_matches(event: Mapping[str, Any], expected: ResearchCorrelation) ->
     return all(event.get(key) == value for key, value in expected.to_payload().items())
 
 
-def _valid_research_evidence(backend, evidence_ids: Any) -> bool:
+def _valid_research_evidence(
+    backend, evidence_ids: Any, *, project_id: str
+) -> bool:
     if (
         not isinstance(evidence_ids, list)
         or not evidence_ids
@@ -243,7 +247,20 @@ def _valid_research_evidence(backend, evidence_ids: Any) -> bool:
         or len(set(evidence_ids)) != len(evidence_ids)
     ):
         return False
-    events_by_id = {event["event_id"]: event for event in backend.query()}
+    events_by_id = {
+        event["event_id"]: event
+        for event in backend.query(project_id=project_id)
+        if event.get("project_id") == project_id
+    }
+    if getattr(backend, "project_id", None) == project_id:
+        # Legacy Research Evidence predates explicit project_id payloads.  It
+        # remains valid only through a Store instance already scoped to the
+        # expected project; explicitly foreign rows are never accepted.
+        events_by_id.update({
+            event["event_id"]: event
+            for event in backend.query()
+            if event.get("project_id") is None
+        })
     referenced = [events_by_id.get(event_id) for event_id in evidence_ids]
     return all(
         event is not None

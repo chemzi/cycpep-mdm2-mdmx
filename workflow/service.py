@@ -145,6 +145,20 @@ def _advance_to_plan(
 ) -> tuple[DiagnosticReport, FormalBoundary | None, LauncherCommandResult | None]:
     prediction = runtime.inspect_prediction()
     report = _mirror_prediction_identity(report, runtime, prediction)
+    if prediction.status == "blocked":
+        return report, None, _block(session, report, prediction)
+    if prediction.status != "completed":
+        report, outcome = _advance_to_prediction(
+            runtime, report, session, prediction, execute=execute
+        )
+        if outcome is not None:
+            return report, None, outcome
+        prediction = runtime.inspect_prediction()
+        if prediction.status != "completed":
+            return report, None, _block_or_invalid(
+                session, report, prediction, "prediction"
+            )
+
     critic = runtime.inspect_critic(prediction)
     if critic.status == "completed":
         planner = runtime.inspect_planner(critic)
@@ -155,14 +169,6 @@ def _advance_to_plan(
         return _resolve_planner(runtime, report, session, critic, execute)
     if critic.status == "blocked":
         return report, None, _block(session, report, critic)
-
-    if prediction.status != "completed":
-        report, outcome = _advance_to_prediction(
-            runtime, report, session, prediction, execute=execute
-        )
-        if outcome is not None:
-            return report, None, outcome
-        prediction = runtime.inspect_prediction()
     return _resolve_critic_and_planner(
         runtime, report, session, prediction, execute=execute
     )
@@ -251,6 +257,7 @@ def _resolve_planner(
 
 def _accept_existing_plan(report, planner, session, execute):
     plan = planner.references["plan_document"]
+    report = _clear_resolved_failure(report, "planner", planner)
     report = _with_plan_trace(report, plan)
     if execute:
         session.write(report)
@@ -302,6 +309,18 @@ def _continue_approved_plan(
         session.write(report)
 
     formal_status = str(orchestrator.references.get("formal_status") or "pending")
+    if not execute and formal_status in {"ready", "running", "pending"}:
+        transaction = runtime.inspect_transaction_recovery()
+        if transaction.status == "blocked":
+            transaction_id = transaction.references.get("transaction_id")
+            if transaction_id:
+                report = report.with_observation(
+                    formal_trace=replace(
+                        report.formal_trace,
+                        transaction_id=str(transaction_id),
+                    )
+                )
+            return _block(session, report, transaction)
     drained = False
     if formal_status == "ready" and execute:
         try:
@@ -400,6 +419,7 @@ def _resolve_boundary(
         formal = inspect()
         if formal.status != "completed":
             return report, _block_or_invalid(session, report, formal, boundary)
+    report = _clear_resolved_failure(report, boundary, formal)
     report = _observe(report, boundary, formal)
     if not execute:
         return report, None
@@ -413,6 +433,14 @@ def _resolve_boundary(
         )
         return report, LauncherCommandResult(failed.browser_projection(status="failed"), 2)
     return report, None
+
+
+def _clear_resolved_failure(
+    report: DiagnosticReport, boundary: str, formal: FormalBoundary
+) -> DiagnosticReport:
+    if report.failed_boundary == boundary and formal.status == "completed":
+        return report.clear_failure()
+    return report
 
 
 def _block_or_invalid(

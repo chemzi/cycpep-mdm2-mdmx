@@ -115,11 +115,37 @@ class FormalBoundaryInspector:
         return FormalBoundary.blocked(boundary, code, message, **references)
 
     def critic(self, *, project_id: str, prediction_run_id: str) -> FormalBoundary:
+        events = self.store.query(
+            project_id=project_id, agent="critic", event_type="critic_review"
+        )
+        explicit_current = [
+            event
+            for event in events
+            if event.get("prediction_run_id") == prediction_run_id
+        ]
+        if explicit_current:
+            return self._critic_events(
+                explicit_current,
+                prediction_run_id=prediction_run_id,
+            )
+
+        legacy = [event for event in events if "prediction_run_id" not in event]
+        return self._critic_events(
+            legacy,
+            prediction_run_id=prediction_run_id,
+            legacy=True,
+        )
+
+    def _critic_events(
+        self,
+        events: Iterable[Mapping[str, Any]],
+        *,
+        prediction_run_id: str,
+        legacy: bool = False,
+    ) -> FormalBoundary:
         matches: list[tuple[dict[str, Any], dict[str, Any], Path]] = []
         invalid = False
-        for event in self.store.query(
-            project_id=project_id, agent="critic", event_type="critic_review"
-        ):
+        for event in events:
             path = _formal_path(event, self.store, "report_path", "report_artifact_id")
             document = _read_json_object(path)
             if document is None:
@@ -127,6 +153,7 @@ class FormalBoundaryInspector:
                 continue
             source = document.get("source") or {}
             if source.get("prediction_run_id") != prediction_run_id:
+                invalid = invalid or not legacy
                 continue
             if not _event_binds_document(event, document, path, "report"):
                 invalid = True

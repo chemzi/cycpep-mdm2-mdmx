@@ -71,10 +71,14 @@ def bind_project_context(context: ProjectContext) -> Iterator[None]:
                 "STATE_PATH": data_dir / "state.json",
                 "LOG_PATH": evidence_dir / "evidence_log.jsonl",
                 "INDEX_PATH": data_dir / "candidate_index.csv",
-                "SQLITE_DB_PATH": data_dir / "store.db",
             }
             for name, value in bindings.items():
                 setattr(data_layer, name, value)
+            # Data Layer owns formal database selection.  Leaving its public
+            # SQLITE_DB_PATH binding untouched preserves an explicit runtime
+            # selection; when absent, its lazy resolver applies the documented
+            # CYCPEP_DB_PATH override and only then falls back to the bound
+            # DATA_DIR/store.db.
             data_layer._runtime_paths = {
                 "data_dir": data_dir,
                 "evidence_dir": evidence_dir,

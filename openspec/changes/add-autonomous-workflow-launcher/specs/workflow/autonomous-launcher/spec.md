@@ -246,3 +246,61 @@ Existing Agent CLIs, public Python seams, formal artifacts, and selfcheck behavi
 #### Scenario: Diagnostic cleanup
 - **WHEN** an operator removes a launcher diagnostic report
 - **THEN** all formal workflow data remains available through its existing authorities
+
+### Requirement: Pre-Planner recovery follows causal authority order
+The Launcher SHALL validate Prediction before inspecting or invoking Critic or Planner. Prediction ambiguity, conflict, partial completion, or absence SHALL take precedence over any stale downstream Critic or Planner record. Critic SHALL be inspected or invoked only after current-run Prediction completion is formally validated, and Planner SHALL be inspected or invoked only after current-run Critic completion is formally validated.
+
+#### Scenario: Prediction blocker overrides stale downstream completion
+- **WHEN** Prediction is blocked or `started_without_completion` while Critic or Planner completion records also exist
+- **THEN** the Launcher returns the Prediction-owned blocker and performs no Critic, Planner, approval, Orchestrator, or Worker continuation
+
+#### Scenario: Prediction has not started
+- **WHEN** the Prediction-owned validator returns `not_started`
+- **THEN** the Launcher may recover only Research, initial Design, and Prediction, then revalidates Prediction before observing Critic
+
+### Requirement: Diagnostic observations preserve unresolved failure and trace
+Ordinary diagnostic observations SHALL preserve `failure`, `failed_boundary`, and all previously known formal trace identifiers. A failure MAY be cleared only through an explicit operation invoked after the owning formal contract proves that the failed condition is resolved.
+
+#### Scenario: Formal failure remains unchanged across status and resume
+- **WHEN** a Worker failure and its task, attempt, and transaction identifiers are recorded and repeated status or resume calls observe the same formal state
+- **THEN** the diagnostic failure and all identifiers remain present and no Worker action is repeated
+
+#### Scenario: Formal owner proves recovery
+- **WHEN** the relevant owner validator later proves the failed condition is resolved
+- **THEN** Launcher may explicitly clear the diagnostic failure and continue; an unrelated observation alone never clears it
+
+### Requirement: Status transaction inspection is read-only
+`status` SHALL call a public transaction/recovery owner contract that inspects the current recovery state without invoking mutating recovery, claiming tasks, writing markers, or transitioning transactions. Unresolved recovery SHALL produce a non-zero structured blocker with available transaction identifiers.
+
+#### Scenario: Unresolved transaction during status
+- **WHEN** read-only formal recovery inspection reports transaction `TX123` unresolved
+- **THEN** `status` returns `blocked` with `transaction_recovery_unresolved` and `TX123`, and performs no formal mutation
+
+### Requirement: Critic review correlation is current-run scoped
+New `critic_review` Evidence SHALL include the source `prediction_run_id`. Inspection SHALL filter explicit events for the current Prediction run before opening report artifacts. Legacy events without that field SHALL remain usable only when their report source can be uniquely validated as the current run; unrelated legacy records SHALL not poison current recovery, while possibly-current but unverifiable or conflicting current records SHALL fail closed.
+
+#### Scenario: Unrelated legacy Critic report is broken
+- **WHEN** an old Prediction run has a broken legacy Critic record and the current run has one valid explicitly correlated Critic record
+- **THEN** the current Critic boundary is `completed`
+
+#### Scenario: Current Critic evidence is broken or conflicting
+- **WHEN** the current run has a broken explicitly correlated report or conflicting current-run records
+- **THEN** Critic recovery is ambiguous and Planner is not inspected or invoked
+
+### Requirement: Research completion references remain project scoped
+Research validation SHALL query and validate referenced Research Evidence within the expected `project_id`, agent, and event-type scope. A completion receipt SHALL NOT become valid by referencing Research Evidence owned by another project.
+
+#### Scenario: Research receipt references another project
+- **WHEN** a Project A completion receipt references Project B `research_targets` Evidence
+- **THEN** Research validation returns invalid or conflicting rather than `completed`, and Design is not invoked
+
+### Requirement: One explicit runtime path context owns all formal storage
+Launcher, Research, Design, Prediction, and Store SHALL use the same officially resolved `ProjectContext` paths for data, Evidence, and database access. Launcher SHALL NOT independently parse runtime path environment variables, guess from the current directory, or silently fall back to another repository data root. Process-scoped compatibility binding SHALL restore previous runtime globals after success or failure.
+
+#### Scenario: Custom runtime paths are supplied
+- **WHEN** the approved project resolves custom data, Evidence, and database paths through the official context contract
+- **THEN** every Launcher boundary and Store access uses those exact paths
+
+#### Scenario: Runtime binding exits with an exception
+- **WHEN** a bound Launcher operation raises
+- **THEN** all previous process runtime bindings are restored and no second Store is selected
