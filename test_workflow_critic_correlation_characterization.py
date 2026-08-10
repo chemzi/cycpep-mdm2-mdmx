@@ -28,12 +28,24 @@ class _Store:
         return None
 
 
-def _inspector(events):
+class _SQLiteLikeStore(_Store):
+    """Match SQLiteStore.query's supported top-level filters."""
+
+    def query(self, **filters):
+        supported = {
+            key: value
+            for key, value in filters.items()
+            if key in {"project_id", "agent", "event_type"}
+        }
+        return super().query(**supported)
+
+
+def _inspector(events, *, store_type=_Store):
     def not_started(*_args, **_kwargs):
         return SimpleNamespace(status="not_started")
 
     return FormalBoundaryInspector(
-        store=_Store(events),
+        store=store_type(events),
         research_validator=not_started,
         design_validator=not_started,
         prediction_validator=not_started,
@@ -61,6 +73,17 @@ def _event(path: Path, report: dict, *, run_id_marker=...):
     if run_id_marker is not ...:
         event["prediction_run_id"] = run_id_marker
     return event
+
+
+def _prediction_start(*, run_id: str, timestamp: str) -> dict:
+    return {
+        "event_id": f"event-start-{run_id}",
+        "project_id": "project-current",
+        "agent": "prediction",
+        "event_type": "prediction_invocation_started",
+        "prediction_run_id": run_id,
+        "timestamp": timestamp,
+    }
 
 
 class CriticCorrelationCharacterizationTests(unittest.TestCase):
@@ -111,6 +134,131 @@ class CriticCorrelationCharacterizationTests(unittest.TestCase):
 
             self.assertEqual(result.status, "completed")
             self.assertEqual(result.references["report_id"], "critic-current")
+
+    def test_old_broken_legacy_history_does_not_block_first_critic_for_current_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_broken_legacy = {
+                "event_id": "event-old-broken",
+                "project_id": "project-current",
+                "agent": "critic",
+                "event_type": "critic_review",
+                "report_id": "critic-old",
+                "report_path": str(root / "missing-old-report.json"),
+                "report_sha256": "legacy-digest",
+                "timestamp": "2026-08-09T10:00:00+00:00",
+            }
+            current_start = _prediction_start(
+                run_id="prediction-current",
+                timestamp="2026-08-10T10:00:00+00:00",
+            )
+            current_completion = {
+                "event_id": "event-complete-prediction-current",
+                "project_id": "project-current",
+                "agent": "prediction",
+                "event_type": "prediction_handoff_ready",
+                "prediction_run_id": "prediction-current",
+                "run_id": "prediction-current",
+                "timestamp": "2026-08-10T10:00:30+00:00",
+            }
+
+            result = _inspector(
+                [old_broken_legacy, current_start, current_completion]
+            ).critic(
+                project_id="project-current",
+                prediction_run_id="prediction-current",
+            )
+
+            self.assertEqual(result.status, "not_started")
+
+    def test_prediction_start_is_filtered_after_sqlite_supported_query(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_broken_legacy = {
+                "event_id": "event-old-broken",
+                "project_id": "project-current",
+                "agent": "critic",
+                "event_type": "critic_review",
+                "report_id": "critic-old",
+                "report_path": str(Path(tmp) / "missing-old-report.json"),
+                "timestamp": "2026-08-09T10:00:00+00:00",
+            }
+            unrelated_start = _prediction_start(
+                run_id="prediction-other",
+                timestamp="2026-08-08T10:00:00+00:00",
+            )
+            current_start = _prediction_start(
+                run_id="prediction-current",
+                timestamp="2026-08-10T10:00:00+00:00",
+            )
+
+            result = _inspector(
+                [old_broken_legacy, unrelated_start, current_start],
+                store_type=_SQLiteLikeStore,
+            ).critic(
+                project_id="project-current",
+                prediction_run_id="prediction-current",
+            )
+
+            self.assertEqual(result.status, "not_started")
+
+    def test_possibly_current_unverifiable_legacy_report_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current_start = _prediction_start(
+                run_id="prediction-current",
+                timestamp="2026-08-10T10:00:00+00:00",
+            )
+            possibly_current = {
+                "event_id": "event-possibly-current",
+                "project_id": "project-current",
+                "agent": "critic",
+                "event_type": "critic_review",
+                "report_id": "critic-possibly-current",
+                "report_path": str(root / "missing-current-report.json"),
+                "report_sha256": "legacy-digest",
+                "timestamp": "2026-08-10T10:01:00+00:00",
+            }
+
+            result = _inspector([current_start, possibly_current]).critic(
+                project_id="project-current",
+                prediction_run_id="prediction-current",
+            )
+
+            self.assertEqual(result.status, "blocked")
+            self.assertEqual(result.blocker_code, "critic_recovery_ambiguous")
+
+    def test_unreadable_legacy_without_report_id_remains_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current_start = _prediction_start(
+                run_id="prediction-current",
+                timestamp="2026-08-10T10:00:00+00:00",
+            )
+            cases = {
+                "post-start": "2026-08-10T10:01:00+00:00",
+                "missing-time": None,
+            }
+            for name, timestamp in cases.items():
+                with self.subTest(name=name):
+                    possibly_current = {
+                        "event_id": f"event-{name}",
+                        "project_id": "project-current",
+                        "agent": "critic",
+                        "event_type": "critic_review",
+                        "report_path": str(root / f"missing-{name}.json"),
+                    }
+                    if timestamp is not None:
+                        possibly_current["timestamp"] = timestamp
+
+                    result = _inspector([current_start, possibly_current]).critic(
+                        project_id="project-current",
+                        prediction_run_id="prediction-current",
+                    )
+
+                    self.assertEqual(result.status, "blocked")
+                    self.assertEqual(
+                        result.blocker_code, "critic_recovery_ambiguous"
+                    )
 
     def test_broken_explicit_current_report_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
@@ -134,6 +135,11 @@ class FormalBoundaryInspector:
             legacy,
             prediction_run_id=prediction_run_id,
             legacy=True,
+            current_start=_unique_prediction_start_time(
+                self.store,
+                project_id=project_id,
+                prediction_run_id=prediction_run_id,
+            ),
         )
 
     def _critic_events(
@@ -142,6 +148,7 @@ class FormalBoundaryInspector:
         *,
         prediction_run_id: str,
         legacy: bool = False,
+        current_start: datetime | None = None,
     ) -> FormalBoundary:
         matches: list[tuple[dict[str, Any], dict[str, Any], Path]] = []
         invalid = False
@@ -149,7 +156,9 @@ class FormalBoundaryInspector:
             path = _formal_path(event, self.store, "report_path", "report_artifact_id")
             document = _read_json_object(path)
             if document is None:
-                invalid = invalid or event.get("report_id") is not None
+                if legacy and _event_precedes(event, current_start):
+                    continue
+                invalid = True
                 continue
             source = document.get("source") or {}
             if source.get("prediction_run_id") != prediction_run_id:
@@ -316,6 +325,40 @@ def _read_json_object(path: Path | None) -> dict[str, Any] | None:
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def _unique_prediction_start_time(
+    store: Any, *, project_id: str, prediction_run_id: str
+) -> datetime | None:
+    events = store.query(
+        project_id=project_id,
+        agent="prediction",
+        event_type="prediction_invocation_started",
+    )
+    matching = [
+        event
+        for event in events
+        if event.get("prediction_run_id") == prediction_run_id
+    ]
+    if len(matching) != 1:
+        return None
+    return _event_time(matching[0])
+
+
+def _event_precedes(event: Mapping[str, Any], boundary: datetime | None) -> bool:
+    observed = _event_time(event)
+    return observed is not None and boundary is not None and observed < boundary
+
+
+def _event_time(event: Mapping[str, Any]) -> datetime | None:
+    value = event.get("timestamp")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def _event_binds_document(
