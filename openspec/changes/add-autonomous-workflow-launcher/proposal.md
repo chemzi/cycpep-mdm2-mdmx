@@ -1,0 +1,37 @@
+## Why
+
+The repository has public entry points for individual workflow stages and a proven Planner-to-Execution composition, but it has no single, reviewable entry point that can drive an approved project, stop safely at approval boundaries, and resume from formal persisted state after a process failure. Workflow Launcher is promoted to P0 so operators no longer need ad hoc scripts that can lose trace context, repeat expensive scientific work, or accidentally become a second workflow authority.
+
+## What Changes
+
+- Add a thin `workflow` package with `launch`, `status`, and `resume` CLI commands for one approved project.
+- Coordinate existing public Research, Design, Prediction, Critic, Planner, Orchestrator, ExecutionWorker, Store, Evidence, Trace, and Transaction seams without reimplementing their algorithms or state ownership.
+- Add the minimum missing public boundary contracts needed for durable Research correlation/completion, a deterministically reconstructable initial Design invocation, and authoritative boundary inspection. These contracts remain owned by the relevant Agent/Store layer; the Launcher does not infer completion from filenames, stdout, `State.phase`, or its journal.
+- Require the initial launcher diagnostic record to be durably persisted before any scientific side effect, so a created `launcher_run_id` is always recoverably bound to its approved project content before Research begins.
+- Keep Prediction invocation identity and Prediction pipeline `run_id` distinct from the formal Orchestrator `run_id`, make both Prediction identities deterministically reconstructable, and have Prediction durably bind the original exact run locator before scientific side effects so recovery cannot drift with the current environment or trust diagnostic metadata as authority.
+- Bind resume to the original `project_id` and approved-content identity and fail closed when either has changed.
+- Persist a versioned launcher diagnostic report containing correlation identifiers, completed call boundaries, structured failures, and references to formal artifacts/evidence/runs/transactions. The report is diagnostic only and cannot declare formal task, run, candidate, or transaction success.
+- Fail fast with a non-zero exit code on errors; preserve committed data; stop at `awaiting_approval`; and fail closed when formal state cannot prove that resuming is safe.
+- Reuse the established `Planner.run -> approval artifact -> Orchestrator.initialize -> ExecutionWorker.drain_run -> Orchestrator.status` composition after a valid approval artifact is supplied. The selfcheck-only synthetic Critic bootstrap behavior is explicitly excluded.
+- Add focused failure, recovery, idempotency, authority-boundary, CLI, and end-to-end tests for the requested workflow stages.
+- No breaking change is intended. Existing Agent CLIs and Python entry points remain supported; new optional correlation inputs must preserve existing behavior when omitted.
+
+## Capabilities
+
+### New Capabilities
+
+- `workflow/autonomous-launcher`: Defines approved-project launch, diagnostic status, approval-aware continuation, authoritative resume, failure reporting, and the prohibition on shadow workflow state.
+
+### Modified Capabilities
+
+None.
+
+## Impact
+
+- **Behavior:** adds an operator-facing coordination path; does not change scientific algorithms, thresholds, Planner decisions, Orchestrator authority, transaction semantics, or worker scheduling.
+- **Public interfaces:** adds `python -m workflow launch|status|resume`; adds only narrow optional public correlation/boundary seams where the audit found no safe existing interface. Exact additions are governed by the design and spec.
+- **Data formats:** adds a versioned launcher diagnostic JSON format; additive `research_invocation_started`, `research_completion_receipt`, `design_initial_invocation_started`, `design_initial_completion`, and `prediction_invocation_started` payload contracts inside the existing Store-backed `EvidenceEvent` envelope; and additive Prediction invocation-correlation fields in the existing Prediction manifest/handoff/Evidence contracts. No Store table, Evidence envelope, plan, approval, Orchestrator run, task, candidate, artifact, or transaction schema is redesigned.
+- **Migration:** none. Existing projects, Evidence readers, Prediction runs, and workflow artifacts remain valid. Launcher correlation fields are mandatory only for launcher-correlated Prediction runs; legacy/non-Launcher manifests omit those keys entirely rather than adding `null`, preserving strict manifest-equality resume behavior. Readers that do not understand new Evidence event types continue to ignore them. Diagnostics are additive and may be deleted without changing formal workflow state.
+- **Affected areas:** new `workflow/` coordination and CLI modules, narrow public Agent/Store boundary additions, tests, and operator documentation.
+- **Legacy paths retained:** individual Agent CLIs, `scripts/run_execution_selfcheck.py`, and direct public Python seams remain available. The selfcheck script remains an isolated validation tool and is not used as Launcher authority.
+- **Non-goals:** frontend controls, automatic code repair, unlimited retry, threshold mutation, approval bypass, a new scheduler/database/state machine, remote GPU redesign, Orchestrator authority migration, Store schema redesign, or Agent rewrites.
