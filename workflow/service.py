@@ -5,7 +5,6 @@ from __future__ import annotations
 import uuid
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
@@ -17,13 +16,14 @@ from .diagnostics import DiagnosticStore, resolve_diagnostics_root
 from .errors import DiagnosticContractError, normalize_error
 from .models import (
     BrowserResult,
-    CallObservation,
     DiagnosticReport,
-    FormalTrace,
     LauncherCommandResult,
-    OpaqueReference,
-    PredictionRunLocator,
     StructuredError,
+)
+from .observations import (
+    mirror_prediction_identity as _mirror_prediction_identity,
+    observe as _observe,
+    with_plan_trace as _with_plan_trace,
 )
 from .runtime_context import bind_project_context
 
@@ -285,7 +285,12 @@ def _continue_approved_plan(
             )
             if execute:
                 session.write(report)
-            return _result(report, "awaiting_approval", 0)
+            return _result(
+                report,
+                "awaiting_approval",
+                0,
+                required_task_ids=tuple(approval_request.get("required_task_ids") or ()),
+            )
         if not execute:
             return _result(report, "ready", 0)
         runtime.initialize_orchestrator(planner.references["plan_path"], supplied)
@@ -295,9 +300,6 @@ def _continue_approved_plan(
         report = _observe(report, "orchestrator", orchestrator)
         session.write(report)
 
-    transaction = runtime.inspect_transactions(orchestrator)
-    if transaction.status == "blocked":
-        return _block(session, report, transaction)
     formal_status = str(orchestrator.references.get("formal_status") or "pending")
     if formal_status == "ready" and execute:
         try:
@@ -319,7 +321,7 @@ def _continue_approved_plan(
         formal_status = str(orchestrator.references.get("formal_status") or "pending")
         report = _observe(report, "execution", orchestrator)
         session.write(report)
-    return _formal_outcome(report, formal_status)
+    return _formal_outcome(report, formal_status, orchestrator, plan)
 
 
 def _worker_failure(runtime, session, report, orchestrator, plan, error):
@@ -383,75 +385,6 @@ def _resolve_boundary(
     return report, None
 
 
-def _observe(
-    report: DiagnosticReport, boundary: str, formal: FormalBoundary
-) -> DiagnosticReport:
-    references = formal.references
-    evidence_ids = _merge_ids(
-        report.evidence_ids,
-        _reference_ids(references, "evidence_id", "evidence_ids", "completion_event_id"),
-    )
-    artifact_ids = _merge_ids(
-        report.artifact_ids, _reference_ids(references, "artifact_id", "artifact_ids")
-    )
-    trace = _trace_from_references(report.formal_trace, references)
-    output_refs = tuple(
-        OpaqueReference(kind=key.removesuffix("_id"), id=value)
-        for key, value in references.items()
-        if key.endswith("_id") and isinstance(value, str) and value
-    )
-    call = CallObservation(
-        boundary=boundary,
-        component=boundary,
-        started_at=_now(),
-        completed_at=_now(),
-        output_refs=output_refs,
-        formal_trace=trace,
-        observed_formal_status=references.get("formal_status"),
-    )
-    calls = report.calls
-    if not any(
-        existing.boundary == boundary and existing.output_refs == output_refs
-        for existing in calls
-    ):
-        calls = (*calls, call)
-    return report.with_observation(
-        current_boundary=_next_boundary(boundary),
-        last_completed_boundary=boundary,
-        calls=calls,
-        formal_trace=trace,
-        evidence_ids=evidence_ids,
-        artifact_ids=artifact_ids,
-        last_known_formal_status=references.get("formal_status")
-        or report.last_known_formal_status,
-    )
-
-
-def _mirror_prediction_identity(
-    report: DiagnosticReport, runtime: Any, formal: FormalBoundary
-) -> DiagnosticReport:
-    invocation_id = formal.references.get("prediction_invocation_id") or runtime.prediction_invocation_id
-    run_id = formal.references.get("prediction_run_id") or runtime.prediction_run_id
-    root = formal.references.get("run_root")
-    locator = None
-    if root is not None:
-        locator = PredictionRunLocator(root=str(root), run_id=run_id)
-    return report.with_observation(
-        prediction_invocation_id=invocation_id,
-        prediction_run_id=run_id,
-        prediction_run_locator=locator or report.prediction_run_locator,
-    )
-
-
-def _with_plan_trace(report: DiagnosticReport, plan: Mapping[str, Any]) -> DiagnosticReport:
-    trace = FormalTrace(
-        workflow_id=plan.get("workflow_id"),
-        plan_id=plan.get("plan_id"),
-        run_id=report.formal_trace.run_id,
-    )
-    return report.with_observation(formal_trace=trace)
-
-
 def _block_or_invalid(
     session: Any, report: DiagnosticReport, formal: FormalBoundary, boundary: str
 ) -> LauncherCommandResult:
@@ -498,16 +431,60 @@ def _record_failure(
     return _result(failed, "failed" if exit_code == 2 else "blocked", exit_code)
 
 
-def _formal_outcome(report: DiagnosticReport, status: str) -> LauncherCommandResult:
+def _formal_outcome(
+    report: DiagnosticReport,
+    status: str,
+    orchestrator: FormalBoundary,
+    plan: Mapping[str, Any],
+) -> LauncherCommandResult:
+    summary = orchestrator.references.get("summary") or {}
+    task_status_counts = summary.get("task_status_counts") or {}
+    required_task_ids = ()
+    if status == "awaiting_approval":
+        required_task_ids = tuple(
+            (plan.get("approval_request") or {}).get("required_task_ids", ())
+        )
     if status == "blocked":
-        return _result(report, status, 3)
+        return _result(
+            report,
+            status,
+            3,
+            required_task_ids=required_task_ids,
+            task_status_counts=task_status_counts,
+        )
     if status == "failed":
-        return _result(report, status, 2)
-    return _result(report, status, 0)
+        return _result(
+            report,
+            status,
+            2,
+            required_task_ids=required_task_ids,
+            task_status_counts=task_status_counts,
+        )
+    return _result(
+        report,
+        status,
+        0,
+        required_task_ids=required_task_ids,
+        task_status_counts=task_status_counts,
+    )
 
 
-def _result(report: DiagnosticReport, status: str, exit_code: int) -> LauncherCommandResult:
-    return LauncherCommandResult(report.browser_projection(status=status), exit_code)
+def _result(
+    report: DiagnosticReport,
+    status: str,
+    exit_code: int,
+    *,
+    required_task_ids: tuple[str, ...] = (),
+    task_status_counts: Mapping[str, int] | None = None,
+) -> LauncherCommandResult:
+    return LauncherCommandResult(
+        report.browser_projection(
+            status=status,
+            required_task_ids=required_task_ids,
+            task_status_counts=task_status_counts,
+        ),
+        exit_code,
+    )
 
 
 def _unbound_failure(
@@ -541,47 +518,6 @@ def _validate_resume_binding(report: DiagnosticReport, context: ProjectContext) 
             "launcher_approved_content_changed",
             "The approved project content no longer matches this launcher run.",
         )
-
-
-def _reference_ids(references: Mapping[str, Any], *keys: str) -> tuple[str, ...]:
-    values: list[str] = []
-    for key in keys:
-        value = references.get(key)
-        if isinstance(value, str) and value:
-            values.append(value)
-        elif isinstance(value, (list, tuple)):
-            values.extend(item for item in value if isinstance(item, str) and item)
-    return tuple(values)
-
-
-def _merge_ids(existing: tuple[str, ...], added: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys((*existing, *added)))
-
-
-def _trace_from_references(trace: FormalTrace, references: Mapping[str, Any]) -> FormalTrace:
-    return FormalTrace(
-        workflow_id=references.get("workflow_id") or trace.workflow_id,
-        run_id=references.get("run_id") or trace.run_id,
-        plan_id=references.get("plan_id") or trace.plan_id,
-        task_id=references.get("task_id") or trace.task_id,
-        attempt_id=references.get("attempt_id") or trace.attempt_id,
-        transaction_id=references.get("transaction_id") or trace.transaction_id,
-    )
-
-
-def _next_boundary(boundary: str) -> str:
-    order = (
-        "project_approval", "research", "design", "prediction", "critic",
-        "planner", "approval", "orchestrator", "execution",
-    )
-    try:
-        return order[order.index(boundary) + 1]
-    except (ValueError, IndexError):
-        return boundary
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _default_dependencies() -> LauncherServiceDependencies:

@@ -249,30 +249,6 @@ class FormalBoundaryInspector:
             )
         return result
 
-    def transactions(self, *, run_id: str) -> FormalBoundary:
-        """Report unresolved transactions for a run without performing recovery."""
-        records = [
-            transaction
-            for transaction in self.store.list_transactions()
-            if _transaction_run_id(transaction) == run_id
-        ]
-        unresolved = [
-            item
-            for item in records
-            if item.get("status") not in {"COMMITTED", "ROLLED_BACK", "FAILED"}
-        ]
-        if unresolved:
-            return FormalBoundary.blocked(
-                "transaction",
-                "transaction_recovery_unresolved",
-                "one or more formal transactions require owner recovery",
-                transaction_ids=tuple(item.get("transaction_id") for item in unresolved),
-            )
-        return FormalBoundary.completed(
-            "transaction",
-            transaction_ids=tuple(item.get("transaction_id") for item in records),
-        )
-
     def execution_failure(self, *, run_id: str) -> FormalBoundary:
         """Return the latest formal Worker failure trace, when one exists."""
         events = self.store.query(
@@ -292,16 +268,6 @@ class FormalBoundaryInspector:
             transaction_id=event.get("transaction_id"),
             formal_status="failed",
         )
-
-
-def _transaction_run_id(transaction: Mapping[str, Any]) -> Any:
-    context = transaction.get("context") or transaction.get("payload") or {}
-    metadata = context.get("metadata") if isinstance(context, Mapping) else {}
-    return (
-        transaction.get("run_id")
-        or (context.get("run_id") if isinstance(context, Mapping) else None)
-        or (metadata.get("run_id") if isinstance(metadata, Mapping) else None)
-    )
 
 
 def _formal_path(

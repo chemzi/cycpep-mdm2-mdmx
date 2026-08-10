@@ -145,19 +145,6 @@ class FormalBoundaryInspectorTests(unittest.TestCase):
             self.assertEqual(result.status, "blocked")
             self.assertEqual(result.blocker_code, "critic_recovery_ambiguous")
 
-    def test_unresolved_transaction_is_a_blocker_without_recovery_mutation(self):
-        store = _Store(transactions=[{
-            "transaction_id": "tx-1",
-            "status": "COMMITTING",
-            "context": {"run_id": "run-1"},
-        }])
-
-        result = _inspector(store).transactions(run_id="run-1")
-
-        self.assertEqual(result.status, "blocked")
-        self.assertEqual(result.blocker_code, "transaction_recovery_unresolved")
-        self.assertEqual(result.references["transaction_ids"], ("tx-1",))
-
     def test_orchestrator_status_is_revalidated_by_public_seam(self):
         calls = []
 

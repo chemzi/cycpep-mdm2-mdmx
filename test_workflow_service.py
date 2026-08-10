@@ -146,6 +146,7 @@ class _Runtime:
             plan_id="plan-1",
             run_path="C:/internal/orchestrator.json",
             formal_status=self.world.orchestrator_status,
+            summary={"task_status_counts": {"succeeded": 1}},
         )
 
     def initialize_orchestrator(self, plan_path, approvals):
@@ -155,9 +156,6 @@ class _Runtime:
         if self.world.fail_at == "orchestrator":
             raise RuntimeError("orchestrator failed")
         self.world.statuses["orchestrator"] = "completed"
-
-    def inspect_transactions(self, orchestrator):
-        return self.world.transaction
 
     def inspect_execution_failure(self, orchestrator):
         if self.world.fail_at != "execution":
@@ -227,6 +225,7 @@ class WorkflowServiceAcceptanceTests(unittest.TestCase):
 
             self.assertEqual(result.exit_code, 0)
             self.assertEqual(result.payload.status, "awaiting_approval")
+            self.assertEqual(result.payload.required_task_ids, ("task-1",))
             self.assertEqual(
                 world.calls,
                 [
@@ -324,23 +323,6 @@ class WorkflowServiceAcceptanceTests(unittest.TestCase):
                 self.assertEqual(result.payload.error.code, f"{boundary}_recovery_ambiguous")
                 self.assertNotIn(boundary, world.calls)
 
-    def test_unresolved_transaction_blocks_worker(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            world = _World()
-            deps = _dependencies(tmp, world)
-            launch_project(project_path="approved.json", dependencies=deps)
-            world.statuses["orchestrator"] = "completed"
-            world.transaction = FormalBoundary.blocked(
-                "transaction", "transaction_recovery_unresolved", "requires recovery"
-            )
-            world.calls.clear()
-
-            result = resume_launcher_run(launcher_run_id=LAUNCHER_ID, dependencies=deps)
-
-            self.assertEqual(result.exit_code, 3)
-            self.assertEqual(result.payload.error.code, "transaction_recovery_unresolved")
-            self.assertNotIn("execution", world.calls)
-
     def test_invalid_approval_and_orchestrator_status_failure_never_reach_worker(self):
         for failure in ("approval", "orchestrator", "orchestrator_status"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
@@ -426,6 +408,7 @@ class WorkflowServiceAcceptanceTests(unittest.TestCase):
 
                 self.assertEqual(result.payload.status, formal_status)
                 self.assertEqual(result.exit_code, exit_code)
+                self.assertEqual(result.payload.task_status_counts, {"succeeded": 1})
                 self.assertEqual(world.calls, [])
 
 

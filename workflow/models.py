@@ -170,6 +170,8 @@ class BrowserResult:
     formal_trace: FormalTrace = field(default_factory=FormalTrace)
     evidence_ids: tuple[str, ...] = ()
     artifact_ids: tuple[str, ...] = ()
+    required_task_ids: tuple[str, ...] = ()
+    task_status_counts: Mapping[str, int] = field(default_factory=dict)
     last_known_formal_status: str | None = None
     error: StructuredError | None = None
     schema_version: int = DIAGNOSTIC_SCHEMA_VERSION
@@ -180,6 +182,15 @@ class BrowserResult:
             raise TypeError("formal_trace must be FormalTrace")
         if self.error is not None and not isinstance(self.error, StructuredError):
             raise TypeError("error must be StructuredError")
+        _string_tuple(self.required_task_ids, "required_task_ids")
+        if not isinstance(self.task_status_counts, Mapping) or any(
+            not isinstance(key, str)
+            or isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            for key, value in self.task_status_counts.items()
+        ):
+            raise TypeError("task_status_counts must map strings to non-negative integers")
 
     def to_dict(self) -> dict[str, Any]:
         error_value = None
@@ -202,6 +213,8 @@ class BrowserResult:
             "formal_trace": self.formal_trace.to_dict(),
             "evidence_ids": list(self.evidence_ids),
             "artifact_ids": list(self.artifact_ids),
+            "required_task_ids": list(self.required_task_ids),
+            "task_status_counts": dict(self.task_status_counts),
             "last_known_formal_status": self.last_known_formal_status,
             "error": error_value,
         }
@@ -297,7 +310,13 @@ class DiagnosticReport:
             last_known_formal_status=formal_status or self.last_known_formal_status,
         )
 
-    def browser_projection(self, *, status: str) -> BrowserResult:
+    def browser_projection(
+        self,
+        *,
+        status: str,
+        required_task_ids: tuple[str, ...] = (),
+        task_status_counts: Mapping[str, int] | None = None,
+    ) -> BrowserResult:
         return BrowserResult(
             status=status,
             launcher_run_id=self.launcher_run_id,
@@ -309,6 +328,8 @@ class DiagnosticReport:
             formal_trace=self.formal_trace,
             evidence_ids=self.evidence_ids,
             artifact_ids=self.artifact_ids,
+            required_task_ids=required_task_ids,
+            task_status_counts=dict(task_status_counts or {}),
             last_known_formal_status=self.last_known_formal_status,
             error=self.failure,
         )
