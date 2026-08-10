@@ -58,4 +58,4 @@
 - [x] 6.1 Run the focused Launcher, Agent seam, approval, Orchestrator, Worker, transaction, recovery, and Store tests and record the commands/results in the change handoff.
 - [x] 6.2 Run the full applicable Python test suite, configured lint/type checks, and `scripts/architecture_gate.py`; resolve regressions within scope and report unrelated failures separately.
 - [x] 6.3 Run strict OpenSpec validation and `$openspec-verify-change` against the approved artifacts.
-- [ ] 6.4 Run the repository `code-review` skill against the integration merge base and the mandatory Strict Code Review, address in-scope findings, report the Standards and Spec results, and require the Strict Code Review score to be at least 85 before merge.
+- [x] 6.4 Run the repository `code-review` skill against the integration merge base and the mandatory Strict Code Review, address in-scope findings, report the Standards and Spec results, and require the Strict Code Review score to be at least 85 before merge.
