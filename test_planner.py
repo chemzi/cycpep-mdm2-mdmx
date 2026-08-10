@@ -223,6 +223,38 @@ class PlannerTests(unittest.TestCase):
             ["design_budget_missing_or_exhausted"],
         )
 
+    def test_budget_exhaustion_stops_planning_and_returns_current_best(self):
+        report_path = self._report([
+            self._issue("l2_interface_confidence_low", "iterate_interface_design")
+        ])
+        state = self._state()
+        state["compute_budget"] = {
+            "max_gpu_minutes": 5.0,
+            "remaining_gpu_minutes": 1.0,
+        }
+        state["candidate_rows"] = [{
+            "candidate_id": "C9000",
+            "final_status": "finalized",
+            "final_rank": 1,
+            "all_layers_pass": True,
+        }]
+        result = build_plan(critic_report_path=report_path, state=state)
+        self.assertEqual(result["status"], "stopped_by_budget")
+        self.assertTrue(result["decision_metadata"]["stopped_early"])
+        self.assertEqual(
+            result["decision_metadata"]["stopped_reason"],
+            "global_compute_budget_exhausted",
+        )
+        self.assertEqual(
+            result["decision_metadata"]["current_best"]["candidate_id"],
+            "C9000",
+        )
+        self.assertEqual(result["tasks"][0]["action"], "iterate_design")
+        self.assertEqual(
+            result["tasks"][0]["resource_request"]["estimate_status"],
+            "estimated",
+        )
+
     def test_l7_reference_and_complete_l6_failures_enter_design_iteration(self):
         report_path = self._report([
             self._issue(
