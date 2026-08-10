@@ -129,7 +129,7 @@ Existing protocol and artifact digest fields remain untouched because they are p
 
 ### 5. Diagnostic report is an atomic observation journal
 
-The diagnostics root is resolved without knowing a project: `CYCPEP_LAUNCHER_DIAGNOSTICS` when configured, otherwise `<NP_DATA>/launcher_diagnostics`, otherwise the repository runtime data root's `launcher_diagnostics` directory. A report is addressed directly by its validated opaque ID; `status` and `resume` never enumerate project directories.
+The diagnostics root is resolved without knowing a project: `CYCPEP_LAUNCHER_DIAGNOSTICS` when explicitly configured, otherwise the repository's stable `data/launcher_diagnostics` directory. Formal-runtime selectors such as `NP_DATA`, `CYCPEP_DATA_DIR`, `CYCPEP_EVIDENCE_DIR`, `CYCPEP_DB_PATH`, and Prediction roots never choose the diagnostic root. An explicit Launcher diagnostics root is operator configuration and must remain the same for commands addressing that run. A report is addressed directly by its validated opaque ID; `status` and `resume` never enumerate project directories.
 
 Default internal location shape:
 
@@ -168,6 +168,8 @@ Version 1 shape:
 ```
 
 The internal report mirrors the exact resolved Prediction run locator for diagnosis, but resume obtains and validates it from the Prediction-owned Store-backed start receipt. Browser-facing output excludes its internal root and exposes opaque IDs and safe relative roles only. The report locator is not recovery, workflow, or scientific authority. The report never stores secrets, environment dumps, full stdout/stderr, tracebacks, candidate payloads, task transition state, or transaction effects. Writes use the repository's existing atomic JSON infrastructure without adding a new hash.
+
+DiagnosticStore also persists the original `RuntimeLocatorBinding` as a directly addressed write-once sidecar under the same per-run lock before the mutable journal is created. Journal reads and writes must match that binding exactly. `status` and `resume` restore formal paths only from the sidecar; changing otherwise valid absolute paths in the mutable journal is rejected before runtime construction. The sidecar is internal location metadata, contains no status or transition, is never browser-projected, and cannot declare a scientific or workflow boundary complete. Missing or invalid sidecars fail closed. No digest or second database is introduced.
 
 After project approval validation, the Launcher allocates `launcher_run_id` and must durably create the initial report containing `project_id`, the current approved-content binding, and the safe project locator before invoking Research. The report writer is injected so tests can fail both this initial write and later writes. Initial-write failure performs no scientific call; a later report-write failure becomes a non-zero launcher failure but never triggers formal rollback.
 
@@ -292,7 +294,8 @@ Once a formal Orchestrator run exists, Launcher first merges its `workflow_id`, 
 For `ready`, `running`, and `pending`, both commands call the owner-side read-only transaction inspector. `status` never mutates. `resume` applies the inspector result as follows:
 
 - clean: re-read Orchestrator and continue only if its new formal state permits it;
-- live active owner: return the current `running`/`pending` outcome without recovery, compensation, claim, drain, or scientific execution;
+- live active owner with no other unresolved/error state: return `running` without recovery, compensation, claim, drain, or scientific execution;
+- live active owner plus another unresolved transaction or marker error: retain the active identifiers but return the unresolved blocker and perform no mutating recovery, compensation, claim, drain, or scientific execution;
 - dead or stale unresolved owner: call the existing formal `recover_transactions` seam, then re-inspect Orchestrator and transaction state before deciding to drain, block, or return a formal outcome;
 - unresolved after recovery: return `transaction_recovery_unresolved` with available identifiers and perform no Worker action.
 

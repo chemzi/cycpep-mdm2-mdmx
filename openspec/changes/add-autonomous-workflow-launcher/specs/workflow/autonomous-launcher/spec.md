@@ -292,6 +292,10 @@ Ordinary diagnostic observations SHALL preserve `failure`, `failed_boundary`, an
 - **WHEN** read-only formal recovery inspection reports transaction `TX123` unresolved
 - **THEN** `status` returns `blocked` with `transaction_recovery_unresolved` and `TX123`, and performs no formal mutation
 
+#### Scenario: Live owner coexists with another unresolved transaction
+- **WHEN** one inspected transaction has a live active owner while another transaction or marker in the same run is stale, unresolved, or corrupt
+- **THEN** status and resume preserve the live-owner identifiers but return the unresolved recovery blocker; resume does not recover, compensate, claim, or rerun the live owner's work
+
 #### Scenario: Orchestrator identifiers precede transaction inspection
 - **WHEN** a stale diagnostic is missing current Orchestrator identifiers and read-only recovery inspection reports `TX123` unresolved
 - **THEN** Launcher non-destructively merges the formal `workflow_id`, `run_id`, and `plan_id` before reporting the blocker, retains any existing `task_id` and `attempt_id`, and reports `transaction_id` as `TX123` without claiming that a boundary completed
@@ -347,6 +351,18 @@ The initial diagnostic SHALL durably store the exact resolved internal data, Evi
 #### Scenario: Runtime locator persistence fails before science
 - **WHEN** the initial diagnostic cannot durably persist the complete runtime locator binding
 - **THEN** launch exits non-zero before Research or any other formal or scientific side effect
+
+#### Scenario: Formal runtime selectors change diagnostic lookup inputs
+- **WHEN** `NP_DATA` or another formal-runtime path selector differs between launch and a later command while no explicit Launcher diagnostics root changes
+- **THEN** the later command locates the same diagnostic directly by `launcher_run_id`, because default diagnostic lookup is independent of formal data, Evidence, database, and Prediction-root selectors
+
+#### Scenario: Mutable journal attempts an absolute Store redirect
+- **WHEN** the diagnostic journal's mirrored data, Evidence, or database locator is edited to another valid absolute location
+- **THEN** DiagnosticStore rejects the mismatch against its write-once locator binding before constructing runtime or invoking any scientific or Worker action
+
+#### Scenario: Write-once locator binding is unavailable
+- **WHEN** the directly addressed locator binding is missing, invalid, or conflicts with the journal/project binding
+- **THEN** status or resume fails closed and does not use the mutable journal or ambient environment to choose a replacement Store
 
 ### Requirement: Latest Planner plan contract is preserved
 Launcher SHALL pass through and validate the current immutable Planner plan without deleting, reconstructing, or downgrading `decision_metadata`, compute estimates, budget metadata, plan identity, or approval-bound fields. Approval validation and Orchestrator initialization SHALL receive the same current plan contract produced by Planner.

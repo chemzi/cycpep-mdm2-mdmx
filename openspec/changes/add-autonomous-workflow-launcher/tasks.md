@@ -105,3 +105,6 @@
 - [x] 10.8 Run the complete focused Launcher, Critic, Research, Prediction, Design, transaction/recovery, Worker, Planner, Orchestrator, Store, and Workbench V2 suites on the merged baseline.
 - [x] 10.9 Run the full Python and Frontend suites, lint, typecheck, frontend build, Architecture Gate, compileall, and `git diff --check` on the final fixed point.
 - [ ] 10.10 Run strict OpenSpec validation and `$openspec-verify-change`, then fresh independent Spec, Standards, and Strict Code Reviews against the latest integration merge base; require behind=0, P0=0, P1=0, and Strict score >=85 while keeping PR #62 Draft and unmerged.
+- [ ] 10.11 Make default diagnostic lookup independent of formal-runtime selector drift, persist the original runtime locator as a directly addressed write-once DiagnosticStore binding, reject mutable-journal absolute Store redirects, and add real default-path cross-command regression coverage.
+- [ ] 10.12 Preserve live-owner identifiers but prioritize any simultaneous unresolved transaction or marker error as a blocker, with zero recovery/claim/scientific action against the live owner.
+- [ ] 10.13 Re-run focused/full/frontend/architecture/OpenSpec gates and all three fresh reviews from the corrected fixed point; require behind=0, P0=0, P1=0, and Strict score >=85.
