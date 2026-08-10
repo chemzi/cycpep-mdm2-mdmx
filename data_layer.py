@@ -606,6 +606,7 @@ class EvidenceLogger:
                      required_approval_task_ids: list,
                      critic_report_path: str | None = None,
                      critic_report_sha256: str | None = None,
+                     planning_metadata: dict | None = None,
                      trace_context: TraceContext | dict | None = None):
         """Record one immutable Planner plan without authorizing execution."""
         payload = {
@@ -621,6 +622,8 @@ class EvidenceLogger:
             payload["critic_report_path"] = critic_report_path
         if critic_report_sha256:
             payload["critic_report_sha256"] = critic_report_sha256
+        if planning_metadata is not None:
+            payload["planning_metadata"] = planning_metadata
         return cls.log("planner", "planner_plan", payload, targets=list(required_target_ids(
             State.load().get("project_config") or State._project_config
         )), phase="iterate", trace_context=trace_context)

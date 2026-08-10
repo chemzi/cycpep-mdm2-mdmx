@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -114,6 +115,9 @@ class PlannerConfig:
     optional_design_batch_size: int = 3
     max_design_proposals_per_plan: int = 48
     max_prediction_candidates_per_task: int = 48
+    max_rounds: int = 5
+    task_timeout_seconds: int = 3600
+    max_gpu_minutes: float = 600.0
 
     def __post_init__(self) -> None:
         for name in (
@@ -121,11 +125,24 @@ class PlannerConfig:
             "optional_design_batch_size",
             "max_design_proposals_per_plan",
             "max_prediction_candidates_per_task",
+            "max_rounds",
+            "task_timeout_seconds",
         ):
             if int(getattr(self, name)) < 1:
                 raise PlannerContractError(
                     "planner_config_invalid", f"{name} must be positive"
                 )
+        try:
+            gpu_minutes = float(self.max_gpu_minutes)
+        except (TypeError, ValueError) as exc:
+            raise PlannerContractError(
+                "planner_config_invalid", "max_gpu_minutes must be numeric"
+            ) from exc
+        if not math.isfinite(gpu_minutes) or gpu_minutes <= 0:
+            raise PlannerContractError(
+                "planner_config_invalid",
+                "max_gpu_minutes must be finite and positive",
+            )
         if self.design_batch_size > self.max_design_proposals_per_plan:
             raise PlannerContractError(
                 "planner_config_invalid",
@@ -344,6 +361,84 @@ def _budget_snapshot(state: dict) -> tuple[dict[str, int], int]:
     return normalized, sum(normalized.values())
 
 
+def _finite_non_negative(value, *, code: str, label: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise PlannerContractError(code, f"{label} must be numeric") from exc
+    if not math.isfinite(number) or number < 0:
+        raise PlannerContractError(code, f"{label} must be finite and non-negative")
+    return number
+
+
+def _compute_budget_status(state: dict, *, default_max_gpu_minutes: float) -> dict:
+    raw = state.get("compute_budget") or {}
+    if raw in (None, {}):
+        raw = {}
+    if not isinstance(raw, dict):
+        raise PlannerContractError(
+            "compute_budget_invalid", "State compute_budget must be an object"
+        )
+    configured = _finite_non_negative(
+        raw.get("max_gpu_minutes", default_max_gpu_minutes),
+        code="compute_budget_invalid",
+        label="max_gpu_minutes",
+    )
+    if configured <= 0:
+        raise PlannerContractError(
+            "compute_budget_invalid", "max_gpu_minutes must be positive"
+        )
+    if raw.get("remaining_gpu_minutes") is not None:
+        remaining = _finite_non_negative(
+            raw["remaining_gpu_minutes"],
+            code="compute_budget_invalid",
+            label="remaining_gpu_minutes",
+        )
+    else:
+        consumed = _finite_non_negative(
+            raw.get("consumed_gpu_minutes", 0.0),
+            code="compute_budget_invalid",
+            label="consumed_gpu_minutes",
+        )
+        remaining = max(configured - consumed, 0.0)
+    requested = 0.0
+    return {
+        "max_gpu_minutes": round(configured, 3),
+        "remaining_gpu_minutes": round(remaining, 3),
+        "requested_gpu_minutes": round(requested, 3),
+        "projected_remaining_gpu_minutes": round(max(remaining - requested, 0.0), 3),
+        "exhausted": remaining <= 0,
+        "reason": "global_compute_budget_exhausted" if remaining <= 0 else None,
+    }
+
+
+def _select_current_best(candidate_rows: list[dict] | None) -> dict | None:
+    rows = [row for row in (candidate_rows or []) if isinstance(row, dict)]
+    if not rows:
+        return None
+
+    def truthy(value: Any) -> bool:
+        return value is True or str(value).strip().casefold() in {"true", "1", "yes"}
+
+    finalized_clear = [
+        row for row in rows
+        if truthy(row.get("all_layers_pass"))
+        and str(row.get("final_status") or "").casefold() == "finalized"
+    ]
+    clear = [row for row in rows if truthy(row.get("all_layers_pass"))]
+    ranked = sorted(
+        (row for row in rows if str(row.get("final_rank") or "").strip().isdigit()),
+        key=lambda row: int(row["final_rank"]),
+    )
+    best = finalized_clear[0] if finalized_clear else clear[0] if clear else ranked[0] if ranked else rows[0]
+    return {
+        "candidate_id": best.get("candidate_id"),
+        "final_status": best.get("final_status"),
+        "final_rank": best.get("final_rank"),
+        "all_layers_pass": truthy(best.get("all_layers_pass")),
+    }
+
+
 def _reason_disposition(reason_codes: list[str], issues_by_code: dict[str, dict]) -> str:
     severities = {issues_by_code[code]["severity"] for code in reason_codes}
     if "blocker" in severities:
@@ -492,6 +587,7 @@ def _task(
     outputs: list[str] | None = None,
     constraints: list[str] | None = None,
     block_reasons: list[str] | None = None,
+    resource_request_overrides: dict | None = None,
 ) -> dict:
     task_id = f"T{len(tasks) + 1:03d}"
     try:
@@ -512,6 +608,20 @@ def _task(
     effective_block_reasons = list(block_reasons or [])
     if not action_spec.executable and "blocked_unimplemented" not in effective_block_reasons:
         effective_block_reasons.append("blocked_unimplemented")
+    resource_request = {
+        "class": resource_class,
+        "gpu_job_slots": 1 if resource_class == "gpu" else 0,
+        "proposal_count": int(proposal_count),
+        "candidate_limit": int(candidate_limit),
+        "estimated_gpu_minutes": None,
+        "estimated_duration_minutes": None,
+        "estimated_cost": None,
+        "estimate_status": (
+            "benchmark_required" if resource_class == "gpu" else "not_applicable"
+        ),
+    }
+    if resource_request_overrides:
+        resource_request.update(resource_request_overrides)
     value = {
         "task_id": task_id,
         "agent": agent,
@@ -525,16 +635,7 @@ def _task(
             "from_task_id": from_task_id,
         },
         "parameters": dict(parameters or {}),
-        "resource_request": {
-            "class": resource_class,
-            "gpu_job_slots": 1 if resource_class == "gpu" else 0,
-            "proposal_count": int(proposal_count),
-            "candidate_limit": int(candidate_limit),
-            "estimated_gpu_minutes": None,
-            "estimate_status": (
-                "benchmark_required" if resource_class == "gpu" else "not_applicable"
-            ),
-        },
+        "resource_request": resource_request,
         "approval": approval or _approval(
             action=action, critic_approval_required=False
         ),
@@ -595,6 +696,40 @@ def _add_critic_followup(
     )
 
 
+def _estimate_resource_request(
+    *,
+    action: str,
+    proposal_count: int = 0,
+    candidate_limit: int = 0,
+    route: str | None = None,
+) -> dict:
+    action_spec = get_action_spec(action)
+    if action_spec.resource_class != "gpu":
+        return {
+            "estimated_gpu_minutes": 0.0,
+            "estimated_duration_minutes": 0.0,
+            "estimated_cost": 0.0,
+            "estimate_status": "not_applicable",
+            "route": None,
+        }
+    route_key = (route or "A").upper()
+    route_minutes = {"A": 2.0, "B": 5.0, "C": 10.0}.get(route_key, 2.0)
+    if action == "evaluate_new_design_candidates":
+        estimated_gpu_minutes = max(route_minutes * max(candidate_limit, 1), 5.0)
+    elif action == "iterate_design":
+        estimated_gpu_minutes = max(route_minutes * max(proposal_count, 1), 5.0)
+    else:
+        estimated_gpu_minutes = max(route_minutes, 5.0)
+    estimated_duration_minutes = max(estimated_gpu_minutes, 5.0)
+    return {
+        "estimated_gpu_minutes": round(estimated_gpu_minutes, 3),
+        "estimated_duration_minutes": round(estimated_duration_minutes, 3),
+        "estimated_cost": round(estimated_gpu_minutes, 3),
+        "estimate_status": "estimated",
+        "route": route_key,
+    }
+
+
 def build_plan(
     *,
     critic_report_path: str | Path,
@@ -630,6 +765,10 @@ def build_plan(
     _validate_critic_report(report, state, report_sha)
     budgets, total_design_budget = _budget_snapshot(state)
     source_round = int(state.get("round") or 1)
+    budget_status = _compute_budget_status(
+        state, default_max_gpu_minutes=float(config.max_gpu_minutes)
+    )
+    current_best = _select_current_best(state.get("candidate_rows"))
     project_id = str(
         report.get("source", {}).get("project_id")
         or state.get("project_id")
@@ -659,6 +798,39 @@ def build_plan(
         for recommendation in report["recommendations"]
     }
     tasks: list[dict] = []
+    planned_gpu_minutes = 0.0
+    budget_exhausted = False
+    stopped_reason = None
+
+    def append_task(*, action: str, **kwargs) -> dict | None:
+        nonlocal planned_gpu_minutes, budget_exhausted, stopped_reason
+        if budget_exhausted:
+            return None
+        estimate = _estimate_resource_request(
+            action=action,
+            proposal_count=kwargs.get("proposal_count", 0),
+            candidate_limit=kwargs.get("candidate_limit", 0),
+            route=kwargs.get("route"),
+        )
+        estimated_gpu_minutes = float(estimate.get("estimated_gpu_minutes", 0.0) or 0.0)
+        if estimated_gpu_minutes > 0:
+            projected = planned_gpu_minutes + estimated_gpu_minutes
+            if projected > budget_status["remaining_gpu_minutes"]:
+                budget_exhausted = True
+                stopped_reason = budget_status["reason"] or "global_compute_budget_exhausted"
+                kwargs.setdefault("block_reasons", [])
+                if "global_compute_budget_exhausted" not in kwargs["block_reasons"]:
+                    kwargs["block_reasons"].append("global_compute_budget_exhausted")
+            else:
+                planned_gpu_minutes += estimated_gpu_minutes
+        else:
+            planned_gpu_minutes += estimated_gpu_minutes
+        kwargs.pop("route", None)
+        kwargs.setdefault("resource_request_overrides", {})
+        task_resource_request_overrides = dict(estimate)
+        task_resource_request_overrides.pop("route", None)
+        kwargs["resource_request_overrides"].update(task_resource_request_overrides)
+        return _task(tasks, action=action, **kwargs)
 
     design_recommendations = [
         recommendation
@@ -696,10 +868,9 @@ def build_plan(
         block_reasons = []
         if proposal_count < 1:
             block_reasons.append("design_budget_missing_or_exhausted")
-        design_task = _task(
-            tasks,
-            agent="design",
+        design_task = append_task(
             action="iterate_design",
+            agent="design",
             phase="design",
             priority=priority,
             disposition=disposition,
@@ -727,44 +898,50 @@ def build_plan(
                 "single_gpu_serial_execution",
             ],
             block_reasons=block_reasons,
+            route=(design_jobs[0]["route"] if design_jobs else "A"),
         )
-        prediction_task = _task(
-            tasks,
-            agent="prediction",
-            action="evaluate_new_design_candidates",
-            phase="evaluate",
-            priority=priority,
-            disposition=disposition,
-            reason_codes=reason_codes,
-            from_task_id=design_task["task_id"],
-            parameters={
-                "reuse_complete_evidence": True,
-                "evidence_mode": "reuse_or_generate_full",
-                "predictor_protocol": "af2_boltz2_prodigy_rosetta_postrelax_v1",
-            },
-            candidate_limit=min(proposal_count, config.max_prediction_candidates_per_task),
-            approval=_approval(
-                action="evaluate_new_design_candidates", critic_approval_required=False
-            ),
-            depends_on=[design_task["task_id"]],
-            outputs=["prediction_handoff.json"],
-            constraints=[
-                "evaluate_only_new_or_incomplete_candidates",
-                "reuse_complete_prediction_evidence",
-                "single_gpu_serial_execution",
-            ],
-            block_reasons=(
-                ["upstream_design_task_blocked"] if block_reasons else []
-            ),
-        )
-        _add_critic_followup(
-            tasks,
-            depends_on=[prediction_task["task_id"]],
-            priority=priority,
-            disposition=disposition,
-            reason_codes=reason_codes,
-            from_task_id=prediction_task["task_id"],
-        )
+        if design_task is None:
+            budget_exhausted = True
+            stopped_reason = budget_status["reason"] or "global_compute_budget_exhausted"
+        else:
+            prediction_task = append_task(
+                action="evaluate_new_design_candidates",
+                agent="prediction",
+                phase="evaluate",
+                priority=priority,
+                disposition=disposition,
+                reason_codes=reason_codes,
+                from_task_id=design_task["task_id"],
+                parameters={
+                    "reuse_complete_evidence": True,
+                    "evidence_mode": "reuse_or_generate_full",
+                    "predictor_protocol": "af2_boltz2_prodigy_rosetta_postrelax_v1",
+                },
+                candidate_limit=min(proposal_count, config.max_prediction_candidates_per_task),
+                approval=_approval(
+                    action="evaluate_new_design_candidates", critic_approval_required=False
+                ),
+                depends_on=[design_task["task_id"]],
+                outputs=["prediction_handoff.json"],
+                constraints=[
+                    "evaluate_only_new_or_incomplete_candidates",
+                    "reuse_complete_prediction_evidence",
+                    "single_gpu_serial_execution",
+                ],
+                block_reasons=(
+                    ["upstream_design_task_blocked"] if block_reasons else []
+                ),
+                route=(design_jobs[0]["route"] if design_jobs else "A"),
+            )
+            if prediction_task is not None:
+                _add_critic_followup(
+                    tasks,
+                    depends_on=[prediction_task["task_id"]],
+                    priority=priority,
+                    disposition=disposition,
+                    reason_codes=reason_codes,
+                    from_task_id=prediction_task["task_id"],
+                )
 
     for recommendation in report["recommendations"]:
         action = recommendation["action"]
@@ -824,10 +1001,9 @@ def build_plan(
                 "single_gpu_serial_execution",
             ])
             outputs = ["prediction_handoff.json"]
-        task = _task(
-            tasks,
-            agent=mapping.agent,
+        task = append_task(
             action=mapping.task_action.value,
+            agent=mapping.agent,
             phase=mapping.phase,
             priority=recommendation["priority"],
             disposition=disposition,
@@ -845,7 +1021,10 @@ def build_plan(
             ),
             outputs=outputs,
             constraints=constraints,
+            route="A",
         )
+        if task is None:
+            continue
         if action in {
             "complete_prediction_evidence",
             "regenerate_invalid_artifact",
@@ -868,10 +1047,9 @@ def build_plan(
             )
 
     if report["verdict"] == "clear":
-        _task(
-            tasks,
-            agent="reporter",
+        append_task(
             action="prepare_final_candidate_report",
+            agent="reporter",
             phase="report",
             priority="P1",
             disposition="required",
@@ -912,7 +1090,9 @@ def build_plan(
     optional_task_ids = [
         task["task_id"] for task in tasks if task["disposition"] == "optional"
     ]
-    if report["verdict"] == "blocked":
+    if budget_exhausted:
+        status = "stopped_by_budget"
+    elif report["verdict"] == "blocked":
         status = "recovery_only"
     elif blocked_tasks:
         status = "blocked"
@@ -952,6 +1132,14 @@ def build_plan(
         f"status={status}; required approvals={len(required_approval_tasks)}; "
         f"blocked tasks={len(blocked_tasks)}; optional tasks={len(optional_task_ids)}."
     )
+    decision_metadata = {
+        "max_rounds": config.max_rounds,
+        "task_timeout_seconds": config.task_timeout_seconds,
+        "budget": budget_status,
+        "current_best": current_best,
+        "stopped_early": budget_exhausted,
+        "stopped_reason": stopped_reason,
+    }
     return {
         "schema_version": PLAN_SCHEMA_VERSION,
         "planner_version": PLANNER_VERSION,
@@ -989,6 +1177,7 @@ def build_plan(
             "reservation_status": "not_reserved",
         },
         "policy_constraints": sorted(MANDATORY_POLICY_CONSTRAINTS),
+        "decision_metadata": decision_metadata,
         "approval_request": {
             "artifact_required": bool(required_approval_tasks),
             "required_task_ids": required_approval_tasks,
