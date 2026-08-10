@@ -43,7 +43,13 @@ export function ExplorationShortlist({
         ) : (
           <div role="list" aria-label="Exploration shortlist candidates">
             {presentation.shortlist.map((item) => (
-              <article className="shortlist-item" role="listitem" key={item.candidate_id}>
+              <article
+                className="shortlist-item"
+                data-candidate-id={item.candidate_id}
+                data-scientific-status={item.passed ? "passed" : "exploratory"}
+                role="listitem"
+                key={item.candidate_id}
+              >
                 <header>
                   <b>{item.candidate_id}</b>
                   <span className={item.passed ? "is-passed" : "is-exploratory"}>

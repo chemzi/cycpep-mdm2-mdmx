@@ -5,12 +5,15 @@ import type {
   EvidenceView,
   MetricValue,
 } from "../domain";
+import { isExplorationShortlistEvidence } from "../domain";
 import {
   candidateArtifacts,
   candidateById,
   candidateEvidence,
   metricEntries,
 } from "../scientific-selectors";
+import { ArtifactContentAvailability } from "./artifact-trace";
+import { StructureViewer } from "./structure-viewer";
 
 export interface CandidateWorkspaceProps {
   candidates: BoundedCollection<CandidateView>;
@@ -41,6 +44,17 @@ export function CandidateWorkspace({
     : [];
   const associatedArtifacts = selected?.candidate_id
     ? candidateArtifacts(selected.candidate_id, artifacts)
+    : [];
+  const structureArtifact = associatedArtifacts.find(
+    (artifact) => artifact.artifact_type === "structure",
+  ) ?? null;
+  const shortlistRelationships = selected?.candidate_id
+    ? evidence.flatMap((item) => {
+      if (!isExplorationShortlistEvidence(item)) return [];
+      return item.shortlist
+        .filter((entry) => entry.candidate_id === selected.candidate_id)
+        .map((entry) => ({ entry, eventId: item.event_id }));
+    })
     : [];
 
   return (
@@ -99,6 +113,24 @@ export function CandidateWorkspace({
                   <div><dt>Source route</dt><dd>{selected.source_route ?? "Unavailable"}</dd></div>
                 </dl>
 
+                <section
+                  className="candidate-structure-stage"
+                  aria-labelledby="candidate-structure-heading"
+                >
+                  <h4 id="candidate-structure-heading">Structure availability</h4>
+                  {structureArtifact ? (
+                    <>
+                      <p>
+                        Trace-linked artifact: <code>{structureArtifact.artifact_id ?? "Opaque identity unavailable"}</code>
+                      </p>
+                      <ArtifactContentAvailability artifact={structureArtifact} />
+                      <StructureViewer artifact={structureArtifact} />
+                    </>
+                  ) : (
+                    <p className="domain-empty">No trace-linked structure artifact returned.</p>
+                  )}
+                </section>
+
                 <section aria-labelledby="candidate-metrics-heading">
                   <h4 id="candidate-metrics-heading">Returned metrics</h4>
                   {metricEntries(selected).length === 0 ? (
@@ -109,6 +141,26 @@ export function CandidateWorkspace({
                         <div key={name}><dt>{name}</dt><dd>{displayMetric(value)}</dd></div>
                       ))}
                     </dl>
+                  )}
+                </section>
+
+                <section aria-labelledby="candidate-shortlist-heading">
+                  <h4 id="candidate-shortlist-heading">Exploration shortlist relationship</h4>
+                  {shortlistRelationships.length === 0 ? (
+                    <p className="domain-empty">No returned shortlist explicitly references this candidate.</p>
+                  ) : (
+                    <ul className="candidate-shortlist-relationships">
+                      {shortlistRelationships.map(({ entry, eventId }, index) => (
+                        <li
+                          key={`${eventId ?? "shortlist"}-${index}`}
+                          data-scientific-status={entry.passed ? "passed" : "exploratory"}
+                        >
+                          <code>{eventId ?? "Opaque Evidence identity unavailable"}</code>
+                          <span>passed: {String(entry.passed)}</span>
+                          <span>{entry.reason}</span>
+                        </li>
+                      ))}
+                    </ul>
                   )}
                 </section>
 

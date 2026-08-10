@@ -18,6 +18,8 @@ export interface TaskGraphProps {
   executions: BoundedCollection<ExecutionView>;
   transactions: BoundedCollection<TransactionView>;
   blockers: BlockerView[];
+  selectedTaskId?: string | null;
+  onSelectTask?: (taskId: string) => void;
 }
 
 function TaskCard({
@@ -67,12 +69,23 @@ function TaskCard({
   </article>;
 }
 
-export function TaskGraph({ tasks, executions, transactions, blockers }: TaskGraphProps) {
+export function TaskGraph({
+  tasks,
+  executions,
+  transactions,
+  blockers,
+  selectedTaskId: controlledTaskId,
+  onSelectTask,
+}: TaskGraphProps) {
   const taskIds = useMemo(
     () => tasks.items.map((task) => task.task_id).filter((identity): identity is string => Boolean(identity)),
     [tasks.items],
   );
-  const [selectedTaskId, setSelectedTaskId] = useBoundedSelection(taskIds);
+  const [internalTaskId, setInternalTaskId] = useBoundedSelection(taskIds);
+  const selectedTaskId = controlledTaskId === undefined
+    ? internalTaskId
+    : controlledTaskId;
+  const selectTask = onSelectTask ?? setInternalTaskId;
 
   if (tasks.items.length === 0) {
     return <section className="task-graph" aria-labelledby="task-graph-title">
@@ -97,7 +110,7 @@ export function TaskGraph({ tasks, executions, transactions, blockers }: TaskGra
         task={task}
         blockers={blockers.filter((blocker) => blocker.task_id === task.task_id)}
         selected={task === selectedTask}
-        onSelect={() => setSelectedTaskId(task.task_id ?? "")}
+        onSelect={() => selectTask(task.task_id ?? "")}
       />)}
     </div>
     <ExecutionTransactionDetail
