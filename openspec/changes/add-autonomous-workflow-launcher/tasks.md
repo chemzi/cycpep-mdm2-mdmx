@@ -92,3 +92,16 @@
 - [x] 9.5 Split approval resolution, Orchestrator initialization, recovery gating, Worker drain, and formal outcome projection so no new service function combines the full workflow continuation responsibilities.
 - [x] 9.6 Add bounded operational logging for catch-all failures that cannot be durably journaled, without exposing raw traces, secrets, paths, or stdout in browser output.
 - [x] 9.7 Re-run focused/full/architecture/frontend/OpenSpec gates and repeat all three independent reviews from the updated fixed point.
+
+## 10. Latest-integration merge-readiness remediation
+
+- [x] 10.1 Merge `origin/integration/data-integrity-transaction` into the shared PR branch without force-push, preserve Planner compute-aware metadata and Frontend V2 additions, inspect the merge result, and run `git diff --check`.
+- [ ] 10.2 Add RED characterization for `running`/`pending` transaction recovery gating, live-owner preservation, stale-owner recovery, post-recovery Orchestrator re-read, unresolved blocker projection, and zero duplicate claim/scientific action.
+- [ ] 10.3 Implement formal transaction inspection for every `ready`/`running`/`pending` resume path, delegate stale-owner mutation to `recover_transactions`, preserve live owners, and re-read formal state before drain or outcome projection.
+- [ ] 10.4 Add RED characterization and implementation for owner-proven clearing of a resolved `transaction_recovery_unresolved` diagnostic plus non-destructive Orchestrator/formal trace merging before recovery inspection.
+- [ ] 10.5 Add a durable internal runtime locator binding before science; make later status/resume reconstruct the original ProjectContext across environment drift, fail closed when it cannot be restored, and keep internal paths out of browser-safe and generic Evidence output.
+- [ ] 10.6 Complete Critic legacy-history classification so unrelated broken history cannot block a current completed Prediction with no Critic record, while explicit-current and possibly-current unverifiable records remain fail-closed.
+- [ ] 10.7 Add Planner integration compatibility coverage proving Launcher inspection, immutable-plan validation, approval binding, and Orchestrator initialization preserve current `decision_metadata`, compute estimates, budget metadata, and plan identity.
+- [ ] 10.8 Run the complete focused Launcher, Critic, Research, Prediction, Design, transaction/recovery, Worker, Planner, Orchestrator, Store, and Workbench V2 suites on the merged baseline.
+- [ ] 10.9 Run the full Python and Frontend suites, lint, typecheck, frontend build, Architecture Gate, compileall, and `git diff --check` on the final fixed point.
+- [ ] 10.10 Run strict OpenSpec validation and `$openspec-verify-change`, then fresh independent Spec, Standards, and Strict Code Reviews against the latest integration merge base; require behind=0, P0=0, P1=0, and Strict score >=85 while keeping PR #62 Draft and unmerged.

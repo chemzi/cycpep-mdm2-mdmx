@@ -198,6 +198,18 @@ The system SHALL provide `python -m workflow resume --launcher-run <id> [--appro
 - **WHEN** formal transaction recovery reports an unresolved commit, compensation, owner-liveness, or marker state
 - **THEN** resume returns a structured blocker, exits non-zero, and does not run or retry a GPU or scientific action
 
+#### Scenario: Running or pending run has a live transaction owner
+- **WHEN** resume observes an Orchestrator run as `running` or `pending` and formal transaction inspection proves the relevant unresolved work has a live active owner
+- **THEN** Launcher returns the current formal running outcome without invoking mutating recovery, compensation, task claim, Worker drain, or scientific execution
+
+#### Scenario: Running or pending run has stale unresolved recovery
+- **WHEN** resume observes an Orchestrator run as `running` or `pending` and formal transaction inspection proves unresolved work has no live owner
+- **THEN** Launcher invokes the existing formal `recover_transactions` owner contract, re-reads Orchestrator after recovery, and only then returns, drains a newly ready run, or reports a structured blocker
+
+#### Scenario: Recovery succeeds before continuation
+- **WHEN** formal recovery resolves stale transaction work during resume
+- **THEN** Launcher re-inspects the Orchestrator and transaction owner state before any Worker action and does not duplicate an existing claim or scientific action
+
 #### Scenario: Repeated resume after a terminal outcome
 - **WHEN** resume is called repeatedly after the formal workflow is completed, blocked, failed, or awaiting approval with no new approval
 - **THEN** every call returns the same formal outcome without duplicating committed scientific work or formal artifacts
@@ -269,12 +281,20 @@ Ordinary diagnostic observations SHALL preserve `failure`, `failed_boundary`, an
 - **WHEN** the relevant owner validator later proves the failed condition is resolved
 - **THEN** Launcher may explicitly clear the diagnostic failure and continue; an unrelated observation alone never clears it
 
+#### Scenario: Transaction blocker is formally resolved
+- **WHEN** a prior diagnostic records `transaction_recovery_unresolved` and the transaction owner later proves the referenced recovery state clean
+- **THEN** Launcher explicitly clears only that transaction failure before returning `ready`, `running`, `pending`, or a terminal formal outcome, so the browser-safe result contains no stale transaction error
+
 ### Requirement: Status transaction inspection is read-only
 `status` SHALL call a public transaction/recovery owner contract that inspects the current recovery state without invoking mutating recovery, claiming tasks, writing markers, or transitioning transactions. Unresolved recovery SHALL produce a non-zero structured blocker with available transaction identifiers.
 
 #### Scenario: Unresolved transaction during status
 - **WHEN** read-only formal recovery inspection reports transaction `TX123` unresolved
 - **THEN** `status` returns `blocked` with `transaction_recovery_unresolved` and `TX123`, and performs no formal mutation
+
+#### Scenario: Orchestrator identifiers precede transaction inspection
+- **WHEN** a stale diagnostic is missing current Orchestrator identifiers and read-only recovery inspection reports `TX123` unresolved
+- **THEN** Launcher non-destructively merges the formal `workflow_id`, `run_id`, and `plan_id` before reporting the blocker, retains any existing `task_id` and `attempt_id`, and reports `transaction_id` as `TX123` without claiming that a boundary completed
 
 ### Requirement: Critic review correlation is current-run scoped
 New `critic_review` Evidence SHALL include the source `prediction_run_id`. Inspection SHALL filter explicit events for the current Prediction run before opening report artifacts. Legacy events without that field SHALL remain usable only when their report source can be uniquely validated as the current run; unrelated legacy records SHALL not poison current recovery, while possibly-current but unverifiable or conflicting current records SHALL fail closed.
@@ -286,6 +306,14 @@ New `critic_review` Evidence SHALL include the source `prediction_run_id`. Inspe
 #### Scenario: Current Critic evidence is broken or conflicting
 - **WHEN** the current run has a broken explicitly correlated report or conflicting current-run records
 - **THEN** Critic recovery is ambiguous and Planner is not inspected or invoked
+
+#### Scenario: Current Prediction has no Critic record and unrelated legacy history is broken
+- **WHEN** the current Prediction run is formally completed, no Critic record belongs or might belong to it, and an older unrelated legacy Critic artifact is broken
+- **THEN** Critic inspection returns `not_started` for the current run and Launcher may invoke Critic once for that run
+
+#### Scenario: Possibly-current legacy Critic record is unverifiable
+- **WHEN** a legacy Critic record might belong to the current Prediction run but its source cannot be safely confirmed
+- **THEN** Critic recovery fails closed and Launcher does not invoke Critic or Planner
 
 ### Requirement: Research completion references remain project scoped
 Research validation SHALL query and validate referenced Research Evidence within the expected `project_id`, agent, and event-type scope. A completion receipt SHALL NOT become valid by referencing Research Evidence owned by another project.
@@ -304,3 +332,25 @@ Launcher, Research, Design, Prediction, and Store SHALL use the same officially 
 #### Scenario: Runtime binding exits with an exception
 - **WHEN** a bound Launcher operation raises
 - **THEN** all previous process runtime bindings are restored and no second Store is selected
+
+### Requirement: Runtime locator binding survives command boundaries
+The initial diagnostic SHALL durably store the exact resolved internal data, Evidence, formal database, and approved-project locators before any formal Research or scientific side effect. Later `status` and `resume` commands SHALL reconstruct their `ProjectContext` from that durable locator binding and SHALL NOT re-resolve formal storage from current ambient path selectors. The locator binding selects where formal authorities are queried but MUST NOT declare any workflow, scientific, task, or transaction state, and browser-safe output MUST omit its internal paths.
+
+#### Scenario: Ambient runtime paths change after launch
+- **WHEN** launch writes formal receipts using runtime locator set A and a later process supplies different data, Evidence, or database environment selectors for set B
+- **THEN** status and resume use the durable locator set A, never classify the boundaries as `not_started` from Store B, and never rerun Research, Design, Prediction, or Worker work in B
+
+#### Scenario: Durable runtime locator cannot be restored
+- **WHEN** the original runtime locator binding is missing, invalid, conflicting with the approved project locator, or cannot safely open its formal Store
+- **THEN** status or resume returns a structured recovery blocker and does not fall back to ambient paths, repository defaults, or a new database
+
+#### Scenario: Runtime locator persistence fails before science
+- **WHEN** the initial diagnostic cannot durably persist the complete runtime locator binding
+- **THEN** launch exits non-zero before Research or any other formal or scientific side effect
+
+### Requirement: Latest Planner plan contract is preserved
+Launcher SHALL pass through and validate the current immutable Planner plan without deleting, reconstructing, or downgrading `decision_metadata`, compute estimates, budget metadata, plan identity, or approval-bound fields. Approval validation and Orchestrator initialization SHALL receive the same current plan contract produced by Planner.
+
+#### Scenario: Planner emits compute-aware metadata
+- **WHEN** Planner produces an immutable plan containing `decision_metadata`, compute estimates, and budget status or limits
+- **THEN** Launcher inspection, approval binding, resume, and Orchestrator initialization preserve and validate those fields without projecting an older plan schema

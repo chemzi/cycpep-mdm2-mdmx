@@ -283,6 +283,29 @@ Launcher constructs or loads the same official `ProjectContext` and resolved `Pr
 
 `ProjectPaths` owns an explicit `database_path` alongside its directories. The official runtime constructor resolves documented environment inputs into an immutable `ProjectContext` before Launcher coordination; after construction, Data Layer receives that exact database path and does not re-read ambient selectors. The compatibility adapter remains a temporary bridge for legacy public Agent seams, not a second resolver.
 
+The first launch also serializes an internal `RuntimeLocatorBinding` into the initial diagnostic before Research. It contains the already resolved data directory, Evidence directory, formal database path, and approved project path needed to reconstruct the same `ProjectContext` in another process. `status` and `resume` load this binding first and construct the context from it without re-reading `CYCPEP_DATA_DIR`, `CYCPEP_EVIDENCE_DIR`, `CYCPEP_DB_PATH`, `NP_DATA`, or repository defaults. Missing, malformed, conflicting, or inaccessible bindings fail closed. The binding is location metadata only: it selects the Store and project contract to query but never asserts boundary completion. Its path values are internal and are omitted from `BrowserResult` and generic Frontend Evidence presentation.
+
+### 15. Recovery gating covers every active Orchestrator state
+
+Once a formal Orchestrator run exists, Launcher first merges its `workflow_id`, `run_id`, and `plan_id` into the accumulated diagnostic trace without replacing any known task, attempt, or transaction identifiers. This trace synchronization is observation only and does not mark a boundary complete.
+
+For `ready`, `running`, and `pending`, both commands call the owner-side read-only transaction inspector. `status` never mutates. `resume` applies the inspector result as follows:
+
+- clean: re-read Orchestrator and continue only if its new formal state permits it;
+- live active owner: return the current `running`/`pending` outcome without recovery, compensation, claim, drain, or scientific execution;
+- dead or stale unresolved owner: call the existing formal `recover_transactions` seam, then re-inspect Orchestrator and transaction state before deciding to drain, block, or return a formal outcome;
+- unresolved after recovery: return `transaction_recovery_unresolved` with available identifiers and perform no Worker action.
+
+Launcher never implements marker, lease, compensation, or owner-liveness policy. It consumes the typed result of Execution's existing inspection/recovery contracts. A prior diagnostic transaction failure is cleared through `clear_failure` only after this owner contract returns clean for the corresponding condition. Ordinary observations continue preserving failures.
+
+### 16. Critic legacy fallback distinguishes absence from ambiguity
+
+Critic inspection continues to prefer explicit current-run Evidence. When no such event exists, it evaluates legacy records only far enough to determine whether each can belong to the current Prediction. A legacy record proven unrelated is ignored even when its artifact is unavailable. If no current or possibly-current record remains, the current Critic boundary is `not_started` and Launcher may invoke Critic once. A legacy record that can be proven current is validated normally; one that might be current but cannot be proven either way remains a fail-closed ambiguity. Explicit current broken or conflicting records also remain blockers.
+
+### 17. Planner compatibility follows the immutable current schema
+
+Launcher passes the Planner-produced immutable plan path and identity through existing Planner inspection, approval validation, and Orchestrator initialization. It does not rebuild a reduced plan dictionary. Current `decision_metadata`, compute estimates, budget status and limits, plan digest, task scope, and approval bindings therefore remain owned by Planner and Approval contracts. Compatibility tests cover the latest integration plan shape.
+
 ## Risks / Trade-offs
 
 - **[Pre-Planner stages are not all transaction-owned]** → Add immutable correlated receipts and fail closed on partial ambiguity; do not claim transactional guarantees those Agents do not currently provide.
@@ -292,6 +315,9 @@ Launcher constructs or loads the same official `ProjectContext` and resolved `Pr
 - **[Concurrent resume calls could duplicate coordination attempts]** → Use a per-launcher-run exclusive diagnostic lock; formal Agent and Orchestrator idempotency remain the ultimate protection.
 - **[Remote/GPU failures are expensive]** → No automatic retry loop; return structured failure or blocker and require explicit resume after formal recovery is clean.
 - **[Public optional correlation parameters affect broad modules]** → Preserve defaults, search all callers, add compatibility tests, and keep changes narrow.
+- **[Durable runtime locators contain sensitive internal paths]** → Keep them in the locked internal diagnostic only, redact them from browser/generic Evidence output, and fail closed rather than using ambient fallback.
+- **[A running Worker can look unresolved to a coordinator]** → Delegate liveness classification to the transaction owner, never recover a live owner, and re-read Orchestrator after stale-owner recovery.
+- **[Initial Design child provenance remains coarser than invocation provenance]** → Record as follow-up debt; do not expand this change unless executable recovery evidence proves a current correctness defect.
 
 ## Migration Plan
 
