@@ -80,8 +80,8 @@
 
 - [x] 8.1 Run all new regression tests plus focused Launcher, Research, Design, Prediction, Critic, Planner, Orchestrator, Execution, transaction, recovery, Store, and Workbench V2 tests.
 - [x] 8.2 Run the full applicable suite, configured lint/type checks, Architecture Gate, and `git diff --check`.
-- [ ] 8.3 Run `openspec validate add-autonomous-workflow-launcher --strict` and `$openspec-verify-change`; reconcile tasks and artifacts with the implemented contracts.
-- [ ] 8.4 Run fresh independent Spec, Standards, and Strict Code Reviews from the integration merge base, require a new score of at least 85 with no P0/P1, and keep PR #62 Draft without merging.
+- [x] 8.3 Run `openspec validate add-autonomous-workflow-launcher --strict` and `$openspec-verify-change`; reconcile tasks and artifacts with the implemented contracts.
+- [x] 8.4 Run fresh independent Spec, Standards, and Strict Code Reviews from the integration merge base, require a new score of at least 85 with no P0/P1, and keep PR #62 Draft without merging.
 
 ## 9. Fresh-review blocker remediation
 
@@ -91,4 +91,4 @@
 - [x] 9.4 Complete the owner-side read-only recovery inspector over Store rows, marker state, owner liveness, and Orchestrator closure using shared recovery parsing/classification primitives.
 - [x] 9.5 Split approval resolution, Orchestrator initialization, recovery gating, Worker drain, and formal outcome projection so no new service function combines the full workflow continuation responsibilities.
 - [x] 9.6 Add bounded operational logging for catch-all failures that cannot be durably journaled, without exposing raw traces, secrets, paths, or stdout in browser output.
-- [ ] 9.7 Re-run focused/full/architecture/frontend/OpenSpec gates and repeat all three independent reviews from the updated fixed point.
+- [x] 9.7 Re-run focused/full/architecture/frontend/OpenSpec gates and repeat all three independent reviews from the updated fixed point.
