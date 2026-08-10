@@ -46,18 +46,18 @@ class FakeStore:
         ]
 
 
-def _task(task_id, action, depends_on=(), *, gate="proposed", approval=False):
+def _task(task_id, action, depends_on=(), *, gate="proposed", approval=False, agent="design", kind="scientific"):
     return {
         "task_id": task_id,
         "action": action,
-        "agent": "design",
-        "kind": "scientific",
+        "agent": agent,
         "phase": "iterate",
         "disposition": "required",
         "depends_on": list(depends_on),
         "resource_request": {"class": "cpu"},
         "approval": {"required": approval, "types": []},
         "execution_gate": {"status": gate, "block_reasons": ["manual_review"] if gate == "blocked" else []},
+        **({"kind": kind} if kind is not None else {}),
     }
 
 
@@ -119,6 +119,40 @@ class WorkbenchReaderTests(unittest.TestCase):
         self.assertFalse(tasks["T002"]["action"]["executable"])
         self.assertIn("action_not_executable", tasks["T002"]["availability"]["reason_codes"])
         self.assertTrue(tasks["T001"]["action"]["handler_available"])
+
+
+    def test_plan_tasks_without_kind_derive_contract_safe_labels(self):
+        plan = {
+            "plan_id": "plan-1",
+            "workflow_id": "workflow-1",
+            "tasks": [
+                _task("T001", "iterate_design", kind=None),
+                _task("T002", "review_prediction_handoff", ("T001",), agent="critic", kind=None),
+                _task("T003", "prepare_final_candidate_report", agent="reporter", kind=None),
+                _task("T004", "evaluate_new_design_candidates", ("T001",), agent="prediction"),
+            ],
+        }
+        run = {
+            "run_id": "run-1",
+            "workflow_id": "workflow-1",
+            "status": "ready",
+            "plan": {"plan_id": "plan-1", "project_id": "project-1", "plan_path": "internal"},
+            "tasks": {task["task_id"]: {"status": "ready", "attempts": 0} for task in plan["tasks"]},
+        }
+        store = FakeStore(state={"project_id": "project-1", "orchestrator": {"run_path": "internal"}})
+        reader = WorkbenchReader(
+            store,
+            status_reader=lambda **_: {"run": run, "summary": {"status": "ready"}},
+            plan_reader=lambda *_: plan,
+        )
+
+        result = reader.read()
+        tasks = {item["task_id"]: item for item in result["tasks"]["items"]}
+        self.assertEqual(tasks["T001"]["kind"], "scientific")
+        self.assertEqual(tasks["T002"]["kind"], "review")
+        self.assertEqual(tasks["T003"]["kind"], "review")
+        self.assertEqual(tasks["T004"]["kind"], "scientific")
+        self.assertTrue(all(isinstance(tasks[tid]["kind"], str) for tid in ("T001", "T002", "T003", "T004")))
 
     def test_transactions_keep_formal_status_and_trace_linkage(self):
         transactions = [

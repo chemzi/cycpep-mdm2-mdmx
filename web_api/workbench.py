@@ -203,6 +203,26 @@ def _reason_codes(task: Mapping[str, Any], state: Mapping[str, Any], *, executab
     return list(dict.fromkeys(reasons))
 
 
+def _task_kind(task: Mapping[str, Any]) -> str | None:
+    """Contract-safe task kind label for the workbench view.
+
+    Planner plans do not carry ``kind`` today, and the workbench frontend
+    contract requires the field to be a string whenever it is present. Derive a
+    stable label from the owning agent so real plans render without emitting
+    ``null``; unknown agents omit the field and the UI falls back to its own
+    label.
+    """
+    kind = task.get("kind")
+    if isinstance(kind, str) and kind:
+        return kind
+    agent = str(task.get("agent") or "").strip()
+    if agent in {"design", "prediction", "planner", "orchestrator", "execution"}:
+        return "scientific"
+    if agent in {"critic", "research", "reporter"}:
+        return "review"
+    return None
+
+
 def _task_view(task: Mapping[str, Any], state: Mapping[str, Any]) -> dict[str, Any]:
     action_name = str(task.get("action") or "")
     try:
@@ -232,7 +252,6 @@ def _task_view(task: Mapping[str, Any], state: Mapping[str, Any]) -> dict[str, A
     result = {
         "task_id": task.get("task_id"),
         "agent": task.get("agent"),
-        "kind": task.get("kind"),
         "disposition": task.get("disposition"),
         "depends_on": list(task.get("depends_on") or []),
         "status": state.get("status"),
@@ -249,6 +268,9 @@ def _task_view(task: Mapping[str, Any], state: Mapping[str, Any]) -> dict[str, A
             "status": (task.get("execution_gate") or {}).get("status"),
         },
     }
+    kind = _task_kind(task)
+    if kind is not None:
+        result["kind"] = kind
     protocol = _protocol(task)
     if protocol:
         result["protocol"] = protocol
