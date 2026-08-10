@@ -216,6 +216,7 @@ class WorkflowServiceAcceptanceTests(unittest.TestCase):
 
             self.assertEqual(result.exit_code, 2)
             self.assertEqual(result.payload.error.code, "launcher_diagnostic_persistence_failed")
+            self.assertEqual(result.payload.launcher_run_id, LAUNCHER_ID)
             self.assertEqual(runtimes, [])
             self.assertEqual(world.calls, [])
 
@@ -366,6 +367,7 @@ class WorkflowServiceAcceptanceTests(unittest.TestCase):
 
         class RecoveryBlocked(RuntimeError):
             code = "transaction_recovery_unresolved"
+            unresolved = ("transaction-recovery-1",)
 
         with tempfile.TemporaryDirectory() as tmp:
             world = _World()
@@ -388,6 +390,10 @@ class WorkflowServiceAcceptanceTests(unittest.TestCase):
             self.assertEqual(result.exit_code, 3)
             self.assertEqual(result.payload.status, "blocked")
             self.assertEqual(result.payload.error.code, "transaction_recovery_unresolved")
+            self.assertEqual(
+                result.payload.formal_trace.transaction_id,
+                "transaction-recovery-1",
+            )
             self.assertNotIn("execution", world.calls)
 
     def test_read_only_status_projects_every_formal_orchestrator_outcome(self):
@@ -485,6 +491,10 @@ class WorkflowServiceAcceptanceTests(unittest.TestCase):
             self.assertEqual(failed.exit_code, 2)
             self.assertEqual(resumed.payload.status, "completed")
             self.assertEqual(world.calls.count("execution"), drains)
+            repaired = deps.diagnostics.read(LAUNCHER_ID)
+            self.assertEqual(repaired.last_completed_boundary, "execution")
+            self.assertEqual(repaired.last_known_formal_status, "completed")
+            self.assertEqual(repaired.formal_trace.run_id, "run-1")
 
     def test_repeated_blocked_and_approval_waiting_resume_are_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
@@ -42,6 +42,7 @@ def launch_project(
     *, project_path: str | Path, dependencies: LauncherServiceDependencies | None = None
 ) -> LauncherCommandResult:
     deps = dependencies or _default_dependencies()
+    launcher_run_id = None
     try:
         context = deps.load_context(project_path)
         deps.validate_project(dict(context.config))
@@ -58,7 +59,7 @@ def launch_project(
         deps.diagnostics.create(report)
         return _coordinate_locked(deps, launcher_run_id, (), execute=True)
     except Exception as error:
-        return _unbound_failure(error)
+        return _unbound_failure(error, launcher_run_id=launcher_run_id)
 
 
 def status_launcher_run(
@@ -301,16 +302,31 @@ def _continue_approved_plan(
         session.write(report)
 
     formal_status = str(orchestrator.references.get("formal_status") or "pending")
+    drained = False
     if formal_status == "ready" and execute:
         try:
             runtime.recover_transactions()
             runtime.drain(orchestrator.references["run_path"])
         except Exception as error:
             if getattr(error, "code", None) == "transaction_recovery_unresolved":
+                unresolved = tuple(
+                    str(value)
+                    for value in (getattr(error, "unresolved", ()) or ())
+                    if value
+                )
+                if unresolved:
+                    report = report.with_observation(
+                        formal_trace=replace(
+                            report.formal_trace,
+                            transaction_id=unresolved[0],
+                        )
+                    )
                 blocker = FormalBoundary.blocked(
                     "transaction",
                     "transaction_recovery_unresolved",
                     "formal transaction recovery requires operator action",
+                    transaction_id=unresolved[0] if unresolved else None,
+                    transaction_ids=unresolved,
                 )
                 return _block(session, report, blocker)
             return _worker_failure(
@@ -322,6 +338,19 @@ def _continue_approved_plan(
         formal_status = str(orchestrator.references.get("formal_status") or "pending")
         report = _observe(report, "execution", orchestrator)
         session.write(report)
+        drained = True
+    if not drained:
+        report = _observe(report, "orchestrator", orchestrator)
+        if formal_status in {
+            "completed",
+            "completed_required",
+            "blocked",
+            "failed",
+            "awaiting_approval",
+        }:
+            report = _observe(report, "execution", orchestrator)
+        if execute:
+            session.write(report)
     return _formal_outcome(report, formal_status, orchestrator, plan)
 
 
