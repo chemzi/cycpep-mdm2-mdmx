@@ -79,3 +79,6 @@ search_pmc*.py
 run_*.sh
 data_layer_v5_backup.py
 test_chain_fix.py
+
+# 演示快照（运行时产物）
+demo/snapshot/
