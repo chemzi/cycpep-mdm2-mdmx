@@ -44,6 +44,31 @@ def _tracing_dependencies(root, world):
 
 
 class WorkflowMergeBlockerCharacterizationTests(unittest.TestCase):
+    def test_diagnostic_update_failure_emits_bounded_operational_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            writes = [0]
+
+            def fail_second_write(path, value):
+                from execution.supervisor import durable_atomic_json
+
+                writes[0] += 1
+                if writes[0] == 2:
+                    raise OSError("C:/internal/diagnostics/report.json unavailable")
+                durable_atomic_json(path, value)
+
+            world = _World()
+            deps = _dependencies(tmp, world, writer=fail_second_write)
+
+            with self.assertLogs("workflow.service", level="ERROR") as captured:
+                result = launch_project(
+                    project_path="approved.json", dependencies=deps
+                )
+
+            self.assertEqual(result.exit_code, 2)
+            logged = "\n".join(captured.output)
+            self.assertIn("launcher command failed", logged)
+            self.assertNotIn("C:/internal", logged)
+
     def test_unbound_service_failure_emits_bounded_operational_log(self):
         with tempfile.TemporaryDirectory() as tmp:
             world = _World()

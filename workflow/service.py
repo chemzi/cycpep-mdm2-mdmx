@@ -445,6 +445,7 @@ def _worker_failure(runtime, session, report, orchestrator, plan, error):
     try:
         session.write(failed)
     except Exception as write_error:
+        _log_operational_failure(write_error, component="launcher")
         failed = report.with_failure(
             boundary="execution",
             error=normalize_error(write_error, component="launcher"),
@@ -487,6 +488,7 @@ def _resolve_boundary(
         failed = report.with_failure(
             boundary=boundary, error=normalize_error(error, component="launcher")
         )
+        _log_operational_failure(error, component="launcher")
         return report, LauncherCommandResult(failed.browser_projection(status="failed"), 2)
     return report, None
 
@@ -520,7 +522,10 @@ def _block(
         message=formal.message or "Formal recovery requires operator action.",
     )
     failed = report.with_failure(boundary=formal.boundary, error=error)
-    session.write(failed)
+    try:
+        session.write(failed)
+    except Exception as write_error:
+        _log_operational_failure(write_error, component="launcher")
     return _result(failed, "blocked", 3)
 
 
@@ -538,6 +543,7 @@ def _record_failure(
     try:
         session.write(failed)
     except Exception as write_error:
+        _log_operational_failure(write_error, component="launcher")
         failed = report.with_failure(
             boundary=boundary,
             error=normalize_error(write_error, component="launcher"),
@@ -605,12 +611,7 @@ def _unbound_failure(
     error: BaseException, *, launcher_run_id: str | None = None
 ) -> LauncherCommandResult:
     normalized = normalize_error(error, component="launcher")
-    _LOGGER.error(
-        "launcher command failed: code=%s component=%s message=%s",
-        normalized.code,
-        normalized.component,
-        normalized.message,
-    )
+    _log_normalized_failure(normalized)
     return LauncherCommandResult(
         BrowserResult(
             status="failed",
@@ -618,6 +619,19 @@ def _unbound_failure(
             error=normalized,
         ),
         2,
+    )
+
+
+def _log_operational_failure(error: BaseException, *, component: str) -> None:
+    _log_normalized_failure(normalize_error(error, component=component))
+
+
+def _log_normalized_failure(error: StructuredError) -> None:
+    _LOGGER.error(
+        "launcher command failed: code=%s component=%s message=%s",
+        error.code,
+        error.component,
+        error.message,
     )
 
 
