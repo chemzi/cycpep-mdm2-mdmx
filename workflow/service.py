@@ -303,6 +303,7 @@ def _continue_approved_plan(
     formal_status = str(orchestrator.references.get("formal_status") or "pending")
     if formal_status == "ready" and execute:
         try:
+            runtime.recover_transactions()
             runtime.drain(orchestrator.references["run_path"])
         except Exception as error:
             if getattr(error, "code", None) == "transaction_recovery_unresolved":

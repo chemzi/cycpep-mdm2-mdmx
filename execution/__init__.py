@@ -21,14 +21,25 @@ __all__ = [
     "ExecutionActionResult",
     "ExecutionFailure",
     "ExecutionWorker",
+    "ensure_transaction_recovery_clean",
     "StagedArtifact",
     "StagingArea",
 ]
 
 
 def __getattr__(name: str):
-    if name in {"ExecutionFailure", "ExecutionWorker"}:
-        from .worker import ExecutionFailure, ExecutionWorker
+    if name in {
+        "ExecutionFailure", "ExecutionWorker", "ensure_transaction_recovery_clean"
+    }:
+        from .worker import (
+            ExecutionFailure,
+            ExecutionWorker,
+            ensure_transaction_recovery_clean,
+        )
 
-        return {"ExecutionFailure": ExecutionFailure, "ExecutionWorker": ExecutionWorker}[name]
+        return {
+            "ExecutionFailure": ExecutionFailure,
+            "ExecutionWorker": ExecutionWorker,
+            "ensure_transaction_recovery_clean": ensure_transaction_recovery_clean,
+        }[name]
     raise AttributeError(name)

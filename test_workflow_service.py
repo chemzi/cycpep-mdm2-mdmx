@@ -172,6 +172,9 @@ class _Runtime:
             formal_status="failed",
         )
 
+    def recover_transactions(self):
+        return None
+
     def drain(self, run_path):
         self.world.calls.append("execution")
         if self.world.fail_at == "execution":
@@ -369,7 +372,9 @@ class WorkflowServiceAcceptanceTests(unittest.TestCase):
             deps = _dependencies(tmp, world)
             launch_project(project_path="approved.json", dependencies=deps)
             runtime = _Runtime(world)
-            runtime.drain = lambda _path: (_ for _ in ()).throw(RecoveryBlocked("blocked"))
+            runtime.recover_transactions = lambda: (_ for _ in ()).throw(
+                RecoveryBlocked("blocked")
+            )
             deps = LauncherServiceDependencies(
                 **{**deps.__dict__, "runtime_factory": lambda *_args: runtime}
             )
@@ -383,6 +388,7 @@ class WorkflowServiceAcceptanceTests(unittest.TestCase):
             self.assertEqual(result.exit_code, 3)
             self.assertEqual(result.payload.status, "blocked")
             self.assertEqual(result.payload.error.code, "transaction_recovery_unresolved")
+            self.assertNotIn("execution", world.calls)
 
     def test_read_only_status_projects_every_formal_orchestrator_outcome(self):
         expected = {

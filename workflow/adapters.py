@@ -138,6 +138,12 @@ class DefaultWorkflowRuntime:
         )
 
     @staticmethod
+    def recover_transactions():
+        from execution import ensure_transaction_recovery_clean
+
+        return ensure_transaction_recovery_clean()
+
+    @staticmethod
     def drain(run_path):
         from execution.worker import drain_run
 

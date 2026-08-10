@@ -482,6 +482,29 @@ class _TaskExecution:
     trace_context: TraceContext | None = None
 
 
+def ensure_transaction_recovery_clean(
+    *, config: ExecutionConfig | None = None
+):
+    """Run the formal recovery owner before any Orchestrator task claim.
+
+    This public gate may reconcile interrupted transactions, but it never
+    claims or executes a task.  Callers must stop when it raises
+    :class:`RecoveryError`.
+    """
+    config = config or ExecutionConfig.from_environment()
+    transaction_worker = ExecutionWorker(
+        get_storage_backend(),
+        config.execution_root / ".staging",
+        config.execution_root / "artifacts",
+    )
+    recovery = transaction_worker.commit_manager.recover_pending(
+        config.execution_root / ".staging",
+        orchestrator_state=_orchestrator_state_for_transaction,
+    )
+    _assert_recovery_clean(recovery)
+    return recovery
+
+
 def execute_task(
     *,
     run_path: str | Path,
@@ -491,6 +514,7 @@ def execute_task(
 ) -> dict:
     """Claim and execute exactly one ready task."""
     config = config or ExecutionConfig.from_environment()
+    ensure_transaction_recovery_clean(config=config)
     started = time.monotonic()
     claimed = claim(run_path=run_path, task_id=task_id, worker=worker_id)
     run_id = claimed["run"]["run_id"]
@@ -588,11 +612,6 @@ def _run_claimed_task(
         config.execution_root / "artifacts",
     )
     execution.transaction_worker = transaction_worker
-    recovery = transaction_worker.commit_manager.recover_pending(
-        config.execution_root / ".staging",
-        orchestrator_state=_orchestrator_state_for_transaction,
-    )
-    _assert_recovery_clean(recovery)
     atomic_json(task_dir / "dispatch_snapshot.json", packet)
     atomic_json(task_dir / "execution_started.json", {
         "execution_worker_version": EXECUTION_WORKER_VERSION,
