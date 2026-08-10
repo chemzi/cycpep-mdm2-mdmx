@@ -24,6 +24,14 @@ from threshold_calibration import (
     calibrate_thresholds,
     load_control_dataset,
 )
+from agents.research_contract import (
+    ResearchCorrelation,
+    ResearchInvocationBlocked,
+    ResearchInvocationStatus,
+    ResearchRunResult,
+    run_with_receipt,
+    validate_research_invocation,
+)
 
 # ============================================================
 # 惰性项目运行时（Engineering Standard §7 / Roadmap PR5）
@@ -661,7 +669,12 @@ def run(state=None, force_recompute=False, skip_pipeline=False, project_config=N
         _injected_project_config = previous
 
 
-def _run_impl(state=None, force_recompute=False, skip_pipeline=False):
+def _run_impl(
+    state=None,
+    force_recompute=False,
+    skip_pipeline=False,
+    receipt_evidence_ids=None,
+):
     _ensure_runtime_dirs()
     assert_project_approved(_cfg())
     # The newly approved config is authoritative even when state.json predates it.
@@ -719,7 +732,7 @@ def _run_impl(state=None, force_recompute=False, skip_pipeline=False):
         sync = State.sync_thresholds_from_cache(_module_attr("THRESHOLDS_CACHE"))
         result["thresholds"] = sync["state"].get("thresholds", {})
         meta = result["research_pipeline_meta"]
-        EvidenceLogger.research_complete(
+        research_event_id = EvidenceLogger.research_complete(
             hotspot_analysis={
                 "pdb_list": meta.get("dynamic_pdb_list", []),
                 "counts_by_target": meta.get("counts_by_target", {}),
@@ -730,6 +743,8 @@ def _run_impl(state=None, force_recompute=False, skip_pipeline=False):
             known_binders=result["known_binders"],
             refs=pipeline_result.get("literature_refs", []),
         )
+        if receipt_evidence_ids is not None:
+            receipt_evidence_ids.append(research_event_id)
         return result
 
     result = {
@@ -763,11 +778,13 @@ def _run_impl(state=None, force_recompute=False, skip_pipeline=False):
         "stage_status": meta.get("stage_status", {}),
         "run_status": meta.get("run_status", "unknown"),
     }
-    EvidenceLogger.research_complete(
+    research_event_id = EvidenceLogger.research_complete(
         hotspot_analysis=hotspot_analysis,
         known_binders=result["known_dual_binders"],
         refs=LITERATURE_REFS,
     )
+    if receipt_evidence_ids is not None:
+        receipt_evidence_ids.append(research_event_id)
     return result
 
 

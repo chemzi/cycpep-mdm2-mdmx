@@ -24,10 +24,13 @@ VALID_PHASES = frozenset({
 
 VALID_EVENT_TYPES = frozenset({
     "research_targets", "research_cache_invalidated", "threshold_calibration",
-    "tool_call", "design_batch", "candidate_registered", "candidate_scored",
+    "research_invocation_started", "research_completion_receipt",
+    "tool_call", "design_batch", "design_initial_invocation_started",
+    "design_initial_completion", "candidate_registered", "candidate_scored",
     "candidate_eliminated", "evaluate_layer_start", "evaluate_layer_complete",
     "critic_review", "planner_adjust", "planner_plan", "planner_approval_recorded",
-    "prediction_run_started", "prediction_recorded", "prediction_handoff_ready",
+    "prediction_run_started", "prediction_invocation_started",
+    "prediction_recorded", "prediction_handoff_ready",
     "orchestrator_run_initialized", "orchestrator_approval_loaded",
     "orchestrator_task_claimed", "orchestrator_task_completed",
     "orchestrator_task_failed", "orchestrator_task_skipped",

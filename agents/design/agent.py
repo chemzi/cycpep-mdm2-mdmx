@@ -81,6 +81,22 @@ class Design:
         from .manifests import _candidate_from_manifest
         return _candidate_from_manifest(manifest, plddt, notes=notes)
 
+    # ---- launcher-correlated initial boundary ----
+    def materialize_initial_jobs(self):
+        """Resolve the safe generic initial job set without scientific effects."""
+        from .initial import materialize_initial_jobs
+        return materialize_initial_jobs(self)
+
+    def validate_initial_invocation(self, correlation, *, store=None):
+        """Read the exact Design-owned receipts for recovery."""
+        from .initial import validate_initial_invocation
+        return validate_initial_invocation(correlation, store=store)
+
+    def run_initial(self, correlation, *, store=None):
+        """Run the initial generic Design route behind durable recovery receipts."""
+        from .initial import run_initial
+        return run_initial(self, correlation, store=store)
+
     # ---- routes ----
     def design_rfpeptides(self, target_spec=None, design_config=None):
         from .route_a import design_rfpeptides
