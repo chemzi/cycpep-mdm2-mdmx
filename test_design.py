@@ -88,10 +88,12 @@ from agents.design.service import (  # noqa: E402
     _load_target_spec, _merge_config, _next_candidate_id, pareto_front, threshold_filter,
 )
 from agents.design.validation import (  # noqa: E402
-    _binder_first_contig, _cheap_filter_sequences, _describe_cyclize,
+    _binder_first_contig, _binder_first_contig_segmented,
+    _cheap_filter_sequences, _describe_cyclize,
     _extract_ligandmpnn_binder_sequence, _hotspot_fixed_residues,
     _hotspot_positions, _infer_binder_chain, _parse_binder_residues,
-    _pdb_chain_residue_layout, _pdb_chain_sequences, _pdb_residue_range,
+    _pdb_chain_residue_layout, _pdb_chain_sequences, _pdb_receptor_contig_segments,
+    _pdb_residue_range, _receptor_contig_segments,
     _ring_closure_check, _sequence_quality_score, _synthesizability_violations,
     _validate_sequence, _verify_fixed_sequence_pdb,
 )
@@ -632,6 +634,74 @@ check(
     'RFdiffusion contig puts cyclic binder before fixed receptor',
 )
 
+# ---- Test 18: gapped receptor contigs never reference unmodeled residues ----
+print('Test 18: gapped receptor contig')
+check(
+    _binder_first_contig_segmented('A', [(25, 109)], 10)
+    == _binder_first_contig('A', 25, 109, 10),
+    'segmented contig is byte-identical to the single-segment form',
+)
+check(
+    _binder_first_contig_segmented(
+        'C', [(26, 68), (70, 228), (235, 306)], 10
+    ) == '10-10 C26-68/C70-228/C235-306/0',
+    'gapped receptor is emitted as one range per modeled segment',
+)
+check(
+    _pdb_receptor_contig_segments([1, 2, 3, 4, 5, 8, 9, 10, 11, 12])
+    == [(1, 5), (8, 12)],
+    'a missing residue splits the receptor into two segments',
+)
+check(
+    _pdb_receptor_contig_segments([1, 2, 3]) == [(1, 3)],
+    'fully contiguous residues stay a single segment',
+)
+check_raises(
+    ValueError,
+    lambda: _pdb_receptor_contig_segments([]),
+    'an empty residue set cannot build a receptor contig',
+)
+check_raises(
+    ValueError,
+    lambda: _binder_first_contig_segmented('A', [(25, 10)], 10),
+    'a reversed receptor segment is rejected',
+)
+gapped_pdb = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+serial = 1
+for seg_start, seg_count in ((1, 5), (8, 5)):
+    for offset in range(seg_count):
+        residue = seg_start + offset
+        gapped_pdb.write(
+            f'ATOM  {serial:5d}  CA  ALA A{residue:4d}    '
+            f'{serial:8.3f}{0.0:8.3f}{0.0:8.3f}'
+            f'{1.00:6.2f}{0.00:6.2f}           C  \n'
+        )
+        serial += 1
+gapped_pdb.close()
+check(
+    _receptor_contig_segments(gapped_pdb.name, 'A') == [(1, 5), (8, 12)],
+    'no-hotspot path emits every modeled segment of a gapped receptor',
+)
+check(
+    _binder_first_contig_segmented(
+        'A', _receptor_contig_segments(gapped_pdb.name, 'A'), 10
+    ) == '10-10 A1-5/A8-12/0',
+    'gapped receptor contig never names the unmodeled residues 6/7',
+)
+check(
+    _receptor_contig_segments(gapped_pdb.name, 'A', hotspot_residues=[3])
+    == [(1, 12)],
+    'hotspot-constrained path keeps the validated single-segment window',
+)
+check_raises(
+    ValueError,
+    lambda: _receptor_contig_segments(
+        gapped_pdb.name, 'A', hotspot_residues=[6]
+    ),
+    'a hotspot inside an unmodeled gap is rejected by the PDB check',
+)
+os.unlink(gapped_pdb.name)
+
 # Hydra must receive hotspots as a list, not one comma-containing string.
 captured_run = {}
 original_subprocess_run = subprocess.run
@@ -776,4 +846,4 @@ if failures:
         print(f'  - {f}')
     sys.exit(1)
 else:
-    print('ALL 17 TEST GROUPS PASSED')
+    print('ALL 18 TEST GROUPS PASSED')
