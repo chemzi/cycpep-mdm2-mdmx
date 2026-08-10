@@ -11,17 +11,9 @@ import { CollectionSummary, FailureState, LoadingState } from "./components/shar
 import { TaskGraph } from "./components/task-graph";
 import { WorkbenchShell } from "./components/workbench-shell";
 import { useWorkbench } from "./use-workbench";
+import { useBoundedSelection } from "./selection";
 
 const AUTO_REFRESH_KEY = "cycpep-workbench-v2-auto-refresh";
-
-function useStableSelection(
-  identities: Array<string | undefined>,
-): [string | null, (identity: string) => void] {
-  const [preferred, setPreferred] = useState<string | null>(null);
-  const available = identities.filter((identity): identity is string => Boolean(identity));
-  const selected = preferred && available.includes(preferred) ? preferred : available[0] ?? null;
-  return [selected, setPreferred];
-}
 
 export function WorkbenchPage() {
   const [initialAutoRefresh] = useState(() => {
@@ -41,20 +33,26 @@ export function WorkbenchPage() {
   }
 
   const candidateIds = useMemo(
-    () => model?.candidates.items.map((candidate) => candidate.candidate_id) ?? [],
+    () => model?.candidates.items
+      .map((candidate) => candidate.candidate_id)
+      .filter((identity): identity is string => Boolean(identity)) ?? [],
     [model?.candidates.items],
   );
   const evidenceIds = useMemo(
-    () => model?.evidence.items.map((evidence) => evidence.event_id) ?? [],
+    () => model?.evidence.items
+      .map((evidence) => evidence.event_id)
+      .filter((identity): identity is string => Boolean(identity)) ?? [],
     [model?.evidence.items],
   );
   const artifactIds = useMemo(
-    () => model?.artifacts.items.map((artifact) => artifact.artifact_id) ?? [],
+    () => model?.artifacts.items
+      .map((artifact) => artifact.artifact_id)
+      .filter((identity): identity is string => Boolean(identity)) ?? [],
     [model?.artifacts.items],
   );
-  const [selectedCandidateId, setSelectedCandidateId] = useStableSelection(candidateIds);
-  const [selectedEvidenceId, setSelectedEvidenceId] = useStableSelection(evidenceIds);
-  const [selectedArtifactId, setSelectedArtifactId] = useStableSelection(artifactIds);
+  const [selectedCandidateId, setSelectedCandidateId] = useBoundedSelection(candidateIds);
+  const [selectedEvidenceId, setSelectedEvidenceId] = useBoundedSelection(evidenceIds);
+  const [selectedArtifactId, setSelectedArtifactId] = useBoundedSelection(artifactIds);
 
   if (!model && workbench.status === "failed-before-data") {
     return <main className="initial-state"><FailureState message={workbench.error ?? "Workbench request failed"}/></main>;

@@ -87,8 +87,8 @@ export function ExecutionTransactionDetail({
 }: ExecutionTransactionDetailProps) {
   const taskId = task.task_id ?? "";
   const attempts = correlateTaskAttempts(taskId, executions, transactions);
-  const relatedTransactions = attempts.flatMap((attempt) => attempt.transactions);
-  const relatedBlockers = transactionBlockers(taskId, relatedTransactions, blockers);
+  const taskTransactions = transactions.filter((transaction) => transaction.task_id === taskId);
+  const relatedBlockers = transactionBlockers(taskId, taskTransactions, blockers);
 
   return <section className="execution-transaction-detail" aria-labelledby="execution-detail-title">
     <h3 id="execution-detail-title">Execution / transaction · {taskId || "Unavailable task"}</h3>
@@ -103,20 +103,27 @@ export function ExecutionTransactionDetail({
           <div><dt>Attempt count</dt><dd>{execution.attempts}</dd></div>
           <div><dt>Worker</dt><dd>{execution.worker_id ?? "Unavailable"}</dd></div>
           <div><dt>Transaction visibility</dt><dd>{execution.transaction_visibility === "not_yet_recorded" ? "not yet recorded" : execution.transaction_visibility}</dd></div>
+          {matchingTransactions.length > 0 ? <div>
+            <dt>Correlated transactions</dt>
+            <dd>{matchingTransactions.map((transaction) => transaction.transaction_id ?? "Unavailable").join(", ")}</dd>
+          </div> : null}
         </dl>
         {execution.transaction_visibility === "not_yet_recorded"
           ? <p className="transaction-not-recorded" role="status">No transaction record exists for this running attempt yet.</p>
           : null}
         {execution.error ? <StructuredFailure error={execution.error}/> : null}
-        {matchingTransactions.length > 0
-          ? matchingTransactions.map((transaction, transactionIndex) =>
-              <TransactionRecord
-                key={transaction.transaction_id ?? `${execution.attempt_id}-${transactionIndex}`}
-                transaction={transaction}
-              />)
-          : null}
       </article>
     )}
+    <section className="transaction-history" aria-labelledby="transaction-history-title">
+      <h4 id="transaction-history-title">Transaction history</h4>
+      {taskTransactions.length > 0
+        ? taskTransactions.map((transaction, transactionIndex) =>
+            <TransactionRecord
+              key={transaction.transaction_id ?? `${transaction.attempt_id}-${transactionIndex}`}
+              transaction={transaction}
+            />)
+        : <p>No transaction history is returned for this task.</p>}
+    </section>
     <BlockerList
       blockers={relatedBlockers}
       headingId="execution-recovery-blockers-title"

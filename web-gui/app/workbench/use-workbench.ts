@@ -5,7 +5,9 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { fetchWorkbench, type FetchWorkbenchOptions } from "./client";
 import {
   initialWorkbenchRequestState,
+  beginWorkbenchRequest,
   workbenchRequestReducer,
+  type RefreshSource,
   type WorkbenchRequestState,
 } from "./request-lifecycle";
 
@@ -39,9 +41,9 @@ export function useWorkbench(options: UseWorkbenchOptions = {}): UseWorkbenchRes
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(initialAutoRefresh);
   const activeRequest = useRef<AbortController | null>(null);
 
-  const refresh = useCallback(async () => {
-    activeRequest.current?.abort();
-    const controller = new AbortController();
+  const refreshFrom = useCallback(async (source: RefreshSource) => {
+    const controller = beginWorkbenchRequest(activeRequest.current, source);
+    if (!controller) return;
     activeRequest.current = controller;
     dispatch({ type: "started" });
     try {
@@ -60,6 +62,11 @@ export function useWorkbench(options: UseWorkbenchOptions = {}): UseWorkbenchRes
     }
   }, [apiOrigin, fetchImpl]);
 
+  const refresh = useCallback(
+    () => refreshFrom("manual"),
+    [refreshFrom],
+  );
+
   useEffect(() => {
     void refresh();
     return () => activeRequest.current?.abort();
@@ -67,9 +74,12 @@ export function useWorkbench(options: UseWorkbenchOptions = {}): UseWorkbenchRes
 
   useEffect(() => {
     if (!autoRefreshEnabled || autoRefreshIntervalMs <= 0) return;
-    const timer = window.setInterval(() => void refresh(), autoRefreshIntervalMs);
+    const timer = window.setInterval(
+      () => void refreshFrom("automatic"),
+      autoRefreshIntervalMs,
+    );
     return () => window.clearInterval(timer);
-  }, [autoRefreshEnabled, autoRefreshIntervalMs, refresh]);
+  }, [autoRefreshEnabled, autoRefreshIntervalMs, refreshFrom]);
 
   return {
     ...state,

@@ -15,6 +15,10 @@ The Frontend V2 workbench SHALL obtain workflow-facing data from `GET /api/v2/wo
 - **WHEN** the request fails or the response does not satisfy the required V2 envelope shape
 - **THEN** the workbench presents a clear failed state and does not fall back to the legacy snapshot or synthetic data
 
+#### Scenario: A required nested domain record is malformed
+- **WHEN** a successful response has the correct schema and collection envelope but a rendered project, task/action, execution, transaction, candidate, Evidence, artifact, protocol, trace, blocker, or shortlist field is missing or has the wrong type
+- **THEN** the client rejects it as a controlled contract error before rendering and does not rely on an unchecked domain cast
+
 ### Requirement: The shell presents formal project and run context
 The workbench shell SHALL present the current project, the validated workflow and run when available, the returned run status as the overall run status, and structured blockers using their returned codes, scopes, identifiers, and summaries.
 
@@ -105,6 +109,10 @@ The workbench SHALL correlate execution and transaction records by their returne
 - **WHEN** a transaction reports rollback or the response contains a transaction recovery blocker
 - **THEN** the UI preserves the returned transaction status and prominently presents the unresolved blocker without claiming successful completion
 
+#### Scenario: A retry advances the current execution attempt
+- **WHEN** the current execution identifies a later attempt while the bounded transaction collection still contains failed, rolled-back, or committed transactions from prior attempts for the same task
+- **THEN** the UI keeps the current execution correlated only to its exact attempt and separately presents every returned transaction for that task as history
+
 ### Requirement: Artifact, protocol, and trace views preserve safe identity
 The workbench SHALL present artifact opaque identity, type, role, producer and input provenance, integrity metadata, protocol name/version/integrity identity, and available trace linkage without exposing or reconstructing a server filesystem path.
 
@@ -120,6 +128,10 @@ The workbench SHALL present artifact opaque identity, type, role, producer and i
 - **WHEN** an artifact includes an explicit browser-safe `content_link`
 - **THEN** the structure or content viewer may use that returned link while continuing to identify the artifact by its opaque identity
 
+#### Scenario: The selected artifact identity changes
+- **WHEN** the user switches from one linked artifact to another
+- **THEN** the viewer clears the prior structure before showing the new identity as loading and resets the representation control to the default applied to the new model
+
 ### Requirement: Read-only UI states remain honest and accessible
 The workbench SHALL provide distinguishable loading, empty, partial/blocked, and request-failed states, SHALL preserve the last successfully loaded response during a refresh failure with a visible stale/error indication, and SHALL expose no start, retry, cancel, dispatch, project creation, SSH, scheduler, or workflow mutation control in this change.
 
@@ -130,6 +142,14 @@ The workbench SHALL provide distinguishable loading, empty, partial/blocked, and
 #### Scenario: Refresh fails after a successful load
 - **WHEN** polling or manual refresh fails after a prior successful response
 - **THEN** the prior response remains visibly marked stale and the error is shown without mutating or synthesizing its domain state
+
+#### Scenario: Automatic polling finds a request in flight
+- **WHEN** an automatic refresh interval fires before the prior workbench request has completed
+- **THEN** the polling tick is skipped without aborting the in-flight request or starting a competing request
+
+#### Scenario: A selected identity leaves a bounded response
+- **WHEN** refresh removes the preferred candidate, task, Evidence, or artifact identity from the returned bounded collection
+- **THEN** the visible fallback becomes the current selection and the unavailable preferred identity does not reappear automatically if a later response contains it again
 
 #### Scenario: User reviews the read-only workbench
 - **WHEN** the V2 page is rendered

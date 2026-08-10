@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 import type { ArtifactView } from "../domain";
 import { artifactContentState } from "../scientific-selectors";
 
 type ViewerStyle = "cartoon" | "sticks" | "surface";
+type ViewerLoadState = "unavailable" | "loading" | "ready" | "failed";
 type MolViewer = {
   addModel(data: string, format: string): void;
   addSurface(type: unknown, style: object): void;
@@ -58,25 +59,47 @@ function modelFormat(contentType: string | null): "cif" | "pdb" {
 export function StructureViewer({ artifact }: { artifact: ArtifactView | null }) {
   const element = useRef<HTMLDivElement>(null);
   const viewer = useRef<MolViewer | null>(null);
-  const [state, setState] = useState<"unavailable" | "loading" | "ready" | "failed">("unavailable");
-  const [message, setMessage] = useState("");
-  const [style, setStyleMode] = useState<ViewerStyle>("cartoon");
+  const [loadResult, setLoadResult] = useState<{
+    identity: string | null;
+    state: ViewerLoadState;
+    message: string;
+  }>({ identity: null, state: "unavailable", message: "" });
+  const [representation, setRepresentation] = useState<{
+    identity: string | null;
+    style: ViewerStyle;
+  }>({ identity: null, style: "cartoon" });
   const content = artifactContentState(artifact);
+  const identity = artifact && content.available
+    ? `${artifact.artifact_id}\u0000${content.contentLink}`
+    : null;
+  const state: ViewerLoadState = loadResult.identity === identity
+    ? loadResult.state
+    : content.available
+      ? "loading"
+      : "unavailable";
+  const message = loadResult.identity === identity ? loadResult.message : "";
+  let style: ViewerStyle;
+  if (representation.identity === identity) {
+    style = representation.style;
+  } else {
+    const reset = { identity, style: "cartoon" as const };
+    setRepresentation(reset);
+    style = reset.style;
+  }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const previous = viewer.current;
+    viewer.current = null;
+    previous?.clear();
+    previous?.render();
+
     if (!content.available || !element.current) {
-      viewer.current?.clear();
-      viewer.current?.render();
-      setState("unavailable");
-      setMessage("");
       return;
     }
     const contentLink = content.contentLink;
 
     let cancelled = false;
     async function load() {
-      setState("loading");
-      setMessage("");
       try {
         await loadViewerLibrary();
         const response = await fetch(contentLink, { cache: "no-store" });
@@ -92,21 +115,26 @@ export function StructureViewer({ artifact }: { artifact: ArtifactView | null })
         instance.zoomTo();
         instance.render();
         viewer.current = instance;
-        setState("ready");
+        setLoadResult({ identity, state: "ready", message: "" });
       } catch (cause) {
         if (!cancelled) {
-          setState("failed");
-          setMessage(cause instanceof Error ? cause.message : "Artifact content could not be loaded");
+          setLoadResult({
+            identity,
+            state: "failed",
+            message: cause instanceof Error
+              ? cause.message
+              : "Artifact content could not be loaded",
+          });
         }
       }
     }
 
     void load();
     return () => { cancelled = true; };
-  }, [content.available, content.contentLink]);
+  }, [content.available, content.contentLink, identity]);
 
   function applyStyle(next: ViewerStyle) {
-    setStyleMode(next);
+    setRepresentation({ identity, style: next });
     const instance = viewer.current;
     if (!instance || !window.$3Dmol) return;
     instance.setStyle(

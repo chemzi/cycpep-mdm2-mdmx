@@ -57,6 +57,45 @@ test("correlates transactions only by returned task and attempt identities", () 
   assert.deepEqual(attempts[0].transactions.map((item) => item.transaction_id), ["tx-3"]);
 });
 
+test("keeps a prior retry transaction in task history without attaching it to the current attempt", () => {
+  const task = data.tasks.items[1];
+  const currentExecution = {
+    ...data.executions.items[1],
+    attempts: 2,
+    attempt_id: "T002-A02",
+    transaction_visibility: "not_yet_recorded",
+  };
+  const priorTransaction = {
+    transaction_id: "tx-t002-a01",
+    task_id: "T002",
+    attempt_id: "T002-A01",
+    status: "ROLLED_BACK",
+    error: {
+      code: "prior_attempt_failed",
+      message: "The prior attempt failed and was rolled back.",
+      component: "ExecutionWorker",
+      retryable: true,
+    },
+  };
+
+  const html = renderToStaticMarkup(ExecutionTransactionDetail({
+    task,
+    executions: [currentExecution],
+    transactions: [priorTransaction],
+    blockers: [],
+  }));
+  const historyStart = html.indexOf("Transaction history");
+  const currentAttemptMarkup = html.slice(0, historyStart);
+  const historyMarkup = html.slice(historyStart);
+
+  assert.match(currentAttemptMarkup, /Attempt T002-A02/);
+  assert.match(currentAttemptMarkup, /not yet recorded/);
+  assert.doesNotMatch(currentAttemptMarkup, /tx-t002-a01|T002-A01|ROLLED_BACK/);
+  assert.match(historyMarkup, /tx-t002-a01/);
+  assert.match(historyMarkup, /T002-A01/);
+  assert.match(historyMarkup, /ROLLED_BACK/);
+});
+
 test("presents not-yet-recorded, structured failure, and unresolved recovery truth", () => {
   const runningHtml = renderToStaticMarkup(ExecutionTransactionDetail({
     task: data.tasks.items[1],

@@ -6,11 +6,13 @@ The current `web-gui/` presents a fixed four-Agent workflow and derives status f
 
 - Replace the rendered fixed Research → Design → Prediction → Critic rail with a dynamic task/action graph sourced only from `/api/v2/workbench`.
 - Add a typed, read-only workbench client and frontend domain model for the versioned success envelope, bounded collections, project/run context, tasks, executions, transactions, candidates, evidence, artifacts, protocols, trace links, and structured blockers.
+- Validate the required nested browser contract at the HTTP boundary so malformed domain records become a controlled contract failure instead of a render-time crash.
 - Recompose the existing page into domain-oriented workbench shell, task graph, candidate, exploration-shortlist, evidence, execution/transaction, artifact/protocol, and trace components with explicit loading, empty, blocked, partial, and failed states.
 - Present project-scoped candidate, evidence, and artifact history with its formal `current_run`, `historical_run`, or `unlinked` provenance instead of merging it into current-run status.
 - Present `exploration_shortlist` as exploratory scientific evidence, keeping `0 / N passed` distinct from shortlist membership and never treating a shortlisted candidate as passed unless its `passed` field is true.
 - Stop the main Frontend V2 workbench from consuming `/api/v1/snapshot`, `State.phase`, fixed Agent order, evidence counts, log text, or browser-side filesystem/SQLite data as workflow authority.
 - Preserve the useful workbench layout, candidate selection, real-artifact structure viewer, refresh settings, and honest empty states where they can be driven by the V2 contract.
+- Preserve transaction history across retries and keep refresh, selection, and structure-viewer transitions aligned with the identity currently shown.
 - Keep the UI read-only in this change; no workflow, execution, project, scheduler, SSH, threshold, Tournament, or Pareto mutation/computation is added.
 
 ## Capabilities

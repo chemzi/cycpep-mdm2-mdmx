@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo } from "react";
 
 import type {
   BoundedCollection,
@@ -11,6 +11,7 @@ import type {
 } from "../domain";
 import { CollectionSummary, EmptyState } from "./shared-states";
 import { ExecutionTransactionDetail } from "./execution-transaction";
+import { useBoundedSelection } from "../selection";
 
 export interface TaskGraphProps {
   tasks: BoundedCollection<TaskView>;
@@ -67,7 +68,11 @@ function TaskCard({
 }
 
 export function TaskGraph({ tasks, executions, transactions, blockers }: TaskGraphProps) {
-  const [selectedTaskId, setSelectedTaskId] = useState(tasks.items[0]?.task_id ?? "");
+  const taskIds = useMemo(
+    () => tasks.items.map((task) => task.task_id).filter((identity): identity is string => Boolean(identity)),
+    [tasks.items],
+  );
+  const [selectedTaskId, setSelectedTaskId] = useBoundedSelection(taskIds);
 
   if (tasks.items.length === 0) {
     return <section className="task-graph" aria-labelledby="task-graph-title">

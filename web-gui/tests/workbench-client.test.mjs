@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   WORKBENCH_ENDPOINT,
+  WorkbenchContractError,
   fetchWorkbench,
   parseWorkbenchEnvelope,
 } from "../app/workbench/client.ts";
@@ -61,6 +62,32 @@ test("rejects unsupported and malformed contracts", async () => {
 
   assert.throws(() => parseWorkbenchEnvelope(unsupported), /frontend\.workbench\.v2/);
   assert.throws(() => parseWorkbenchEnvelope(malformed), /tasks/);
+});
+
+test("rejects malformed required nested records before rendering", async () => {
+  const cases = [
+    ["project", (data) => { data.project.targets = "MDM2"; }],
+    ["tasks.items[0].action", (data) => { delete data.tasks.items[0].action.name; }],
+    ["executions.items[0]", (data) => { data.executions.items[0].attempts = "1"; }],
+    ["transactions.items[0]", (data) => { delete data.transactions.items[0].task_id; }],
+    ["candidates.items[0]", (data) => { delete data.candidates.items[0].run_relation; }],
+    ["evidence.items[1]", (data) => { data.evidence.items[1].trace = []; }],
+    ["artifacts.items[0]", (data) => { data.artifacts.items[0].run_relation = "current"; }],
+    ["protocols.items[0]", (data) => { data.protocols.items[0].version = 2.1; }],
+    ["trace", (data) => { data.trace.run_id = 42; }],
+    ["blockers.items[0]", (data) => { delete data.blockers.items[0].summary; }],
+  ];
+
+  for (const [field, mutate] of cases) {
+    const malformed = structuredClone(await fixture());
+    mutate(malformed.data);
+
+    assert.throws(
+      () => parseWorkbenchEnvelope(malformed),
+      (error) => error instanceof WorkbenchContractError && error.message.includes(field),
+      field,
+    );
+  }
 });
 
 test("fetches only the exact V2 workbench route and rejects HTTP failures", async () => {

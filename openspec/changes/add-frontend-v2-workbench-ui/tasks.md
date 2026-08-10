@@ -34,3 +34,11 @@
 - [x] 5.2 Run the repository full CPU test suite and `scripts/architecture_gate.py`; confirm no backend behavior, public API, persistence, transaction, or scientific data-format change.
 - [x] 5.3 Run strict OpenSpec validation and implementation verification against every requirement and scenario, including the zero-passed shortlist and trustworthy partial-response cases.
 - [x] 5.4 Perform Spec and Standards code review, verify the final diff remains within this change, and report any missing backend field as a contract gap without introducing a file/SQLite/log/`State.phase` fallback.
+
+## 6. Merge-readiness Remediation
+
+- [x] 6.1 Add a retry fixture/regression test and present prior-attempt transactions as selected-task history without attaching them to the current execution attempt.
+- [x] 6.2 Add nested malformed-record contract tests and validate every required rendered V2 domain field before returning the typed envelope.
+- [x] 6.3 Add a structure identity-switch regression test; clear the previous model and reset representation state before loading a newly selected linked artifact.
+- [x] 6.4 Add selection-refresh and slow-polling regression tests; clear unavailable preferred selections and skip automatic refresh ticks while a request is in flight.
+- [x] 6.5 Re-run focused and complete frontend checks, full CPU suite, Architecture Gate, strict OpenSpec validation, implementation verification, Spec review, Standards review, and final diff checks; update Draft PR #55 without archiving.

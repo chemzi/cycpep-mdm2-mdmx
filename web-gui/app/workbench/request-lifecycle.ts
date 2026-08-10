@@ -18,6 +18,17 @@ export type WorkbenchRequestAction =
   | { type: "succeeded"; data: WorkbenchEnvelope }
   | { type: "failed"; error: string };
 
+export type RefreshSource = "manual" | "automatic";
+
+export function beginWorkbenchRequest(
+  active: AbortController | null,
+  source: RefreshSource,
+): AbortController | null {
+  if (source === "automatic" && active) return null;
+  active?.abort();
+  return new AbortController();
+}
+
 export function initialWorkbenchRequestState(): WorkbenchRequestState {
   return { status: "initial-loading", data: null, error: null };
 }
