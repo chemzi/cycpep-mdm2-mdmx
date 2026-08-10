@@ -10,6 +10,7 @@ from pathlib import Path
 
 import data_layer
 from agents.planner import (
+    PlannerConfig,
     PlannerContractError,
     build_plan,
     plan,
@@ -232,6 +233,89 @@ class PlannerTests(_PlannerFixtures, unittest.TestCase):
             design["execution_gate"]["block_reasons"],
             ["design_budget_missing_or_exhausted"],
         )
+
+    def test_plan_emits_compute_metadata_with_global_budget(self):
+        report_path = self._report([
+            self._issue("l2_interface_confidence_low", "iterate_interface_design")
+        ])
+        state = self._state()
+        state["compute_budget"] = {"global_budget_minutes": 180.0}
+        result = build_plan(critic_report_path=report_path, state=state)
+        self.assertEqual(result["decision_metadata"]["global_budget_minutes"], 180.0)
+        self.assertEqual(
+            result["decision_metadata"]["on_budget_exhausted"],
+            "graceful_stop_return_current_best",
+        )
+        self.assertGreater(result["decision_metadata"]["total_estimated_gpu_minutes"], 0.0)
+        design = next(task for task in result["tasks"] if task["action"] == "iterate_design")
+        self.assertEqual(design["resource_request"]["estimate_status"], "estimated")
+        self.assertGreater(design["resource_request"]["estimated_gpu_minutes"], 0.0)
+
+    def test_plan_uses_config_driven_compute_limits(self):
+        report_path = self._report([
+            self._issue("l2_interface_confidence_low", "iterate_interface_design")
+        ])
+        config = PlannerConfig(
+            max_rounds=4,
+            task_timeout_minutes=90,
+            global_budget_minutes=240.0,
+            on_budget_exhausted="stop_after_current_round",
+        )
+        result = build_plan(critic_report_path=report_path, state=self._state(), config=config)
+        self.assertEqual(result["decision_metadata"]["max_rounds"], 4)
+        self.assertEqual(result["decision_metadata"]["task_timeout_minutes"], 90)
+        self.assertEqual(result["decision_metadata"]["global_budget_minutes"], 240.0)
+        self.assertEqual(
+            result["decision_metadata"]["on_budget_exhausted"],
+            "stop_after_current_round",
+        )
+
+    def test_estimates_respect_config_tunables(self):
+        report_path = self._report([
+            self._issue("l2_interface_confidence_low", "iterate_interface_design")
+        ])
+        # reduce per-proposal minutes to make estimate small
+        small_config = PlannerConfig(gpu_minutes_per_proposal=1.0, gpu_minutes_per_candidate_factor=0.1, gpu_cost_per_minute_usd=0.005)
+        default_config = PlannerConfig()
+        result_default = build_plan(critic_report_path=report_path, state=self._state(), config=default_config)
+        result_small = build_plan(critic_report_path=report_path, state=self._state(), config=small_config)
+        design_default = next(task for task in result_default["tasks"] if task["action"] == "iterate_design")
+        design_small = next(task for task in result_small["tasks"] if task["action"] == "iterate_design")
+        self.assertEqual(design_small["resource_request"]["estimate_status"], "estimated")
+        # estimate with smaller tunables must be less than the default estimate
+        self.assertLess(design_small["resource_request"]["estimated_gpu_minutes"], design_default["resource_request"]["estimated_gpu_minutes"])
+
+    def test_budget_status_shows_exceeds_when_small_budget(self):
+        report_path = self._report([
+            self._issue("l2_interface_confidence_low", "iterate_interface_design")
+        ])
+        state = self._state()
+        # set a tiny global budget to force exceed
+        state["compute_budget"] = {"global_budget_minutes": 1.0}
+        result = build_plan(critic_report_path=report_path, state=state)
+        self.assertEqual(result["decision_metadata"]["budget_status"], "exceeds_budget")
+
+    def test_planner_config_rejects_negative_global_budget(self):
+        with self.assertRaisesRegex(PlannerContractError, "global_budget_minutes"):
+            PlannerConfig(global_budget_minutes=-1.0)
+
+    def test_planner_config_rejects_nan_and_inf_global_budget(self):
+        with self.assertRaisesRegex(PlannerContractError, "global_budget_minutes"):
+            PlannerConfig(global_budget_minutes=float('nan'))
+        with self.assertRaisesRegex(PlannerContractError, "global_budget_minutes"):
+            PlannerConfig(global_budget_minutes=float('inf'))
+
+    def test_plan_ignores_nonfinite_state_global_budget(self):
+        report_path = self._report([
+            self._issue("l2_interface_confidence_low", "iterate_interface_design")
+        ])
+        state = self._state()
+        state["compute_budget"] = {"global_budget_minutes": float('nan')}
+        result = build_plan(critic_report_path=report_path, state=state)
+        self.assertIsNone(result["decision_metadata"]["global_budget_minutes"])
+        state["compute_budget"] = {"global_budget_minutes": float('inf')}
+        result = build_plan(critic_report_path=report_path, state=state)
+        self.assertIsNone(result["decision_metadata"]["global_budget_minutes"])
 
     def test_l7_reference_and_complete_l6_failures_enter_design_iteration(self):
         report_path = self._report([
