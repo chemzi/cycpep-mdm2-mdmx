@@ -21,14 +21,14 @@ from .service import (  # noqa: E402
     _require_mdm_reference_route,
 )
 from .validation import (  # noqa: E402
-    _binder_first_contig,
+    _binder_first_contig_segmented,
     _cheap_filter_sequences,
     _hotspot_fixed_residues,
     _hotspot_positions,
     _infer_binder_chain,
     _parse_binder_residues,
     _parse_hotspot_residues,
-    _pdb_residue_range,
+    _receptor_contig_segments,
 )
 from project_config import target_slug  # noqa: E402
 from peptide_contract import (  # noqa: E402
@@ -45,7 +45,7 @@ def _route_b_generate_backbones(config, batch_dir, templates):
     """
     n_per = max(1, config.get("n", 100) // max(1, len(templates)))
     hotspots = _parse_hotspot_residues(config.get("hotspots", ""))
-    target_range = _pdb_residue_range(
+    receptor_segments = _receptor_contig_segments(
         config["target_pdb"], config["chain"], hotspot_residues=hotspots
     )
     backbone_entries = []  # (bb_path, binder_chain, raw_seqs)
@@ -60,8 +60,8 @@ def _route_b_generate_backbones(config, batch_dir, templates):
         os.makedirs(backbone_dir, exist_ok=True)
         rfdiff_ok = _run_rfdiff(target_pdb=config["target_pdb"], binder_len=L,
             n_designs=n_per, output_prefix=f"{backbone_dir}/bb",
-            contig=_binder_first_contig(
-                config["chain"], target_range[0], target_range[1], L
+            contig=_binder_first_contig_segmented(
+                config["chain"], receptor_segments, L
             ),
             seed=config["seed"],
             hotspots=config.get("hotspots"),

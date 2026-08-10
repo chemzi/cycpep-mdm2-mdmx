@@ -30,11 +30,11 @@ from .service import (  # noqa: E402
     _require_mdm_reference_route,
 )
 from .validation import (  # noqa: E402
-    _binder_first_contig,
+    _binder_first_contig_segmented,
     _describe_cyclize,
     _infer_binder_chain,
     _parse_hotspot_residues,
-    _pdb_residue_range,
+    _receptor_contig_segments,
     _synthesizability_violations,
     _validate_sequence,
 )
@@ -97,7 +97,7 @@ def _route_c_design_references(config, batch_dir, sequences):
         indexed_by_length.setdefault(len(sequence), []).append(index)
 
     hotspots = _parse_hotspot_residues(config.get("hotspots", ""))
-    target_start, target_end = _pdb_residue_range(
+    receptor_segments = _receptor_contig_segments(
         config["target_pdb"], config["chain"], hotspot_residues=hotspots
     )
     references = {}
@@ -110,8 +110,8 @@ def _route_c_design_references(config, batch_dir, sequences):
             binder_len=length,
             n_designs=len(indexes),
             output_prefix=output_prefix,
-            contig=_binder_first_contig(
-                config["chain"], target_start, target_end, length
+            contig=_binder_first_contig_segmented(
+                config["chain"], receptor_segments, length
             ),
             seed=config["seed"],
             hotspots=config.get("hotspots"),

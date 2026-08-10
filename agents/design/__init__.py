@@ -46,6 +46,7 @@ from .service import (  # noqa: F401
 )
 from .validation import (  # noqa: F401
     _binder_first_contig,
+    _binder_first_contig_segmented,
     _canonical_cyclization_type,
     _cheap_filter_sequences,
     _describe_cyclize,
@@ -59,7 +60,9 @@ from .validation import (  # noqa: F401
     _parse_hotspot_residues,
     _pdb_chain_residue_layout,
     _pdb_chain_sequences,
+    _pdb_receptor_contig_segments,
     _pdb_residue_range,
+    _receptor_contig_segments,
     _ring_closure_check,
     _sequence_quality_score,
     _synthesizability_violations,

@@ -179,6 +179,44 @@ def _binder_first_contig(target_chain, target_start, target_end, binder_len):
         )
     return f"{length}-{length} {chain}{start}-{end}/0"
 
+
+def _binder_first_contig_segmented(target_chain, segments, binder_len):
+    """Build a binder-first RFdiffusion contig over modeled receptor segments.
+
+    RFdiffusion asserts in ``get_idx0`` when a contig range names a residue
+    that is absent from the input PDB, so unmodeled receptor loops must be
+    expressed as segment breaks instead of one spanning range (reproduced on
+    CXCR4 22XC, where the unmodeled residue 69 killed the whole batch).  The
+    receptor is emitted as one ``chainstart-end`` block per modeled segment,
+    joined with ``/`` so they land on the same output chain, followed by the
+    ``/0`` chain break that keeps the generated binder on its own chain.
+
+    With a single segment the output is byte-identical to
+    ``_binder_first_contig``.
+    """
+    chain = str(target_chain or "").strip()
+    if len(chain) != 1 or not chain.isalpha() or not chain.isupper():
+        raise ValueError(
+            f"target chain must be a single uppercase PDB chain ID, got {target_chain!r}"
+        )
+    length = int(binder_len)
+    if not MIN_CYCLIC_PEPTIDE_LENGTH <= length <= MAX_CYCLIC_PEPTIDE_LENGTH:
+        raise ValueError(
+            f"{supported_length_message('binder')}, got {length}"
+        )
+    segments = list(segments or [])
+    if not segments:
+        raise ValueError("receptor contig requires at least one modeled segment")
+    normalized = []
+    for start, end in segments:
+        start, end = int(start), int(end)
+        if start > end:
+            raise ValueError(f"target residue range is reversed: {start}-{end}")
+        normalized.append((start, end))
+    receptor = "/".join(f"{chain}{s}-{e}" for s, e in normalized)
+    return f"{length}-{length} {receptor}/0"
+
+
 def _canonical_cyclization_type(cyclization, sequence=None):
     """Return the stable manifest value while accepting legacy descriptions."""
     raw = str(cyclization or "").strip()
@@ -421,6 +459,28 @@ def _pdb_contiguous_segments(sorted_res):
     return segments
 
 
+def _pdb_receptor_contig_segments(sorted_res):
+    """Split sorted residue numbers into modeled receptor segments.
+
+    Any gap > 1 starts a new segment: RFdiffusion requires every residue named
+    by the contig to exist in the PDB, so an unmodeled loop must become a
+    segment break.  This is stricter than ``_pdb_contiguous_segments`` (gap >
+    50), which remains for the hotspot-constrained single-segment window.
+    """
+    if not sorted_res:
+        raise ValueError("cannot build a receptor contig from an empty residue set")
+    segments = []
+    seg_start = sorted_res[0]
+    prev = seg_start
+    for r in sorted_res[1:]:
+        if r - prev > 1:
+            segments.append((seg_start, prev))
+            seg_start = r
+        prev = r
+    segments.append((seg_start, prev))
+    return segments
+
+
 def _select_hotspot_segment(chain, pdb_path, residues, segments, hotspot_residues):
     """Validate hotspots and return the contiguous segment covering them."""
     hotspot_set = {int(r) for r in hotspot_residues}
@@ -494,6 +554,23 @@ def _pdb_residue_range(pdb_path, chain="A", hotspot_residues=None):
         # No hotspot guidance -> longest segment (backward compatible)
         best = max(segments, key=lambda s: s[1] - s[0])
     return best[0], best[1]
+
+
+def _receptor_contig_segments(pdb_path, chain="A", hotspot_residues=None):
+    """Return the receptor segments for a binder-first contig.
+
+    With hotspots, the approved binding-site residues are validated and the
+    single contiguous segment covering them is returned (the existing
+    ``_pdb_residue_range`` window).  Without hotspots, every modeled segment is
+    returned so unmodeled gaps never crash RFdiffusion.
+    """
+    if hotspot_residues:
+        start, end = _pdb_residue_range(
+            pdb_path, chain, hotspot_residues=hotspot_residues
+        )
+        return [(start, end)]
+    residues = sorted(_pdb_chain_residue_numbers(pdb_path, chain))
+    return _pdb_receptor_contig_segments(residues)
 
 def _pdb_chain_residue_layout(pdb_path):
     """Return first-model PDB residues grouped in emitted chain order."""

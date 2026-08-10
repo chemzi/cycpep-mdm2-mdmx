@@ -20,11 +20,11 @@ from .service import (  # noqa: E402
     _resolve_target,
 )
 from .validation import (  # noqa: E402
-    _binder_first_contig,
+    _binder_first_contig_segmented,
     _cheap_filter_sequences,
     _infer_binder_chain,
     _parse_hotspot_residues,
-    _pdb_residue_range,
+    _receptor_contig_segments,
 )
 from project_config import target_slug  # noqa: E402
 
@@ -36,7 +36,7 @@ def _route_a_generate_backbones(config, batch_dir):
     together (P1-2) instead of biasing results by backbone order.
     """
     hotspots = _parse_hotspot_residues(config.get("hotspots", ""))
-    target_range = _pdb_residue_range(
+    receptor_segments = _receptor_contig_segments(
         config["target_pdb"], config["chain"], hotspot_residues=hotspots
     )
     backbone_entries = []  # (bb_path, binder_chain, raw_seqs)
@@ -48,8 +48,8 @@ def _route_a_generate_backbones(config, batch_dir):
         rfdiff_ok = _run_rfdiff(
             target_pdb=config["target_pdb"], binder_len=L,
             n_designs=n_designs, output_prefix=f"{backbone_dir}/bb",
-            contig=_binder_first_contig(
-                config["chain"], target_range[0], target_range[1], L
+            contig=_binder_first_contig_segmented(
+                config["chain"], receptor_segments, L
             ),
             seed=config["seed"],
             hotspots=config.get("hotspots"),
