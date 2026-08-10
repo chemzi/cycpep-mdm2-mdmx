@@ -22,7 +22,8 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-EXPECTED_SCHEMA = "frontend.workbench.v2"
+EXPECTED_WORKBENCH_SCHEMA = "frontend.workbench.v2"
+EXPECTED_RESULTS_SCHEMA = "frontend.results.v1"
 POLL_ATTEMPTS = 40
 POLL_INTERVAL = 0.5
 
@@ -39,14 +40,14 @@ def _port_open(port: int) -> bool:
         return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
-def _fetch(port: int, timeout: float = 2.0):
-    """Fetch the workbench payload, unwrapping the adapter envelope.
+def _fetch(port: int, path: str = "/api/v2/workbench", timeout: float = 2.0):
+    """Fetch one read-model payload, unwrapping the adapter envelope.
 
     The adapter wraps every response as ``{"request_id": ..., "data": ...}``
     (or ``"error"`` on failure); raise when the payload is an error so callers
     never snapshot a partial result.
     """
-    url = f"http://127.0.0.1:{port}/api/v2/workbench"
+    url = f"http://127.0.0.1:{port}{path}"
     with urllib.request.urlopen(url, timeout=timeout) as resp:
         envelope = json.loads(resp.read().decode("utf-8"))
     if not isinstance(envelope, dict):
@@ -57,7 +58,7 @@ def _fetch(port: int, timeout: float = 2.0):
 
 
 def _is_workbench(data) -> bool:
-    return isinstance(data, dict) and data.get("schema_version") == EXPECTED_SCHEMA
+    return isinstance(data, dict) and data.get("schema_version") == EXPECTED_WORKBENCH_SCHEMA
 
 
 def _probe(port: int, attempts: int = 3) -> bool:
@@ -93,6 +94,20 @@ def _summarize(data: dict) -> None:
     trace = data.get("trace") or {}
     print(f"trace          : project={trace.get('project_id')} "
           f"workflow={trace.get('workflow_id')} run={trace.get('run_id')}")
+
+
+def _summarize_results(data: dict) -> None:
+    print(f"schema_version : {data.get('schema_version')}")
+    project = data.get("project") or {}
+    print(f"project        : {project.get('project_id')} ({project.get('name')})")
+    summary = data.get("summary") or {}
+    print(f"candidates     : total={summary.get('candidates_total')} "
+          f"evaluated={summary.get('candidates_evaluated')} "
+          f"pending={summary.get('candidates_pending_prediction')}")
+    print(f"hard clearance : {summary.get('hard_cleared')} "
+          f"rate={summary.get('hard_clearance_rate')}")
+    print(f"data basis     : {summary.get('data_basis')}")
+    print(f"conclusion     : {data.get('conclusion')}")
 
 
 def main() -> int:
@@ -140,14 +155,29 @@ def main() -> int:
             if proc is not None:
                 _print_server_tail(server_log)
             return 1
-        if data.get("schema_version") != EXPECTED_SCHEMA:
+        if data.get("schema_version") != EXPECTED_WORKBENCH_SCHEMA:
             print(f"FAILED: unexpected schema_version "
-                  f"{data.get('schema_version')!r} (expected {EXPECTED_SCHEMA!r})")
+                  f"{data.get('schema_version')!r} (expected {EXPECTED_WORKBENCH_SCHEMA!r})")
             if proc is not None:
                 _print_server_tail(server_log)
             return 1
 
         _summarize(data)
+
+        try:
+            results = _fetch(port, path="/api/v2/results")
+        except Exception as exc:
+            print(f"FAILED: /api/v2/results did not respond ({exc})")
+            if proc is not None:
+                _print_server_tail(server_log)
+            return 1
+        if not isinstance(results, dict) or results.get("schema_version") != EXPECTED_RESULTS_SCHEMA:
+            print(f"FAILED: unexpected results schema_version "
+                  f"{results.get('schema_version')!r} (expected {EXPECTED_RESULTS_SCHEMA!r})")
+            if proc is not None:
+                _print_server_tail(server_log)
+            return 1
+        _summarize_results(results)
 
         snapshot_dir = Path(args.snapshot_dir)
         snapshot_dir.mkdir(parents=True, exist_ok=True)

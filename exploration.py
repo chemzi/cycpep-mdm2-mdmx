@@ -50,7 +50,7 @@ def _as_float(value):
     return result
 
 
-def _split_layer_key(layer_key):
+def split_layer_key(layer_key):
     """Split ``layer_values`` key into (METRIC_SPECS metric key, slug suffix).
 
     靶标维度键（如 ``L2_ipsae_mdm2``）的 slug 后缀用于解析 per-target
@@ -127,7 +127,7 @@ def desirability(layer_values: dict, thresholds: dict, target_ids=()):
     margins = {}
     consumed = []
     for layer_key, raw in (layer_values or {}).items():
-        metric, slug = _split_layer_key(layer_key)
+        metric, slug = split_layer_key(layer_key)
         if metric is None:
             continue
         value = _as_float(raw)
@@ -210,7 +210,7 @@ def exploration_shortlist(events=None, targets=None, k: int = 5, thresholds=None
     for row in rows:
         layer_values = row.get("layer_values") or {}
         unmapped.update(
-            key for key in layer_values if _split_layer_key(key)[0] is None
+            key for key in layer_values if split_layer_key(key)[0] is None
         )
         score, top_metric, _margins, row_consumed = desirability(
             layer_values, normalized, target_ids=row.get("targets") or ()
@@ -224,7 +224,7 @@ def exploration_shortlist(events=None, targets=None, k: int = 5, thresholds=None
             "pareto_values": {
                 key: _as_float(layer_values.get(key))
                 for key in layer_values
-                if _split_layer_key(key)[0] is not None
+                if split_layer_key(key)[0] is not None
             },
         })
 
@@ -234,7 +234,7 @@ def exploration_shortlist(events=None, targets=None, k: int = 5, thresholds=None
     })
     objectives = [
         {"key": key,
-         "direction": METRIC_SPECS[_split_layer_key(key)[0]]["direction"]}
+         "direction": METRIC_SPECS[split_layer_key(key)[0]]["direction"]}
         for key in objective_keys
     ]
     front_ids = set()
@@ -311,3 +311,8 @@ def record_exploration_shortlist(result: dict, targets=None, round_num=None,
         round_num=round_num,
         trace_context=trace_context,
     )
+
+
+# Legacy private alias kept for backward compatibility; new code should use
+# the public split_layer_key (the architecture gate forbids private imports).
+_split_layer_key = split_layer_key

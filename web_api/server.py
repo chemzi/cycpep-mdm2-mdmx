@@ -33,6 +33,7 @@ from target_bootstrap import (  # noqa: E402
     approve_draft,
     edit_target_draft,
 )
+from web_api.results import ResultsReader  # noqa: E402
 from web_api.workbench import WorkbenchReader  # noqa: E402
 
 STORE = Path(os.environ.get("CYCPEP_WEB_STORE", ROOT / "data" / "web_api"))
@@ -315,6 +316,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, projects)
             if path == "/api/v1/snapshot":
                 return self._json(200, local_snapshot())
+            if path == "/api/v2/results":
+                store = getattr(self.server, "workbench_store", None)
+                if store is None:
+                    return self._json(503, error={
+                        "code": "results_unavailable",
+                        "message": "Results read model is unavailable",
+                    })
+                return self._json(200, ResultsReader(store).read())
             if path == "/api/v2/workbench":
                 store = getattr(self.server, "workbench_store", None)
                 if store is None:

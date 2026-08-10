@@ -14,6 +14,7 @@ from exploration import (
     desirability,
     exploration_shortlist,
     record_exploration_shortlist,
+    split_layer_key,
 )
 
 THRESHOLDS = {
@@ -323,3 +324,22 @@ class ShortlistEventTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SplitLayerKeyTests(unittest.TestCase):
+    """Public contract: layer_values key -> (METRIC_SPECS key, slug suffix)."""
+
+    def test_target_scoped_key_splits_metric_and_slug(self):
+        self.assertEqual(split_layer_key("L2_ipsae_mdm2"), ("L2_ipsae", "mdm2"))
+        self.assertEqual(split_layer_key("L5_hotspot_cov_mdmx"), ("L5_hotspot_coverage", "mdmx"))
+
+    def test_global_key_has_no_slug(self):
+        self.assertEqual(split_layer_key("L4_nc_distance_post"), ("L4_nc_term_dist", "post"))
+        self.assertEqual(split_layer_key("L7_scrmsd"), ("L7_scrmsd", None))
+
+    def test_longest_prefix_wins(self):
+        self.assertEqual(split_layer_key("L3_dsasa"), ("L3_dsasa", None))
+        self.assertEqual(split_layer_key("L3_dg"), ("L3_dg", None))
+
+    def test_unknown_key_is_not_mapped(self):
+        self.assertEqual(split_layer_key("totally_unknown"), (None, None))

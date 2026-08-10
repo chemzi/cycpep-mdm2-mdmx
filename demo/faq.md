@@ -32,4 +32,12 @@ protocol name/version/sha256 → 参数变更 → artifact 复用被拒。协议
 
 ## 8. 演示环境怎么启动？
 
-后端读模型一条命令：`python demo/scripts/verify_demo_stack.py`；完整栈：`cd web-gui && .\start-local.ps1`（见 `demo/README.md`）。
+后端读模型一条命令：`python demo/scripts/verify_demo_stack.py`（同时校验 workbench 与 results 两个读模型）；完整栈：`cd web-gui && .\start-local.ps1`（见 `demo/README.md`）。
+
+## 9. 工作台和结果页有什么区别？
+
+工作台（`/api/v2/workbench`）是证据链视角：任务图、执行、transaction、candidate workspace、evidence timeline、artifact trace。结果页（`/api/v2/results`，页面顶部 "Results digest"）是科学结论视角：硬清关汇总、finalists 排名、每层通过率、阈值标定计数与一句话结论。两者共用同一只读存储，`data_basis` 字段明确标注当前行是 `demo_fixture`（合成）还是 `real`（真实），页面结论也明确写"这是流程演示，不是最终科学结论"。
+
+## 10. 演示数据是怎么来的？会不会污染真实结果？
+
+`demo/snapshot/seed_demo_fixture.py` 只写本地 `data/store.db` 与 `demo/snapshot/demo_run/`，所有行都带 `demo_fixture=true` 标记或 `DEMO` 前缀；重跑会先删除上次的 fixture 行。它不碰服务器、git 或任何公共资源。结果页通过 `data_basis=demo_fixture` 显式标注，不会被误认为真实科学结论。

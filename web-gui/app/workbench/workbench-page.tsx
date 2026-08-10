@@ -9,7 +9,9 @@ import { EvidenceProvenance } from "./components/evidence-provenance";
 import { ExplorationShortlist } from "./components/exploration-shortlist";
 import { CollectionSummary, FailureState, LoadingState } from "./components/shared-states";
 import { TaskGraph } from "./components/task-graph";
+import { ResultsSummary } from "./components/results-summary";
 import { WorkbenchShell } from "./components/workbench-shell";
+import { useResults } from "./use-results";
 import { useWorkbench } from "./use-workbench";
 import { useBoundedSelection } from "./selection";
 
@@ -22,6 +24,10 @@ export function WorkbenchPage() {
     return stored === null ? true : stored === "true";
   });
   const workbench = useWorkbench({
+    autoRefreshIntervalMs: 10_000,
+    initialAutoRefresh,
+  });
+  const results = useResults({
     autoRefreshIntervalMs: 10_000,
     initialAutoRefresh,
   });
@@ -103,6 +109,14 @@ export function WorkbenchPage() {
         onSelectCandidate={setSelectedCandidateId}
       />
     </div>
+
+    <section className="results-section" aria-labelledby="results-digest-heading">
+      <ResultsSummary
+        digest={results.data}
+        error={results.error}
+        refreshing={results.status === "refreshing"}
+      />
+    </section>
 
     <section className="scientific-results" aria-labelledby="scientific-results-heading">
       <div className="domain-section-header">
