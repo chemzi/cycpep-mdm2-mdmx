@@ -1,19 +1,64 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
-import { isExplorationShortlistEvidence } from "./domain";
-import { ArtifactTraceInspector } from "./components/artifact-trace";
-import { CandidateWorkspace } from "./components/candidate-workspace";
-import { EvidenceProvenance } from "./components/evidence-provenance";
-import { ExplorationShortlist } from "./components/exploration-shortlist";
-import { CollectionSummary, FailureState, LoadingState } from "./components/shared-states";
-import { TaskGraph } from "./components/task-graph";
-import { WorkbenchShell } from "./components/workbench-shell";
+import type { WorkbenchReadModel } from "./domain";
+import { FailureState, LoadingState } from "./components/shared-states";
+import { WorkbenchWorkspace } from "./components/workbench-workspace";
+import type { WorkbenchAuxiliaryPanel } from "./components/workbench-workspace";
+import { useWorkbenchSelection } from "./selection";
+import type { WorkbenchSelection } from "./selection";
 import { useWorkbench } from "./use-workbench";
-import { useBoundedSelection } from "./selection";
 
 const AUTO_REFRESH_KEY = "cycpep-workbench-v2-auto-refresh";
+
+function initialSelection(data: WorkbenchReadModel): WorkbenchSelection {
+  const task = data.tasks.items.find((item) => item.task_id)?.task_id;
+  if (task) return { kind: "task", identity: task };
+  const candidate = data.candidates.items.find((item) => item.candidate_id)?.candidate_id;
+  if (candidate) return { kind: "candidate", identity: candidate };
+  const evidence = data.evidence.items.find((item) => item.event_id)?.event_id;
+  if (evidence) return { kind: "evidence", identity: evidence };
+  return { kind: "overview", identity: null };
+}
+
+function LoadedWorkbench({
+  data,
+  requestStatus,
+  refreshError,
+  autoRefreshEnabled,
+  onRefresh,
+  onAutoRefreshChange,
+}: {
+  data: WorkbenchReadModel;
+  requestStatus: ReturnType<typeof useWorkbench>["status"];
+  refreshError: string | null;
+  autoRefreshEnabled: boolean;
+  onRefresh: () => void;
+  onAutoRefreshChange: (enabled: boolean) => void;
+}) {
+  const [selection, setSelection] = useWorkbenchSelection(data, initialSelection(data));
+  const [collapsedPanels, setCollapsedPanels] = useState<WorkbenchAuxiliaryPanel[]>([]);
+
+  function setPanelCollapsed(panel: WorkbenchAuxiliaryPanel, collapsed: boolean) {
+    setCollapsedPanels((current) => collapsed
+      ? current.includes(panel) ? current : [...current, panel]
+      : current.filter((item) => item !== panel));
+  }
+
+  return <WorkbenchWorkspace
+    data={data}
+    requestStatus={requestStatus}
+    refreshError={refreshError}
+    autoRefreshEnabled={autoRefreshEnabled}
+    onRefresh={onRefresh}
+    onAutoRefreshChange={onAutoRefreshChange}
+    selection={selection}
+    collapsedPanels={collapsedPanels}
+    onSelectionChange={setSelection}
+    onPanelCollapsedChange={setPanelCollapsed}
+  />;
+}
 
 export function WorkbenchPage() {
   const [initialAutoRefresh] = useState(() => {
@@ -32,106 +77,19 @@ export function WorkbenchPage() {
     workbench.setAutoRefreshEnabled(enabled);
   }
 
-  const candidateIds = useMemo(
-    () => model?.candidates.items
-      .map((candidate) => candidate.candidate_id)
-      .filter((identity): identity is string => Boolean(identity)) ?? [],
-    [model?.candidates.items],
-  );
-  const evidenceIds = useMemo(
-    () => model?.evidence.items
-      .map((evidence) => evidence.event_id)
-      .filter((identity): identity is string => Boolean(identity)) ?? [],
-    [model?.evidence.items],
-  );
-  const artifactIds = useMemo(
-    () => model?.artifacts.items
-      .map((artifact) => artifact.artifact_id)
-      .filter((identity): identity is string => Boolean(identity)) ?? [],
-    [model?.artifacts.items],
-  );
-  const [selectedCandidateId, setSelectedCandidateId] = useBoundedSelection(candidateIds);
-  const [selectedEvidenceId, setSelectedEvidenceId] = useBoundedSelection(evidenceIds);
-  const [selectedArtifactId, setSelectedArtifactId] = useBoundedSelection(artifactIds);
-
   if (!model && workbench.status === "failed-before-data") {
-    return <main className="initial-state"><FailureState message={workbench.error ?? "Workbench request failed"}/></main>;
+    return <main className="initial-state"><FailureState message={workbench.error ?? "Workbench request failed"} /></main>;
   }
   if (!model) {
-    return <main className="initial-state"><LoadingState label="Loading Frontend V2 workbench"/></main>;
+    return <main className="initial-state"><LoadingState label="Loading Frontend V2 workbench" /></main>;
   }
 
-  const shortlists = model.evidence.items.filter(isExplorationShortlistEvidence);
-  const collections = [
-    ["Tasks", model.tasks],
-    ["Executions", model.executions],
-    ["Transactions", model.transactions],
-    ["Candidates", model.candidates],
-    ["Evidence", model.evidence],
-    ["Artifacts", model.artifacts],
-    ["Protocols", model.protocols],
-    ["Blockers", model.blockers],
-  ] as const;
-
-  return <WorkbenchShell
+  return <LoadedWorkbench
     data={model}
     requestStatus={workbench.status}
     refreshError={workbench.error}
     autoRefreshEnabled={workbench.autoRefreshEnabled}
     onRefresh={() => void workbench.refresh()}
     onAutoRefreshChange={setAutoRefresh}
-  >
-    <section className="collection-coverage" aria-labelledby="coverage-heading">
-      <div className="domain-section-header">
-        <div><span className="domain-kicker">BOUNDED RESPONSE</span><h2 id="coverage-heading">Collection coverage</h2></div>
-      </div>
-      <div>{collections.map(([label, collection]) => <CollectionSummary key={label} label={label} collection={collection}/>)}</div>
-    </section>
-
-    <div className="primary-workspace-grid">
-      <TaskGraph
-        tasks={model.tasks}
-        executions={model.executions}
-        transactions={model.transactions}
-        blockers={model.blockers.items}
-      />
-      <CandidateWorkspace
-        candidates={model.candidates}
-        evidence={model.evidence.items}
-        artifacts={model.artifacts.items}
-        selectedCandidateId={selectedCandidateId}
-        onSelectCandidate={setSelectedCandidateId}
-      />
-    </div>
-
-    <section className="scientific-results" aria-labelledby="scientific-results-heading">
-      <div className="domain-section-header">
-        <div><span className="domain-kicker">SCIENTIFIC EVIDENCE</span><h2 id="scientific-results-heading">Exploration results</h2></div>
-      </div>
-      {shortlists.length === 0
-        ? <p className="domain-empty">No exploration_shortlist Evidence returned.</p>
-        : shortlists.map((shortlist, index) => <ExplorationShortlist
-            key={shortlist.event_id ?? `shortlist-${index}`}
-            shortlist={shortlist}
-            evidence={model.evidence.items}
-            headingId={`exploration-shortlist-${index}-title`}
-            passedHeadingId={`exploration-shortlist-${index}-passed-title`}
-            onSelectEvidence={setSelectedEvidenceId}
-          />)}
-    </section>
-
-    <div className="provenance-grid">
-      <EvidenceProvenance
-        evidence={model.evidence.items}
-        selectedEvidenceId={selectedEvidenceId}
-        onSelectEvidence={setSelectedEvidenceId}
-      />
-      <ArtifactTraceInspector
-        artifacts={model.artifacts.items}
-        protocols={model.protocols.items}
-        selectedArtifactId={selectedArtifactId}
-        onSelectArtifact={setSelectedArtifactId}
-      />
-    </div>
-  </WorkbenchShell>;
+  />;
 }

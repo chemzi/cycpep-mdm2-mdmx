@@ -24,6 +24,7 @@ from .task_builders import (
     _recommendation_tasks,
 )
 from .validation import _validate_critic_report
+import math
 
 def _inject_project_config(state: dict, project_config: dict | None) -> None:
     """Bind an explicitly approved project config into the plan inputs."""
@@ -240,6 +241,91 @@ def _plan_execution(tasks: list[dict], blocked_tasks: list[str]) -> dict:
     }
 
 
+def _compute_plan_metadata(tasks: list[dict], budgets: dict[str, int], config: PlannerConfig, state: dict[str, object]) -> dict[str, object]:
+    """Attach lightweight compute-aware estimates directly to the assembled plan.
+
+    Priority for `global_budget_minutes` (higher wins):
+    1. `state["compute_budget"]["global_budget_minutes"]` if it's a mapping and finite
+    2. `state["planning_constraints"]["global_budget_minutes"]` if mapping and finite
+    3. `config.global_budget_minutes` (PlannerConfig)
+
+    Accesses are defensive: non-mapping values in State are ignored to avoid
+    raising `AttributeError` when callers store unexpected types.
+    """
+    total_estimated_gpu_minutes = 0.0
+    # Use PlannerConfig tunables to compute conservative estimates. These are
+    # priors and should be replaced by benchmark-driven values when available.
+    per_proposal = float(config.gpu_minutes_per_proposal)
+    candidate_factor = float(config.gpu_minutes_per_candidate_factor)
+    per_minute_cost = float(config.gpu_cost_per_minute_usd)
+
+    for task in tasks:
+        resource = task.get("resource_request") or {}
+        resource_class = resource.get("class")
+        if resource_class == "gpu":
+            proposals = int(resource.get("proposal_count") or 0)
+            candidates = int(resource.get("candidate_limit") or 0)
+            estimated_minutes = proposals * per_proposal + candidates * (per_proposal * candidate_factor)
+            estimated_cost = round(estimated_minutes * per_minute_cost, 4)
+            resource["estimated_gpu_minutes"] = float(estimated_minutes)
+            resource["estimated_cost_usd"] = float(estimated_cost)
+            resource["estimate_status"] = "estimated"
+            total_estimated_gpu_minutes += estimated_minutes
+        else:
+            resource["estimated_gpu_minutes"] = None
+            resource["estimated_cost_usd"] = 0.0
+            resource["estimate_status"] = "not_applicable"
+        task["resource_request"] = resource
+
+    route_resource_estimate = {
+        key: int(value)
+        for key, value in sorted((budgets or {}).items())
+        if key.startswith("route_")
+    }
+
+    # Collect candidates defensively
+    candidates: list[object] = []
+    cb = state.get("compute_budget")
+    if isinstance(cb, dict):
+        candidates.append(cb.get("global_budget_minutes"))
+    pc = state.get("planning_constraints")
+    if isinstance(pc, dict):
+        candidates.append(pc.get("global_budget_minutes"))
+    candidates.append(config.global_budget_minutes)
+
+    global_budget_minutes = None
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            v = float(candidate)
+        except (TypeError, ValueError):
+            continue
+        # Reject NaN/Inf carried in State; only accept finite numbers
+        if not math.isfinite(v):
+            continue
+        global_budget_minutes = v
+        break
+
+    return {
+        "route_resource_estimate": route_resource_estimate,
+        "max_rounds": int(config.max_rounds),
+        "task_timeout_minutes": int(config.task_timeout_minutes),
+        "global_budget_minutes": (
+            float(global_budget_minutes) if global_budget_minutes is not None else None
+        ),
+        "on_budget_exhausted": config.on_budget_exhausted,
+        # Advisory budget status: 'within_budget' | 'exceeds_budget' | 'unknown'
+        "budget_status": (
+            "unknown"
+            if global_budget_minutes is None
+            else ("exceeds_budget" if total_estimated_gpu_minutes > float(global_budget_minutes) else "within_budget")
+        ),
+        "total_estimated_gpu_minutes": float(total_estimated_gpu_minutes),
+        "estimator_version": "simple-v1",
+    }
+
+
 def _assemble_plan(
     tasks: list[dict],
     *,
@@ -298,4 +384,5 @@ def _assemble_plan(
         ),
         "execution": _plan_execution(tasks, blocked_tasks),
         "tasks": tasks,
+        "decision_metadata": _compute_plan_metadata(tasks, budgets, config, state),
     }

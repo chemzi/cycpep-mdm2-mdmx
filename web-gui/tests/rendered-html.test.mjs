@@ -20,7 +20,7 @@ test("server-renders the honest Frontend V2 initial state", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>CycPep Studio — Frontend V2 Workbench<\/title>/i);
+  assert.match(html, /<title>CycPep Workbench<\/title>/i);
   assert.match(html, /Loading Frontend V2 workbench/);
   assert.match(html, /role="status"/);
   assert.doesNotMatch(html, /example candidate|fake progress|demo molecule/i);
