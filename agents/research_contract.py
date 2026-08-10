@@ -252,15 +252,6 @@ def _valid_research_evidence(
         for event in backend.query(project_id=project_id)
         if event.get("project_id") == project_id
     }
-    if getattr(backend, "project_id", None) == project_id:
-        # Legacy Research Evidence predates explicit project_id payloads.  It
-        # remains valid only through a Store instance already scoped to the
-        # expected project; explicitly foreign rows are never accepted.
-        events_by_id.update({
-            event["event_id"]: event
-            for event in backend.query()
-            if event.get("project_id") is None
-        })
     referenced = [events_by_id.get(event_id) for event_id in evidence_ids]
     return all(
         event is not None

@@ -27,7 +27,11 @@ class WorkflowCLITests(unittest.TestCase):
         )
         stdout = io.StringIO()
 
-        code = main(["launch", "--project", "approved.json"], handlers=handlers, stdout=stdout)
+        code = main(
+            ["launch", "--project", "approved.json"],
+            handlers=handlers,
+            stdout=stdout,
+        )
 
         self.assertEqual(code, 0)
         self.assertEqual(calls, [("launch", {"project_path": "approved.json"})])
@@ -79,13 +83,20 @@ class WorkflowCLITests(unittest.TestCase):
         )
         stdout = io.StringIO()
 
-        code = main(["launch", "--project", "approved.json"], handlers=handlers, stdout=stdout)
+        with self.assertLogs("workflow.cli", level="ERROR") as captured:
+            code = main(
+                ["launch", "--project", "approved.json"],
+                handlers=handlers,
+                stdout=stdout,
+            )
 
         payload = json.loads(stdout.getvalue())
         self.assertEqual(code, 2)
         self.assertEqual(payload["error"]["code"], "RuntimeError")
         self.assertNotIn("secret-value", stdout.getvalue())
         self.assertNotIn("C:/internal", stdout.getvalue())
+        self.assertNotIn("secret-value", "\n".join(captured.output))
+        self.assertNotIn("C:/internal", "\n".join(captured.output))
         self.assertEqual(stdout.getvalue().count("\n"), 1)
 
 

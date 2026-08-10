@@ -62,7 +62,11 @@ class ResearchLauncherContractTests(unittest.TestCase):
             )
             observed["starts"] = starts
             receipt_evidence_ids.append(
-                EvidenceLogger.log("research", "research_targets", {"formal": True})
+                EvidenceLogger.log(
+                    "research",
+                    "research_targets",
+                    {"formal": True, "project_id": self.config["project_id"]},
+                )
             )
             return {"scientific": "result"}
 
@@ -97,7 +101,8 @@ class ResearchLauncherContractTests(unittest.TestCase):
 
     def test_validator_resolves_completed_invocation_from_formal_store(self):
         research_target_id = EvidenceLogger.log(
-            "research", "research_targets", {"formal": True}
+            "research", "research_targets",
+            {"formal": True, "project_id": self.config["project_id"]}
         )
         self._append_start()
         self._append_completion([research_target_id])
@@ -122,7 +127,8 @@ class ResearchLauncherContractTests(unittest.TestCase):
 
     def test_validator_fails_closed_for_completion_without_start(self):
         research_target_id = EvidenceLogger.log(
-            "research", "research_targets", {"formal": True}
+            "research", "research_targets",
+            {"formal": True, "project_id": self.config["project_id"]}
         )
         self._append_completion([research_target_id])
         status = research.validate_research_invocation(

@@ -175,7 +175,7 @@ class _Runtime:
     def recover_transactions(self):
         return None
 
-    def inspect_transaction_recovery(self):
+    def inspect_transaction_recovery(self, _orchestrator=None):
         return self.world.transaction
 
     def drain(self, run_path):

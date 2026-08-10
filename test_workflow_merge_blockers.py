@@ -28,7 +28,7 @@ class _TracingRuntime(_Runtime):
         self.world.calls.append("inspect_planner")
         return super().inspect_planner(critic)
 
-    def inspect_transaction_recovery(self):
+    def inspect_transaction_recovery(self, _orchestrator=None):
         self.world.calls.append("inspect_transaction_recovery")
         return self.world.transaction
 
@@ -44,6 +44,19 @@ def _tracing_dependencies(root, world):
 
 
 class WorkflowMergeBlockerCharacterizationTests(unittest.TestCase):
+    def test_unbound_service_failure_emits_bounded_operational_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            world = _World()
+            deps = _tracing_dependencies(tmp, world)
+
+            with self.assertLogs("workflow.service", level="ERROR") as captured:
+                result = status_launcher_run(
+                    launcher_run_id="invalid", dependencies=deps
+                )
+
+            self.assertEqual(result.exit_code, 2)
+            self.assertTrue(any("launcher command failed" in item for item in captured.output))
+
     def test_prediction_blocker_precedes_stale_critic_and_planner(self):
         with tempfile.TemporaryDirectory() as tmp:
             world = _World()

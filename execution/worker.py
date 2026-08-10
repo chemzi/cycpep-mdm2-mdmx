@@ -506,9 +506,9 @@ def ensure_transaction_recovery_clean(
 
 
 def inspect_transaction_recovery(
-    *, config: ExecutionConfig | None = None
+    *, config: ExecutionConfig | None = None, run_id: str | None = None
 ):
-    """Inspect formal recovery markers without reconciling or mutating them."""
+    """Inspect one run's formal recovery state without mutating it."""
 
     config = config or ExecutionConfig.from_environment()
     transaction_worker = ExecutionWorker(
@@ -517,7 +517,9 @@ def inspect_transaction_recovery(
         config.execution_root / "artifacts",
     )
     return transaction_worker.commit_manager.recovery.inspect_pending(
-        config.execution_root / ".staging"
+        config.execution_root / ".staging",
+        orchestrator_state=_orchestrator_state_for_transaction,
+        run_id=run_id,
     )
 
 

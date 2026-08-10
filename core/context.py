@@ -31,9 +31,12 @@ class ProjectPaths:
     data_dir: Path | None = None
     evidence_dir: Path | None = None
     output_dir: Path | None = None
+    database_path: Path | None = None
 
     def __post_init__(self) -> None:
-        for field_name in ("data_dir", "evidence_dir", "output_dir"):
+        for field_name in (
+            "data_dir", "evidence_dir", "output_dir", "database_path"
+        ):
             value = getattr(self, field_name)
             if value is None:
                 continue
@@ -61,10 +64,16 @@ class ProjectPaths:
             if self.evidence_dir is not None
             else (root / "evidence" if is_reference else root / "evidence" / "projects" / slug)
         )
+        database_path = (
+            self.database_path
+            if self.database_path is not None
+            else data_dir / "store.db"
+        )
         return ProjectPaths(
             data_dir=data_dir,
             evidence_dir=evidence_dir,
             output_dir=self.output_dir,
+            database_path=database_path,
         )
 
 
@@ -124,9 +133,48 @@ class ProjectContext:
         )
 
     @classmethod
+    def from_runtime_config(
+        cls,
+        config: Mapping[str, Any],
+        *,
+        environ: Mapping[str, str] | None = None,
+        runtime: Mapping[str, Any] | None = None,
+    ) -> "ProjectContext":
+        """Freeze documented runtime path overrides into one context."""
+
+        source = os.environ if environ is None else environ
+        def runtime_path(name: str) -> str | None:
+            value = source.get(name)
+            return value if value else None
+
+        paths = ProjectPaths(
+            data_dir=runtime_path("CYCPEP_DATA_DIR"),
+            evidence_dir=runtime_path("CYCPEP_EVIDENCE_DIR"),
+            database_path=runtime_path("CYCPEP_DB_PATH"),
+        )
+        return cls.from_config(config, paths=paths, runtime=runtime)
+
+    @classmethod
+    def from_runtime(
+        cls,
+        path: str | Path | None = None,
+        raw: dict | None = None,
+        *,
+        environ: Mapping[str, str] | None = None,
+        runtime: Mapping[str, Any] | None = None,
+    ) -> "ProjectContext":
+        """Load a project and resolve documented runtime paths exactly once."""
+
+        return cls.from_runtime_config(
+            load_project_config(path=path, raw=raw),
+            environ=environ,
+            runtime=runtime,
+        )
+
+    @classmethod
     def default(cls) -> "ProjectContext":
         """Context for the environment-selected project (legacy default)."""
-        return cls.load()
+        return cls.from_runtime()
 
     @property
     def targets(self) -> tuple[str, ...]:

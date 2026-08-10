@@ -82,3 +82,13 @@
 - [x] 8.2 Run the full applicable suite, configured lint/type checks, Architecture Gate, and `git diff --check`.
 - [ ] 8.3 Run `openspec validate add-autonomous-workflow-launcher --strict` and `$openspec-verify-change`; reconcile tasks and artifacts with the implemented contracts.
 - [ ] 8.4 Run fresh independent Spec, Standards, and Strict Code Reviews from the integration merge base, require a new score of at least 85 with no P0/P1, and keep PR #62 Draft without merging.
+
+## 9. Fresh-review blocker remediation
+
+- [x] 9.1 Add RED tests proving `ProjectPaths` owns the exact database path, Research rejects projectless cross-project references, and read-only recovery distinguishes DB-only unresolved, live-owner, and formally closed marker states without mutation.
+- [x] 9.2 Add `database_path` and the documented runtime-path constructor to the public `ProjectContext` contract; bind the resolved database path exactly and never re-resolve it inside Launcher coordination.
+- [x] 9.3 Remove projectless Research Evidence fallback from launcher-correlated completion validation while preserving legacy non-Launcher Research execution.
+- [x] 9.4 Complete the owner-side read-only recovery inspector over Store rows, marker state, owner liveness, and Orchestrator closure using shared recovery parsing/classification primitives.
+- [x] 9.5 Split approval resolution, Orchestrator initialization, recovery gating, Worker drain, and formal outcome projection so no new service function combines the full workflow continuation responsibilities.
+- [x] 9.6 Add bounded operational logging for catch-all failures that cannot be durably journaled, without exposing raw traces, secrets, paths, or stdout in browser output.
+- [ ] 9.7 Re-run focused/full/architecture/frontend/OpenSpec gates and repeat all three independent reviews from the updated fixed point.

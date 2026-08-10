@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import logging
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -26,6 +27,9 @@ from .observations import (
     with_plan_trace as _with_plan_trace,
 )
 from .runtime_context import bind_project_context
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -274,89 +278,93 @@ def _continue_approved_plan(
     execute: bool,
 ) -> LauncherCommandResult:
     plan = planner.references["plan_document"]
+    report, orchestrator, outcome = _resolve_orchestrator(
+        runtime,
+        report,
+        session,
+        planner,
+        plan,
+        approval_paths=approval_paths,
+        execute=execute,
+    )
+    if outcome is not None:
+        return outcome
+    return _drive_orchestrator(
+        runtime, report, session, orchestrator, plan, execute=execute
+    )
 
+
+def _resolve_orchestrator(
+    runtime: Any,
+    report: DiagnosticReport,
+    session: Any,
+    planner: FormalBoundary,
+    plan: Mapping[str, Any],
+    *,
+    approval_paths: tuple[str | Path, ...],
+    execute: bool,
+) -> tuple[DiagnosticReport, FormalBoundary | None, LauncherCommandResult | None]:
     orchestrator = runtime.inspect_orchestrator(plan)
     if orchestrator.status == "blocked":
-        return _block(session, report, orchestrator)
-    if orchestrator.status == "not_started":
-        approvals = runtime.inspect_approvals(planner)
-        if approvals.status == "blocked":
-            return _block(session, report, approvals)
-        supplied = approval_paths or tuple(approvals.references.get("approval_paths") or ())
-        approval_request = plan.get("approval_request") or {}
-        approval_required = bool(approval_request.get("required_task_ids") or ())
-        if approval_required and not supplied:
-            report = report.with_observation(
-                current_boundary="approval",
-                last_completed_boundary="planner",
-                last_known_formal_status="awaiting_approval",
-            )
-            if execute:
-                session.write(report)
-            return _result(
-                report,
-                "awaiting_approval",
-                0,
-                required_task_ids=tuple(approval_request.get("required_task_ids") or ()),
-            )
-        if not execute:
-            return _result(report, "ready", 0)
-        runtime.initialize_orchestrator(planner.references["plan_path"], supplied)
-        orchestrator = runtime.inspect_orchestrator(plan)
-        if orchestrator.status != "completed":
-            return _block_or_invalid(session, report, orchestrator, "orchestrator")
-        report = _observe(report, "orchestrator", orchestrator)
-        session.write(report)
+        return report, None, _block(session, report, orchestrator)
+    if orchestrator.status != "not_started":
+        return report, orchestrator, None
 
+    approvals = runtime.inspect_approvals(planner)
+    if approvals.status == "blocked":
+        return report, None, _block(session, report, approvals)
+    supplied = approval_paths or tuple(approvals.references.get("approval_paths") or ())
+    required = tuple(
+        (plan.get("approval_request") or {}).get("required_task_ids") or ()
+    )
+    if required and not supplied:
+        report = report.with_observation(
+            current_boundary="approval",
+            last_completed_boundary="planner",
+            last_known_formal_status="awaiting_approval",
+        )
+        if execute:
+            session.write(report)
+        return report, None, _result(
+            report, "awaiting_approval", 0, required_task_ids=required
+        )
+    if not execute:
+        return report, None, _result(report, "ready", 0)
+    runtime.initialize_orchestrator(planner.references["plan_path"], supplied)
+    orchestrator = runtime.inspect_orchestrator(plan)
+    if orchestrator.status != "completed":
+        return report, None, _block_or_invalid(
+            session, report, orchestrator, "orchestrator"
+        )
+    report = _observe(report, "orchestrator", orchestrator)
+    session.write(report)
+    return report, orchestrator, None
+
+
+def _drive_orchestrator(
+    runtime: Any,
+    report: DiagnosticReport,
+    session: Any,
+    orchestrator: FormalBoundary,
+    plan: Mapping[str, Any],
+    *,
+    execute: bool,
+) -> LauncherCommandResult:
     formal_status = str(orchestrator.references.get("formal_status") or "pending")
     if not execute and formal_status in {"ready", "running", "pending"}:
-        transaction = runtime.inspect_transaction_recovery()
-        if transaction.status == "blocked":
-            transaction_id = transaction.references.get("transaction_id")
-            if transaction_id:
-                report = report.with_observation(
-                    formal_trace=replace(
-                        report.formal_trace,
-                        transaction_id=str(transaction_id),
-                    )
-                )
-            return _block(session, report, transaction)
+        outcome = _read_only_recovery_outcome(
+            runtime, report, session, orchestrator
+        )
+        if outcome is not None:
+            return outcome
     drained = False
     if formal_status == "ready" and execute:
-        try:
-            runtime.recover_transactions()
-            runtime.drain(orchestrator.references["run_path"])
-        except Exception as error:
-            if getattr(error, "code", None) == "transaction_recovery_unresolved":
-                unresolved = tuple(
-                    str(value)
-                    for value in (getattr(error, "unresolved", ()) or ())
-                    if value
-                )
-                if unresolved:
-                    report = report.with_observation(
-                        formal_trace=replace(
-                            report.formal_trace,
-                            transaction_id=unresolved[0],
-                        )
-                    )
-                blocker = FormalBoundary.blocked(
-                    "transaction",
-                    "transaction_recovery_unresolved",
-                    "formal transaction recovery requires operator action",
-                    transaction_id=unresolved[0] if unresolved else None,
-                    transaction_ids=unresolved,
-                )
-                return _block(session, report, blocker)
-            return _worker_failure(
-                runtime, session, report, orchestrator, plan, error
-            )
-        orchestrator = runtime.inspect_orchestrator(plan)
-        if orchestrator.status != "completed":
-            return _block_or_invalid(session, report, orchestrator, "orchestrator")
+        report, orchestrator, outcome = _drain_ready_run(
+            runtime, report, session, orchestrator, plan
+        )
+        if outcome is not None:
+            return outcome
         formal_status = str(orchestrator.references.get("formal_status") or "pending")
-        report = _observe(report, "execution", orchestrator)
-        session.write(report)
         drained = True
     if not drained:
         report = _observe(report, "orchestrator", orchestrator)
@@ -371,6 +379,54 @@ def _continue_approved_plan(
         if execute:
             session.write(report)
     return _formal_outcome(report, formal_status, orchestrator, plan)
+
+
+def _read_only_recovery_outcome(runtime, report, session, orchestrator):
+    transaction = runtime.inspect_transaction_recovery(orchestrator)
+    if transaction.status != "blocked":
+        return None
+    transaction_id = transaction.references.get("transaction_id")
+    if transaction_id:
+        report = report.with_observation(formal_trace=replace(
+            report.formal_trace, transaction_id=str(transaction_id)
+        ))
+    return _block(session, report, transaction)
+
+
+def _drain_ready_run(runtime, report, session, orchestrator, plan):
+    try:
+        runtime.recover_transactions()
+        runtime.drain(orchestrator.references["run_path"])
+    except Exception as error:
+        if getattr(error, "code", None) != "transaction_recovery_unresolved":
+            return report, orchestrator, _worker_failure(
+                runtime, session, report, orchestrator, plan, error
+            )
+        unresolved = tuple(
+            str(value)
+            for value in (getattr(error, "unresolved", ()) or ())
+            if value
+        )
+        if unresolved:
+            report = report.with_observation(formal_trace=replace(
+                report.formal_trace, transaction_id=unresolved[0]
+            ))
+        blocker = FormalBoundary.blocked(
+            "transaction",
+            "transaction_recovery_unresolved",
+            "formal transaction recovery requires operator action",
+            transaction_id=unresolved[0] if unresolved else None,
+            transaction_ids=unresolved,
+        )
+        return report, orchestrator, _block(session, report, blocker)
+    orchestrator = runtime.inspect_orchestrator(plan)
+    if orchestrator.status != "completed":
+        return report, orchestrator, _block_or_invalid(
+            session, report, orchestrator, "orchestrator"
+        )
+    report = _observe(report, "execution", orchestrator)
+    session.write(report)
+    return report, orchestrator, None
 
 
 def _worker_failure(runtime, session, report, orchestrator, plan, error):
@@ -548,11 +604,18 @@ def _result(
 def _unbound_failure(
     error: BaseException, *, launcher_run_id: str | None = None
 ) -> LauncherCommandResult:
+    normalized = normalize_error(error, component="launcher")
+    _LOGGER.error(
+        "launcher command failed: code=%s component=%s message=%s",
+        normalized.code,
+        normalized.component,
+        normalized.message,
+    )
     return LauncherCommandResult(
         BrowserResult(
             status="failed",
             launcher_run_id=launcher_run_id,
-            error=normalize_error(error, component="launcher"),
+            error=normalized,
         ),
         2,
     )
@@ -585,7 +648,7 @@ def _default_dependencies() -> LauncherServiceDependencies:
 
     return LauncherServiceDependencies(
         diagnostics=diagnostics,
-        load_context=lambda path: ProjectContext.load(path=path),
+        load_context=lambda path: ProjectContext.from_runtime(path=path),
         validate_project=assert_project_approved,
         bind_context=bind_project_context,
         runtime_factory=lambda context, launcher_run_id: DefaultWorkflowRuntime(

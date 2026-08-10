@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from dataclasses import dataclass
 from typing import Callable, Sequence, TextIO
@@ -13,6 +14,7 @@ from .models import BrowserResult, LauncherCommandResult
 
 
 Command = Callable[..., LauncherCommandResult]
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,13 @@ def main(
         # import failures are normalized once, emitted once, and never resumed
         # into a later workflow boundary here.
         result = _invalid_input(error)
+        normalized = result.payload.error
+        _LOGGER.error(
+            "launcher CLI failed: code=%s component=%s message=%s",
+            normalized.code,
+            normalized.component,
+            normalized.message,
+        )
     destination.write(json.dumps(result.payload.to_dict(), ensure_ascii=False, separators=(",", ":")) + "\n")
     return result.exit_code
 

@@ -138,10 +138,12 @@ class DefaultWorkflowRuntime:
         )
 
     @staticmethod
-    def inspect_transaction_recovery():
+    def inspect_transaction_recovery(orchestrator):
         from execution import inspect_transaction_recovery
 
-        recovery = inspect_transaction_recovery()
+        recovery = inspect_transaction_recovery(
+            run_id=orchestrator.references.get("run_id")
+        )
         if recovery.clean:
             from .boundaries import FormalBoundary
 

@@ -269,6 +269,8 @@ Pre-Orchestrator continuation is resolved in causal order, not by searching for 
 
 Transaction/Store infrastructure exposes the minimum public read-only inspection needed to report whether recovery is clean for the referenced formal run. It reads existing transaction, marker, compensation, and owner-liveness state without invoking `recover_pending`, claiming a task, writing a marker, or changing transaction state. `status` uses this inspector and returns `transaction_recovery_unresolved` with available transaction identifiers when unresolved. `resume` may use the existing formal mutating recovery contract immediately before Worker continuation; Launcher does not duplicate transaction policy.
 
+The inspector composes Store transaction rows with durable recovery markers, owner-liveness leases, and Orchestrator closure probes. A live owner is reported as active rather than unresolved; a stale marker whose Store transaction and Orchestrator closure are already formally complete is clean; DB-only unresolved transaction states and incomplete compensation remain blockers. Marker parsing and status categories are shared with mutating recovery so the two owner paths cannot drift.
+
 ### 13. Critic and Research correlation is filtered before artifact validation
 
 New `critic_review` Evidence binds the source `prediction_run_id`. The formal boundary inspector filters explicit current-run events before opening any report artifact. Legacy events without this field remain compatible: they are considered only when the referenced report can be uniquely and safely validated as sourced from the current Prediction run. Unrelated legacy history, including broken artifacts, cannot poison the current run; a legacy record that might belong to the current run but cannot be verified fails closed. Multiple or broken explicit records for the current run also fail closed.
@@ -278,6 +280,8 @@ Research validation queries Evidence with the expected `project_id`, agent, and 
 ### 14. Runtime paths come from one explicit ProjectContext contract
 
 Launcher constructs or loads the same official `ProjectContext` and resolved `ProjectPaths` used by Data Layer and Agent execution. The resolved data, Evidence, and database paths are supplied through that context once and temporarily bound only through the existing process-scoped compatibility adapter, which restores prior globals on every exit. Launcher does not independently parse environment variables, infer paths from the current directory, or silently fall back to repository data. Conflicting explicit runtime inputs fail before formal writes.
+
+`ProjectPaths` owns an explicit `database_path` alongside its directories. The official runtime constructor resolves documented environment inputs into an immutable `ProjectContext` before Launcher coordination; after construction, Data Layer receives that exact database path and does not re-read ambient selectors. The compatibility adapter remains a temporary bridge for legacy public Agent seams, not a second resolver.
 
 ## Risks / Trade-offs
 

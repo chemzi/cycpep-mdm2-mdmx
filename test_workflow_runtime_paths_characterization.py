@@ -37,6 +37,7 @@ def _context(root: Path) -> ProjectContext:
             data_dir=root / "custom-data",
             evidence_dir=root / "custom-evidence",
             output_dir=root / "custom-output",
+            database_path=root / "formal-database" / "project.sqlite3",
         ),
     )
 
@@ -49,9 +50,13 @@ class WorkflowRuntimePathCharacterizationTests(unittest.TestCase):
             root = Path(tmp)
             context = _context(root)
             resolved = context.resolve_paths()
-            database_path = root / "formal-database" / "project.sqlite3"
+            database_path = resolved.database_path
 
-            with patch.object(data_layer, "SQLITE_DB_PATH", database_path):
+            with patch.object(
+                data_layer,
+                "SQLITE_DB_PATH",
+                root / "ambient-database" / "wrong.sqlite3",
+            ):
                 with bind_project_context(context):
                     store = data_layer.get_storage_backend()
 
@@ -65,28 +70,31 @@ class WorkflowRuntimePathCharacterizationTests(unittest.TestCase):
                     self.assertEqual(Path(data_layer.SQLITE_DB_PATH), database_path)
                     self.assertEqual(store.path, database_path)
 
-    def test_binding_delegates_documented_database_environment_to_data_layer(self):
-        """Launcher does not parse or replace Data Layer's environment override."""
+    def test_official_runtime_context_freezes_documented_environment_paths(self):
+        """Environment is resolved by ProjectContext once, before coordination."""
 
-        missing = object()
-        previous = vars(data_layer).pop("SQLITE_DB_PATH", missing)
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                context = _context(root)
-                database_path = root / "environment-database" / "project.sqlite3"
-                with patch.dict(
-                    os.environ,
-                    {"CYCPEP_DB_PATH": str(database_path)},
-                ):
-                    with bind_project_context(context):
-                        self.assertEqual(
-                            data_layer.get_storage_backend().path,
-                            database_path,
-                        )
-        finally:
-            if previous is not missing:
-                vars(data_layer)["SQLITE_DB_PATH"] = previous
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            database_path = root / "environment-database" / "project.sqlite3"
+            data_path = root / "environment-data"
+            evidence_path = root / "environment-evidence"
+            with patch.dict(os.environ, {
+                "CYCPEP_DATA_DIR": str(data_path),
+                "CYCPEP_EVIDENCE_DIR": str(evidence_path),
+                "CYCPEP_DB_PATH": str(database_path),
+            }):
+                context = ProjectContext.from_runtime_config(dict(_context(root).config))
+
+            with patch.dict(os.environ, {
+                "CYCPEP_DATA_DIR": str(root / "drifted-data"),
+                "CYCPEP_EVIDENCE_DIR": str(root / "drifted-evidence"),
+                "CYCPEP_DB_PATH": str(root / "drifted.sqlite3"),
+            }):
+                with bind_project_context(context):
+                    self.assertEqual(Path(data_layer.DATA_DIR), data_path)
+                    self.assertEqual(Path(data_layer.EVIDENCE_DIR), evidence_path)
+                    self.assertEqual(Path(data_layer.SQLITE_DB_PATH), database_path)
+                    self.assertEqual(data_layer.get_storage_backend().path, database_path)
 
     def test_exception_restores_all_official_bindings_and_store_selection(self):
         """Failure restores the prior Data Layer and Research runtime context."""
