@@ -26,7 +26,15 @@ EXTRACTION_PROMPT = """你是一个蛋白质结构生物学专家。从以下一
 - key_residues: 关键残基列表 [{"position": "Phe19", "residue": "Phe", "role": "anchor"}]
 - pmid: 从输入中精确复制 PMID
 - pdb_ids: 相关的 PDB ID 列表（如有）
-- design_insight: 一句话设计启发
+- design_insight: 一句话设计启发。design_insight 是模型推断，不是论文原话
+- source_evidence: 可选列表，为有直接原文证据的事实字段提供 {"field": 字段路径, "quote": 原文引文}
+
+source_evidence 规则：
+1. quote 必须逐字复制自本次输入的 Full Text 或 Abstract 正文，只输出包含关键数据和必要上下文的一小段（一个短句或短段），不要大段复制。
+2. 不得根据领域常识、其他论文或模型记忆补写、改写或伪造 quote。
+3. 找不到直接原文证据的字段允许为 null 或省略，并且不要为该字段输出 source_evidence。
+4. field 使用明确字段路径，例如 sequence、affinity_by_target.MDM2、key_residues。
+5. design_insight 是模型推断，不得为它输出 quote，也不得把它伪装成论文原话。
 
 如果论文不涉及项目靶点的具体分子（如综述、方法学文章），返回 {"is_relevant": false}。
 
@@ -43,11 +51,50 @@ EXTRACTION_PROMPT = """你是一个蛋白质结构生物学专家。从以下一
   "key_residues": [{"position": "Phe19", "residue": "Phe", "role": "anchor"}, {"position": "Trp23", "residue": "Trp", "role": "anchor"}, {"position": "Leu26", "residue": "Leu", "role": "anchor"}],
   "pmid": "34589387",
   "pdb_ids": ["3EQS", "3EQY"],
-  "design_insight": "FxxWxxxL 三锚点motif，Phe/Trp/Leu 三残基固定"
+  "design_insight": "FxxWxxxL 三锚点motif，Phe/Trp/Leu 三残基固定",
+  "source_evidence": [
+    {"field": "sequence", "quote": "exact short passage copied from the supplied paper text"},
+    {"field": "affinity_by_target.TARGET_A", "quote": "exact short passage copied from the supplied paper text"}
+  ]
 }
 
 以下是论文信息：
 """
+
+
+# Deliberately local: importing threshold_research's private helper or extracting
+# a shared Evidence utility would couple flows outside this change's approved scope.
+def _normalize_evidence(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip().casefold()
+
+
+def _annotate_source_evidence(
+    evidence: list, content: str, pmid: str, source_type: str
+) -> list[dict]:
+    """Bind LLM quotes to the current paper and verify them against its input text."""
+    if not isinstance(evidence, list):
+        return []
+
+    normalized_content = _normalize_evidence(content)
+    annotated = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        field = item.get("field")
+        quote = item.get("quote")
+        if not isinstance(field, str) or not isinstance(quote, str):
+            continue
+        if field.strip() == "design_insight":
+            continue
+        normalized_quote = _normalize_evidence(quote)
+        annotated.append({
+            "field": field,
+            "quote": quote,
+            "pmid": pmid,
+            "quote_verified": bool(normalized_quote) and normalized_quote in normalized_content,
+            "source_type": source_type,
+        })
+    return annotated
 
 
 def call_openai(system_prompt: str, user_content: str, model: str) -> str:
@@ -92,7 +139,7 @@ def extract_one_paper(paper: dict, model: str, target_ids: list[str]) -> dict | 
     """对一篇论文调用 LLM 提取。返回结构化 dict 或 None（失败时）。"""
     pmid = paper.get("pmid", "?")
     title = paper.get("title", "")
-    content = paper.get("content", paper.get("abstract", ""))[:5000]  # PMC 全文或摘要
+    content = paper.get("content", paper.get("abstract", ""))[:30000]  # PMC 全文或摘要
     source = paper.get("source", "")
     source_type = paper.get("source_type", "abstract")
 
@@ -127,6 +174,10 @@ def extract_one_paper(paper: dict, model: str, target_ids: list[str]) -> dict | 
     if not result.get("is_relevant", True):
         return None
 
+    if "source_evidence" in result:
+        result["source_evidence"] = _annotate_source_evidence(
+            result["source_evidence"], content, pmid, source_type
+        )
     result["pmid"] = pmid  # 强制使用输入中的 PMID
     return result
 

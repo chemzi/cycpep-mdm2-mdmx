@@ -79,7 +79,7 @@ from agents.design.manifests import _candidate_from_manifest, _write_manifest  #
 from agents.design.route_b import design_motif_guided  # noqa: E402
 from agents.design.route_c import (  # noqa: E402
     _route_c_base_combos, _route_c_cyclization_pairs, _route_c_design_references,
-    design_atsp_derived,
+    _route_c_select_template, design_atsp_derived,
 )
 from agents.design.runtime import (  # noqa: E402
     _build_refold_script, _rfdiff_subprocess_env, _run_rfdiff,
@@ -268,6 +268,13 @@ check('targets' in spec, 'has targets')
 check('known_dual_binders' in spec, 'has known_dual_binders')
 check('design_rules' in spec, 'has design_rules')
 check(len(spec['known_dual_binders']) == 3, f'3 binders, got {len(spec["known_dual_binders"])}')
+legacy_template = _route_c_select_template([
+    {"name": "Legacy binder", "sequence": "ACDEFGHI", "pmid": "12345"}
+])
+check(
+    legacy_template == ("ACDEFGHI", "Legacy binder"),
+    'legacy binder without source_evidence keeps name and sequence behavior',
+)
 
 # ── Test 5: _merge_config ──
 print('Test 5: _merge_config')
