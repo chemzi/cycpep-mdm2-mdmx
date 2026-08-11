@@ -12,7 +12,13 @@ from unittest.mock import patch
 import data_layer
 from agents import prediction
 from prediction_pipeline import PredictionConfig, PredictionPipeline
-from prediction_pipeline.contracts import ContractError
+from prediction_pipeline.contracts import (
+    CRITIC_READY_STATUSES,
+    ContractError,
+    file_sha256,
+    prediction_status_from_battery,
+)
+from prediction_pipeline.transaction_effects import PredictionPersistence
 
 from _prediction_test_utils import project_config
 
@@ -73,6 +79,81 @@ class PredictionLauncherContractTests(unittest.TestCase):
             project_config=self.project,
             correlation=self.correlation,
         )
+
+    def _materialize_owner_status(self, status, battery=None):
+        assignments = (
+            status
+            if isinstance(status, dict)
+            else {"C0001": (status, battery)}
+        )
+        with patch.object(
+            PredictionPersistence, "record_handoff_ready", autospec=True
+        ):
+            self._run()
+        run_dir = self.run_root / self.correlation.prediction_run_id
+        categories = {}
+        record_paths = {}
+        for candidate_id, (record_status, record_battery) in assignments.items():
+            record_path = run_dir / "records" / f"{candidate_id}.json"
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            record["status"] = record_status
+            record["battery"] = record_battery
+            record_path.write_text(
+                json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            categories.setdefault(record_status, []).append({
+                "candidate_id": candidate_id,
+                "sequence": record["candidate"].get("sequence"),
+                "record_path": str(record_path),
+                "record_sha256": file_sha256(record_path),
+                "issues": record.get("issues", []),
+            })
+            record_paths[candidate_id] = record_path
+        handoff_path = run_dir / "prediction_handoff.json"
+        handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+        handoff["categories"] = categories
+        handoff_path.write_text(
+            json.dumps(handoff, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        prediction.EvidenceLogger.log(
+            "prediction",
+            "prediction_handoff_ready",
+            {
+                "run_id": self.correlation.prediction_run_id,
+                "status_counts": {
+                    key: len(values) for key, values in categories.items()
+                },
+                "protocol_identity": handoff["protocol_identity"],
+                "handoff_path": str(handoff_path),
+                "handoff_sha256": file_sha256(handoff_path),
+                **self.correlation.receipt_fields(),
+            },
+            phase="evaluate",
+        )
+        return record_paths, handoff_path
+
+    def test_prediction_owner_status_and_readiness_contract_is_single_source(self):
+        ready_battery = {
+            "competition_clearance": False,
+            "metric_clearance": False,
+            "triage_status": "valid",
+            "missing_evidence": [],
+            "missing_thresholds": [],
+        }
+        pending_battery = {
+            **ready_battery,
+            "missing_evidence": ["L1"],
+        }
+        self.assertEqual(
+            prediction_status_from_battery(ready_battery), "needs_optimization"
+        )
+        self.assertIn("needs_optimization", CRITIC_READY_STATUSES)
+        self.assertEqual(
+            prediction_status_from_battery(pending_battery), "prediction_pending"
+        )
+        self.assertNotIn("prediction_pending", CRITIC_READY_STATUSES)
 
     def test_public_run_root_resolver_preserves_configured_precedence(self):
         explicit_argument = self.root / "argument-runs"
@@ -217,7 +298,7 @@ class PredictionLauncherContractTests(unittest.TestCase):
         self.assertEqual(recovery.status, "started_without_completion")
         self.assertEqual(recovery.blocker_code, "prediction_recovery_ambiguous")
 
-    def test_completed_invocation_is_recovered_from_original_receipt_locator(self):
+    def test_non_ready_invocation_is_recovered_from_original_receipt_locator(self):
         self._run()
         changed_root = self.root / "ambient-other-runs"
         with patch.dict(os.environ, {"CYCPEP_PREDICTION_ROOT": str(changed_root)}):
@@ -230,10 +311,114 @@ class PredictionLauncherContractTests(unittest.TestCase):
                 store=data_layer.get_storage_backend(),
             )
 
-        self.assertEqual(first.status, "completed")
+        self.assertEqual(first.status, "blocked")
+        self.assertEqual(first.blocker_code, "prediction_execution_incomplete")
         self.assertEqual(first, second)
         self.assertEqual(first.run_root, self.run_root.resolve())
         self.assertFalse(changed_root.exists())
+
+    def test_owner_ready_status_with_complete_battery_advances(self):
+        self._materialize_owner_status("needs_optimization", {
+            "competition_clearance": False,
+            "metric_clearance": False,
+            "triage_status": "valid",
+            "missing_evidence": [],
+            "missing_thresholds": [],
+        })
+        result = prediction.validate_prediction_invocation(
+            self.correlation, store=data_layer.get_storage_backend()
+        )
+        self.assertEqual(result.status, "completed")
+
+    def test_pending_status_blocks_before_critic(self):
+        self._materialize_owner_status("prediction_pending", {
+            "competition_clearance": False,
+            "metric_clearance": False,
+            "triage_status": "valid",
+            "missing_evidence": ["L1"],
+            "missing_thresholds": [],
+        })
+        result = prediction.validate_prediction_invocation(
+            self.correlation, store=data_layer.get_storage_backend()
+        )
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.blocker_code, "prediction_execution_incomplete")
+
+    def test_non_ready_terminal_status_blocks_before_critic(self):
+        self._materialize_owner_status("invalid", None)
+        result = prediction.validate_prediction_invocation(
+            self.correlation, store=data_layer.get_storage_backend()
+        )
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.blocker_code, "prediction_execution_incomplete")
+
+    def test_declared_ready_status_with_missing_evidence_is_not_completion(self):
+        self._materialize_owner_status("finalized", {
+            "competition_clearance": False,
+            "metric_clearance": False,
+            "triage_status": "valid",
+            "missing_evidence": ["L1"],
+            "missing_thresholds": [],
+        })
+        result = prediction.validate_prediction_invocation(
+            self.correlation, store=data_layer.get_storage_backend()
+        )
+        self.assertEqual(result.status, "started_without_completion")
+        self.assertEqual(result.blocker_code, "prediction_recovery_ambiguous")
+
+    def test_mixed_ready_and_pending_records_block_as_scientifically_incomplete(self):
+        self.rows.append({
+            "candidate_id": "C0002",
+            "sequence": "ACDEFGHK",
+            "source_route": "test",
+            "manifest_path": str(self.root / "design" / "manifest-2.json"),
+        })
+        ready = {
+            "competition_clearance": False,
+            "metric_clearance": False,
+            "triage_status": "valid",
+            "missing_evidence": [],
+            "missing_thresholds": [],
+        }
+        pending = {**ready, "missing_evidence": ["L2"]}
+        self._materialize_owner_status({
+            "C0001": ("needs_optimization", ready),
+            "C0002": ("prediction_pending", pending),
+        })
+        result = prediction.validate_prediction_invocation(
+            self.correlation, store=data_layer.get_storage_backend()
+        )
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.blocker_code, "prediction_execution_incomplete")
+
+    def test_candidate_coverage_and_record_integrity_contradictions_are_ambiguous(self):
+        self.rows.append({
+            "candidate_id": "C0002",
+            "sequence": "ACDEFGHK",
+            "source_route": "test",
+            "manifest_path": str(self.root / "design" / "manifest-2.json"),
+        })
+        ready = {
+            "competition_clearance": False,
+            "metric_clearance": False,
+            "triage_status": "valid",
+            "missing_evidence": [],
+            "missing_thresholds": [],
+        }
+        paths, _ = self._materialize_owner_status({
+            "C0001": ("needs_optimization", ready),
+        })
+        missing = prediction.validate_prediction_invocation(
+            self.correlation, store=data_layer.get_storage_backend()
+        )
+        self.assertEqual(missing.status, "started_without_completion")
+
+        paths["C0001"].write_text("{}", encoding="utf-8")
+        tampered = prediction.validate_prediction_invocation(
+            self.correlation, store=data_layer.get_storage_backend()
+        )
+        self.assertEqual(tampered.status, "started_without_completion")
+        self.assertEqual(tampered.blocker_code, "prediction_recovery_ambiguous")
 
     def test_started_without_coherent_completion_fails_closed(self):
         with patch.object(PredictionPipeline, "run", side_effect=RuntimeError("crash")):

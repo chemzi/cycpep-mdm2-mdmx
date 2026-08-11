@@ -12,7 +12,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from prediction_pipeline.contracts import ContractError, file_sha256, object_sha256
+from prediction_pipeline.contracts import (
+    CRITIC_READY_STATUSES,
+    PREDICTION_RECORD_STATUSES,
+    UNEVALUATED_NON_READY_STATUSES,
+    ContractError,
+    file_sha256,
+    object_sha256,
+    prediction_status_from_battery,
+)
 
 
 _LAUNCHER_ID = re.compile(r"^launcher_([0-9a-f]{32})$")
@@ -126,6 +134,7 @@ class PredictionInvocationRecovery:
     run_root: Path | None = None
     handoff_path: Path | None = None
     blocker_code: str | None = None
+    message: str | None = None
 
 
 def start_receipt_payload(
@@ -237,6 +246,82 @@ def _relevant_completion(
         or event.get("run_id") == expected.prediction_run_id
         or event.get("launcher_run_id") == expected.launcher_run_id
     )
+
+
+def _resolve_record_path(raw: Any, handoff_path: Path) -> Path | None:
+    if not isinstance(raw, str) or not raw:
+        return None
+    path = Path(raw).expanduser()
+    return path.resolve() if path.is_absolute() else (handoff_path.parent / path).resolve()
+
+
+def _owner_readiness(
+    handoff: Mapping[str, Any],
+    handoff_path: Path,
+    inputs: PredictionInvocationInputs,
+    correlation: PredictionCorrelation,
+) -> bool | None:
+    """Return readiness, or None when authoritative evidence is contradictory."""
+    downstream = handoff.get("downstream")
+    categories = handoff.get("categories")
+    if (
+        not isinstance(downstream, Mapping)
+        or downstream.get("critic_input_statuses") != list(CRITIC_READY_STATUSES)
+        or downstream.get("authoritative_record_field") != "record_path"
+        or not isinstance(categories, Mapping)
+        or any(status not in PREDICTION_RECORD_STATUSES for status in categories)
+    ):
+        return None
+
+    seen: set[str] = set()
+    ready = True
+    for status, entries in categories.items():
+        if not isinstance(entries, list):
+            return None
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                return None
+            candidate_id = entry.get("candidate_id")
+            record_path = _resolve_record_path(entry.get("record_path"), handoff_path)
+            declared_digest = entry.get("record_sha256")
+            if (
+                not isinstance(candidate_id, str)
+                or not candidate_id
+                or candidate_id in seen
+                or record_path is None
+                or not isinstance(declared_digest, str)
+                or len(declared_digest) != 64
+                or not record_path.is_file()
+                or file_sha256(record_path) != declared_digest
+            ):
+                return None
+            record = _load_object(record_path)
+            candidate = record.get("candidate") if record is not None else None
+            battery = record.get("battery") if record is not None else None
+            if (
+                record is None
+                or not isinstance(candidate, Mapping)
+                or candidate.get("candidate_id") != candidate_id
+                or record.get("run_id") != correlation.prediction_run_id
+                or record.get("pipeline_version") != handoff.get("pipeline_version")
+                or record.get("status") != status
+            ):
+                return None
+            if battery is None and status in UNEVALUATED_NON_READY_STATUSES:
+                computed_status = status
+            else:
+                try:
+                    computed_status = prediction_status_from_battery(battery)
+                except ContractError:
+                    return None
+            if computed_status != status:
+                return None
+            seen.add(candidate_id)
+            ready = ready and status in CRITIC_READY_STATUSES
+
+    if tuple(sorted(seen)) != inputs.candidate_ids:
+        return None
+    return ready
 
 
 def _ambiguous(
@@ -361,6 +446,25 @@ def validate_prediction_invocation(
             correlation,
             start_event_id=start.get("event_id"),
             run_root=run_root,
+        )
+    readiness = _owner_readiness(handoff, handoff_path, inputs, correlation)
+    if readiness is None:
+        return _ambiguous(
+            correlation,
+            start_event_id=start.get("event_id"),
+            run_root=run_root,
+        )
+    if not readiness:
+        return PredictionInvocationRecovery(
+            status="blocked",
+            prediction_invocation_id=correlation.prediction_invocation_id,
+            prediction_run_id=correlation.prediction_run_id,
+            start_event_id=start.get("event_id"),
+            completion_event_id=completion.get("event_id"),
+            run_root=run_root,
+            handoff_path=handoff_path,
+            blocker_code="prediction_execution_incomplete",
+            message="Prediction evidence is not ready for Critic",
         )
     return PredictionInvocationRecovery(
         status="completed",

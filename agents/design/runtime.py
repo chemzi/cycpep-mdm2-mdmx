@@ -34,6 +34,15 @@ from peptide_contract import (  # noqa: E402
 )
 
 
+class ScientificToolExecutionError(RuntimeError):
+    """A required Design scientific tool failed to execute or emit output."""
+
+    def __init__(self, tool: str, detail: str):
+        self.tool = tool
+        self.detail = detail
+        super().__init__(f"{tool} execution failed: {detail}")
+
+
 
 def _colabdesign_smoke_script():
     """Inline ColabDesign functional smoke test run under CYCPEP_PYTHON."""
@@ -140,7 +149,7 @@ def _verify_colabdesign_runtime():
         _run_colabdesign_smoke_check(sig)
 
 def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
-                seed=None, hotspots=None, chain="A"):
+                seed=None, hotspots=None, chain="A", *, strict_tools=False):
     """RFdiffusion 子进程。hotspots: 逗号分隔的残基号如 '54,93,96'
 
     .. note::
@@ -189,12 +198,18 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
             EvidenceLogger.error("design", "rfdiff_failed",
                 f"exit={r.returncode} stderr={r.stderr[-300:]}")
             _cleanup_partial_rfdiff_output(output_prefix)
+            if strict_tools:
+                raise ScientificToolExecutionError(
+                    "rfdiffusion", f"exit={r.returncode}"
+                )
             return False
         return True
     except (subprocess.SubprocessError, OSError, ValueError) as e:
         print(f"[RFdiff 异常] {e}")
         EvidenceLogger.error("design", "rfdiff_exception", str(e))
         _cleanup_partial_rfdiff_output(output_prefix)
+        if strict_tools:
+            raise ScientificToolExecutionError("rfdiffusion", str(e)) from e
         return False
 
 def _cleanup_partial_rfdiff_output(output_prefix):
@@ -358,7 +373,7 @@ def _collect_ligandmpnn_sequences(output_dir, n_seq, binder_chain, layout,
 
 
 def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=None, binder_chain=None,
-                    fixed_residues=None, seed=42):
+                    fixed_residues=None, seed=42, *, strict_tools=False):
     """LigandMPNN subprocess with an explicitly validated binder chain.
 
     The RFdiffusion output chain labels are discovered from the emitted PDB,
@@ -414,6 +429,10 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=None, binder_chain=None,
             env=_rfdiff_subprocess_env())
         if r.returncode != 0:
             print(f"[LigandMPNN failed] exit={r.returncode} stderr={r.stderr[-300:]}")
+            if strict_tools:
+                raise ScientificToolExecutionError(
+                    "ligandmpnn", f"exit={r.returncode}"
+                )
             return []
         return _collect_ligandmpnn_sequences(
             output_dir, n_seq, binder_chain, layout, input_sequences,
@@ -421,6 +440,8 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=None, binder_chain=None,
         )
     except (subprocess.SubprocessError, OSError, ValueError) as e:
         EvidenceLogger.error("design", "ligandmpnn_exception", str(e))
+        if strict_tools:
+            raise ScientificToolExecutionError("ligandmpnn", str(e)) from e
         return []
 
 def _rfdiff_subprocess_env():
@@ -620,7 +641,9 @@ def _clear_refold_artifacts(output_pdb, plddt_file):
             ) from exc
 
 
-def _run_refold_subprocess(spath, output_pdb, plddt_file, sequence):
+def _run_refold_subprocess(
+    spath, output_pdb, plddt_file, sequence, *, strict_tools=False
+):
     """Execute the generated AfCycDesign script and read the pLDDT score."""
     try:
         _refold_timeout = int(os.environ.get("REFOLD_TIMEOUT") or "1200")
@@ -636,12 +659,20 @@ def _run_refold_subprocess(spath, output_pdb, plddt_file, sequence):
         if r.returncode != 0:
             EvidenceLogger.error("design", "refold_nonzero",
                 f"exit={r.returncode} stderr={r.stderr[-200:]}")
+            if strict_tools:
+                raise ScientificToolExecutionError(
+                    "afcycdesign_refold", f"exit={r.returncode}"
+                )
             return None
         if not os.path.isfile(output_pdb) or not os.path.isfile(plddt_file):
             EvidenceLogger.error(
                 "design", "refold_artifact_missing",
                 f"fixed-sequence refold did not produce {output_pdb} and score",
             )
+            if strict_tools:
+                raise ScientificToolExecutionError(
+                    "afcycdesign_refold", "required output artifact missing"
+                )
             return None
         _verify_fixed_sequence_pdb(output_pdb, sequence)
         with open(plddt_file) as pf:
@@ -665,13 +696,19 @@ def _run_refold_subprocess(spath, output_pdb, plddt_file, sequence):
                 f"refold PDB sequence diverged from input: {e}")
         else:
             EvidenceLogger.error("design", "refold_exception", str(e))
+            if strict_tools:
+                raise ScientificToolExecutionError("afcycdesign_refold", str(e)) from e
         return None
     except (subprocess.SubprocessError, OSError, RuntimeError) as e:
+        if isinstance(e, ScientificToolExecutionError):
+            raise
         EvidenceLogger.error("design", "refold_exception", str(e))
+        if strict_tools:
+            raise ScientificToolExecutionError("afcycdesign_refold", str(e)) from e
         return None
 
 
-def _run_refold(sequence, output_pdb):
+def _run_refold(sequence, output_pdb, *, strict_tools=False):
     """AfCycDesign refold: fold the fixed sequence as a cyclic peptide.
 
     Only basic fold verification is done here; the final pLDDT > 0.8 gate is
@@ -687,7 +724,9 @@ def _run_refold(sequence, output_pdb):
     with open(spath, "w") as f:
         f.write(script)
     try:
-        return _run_refold_subprocess(spath, output_pdb, plddt_file, sequence)
+        return _run_refold_subprocess(
+            spath, output_pdb, plddt_file, sequence, strict_tools=strict_tools
+        )
     finally:
         try:
             os.unlink(spath)

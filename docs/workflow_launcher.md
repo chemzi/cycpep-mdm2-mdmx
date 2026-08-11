@@ -128,7 +128,10 @@ Common operator-action blockers include:
 | `launcher_project_binding_changed`, `launcher_approved_content_changed` | The project no longer matches the original launch. Do not reuse the run for changed content; restore/review the original approved input or start a separately approved launch. |
 | `research_completion_ambiguous`, `research_correlation_conflict` | Research started but completion is absent, invalid, or non-unique. Inspect the formal Research Evidence; do not rerun automatically. |
 | `design_recovery_ambiguous` | Initial Design has a durable start without one valid bound completion, or conflicting formal records. Do not rerun Design/GPU work automatically. |
+| `initial_design_no_valid_candidates` | Launcher initial Design finished its required tool calls normally but produced no formally usable candidate. The correlated failure receipt is terminal for this invocation; review the Design outcome and start a newly approved run rather than retrying it in place. |
+| `initial_design_scientific_tool_failed` | A required RFdiffusion, LigandMPNN, or refold execution failed on the strict Launcher initial path. This is distinct from a normal zero-result and remains stable across `launch`, `status`, and `resume`. Restore the scientific runtime before starting a newly approved run. |
 | `prediction_recovery_ambiguous`, `prediction_correlation_conflict` | The Prediction start/completion records or exact locator are partial, conflicting, or unverifiable. Do not select another root or rerun Prediction automatically. |
+| `prediction_execution_incomplete` | The correlated production handoff is structurally coherent, but at least one authoritative record does not satisfy Prediction's own Critic-readiness/evidence contract. Missing required evidence, pending work, and owner-declared non-ready terminal outcomes do not enter Critic. |
 | `critic_recovery_ambiguous`, `planner_recovery_ambiguous`, `orchestrator_recovery_ambiguous` | The named owner cannot prove one coherent formal result. Resolve the owner records rather than editing diagnostics. |
 | `approval_binding_conflict` | Formal approval records do not bind cleanly to the immutable plan. Obtain a valid approval; do not bypass validation. |
 | `transaction_recovery_unresolved` | Transaction ownership or recovery is unresolved. Use the existing transaction/Worker recovery path; Launcher will not execute scientific work meanwhile. |
@@ -140,6 +143,17 @@ owning formal validator can prove that completion, allowing Launcher to repair
 its observation and continue without repeating the scientific action. A durable
 start without uniquely valid completion remains blocked: explicit resume is not
 an instruction to perform a dangerous automatic retry.
+
+Launcher does not maintain a scientific status table. Prediction owns the
+battery-to-status mapping, the authoritative record binding, and the statuses
+permitted as Critic input; both handoff generation and Launcher-correlated
+validation reuse that one contract. A non-pending status alone is not proof of
+scientific readiness.
+
+Critic project binding is intentionally outside this contract. Changes to
+`critic_review.project_id`, Critic persistence, Critic transaction handling,
+and Critic idempotency are owned by the separate `critic-project-binding`
+change.
 
 ## Internal locator privacy
 

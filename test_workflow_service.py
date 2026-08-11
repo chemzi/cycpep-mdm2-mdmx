@@ -44,6 +44,10 @@ class _World:
         }
         self.calls = []
         self.fail_at = None
+        self.blocker_codes = {
+            boundary: f"{boundary}_recovery_ambiguous"
+            for boundary in self.statuses
+        }
         self.orchestrator_status = "ready"
         self.required_task_ids = ("task-1",)
         self.approvals = FormalBoundary.not_started("approval")
@@ -61,7 +65,7 @@ class _Runtime:
         status = self.world.statuses[boundary]
         if status == "blocked":
             return FormalBoundary.blocked(
-                boundary, f"{boundary}_recovery_ambiguous", "partial formal state"
+                boundary, self.world.blocker_codes[boundary], "partial formal state"
             )
         if status == "not_started":
             return FormalBoundary.not_started(boundary)
@@ -329,6 +333,38 @@ class WorkflowServiceAcceptanceTests(unittest.TestCase):
                 self.assertEqual(result.exit_code, 3)
                 self.assertEqual(result.payload.error.code, f"{boundary}_recovery_ambiguous")
                 self.assertNotIn(boundary, world.calls)
+
+    def test_owner_blockers_are_identical_across_launch_status_and_resume(self):
+        cases = (
+            ("design", "initial_design_no_valid_candidates"),
+            ("design", "initial_design_scientific_tool_failed"),
+            ("prediction", "prediction_execution_incomplete"),
+        )
+        for boundary, code in cases:
+            with self.subTest(boundary=boundary, code=code), tempfile.TemporaryDirectory() as tmp:
+                world = _World()
+                world.statuses["research"] = "completed"
+                if boundary == "prediction":
+                    world.statuses["design"] = "completed"
+                world.statuses[boundary] = "blocked"
+                world.blocker_codes[boundary] = code
+                deps = _dependencies(tmp, world)
+
+                launched = launch_project(project_path="approved.json", dependencies=deps)
+                calls_after_launch = list(world.calls)
+                observed = status_launcher_run(
+                    launcher_run_id=LAUNCHER_ID, dependencies=deps
+                )
+                resumed = resume_launcher_run(
+                    launcher_run_id=LAUNCHER_ID, dependencies=deps
+                )
+
+                for result in (launched, observed, resumed):
+                    self.assertEqual(result.payload.status, "blocked")
+                    self.assertEqual(result.payload.boundary, boundary)
+                    self.assertEqual(result.payload.error.code, code)
+                self.assertEqual(world.calls, calls_after_launch)
+                self.assertNotIn("critic", world.calls)
 
     def test_invalid_approval_and_orchestrator_status_failure_never_reach_worker(self):
         for failure in ("approval", "orchestrator", "orchestrator_status"):

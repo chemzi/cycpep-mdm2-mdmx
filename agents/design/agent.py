@@ -105,6 +105,15 @@ class Design:
             context=self.context,
         )
 
+    def design_rfpeptides_initial(self, target_spec=None, design_config=None):
+        """Run Route A with Launcher-owned scientific-tool failure semantics."""
+        from .route_a import design_rfpeptides_initial
+        return design_rfpeptides_initial(
+            target_spec=target_spec,
+            design_config=design_config,
+            context=self.context,
+        )
+
     def design_motif_guided(self, target_spec=None, design_config=None):
         from .route_b import design_motif_guided
         return design_motif_guided(

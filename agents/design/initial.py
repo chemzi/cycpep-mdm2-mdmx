@@ -19,12 +19,20 @@ from .config import (
     DESIGN_PIPELINE_VERSION,
     DESIGN_PROTOCOL_SHA256,
 )
+from .runtime import ScientificToolExecutionError
 
 
 DESIGN_INITIAL_STARTED = "design_initial_invocation_started"
 DESIGN_INITIAL_COMPLETED = "design_initial_completion"
+DESIGN_INITIAL_FAILED = "design_initial_failure"
 DESIGN_RECOVERY_AMBIGUOUS = "design_recovery_ambiguous"
 INITIAL_DESIGN_CONTRACT_GAP = "initial_design_contract_gap"
+INITIAL_DESIGN_NO_VALID_CANDIDATES = "initial_design_no_valid_candidates"
+INITIAL_DESIGN_SCIENTIFIC_TOOL_FAILED = "initial_design_scientific_tool_failed"
+_INITIAL_DESIGN_FAILURE_CODES = frozenset({
+    INITIAL_DESIGN_NO_VALID_CANDIDATES,
+    INITIAL_DESIGN_SCIENTIFIC_TOOL_FAILED,
+})
 
 
 def design_initial_invocation_id(launcher_run_id: str) -> str:
@@ -108,6 +116,7 @@ class InitialDesignValidation:
     design_invocation_id: str
     start_event_id: str | None = None
     completion_event_id: str | None = None
+    failure_event_id: str | None = None
     jobs: tuple[dict[str, Any], ...] = ()
     candidate_ids: tuple[str, ...] = ()
     artifact_ids: tuple[str, ...] = ()
@@ -226,7 +235,16 @@ def validate_initial_invocation(
         )
         if _matches_correlation(event, correlation)
     ]
-    if not starts and not completions:
+    failures = [
+        event
+        for event in formal_store.query(
+            project_id=correlation.project_id,
+            agent="design",
+            event_type=DESIGN_INITIAL_FAILED,
+        )
+        if _matches_correlation(event, correlation)
+    ]
+    if not starts and not completions and not failures:
         return InitialDesignValidation(
             status="not_started",
             design_invocation_id=correlation.design_invocation_id,
@@ -242,6 +260,26 @@ def validate_initial_invocation(
         or any(not isinstance(job, Mapping) for job in start_jobs)
     ):
         return _conflict(correlation, "initial Design start binding or jobs are invalid")
+    if failures:
+        if completions or len(failures) != 1:
+            return _conflict(correlation, "initial Design terminal receipt is conflicting")
+        failure = failures[0]
+        blocker_code = failure.get("code")
+        if (
+            not _has_binding(failure, correlation)
+            or failure.get("jobs") != start_jobs
+            or blocker_code not in _INITIAL_DESIGN_FAILURE_CODES
+        ):
+            return _conflict(correlation, "initial Design failure receipt is invalid")
+        return InitialDesignValidation(
+            status="blocked",
+            design_invocation_id=correlation.design_invocation_id,
+            start_event_id=start.get("event_id"),
+            failure_event_id=failure.get("event_id"),
+            jobs=tuple(dict(job) for job in start_jobs),
+            blocker_code=blocker_code,
+            message=str(failure.get("message") or blocker_code),
+        )
     if not completions:
         return InitialDesignValidation(
             status="started_without_completion",
@@ -262,7 +300,12 @@ def validate_initial_invocation(
     candidate_ids = _string_tuple(completion.get("candidate_ids"))
     artifact_ids = _string_tuple(completion.get("artifact_ids"))
     evidence_ids = _string_tuple(completion.get("evidence_ids"))
-    if candidate_ids is None or artifact_ids is None or evidence_ids is None:
+    if (
+        candidate_ids is None
+        or not candidate_ids
+        or artifact_ids is None
+        or evidence_ids is None
+    ):
         return _conflict(correlation, "initial Design formal reference lists are invalid")
     if start.get("event_id") not in evidence_ids:
         return _conflict(correlation, "initial Design completion does not reference its start")
@@ -380,6 +423,35 @@ def _formal_references(
     return candidate_ids, tuple(artifact_ids), evidence_ids
 
 
+def _persist_failure(
+    store,
+    correlation: InitialDesignCorrelation,
+    jobs: tuple[dict[str, Any], ...],
+    *,
+    targets: tuple[str, ...],
+    blocker_code: str,
+    message: str,
+) -> None:
+    event_id = store.append(_event(
+        DESIGN_INITIAL_FAILED,
+        {
+            **correlation.to_payload(),
+            "jobs": list(jobs),
+            "code": blocker_code,
+            "message": message,
+            "component": "design",
+            "retryable": False,
+        },
+        targets=targets,
+    ))
+    validation = validate_initial_invocation(correlation, store=store)
+    if validation.status != "blocked" or validation.failure_event_id != event_id:
+        raise InitialDesignContractError(
+            DESIGN_RECOVERY_AMBIGUOUS,
+            "initial Design failure receipt could not be validated",
+        )
+
+
 def run_initial(design, correlation: InitialDesignCorrelation, *, store=None) -> InitialDesignResult:
     """Execute the existing generic route once, guarded by durable receipts."""
     formal_store = _store_for(store)
@@ -413,17 +485,44 @@ def run_initial(design, correlation: InitialDesignCorrelation, *, store=None) ->
     )
 
     candidates: list[Mapping[str, Any]] = []
-    for job in jobs:
-        controls = job["config"]
-        result = design.design_rfpeptides(
-            target_spec={"target_id": job["target_id"]},
-            design_config={
-                "lengths": list(controls["lengths"]),
-                "n": controls["n"],
-                "seed": controls["seed"],
-            },
+    try:
+        for job in jobs:
+            controls = job["config"]
+            result = design.design_rfpeptides_initial(
+                target_spec={"target_id": job["target_id"]},
+                design_config={
+                    "lengths": list(controls["lengths"]),
+                    "n": controls["n"],
+                    "seed": controls["seed"],
+                },
+            )
+            candidates.extend(result)
+    except ScientificToolExecutionError as exc:
+        _persist_failure(
+            formal_store,
+            correlation,
+            jobs,
+            targets=targets,
+            blocker_code=INITIAL_DESIGN_SCIENTIFIC_TOOL_FAILED,
+            message=str(exc),
         )
-        candidates.extend(result)
+        raise InitialDesignContractError(
+            INITIAL_DESIGN_SCIENTIFIC_TOOL_FAILED, str(exc)
+        ) from exc
+
+    if not candidates:
+        message = "initial Design completed normally without a valid candidate"
+        _persist_failure(
+            formal_store,
+            correlation,
+            jobs,
+            targets=targets,
+            blocker_code=INITIAL_DESIGN_NO_VALID_CANDIDATES,
+            message=message,
+        )
+        raise InitialDesignContractError(
+            INITIAL_DESIGN_NO_VALID_CANDIDATES, message
+        )
 
     candidate_ids, artifact_ids, evidence_ids = _formal_references(
         formal_store,

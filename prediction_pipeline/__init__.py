@@ -7,17 +7,23 @@ different environment; their outputs cross the boundary through a versioned
 """
 
 from .contracts import (
+    CRITIC_READY_STATUSES,
     CandidateInput,
     ContractError,
+    PREDICTION_RECORD_STATUSES,
     PredictionConfig,
     load_candidate_inputs,
+    prediction_status_from_battery,
 )
 from .pipeline import PredictionPipeline
 
 __all__ = [
     "CandidateInput",
+    "CRITIC_READY_STATUSES",
     "ContractError",
+    "PREDICTION_RECORD_STATUSES",
     "PredictionConfig",
     "PredictionPipeline",
     "load_candidate_inputs",
+    "prediction_status_from_battery",
 ]

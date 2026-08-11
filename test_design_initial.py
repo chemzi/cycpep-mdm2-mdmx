@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from agents.design import (
@@ -13,6 +14,12 @@ from agents.design import (
     InitialDesignContractError,
     InitialDesignCorrelation,
     design_initial_invocation_id,
+)
+from agents.design.runtime import (
+    ScientificToolExecutionError,
+    _run_ligandmpnn,
+    _run_refold_subprocess,
+    _run_rfdiff,
 )
 from storage import SQLiteStore
 from target_bootstrap import config_digest
@@ -109,7 +116,7 @@ class InitialDesignContractTests(unittest.TestCase):
             observed.append(starts)
             return self._route_result()
 
-        with patch.object(self.design, "design_rfpeptides", side_effect=route) as route_call:
+        with patch.object(self.design, "design_rfpeptides_initial", side_effect=route) as route_call:
             result = self.design.run_initial(self.correlation, store=self.store)
 
         route_call.assert_called_once()
@@ -130,7 +137,7 @@ class InitialDesignContractTests(unittest.TestCase):
         failing_store = _FailingAppendStore(
             self.store, fail_event_type="design_initial_invocation_started"
         )
-        with patch.object(self.design, "design_rfpeptides") as route_call:
+        with patch.object(self.design, "design_rfpeptides_initial") as route_call:
             with self.assertRaises(OSError):
                 self.design.run_initial(self.correlation, store=failing_store)
         route_call.assert_not_called()
@@ -141,7 +148,7 @@ class InitialDesignContractTests(unittest.TestCase):
 
     def test_durable_start_without_completion_fails_closed_and_never_retries(self):
         with patch.object(
-            self.design, "design_rfpeptides", side_effect=RuntimeError("GPU stopped")
+            self.design, "design_rfpeptides_initial", side_effect=RuntimeError("GPU stopped")
         ) as route_call:
             with self.assertRaisesRegex(RuntimeError, "GPU stopped"):
                 self.design.run_initial(self.correlation, store=self.store)
@@ -153,15 +160,72 @@ class InitialDesignContractTests(unittest.TestCase):
         self.assertEqual(validation.status, "started_without_completion")
         self.assertEqual(validation.blocker_code, "design_recovery_ambiguous")
 
-        with patch.object(self.design, "design_rfpeptides") as retry:
+        with patch.object(self.design, "design_rfpeptides_initial") as retry:
             with self.assertRaises(InitialDesignContractError) as raised:
                 self.design.run_initial(self.correlation, store=self.store)
         retry.assert_not_called()
         self.assertEqual(raised.exception.code, "design_recovery_ambiguous")
 
+    def test_normal_zero_result_has_durable_distinct_blocker_and_never_retries(self):
+        with patch.object(
+            self.design, "design_rfpeptides_initial", return_value=[]
+        ) as route_call:
+            with self.assertRaises(InitialDesignContractError) as raised:
+                self.design.run_initial(self.correlation, store=self.store)
+        self.assertEqual(raised.exception.code, "initial_design_no_valid_candidates")
+        route_call.assert_called_once()
+        self.assertEqual(
+            self.store.query(agent="design", event_type="design_initial_completion"),
+            [],
+        )
+        validation = self.design.validate_initial_invocation(
+            self.correlation, store=self.store
+        )
+        self.assertEqual(validation.status, "blocked")
+        self.assertEqual(validation.blocker_code, "initial_design_no_valid_candidates")
+        with patch.object(self.design, "design_rfpeptides_initial") as retry:
+            with self.assertRaises(InitialDesignContractError) as repeated:
+                self.design.run_initial(self.correlation, store=self.store)
+        retry.assert_not_called()
+        self.assertEqual(repeated.exception.code, "initial_design_no_valid_candidates")
+
+    def test_classified_tool_failure_is_never_reported_as_zero_result(self):
+        failure = ScientificToolExecutionError("rfdiffusion", "exit=1")
+        with patch.object(
+            self.design, "design_rfpeptides_initial", side_effect=failure
+        ):
+            with self.assertRaises(InitialDesignContractError) as raised:
+                self.design.run_initial(self.correlation, store=self.store)
+        self.assertEqual(raised.exception.code, "initial_design_scientific_tool_failed")
+        validation = self.design.validate_initial_invocation(
+            self.correlation, store=self.store
+        )
+        self.assertEqual(validation.status, "blocked")
+        self.assertEqual(
+            validation.blocker_code, "initial_design_scientific_tool_failed"
+        )
+        self.assertNotEqual(
+            validation.blocker_code, "initial_design_no_valid_candidates"
+        )
+
+    def test_failure_receipt_persistence_failure_remains_recovery_ambiguous(self):
+        failing_store = _FailingAppendStore(
+            self.store, fail_event_type="design_initial_failure"
+        )
+        with patch.object(
+            self.design, "design_rfpeptides_initial", return_value=[]
+        ):
+            with self.assertRaises(OSError):
+                self.design.run_initial(self.correlation, store=failing_store)
+        validation = self.design.validate_initial_invocation(
+            self.correlation, store=self.store
+        )
+        self.assertEqual(validation.status, "started_without_completion")
+        self.assertEqual(validation.blocker_code, "design_recovery_ambiguous")
+
     def test_durable_completion_survives_caller_bookkeeping_crash_without_gpu_rerun(self):
         with patch.object(
-            self.design, "design_rfpeptides", side_effect=self._route_result
+            self.design, "design_rfpeptides_initial", side_effect=self._route_result
         ) as route_call:
             first = self.design.run_initial(self.correlation, store=self.store)
             self.assertEqual(route_call.call_count, 1)
@@ -173,7 +237,7 @@ class InitialDesignContractTests(unittest.TestCase):
             self.correlation, store=self.store
         )
         self.assertEqual(validation.status, "completed")
-        with patch.object(self.design, "design_rfpeptides") as rerun:
+        with patch.object(self.design, "design_rfpeptides_initial") as rerun:
             recovered = self.design.run_initial(self.correlation, store=self.store)
         rerun.assert_not_called()
         self.assertEqual(recovered.status, "completed")
@@ -196,6 +260,45 @@ class InitialDesignContractTests(unittest.TestCase):
         self.assertEqual(validation.status, "conflict")
         self.assertEqual(validation.blocker_code, "design_recovery_ambiguous")
 
+    def test_empty_legacy_completion_and_conflicting_terminal_receipts_fail_closed(self):
+        jobs = self.design.materialize_initial_jobs()
+        start_id = self.store.append({
+            "agent": "design",
+            "event_type": "design_initial_invocation_started",
+            **self.correlation.to_payload(),
+            "jobs": list(jobs),
+        })
+        self.store.append({
+            "agent": "design",
+            "event_type": "design_initial_completion",
+            **self.correlation.to_payload(),
+            "jobs": list(jobs),
+            "candidate_ids": [],
+            "artifact_ids": [],
+            "evidence_ids": [start_id],
+        })
+        validation = self.design.validate_initial_invocation(
+            self.correlation, store=self.store
+        )
+        self.assertEqual(validation.status, "conflict")
+        self.assertEqual(validation.blocker_code, "design_recovery_ambiguous")
+
+        self.store.append({
+            "agent": "design",
+            "event_type": "design_initial_failure",
+            **self.correlation.to_payload(),
+            "jobs": list(jobs),
+            "code": "initial_design_no_valid_candidates",
+            "message": "normal empty result",
+            "component": "design",
+            "retryable": False,
+        })
+        conflict = self.design.validate_initial_invocation(
+            self.correlation, store=self.store
+        )
+        self.assertEqual(conflict.status, "conflict")
+        self.assertEqual(conflict.blocker_code, "design_recovery_ambiguous")
+
     def test_contract_gap_is_reported_before_route_or_start_receipt(self):
         invalid_context = DesignContext(
             project_config={
@@ -215,7 +318,7 @@ class InitialDesignContractTests(unittest.TestCase):
             Path(self.temp.name) / "invalid.sqlite3",
             project_id="invalid_initial_design",
         )
-        with patch.object(design, "design_rfpeptides") as route_call:
+        with patch.object(design, "design_rfpeptides_initial") as route_call:
             with self.assertRaises(InitialDesignContractError) as raised:
                 design.run_initial(correlation, store=invalid_store)
         route_call.assert_not_called()
@@ -242,6 +345,70 @@ class InitialDesignContractTests(unittest.TestCase):
             design_config={"n": 1, "seed": 7},
             context=self.context,
         )
+
+    def test_launcher_route_adapter_alone_enables_strict_tool_semantics(self):
+        with patch(
+            "agents.design.route_a._design_rfpeptides", return_value=[]
+        ) as route_core:
+            self.design.design_rfpeptides_initial()
+            strict_call = route_core.call_args
+            self.design.design_rfpeptides()
+            legacy_call = route_core.call_args
+        self.assertTrue(strict_call.kwargs["strict_tools"])
+        self.assertNotIn("strict_tools", legacy_call.kwargs)
+
+    def test_scientific_tool_fallbacks_are_legacy_only(self):
+        failed = SimpleNamespace(returncode=1, stderr="tool failed", stdout="")
+        with patch("agents.design.runtime.subprocess.run", return_value=failed), patch(
+            "agents.design.runtime.EvidenceLogger.error"
+        ), patch("agents.design.runtime._cleanup_partial_rfdiff_output"):
+            legacy = _run_rfdiff(
+                "target.pdb", 8, 1, str(Path(self.temp.name) / "bb"), "contig"
+            )
+            with self.assertRaises(ScientificToolExecutionError):
+                _run_rfdiff(
+                    "target.pdb",
+                    8,
+                    1,
+                    str(Path(self.temp.name) / "bb"),
+                    "contig",
+                    strict_tools=True,
+                )
+        self.assertFalse(legacy)
+
+        with patch("agents.design.runtime.subprocess.run", return_value=failed), patch(
+            "agents.design.runtime.EvidenceLogger.error"
+        ), patch(
+            "agents.design.runtime._pdb_chain_residue_layout",
+            return_value={"B": [1]},
+        ), patch(
+            "agents.design.runtime._pdb_chain_sequences",
+            return_value={"B": "A"},
+        ), patch("agents.design.runtime.shutil.rmtree"), patch(
+            "agents.design.runtime.os.makedirs"
+        ):
+            legacy = _run_ligandmpnn("bb.pdb", self.temp.name, binder_chain="B")
+            with self.assertRaises(ScientificToolExecutionError):
+                _run_ligandmpnn(
+                    "bb.pdb", self.temp.name, binder_chain="B", strict_tools=True
+                )
+        self.assertEqual(legacy, [])
+
+        with patch("agents.design.runtime.subprocess.run", return_value=failed), patch(
+            "agents.design.runtime.EvidenceLogger.error"
+        ):
+            legacy = _run_refold_subprocess(
+                "refold.py", "refold.pdb", "refold.plddt", "ACDEFGHI"
+            )
+            with self.assertRaises(ScientificToolExecutionError):
+                _run_refold_subprocess(
+                    "refold.py",
+                    "refold.pdb",
+                    "refold.plddt",
+                    "ACDEFGHI",
+                    strict_tools=True,
+                )
+        self.assertIsNone(legacy)
 
 
 if __name__ == "__main__":

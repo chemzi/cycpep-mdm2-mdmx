@@ -730,18 +730,6 @@ class MetricCollectorsMixin:
             })
 
 
-    def _status_from_battery(self, battery: dict) -> str:
-        if battery["competition_clearance"]:
-            return "finalized"
-        if battery["metric_clearance"]:
-            return "awaiting_threshold_calibration"
-        if battery["triage_status"] == "invalid":
-            return "invalid"
-        if battery["missing_evidence"] or battery["missing_thresholds"]:
-            return "prediction_pending"
-        return "needs_optimization"
-
-
 def _parse_numeric_relax_metadata(
     relax_metadata: dict, coordinate_constraints: dict
 ) -> dict:

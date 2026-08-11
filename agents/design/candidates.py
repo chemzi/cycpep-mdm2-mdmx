@@ -89,6 +89,7 @@ def _register_refolded_candidate(
     ring_closure=None,
     notes=None,
     bb_alternatives=None,
+    strict_tools=False,
 ) -> CandidateRegistration:
     """Refold, validate ring closure, write manifest, and register a candidate.
 
@@ -99,7 +100,11 @@ def _register_refolded_candidate(
     refold_dir = os.path.join(batch_dir, "candidates", candidate_id)
     os.makedirs(refold_dir, exist_ok=True)
     refold_pdb = os.path.join(refold_dir, "refold.pdb")
-    plddt = _run_refold(sequence, refold_pdb)
+    plddt = (
+        _run_refold(sequence, refold_pdb, strict_tools=True)
+        if strict_tools
+        else _run_refold(sequence, refold_pdb)
+    )
     cyclization_type = cyclization or _infer_cyclization_type(sequence)
     try:
         rc = (
