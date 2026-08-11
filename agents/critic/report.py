@@ -8,6 +8,7 @@ from data_layer import CandidateIndex, EvidenceLogger, State
 from dataclasses import asdict
 from pathlib import Path
 from prediction_pipeline.contracts import file_sha256, object_sha256
+from project_config import required_target_ids
 from .config import (
     CRITIC_VERSION,
     LAYER_KEYS,
@@ -363,12 +364,19 @@ def run(
     )
     if not any(
         entry.get("event_type") == "critic_review"
+        and entry.get("project_id") == evidence_payload["project_id"]
+        and entry.get("prediction_run_id") == evidence_payload["prediction_run_id"]
         and entry.get("report_id") == report["report_id"]
+        and entry.get("report_sha256") == report_sha
         for entry in EvidenceLogger.get_all()
     ):
-        EvidenceLogger.critic_review(**{
-            key: value
-            for key, value in evidence_payload.items()
-            if key != "history_entry"
-        })
+        EvidenceLogger.log(
+            "critic",
+            "critic_review",
+            dict(evidence_payload["event_payload"]),
+            targets=list(required_target_ids(
+                State.load().get("project_config") or State._project_config
+            )),
+            phase="critic",
+        )
     return {"report": report, "report_path": str(output_path), "report_sha256": report_sha}

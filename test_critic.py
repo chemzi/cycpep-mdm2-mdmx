@@ -442,6 +442,85 @@ class CriticTests(unittest.TestCase):
         events = data_layer.EvidenceLogger.filter(event_type="critic_review")
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["report_id"], first["report"]["report_id"])
+        self.assertEqual(events[0]["project_id"], project["project_id"])
+        self.assertEqual(
+            events[0]["targets"],
+            [target["id"] for target in project["targets"]],
+        )
+
+    def test_unbound_same_report_event_does_not_suppress_one_bound_event(self):
+        project = copy.deepcopy(data_layer.State._project_config)
+        state = copy.deepcopy(data_layer.State._default)
+        state["project_id"] = project["project_id"]
+        state["project_config"] = project
+        state["thresholds"] = {}
+        state["iteration_history"] = []
+        data_layer.State.save(state)
+        record = self._record(
+            "C0001",
+            "ACDEFGHI",
+            "needs_optimization",
+            battery=complete_battery(failed=("l2_pass",)),
+        )
+        handoff = self._handoff(
+            [("needs_optimization", "C0001", record)],
+            project_id=project["project_id"],
+        )
+        handoff_payload = json.loads(handoff.read_text(encoding="utf-8"))
+        handoff_payload["required_targets"] = ["MDM2"]
+        handoff.write_text(json.dumps(handoff_payload), encoding="utf-8")
+        rows = self._rows(("C0001", "ACDEFGHI", "route_A"))
+        config = CriticConfig(min_cohort_for_distribution=1)
+        expected_report = review(
+            handoff_path=handoff,
+            state=state,
+            candidate_rows=rows,
+            config=config,
+        )
+        data_layer.EvidenceLogger.log(
+            "critic",
+            "critic_review",
+            {
+                "report_id": expected_report["report_id"],
+                "prediction_run_id": expected_report["source"]["prediction_run_id"],
+                "report_sha256": "legacy-unbound-digest",
+            },
+            phase="critic",
+        )
+        legacy = data_layer.EvidenceLogger.filter(event_type="critic_review")[0]
+
+        output = self.root / "critic_report.json"
+        first = run(
+            handoff_path=handoff,
+            output_path=output,
+            state=state,
+            candidate_rows=rows,
+            config=config,
+        )
+        run(
+            handoff_path=handoff,
+            output_path=output,
+            state=data_layer.State.load(),
+            candidate_rows=rows,
+            config=config,
+        )
+
+        events = data_layer.EvidenceLogger.filter(event_type="critic_review")
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0], legacy)
+        bound = [event for event in events if event.get("project_id")]
+        self.assertEqual(len(bound), 1)
+        self.assertEqual(bound[0]["project_id"], project["project_id"])
+        self.assertEqual(
+            bound[0]["targets"],
+            [target["id"] for target in project["targets"]],
+        )
+        self.assertEqual(
+            bound[0]["prediction_run_id"],
+            first["report"]["source"]["prediction_run_id"],
+        )
+        self.assertEqual(bound[0]["report_id"], first["report"]["report_id"])
+        self.assertEqual(bound[0]["report_sha256"], first["report_sha256"])
 
 
     def test_review_injected_project_config_overrides_state_mismatch(self):

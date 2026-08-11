@@ -92,7 +92,10 @@ class CriticCorrelationCharacterizationTests(unittest.TestCase):
             report={
                 "critic_version": "test",
                 "report_id": "critic-current",
-                "source": {"prediction_run_id": "prediction-current"},
+                "source": {
+                    "project_id": "project-current",
+                    "prediction_run_id": "prediction-current",
+                },
                 "verdict": "clear",
                 "passed": True,
                 "issue_counts": {},
@@ -107,6 +110,33 @@ class CriticCorrelationCharacterizationTests(unittest.TestCase):
         )
 
         self.assertEqual(evidence["prediction_run_id"], "prediction-current")
+        self.assertEqual(evidence["project_id"], "project-current")
+        self.assertTrue(evidence["passed"])
+        self.assertEqual(evidence["metrics"], {})
+        self.assertTrue(evidence["event_payload"]["pass"])
+        self.assertEqual(evidence["event_payload"]["metrics_snapshot"], {})
+
+    def test_critic_persistence_requires_report_source_project_id(self):
+        report = {
+            "critic_version": "test",
+            "report_id": "critic-current",
+            "source": {"prediction_run_id": "prediction-current"},
+            "verdict": "clear",
+            "passed": True,
+            "issue_counts": {},
+            "recommendations": [],
+            "issues": {},
+            "summary": "clear",
+            "metrics_snapshot": {},
+        }
+
+        with self.assertRaisesRegex(ValueError, "source.project_id"):
+            critic_persistence_effects(
+                report=report,
+                report_path="critic-current.json",
+                report_digest="report-digest",
+                state={},
+            )
 
     def test_unrelated_broken_legacy_history_does_not_block_explicit_current_report(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -134,6 +164,28 @@ class CriticCorrelationCharacterizationTests(unittest.TestCase):
 
             self.assertEqual(result.status, "completed")
             self.assertEqual(result.references["report_id"], "critic-current")
+
+    def test_valid_cross_project_report_is_not_authoritative(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_path, report = _write_report(
+                root, "critic-other", "prediction-current"
+            )
+            cross_project = _event(
+                report_path, report, run_id_marker="prediction-current"
+            )
+            cross_project["project_id"] = "project-other"
+            current_start = _prediction_start(
+                run_id="prediction-current",
+                timestamp="2026-08-10T10:00:00+00:00",
+            )
+
+            result = _inspector([cross_project, current_start]).critic(
+                project_id="project-current",
+                prediction_run_id="prediction-current",
+            )
+
+            self.assertEqual(result.status, "not_started")
 
     def test_old_broken_legacy_history_does_not_block_first_critic_for_current_run(self):
         with tempfile.TemporaryDirectory() as tmp:

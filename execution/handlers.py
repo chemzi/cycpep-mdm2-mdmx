@@ -541,6 +541,17 @@ def review_prediction_handoff(context: HandlerContext) -> HandlerOutcome:
             state=state,
             report_artifact_id=context.artifact_id_for("critic_report"),
         )
+        trace_project_id = (context.packet.get("trace_context") or {}).get(
+            "project_id"
+        )
+        if (
+            trace_project_id is not None
+            and trace_project_id != evidence["project_id"]
+        ):
+            raise ExecutionContractError(
+                "critic_project_binding_mismatch",
+                "Critic report and transaction trace project binding disagree",
+            )
         return HandlerOutcome(
             state_updates=state_updates,
             state_appends=(StateAppendMutation(
@@ -553,13 +564,7 @@ def review_prediction_handoff(context: HandlerContext) -> HandlerOutcome:
                 "agent": "critic",
                 "event_type": "critic_review",
                 "phase": "critic",
-                "issues": evidence["issues"],
-                "pass": evidence["passed"],
-                "summary": evidence["summary"],
-                "recommendation": evidence["recommendation"],
-                "metrics_snapshot": evidence["metrics"],
-                "report_id": evidence["report_id"],
-                "prediction_run_id": evidence["prediction_run_id"],
+                **evidence["event_payload"],
             },),
             outputs=(("critic_report", output),),
         )

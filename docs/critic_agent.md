@@ -84,7 +84,11 @@ python agents/critic.py review \
 
 可用 `--output` 指定其他位置。相同 handoff、阈值、CandidateIndex 摘要、Critic
 配置和版本会产生相同 `report_id`。重复运行不会重复写 iteration history 或
-`critic_review` evidence 事件。
+`critic_review` evidence 事件。新发布的 `critic_review` 必须携带 Critic report
+不可变 `source.project_id` 提供的 project binding；direct 与 transaction-managed
+发布使用同一 binding contract。Evidence 幂等身份由 project、Prediction run、
+report ID 和 report digest 共同确定。既有未绑定事件保持不变且不具备项目级转换
+权威；受支持的显式恢复可追加一个绑定事件，之后的重复恢复不会再次追加。
 
 ## 6. 验证
 
