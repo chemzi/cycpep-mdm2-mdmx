@@ -12,7 +12,11 @@ from data_layer import CandidateIndex, EvidenceLogger  # noqa: E402
 from . import config  # noqa: E402
 from .candidates import _collect_raw_sequences, _register_refolded_candidate  # noqa: E402
 from .config import DESIGN_PIPELINE_VERSION, DESIGN_PROTOCOL, DesignContext  # noqa: E402
-from .runtime import _run_ligandmpnn, _run_rfdiff  # noqa: E402
+from .runtime import (  # noqa: E402
+    ScientificToolExecutionError,
+    _run_ligandmpnn,
+    _run_rfdiff,
+)
 from .service import (  # noqa: E402
     _load_existing_sequences,
     _merge_config,
@@ -75,6 +79,10 @@ def _route_a_generate_backbones(config, batch_dir, *, strict_tools=False):
                     "design", "rfdiff_binder_chain_invalid",
                     f"{bb_path}: {exc}", recovery="skip ambiguous backbone",
                 )
+                if strict_tools:
+                    raise ScientificToolExecutionError(
+                        "rfdiffusion", f"malformed backbone {bb_path}: {exc}"
+                    ) from exc
                 continue
             mpnn_dir = os.path.join(batch_dir, f"mpnn_{bb_path.stem}")
             os.makedirs(mpnn_dir, exist_ok=True)
@@ -93,7 +101,12 @@ def _route_a_generate_backbones(config, batch_dir, *, strict_tools=False):
     return backbone_entries, total_gen
 
 def _design_rfpeptides(
-    target_spec=None, design_config=None, context=None, *, strict_tools=False
+    target_spec=None,
+    design_config=None,
+    context=None,
+    *,
+    strict_tools=False,
+    candidate_updates=None,
 ):
     """RFpeptides \u2192 LigandMPNN \u2192 AfCycDesign refold"""
     ctx = context if context is not None else DesignContext.default()
@@ -151,6 +164,8 @@ def _design_rfpeptides(
         bb_alternatives = [str(bp) for bp, _ in bb_list[1:]] if len(bb_list) > 1 else []
         cid = _next_candidate_id()
         registration_kwargs = {"strict_tools": True} if strict_tools else {}
+        if candidate_updates is not None:
+            registration_kwargs["candidate_updates"] = candidate_updates
         registration = _register_refolded_candidate(
             candidate_id=cid, sequence=seq, config=config,
             batch_dir=batch_dir, route_name=route_name, batch_id=batch_id,
@@ -179,11 +194,15 @@ def design_rfpeptides(target_spec=None, design_config=None, context=None):
     )
 
 
-def design_rfpeptides_initial(target_spec=None, design_config=None, context=None):
+def design_rfpeptides_initial(
+    target_spec=None, design_config=None, context=None, *, candidate_updates=None
+):
     """Launcher initial Route A with classified tool failures propagated."""
+    staged_updates = candidate_updates if candidate_updates is not None else []
     return _design_rfpeptides(
         target_spec=target_spec,
         design_config=design_config,
         context=context,
         strict_tools=True,
+        candidate_updates=staged_updates,
     )

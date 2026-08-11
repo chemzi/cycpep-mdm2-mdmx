@@ -203,6 +203,21 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
                     "rfdiffusion", f"exit={r.returncode}"
                 )
             return False
+        if strict_tools:
+            expected = [
+                Path(f"{output_prefix}_{index}.pdb") for index in range(n_designs)
+            ]
+            missing = [str(path) for path in expected if not path.is_file()]
+            empty = [
+                str(path)
+                for path in expected
+                if path.is_file() and path.stat().st_size == 0
+            ]
+            if missing or empty:
+                raise ScientificToolExecutionError(
+                    "rfdiffusion",
+                    f"required backbone output missing={missing} empty={empty}",
+                )
         return True
     except (subprocess.SubprocessError, OSError, ValueError) as e:
         print(f"[RFdiff 异常] {e}")
@@ -257,7 +272,8 @@ def _build_ligandmpnn_command(backbone_pdb, output_dir, binder_chain,
 
 def _flush_ligandmpnn_record(seq_buffer, is_generated_record, uses_id_marker,
                              binder_chain, layout, input_sequences, seqs,
-                             ref_binder_seq, fa, header_index):
+                             ref_binder_seq, fa, header_index,
+                             strict_tools=False):
     """Consume one accumulated FASTA record at a header/EOF boundary.
 
     Returns the (possibly updated) captured reference binder sequence.  The
@@ -274,6 +290,10 @@ def _flush_ligandmpnn_record(seq_buffer, is_generated_record, uses_id_marker,
                 "design", "ligandmpnn_fasta_invalid",
                 f"{fa}: {exc}", recovery="skip malformed output",
             )
+            if strict_tools:
+                raise ScientificToolExecutionError(
+                    "ligandmpnn", f"malformed generated FASTA {fa}: {exc}"
+                ) from exc
             seq = None
         if seq is not None:
             # Skip poly-homopolymer (LigandMPNN baseline artifact).
@@ -304,13 +324,18 @@ def _flush_ligandmpnn_record(seq_buffer, is_generated_record, uses_id_marker,
             ref_binder_seq = _extract_ligandmpnn_binder_sequence(
                 seq_buffer, binder_chain, layout, input_sequences
             )
-        except (OSError, UnicodeError, ValueError):
+        except (OSError, UnicodeError, ValueError) as exc:
+            if strict_tools:
+                raise ScientificToolExecutionError(
+                    "ligandmpnn", f"malformed reference FASTA {fa}: {exc}"
+                ) from exc
             ref_binder_seq = None
     return ref_binder_seq
 
 
 def _collect_ligandmpnn_sequences(output_dir, n_seq, binder_chain, layout,
-                                  input_sequences, backbone_pdb):
+                                  input_sequences, backbone_pdb,
+                                  strict_tools=False):
     """Parse generated binder FASTA records from a finished LigandMPNN run."""
     seqs = []
     fa_files = sorted(Path(output_dir).glob("**/*.fa"))
@@ -351,6 +376,7 @@ def _collect_ligandmpnn_sequences(output_dir, n_seq, binder_chain, layout,
                     seq_buffer, is_generated_record, uses_id_marker,
                     binder_chain, layout, input_sequences, seqs,
                     ref_binder_seq, fa, header_index,
+                    strict_tools=strict_tools,
                 )
                 if line is exhausted:
                     break
@@ -369,7 +395,12 @@ def _collect_ligandmpnn_sequences(output_dir, n_seq, binder_chain, layout,
                 continue
             if is_generated_record:
                 seq_buffer += line.strip()
-    return seqs[:n_seq]
+    selected = seqs[:n_seq]
+    if strict_tools and not selected:
+        raise ScientificToolExecutionError(
+            "ligandmpnn", "successful process emitted no parseable generated sequence"
+        )
+    return selected
 
 
 def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=None, binder_chain=None,
@@ -391,7 +422,22 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=None, binder_chain=None,
             "the validated protein-target workflow requires 'protein_mpnn'",
             recovery="use protein_mpnn or add a separately tested adapter",
         )
+        if strict_tools:
+            raise ScientificToolExecutionError(
+                "ligandmpnn",
+                f"unsupported model type {config.LIGANDMPNN_MODEL_TYPE!r}",
+            )
         return []
+    if strict_tools:
+        required_paths = (
+            Path(config.LIGANDMPNN_DIR) / "run.py",
+            Path(config.LIGANDMPNN_CHECKPOINT),
+        )
+        missing = [str(path) for path in required_paths if not path.is_file()]
+        if missing:
+            raise ScientificToolExecutionError(
+                "ligandmpnn", f"required runtime/model unavailable: {missing}"
+            )
     try:
         layout = _pdb_chain_residue_layout(backbone_pdb)
         input_sequences = _pdb_chain_sequences(backbone_pdb)
@@ -399,6 +445,10 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=None, binder_chain=None,
         EvidenceLogger.error(
             "design", "ligandmpnn_backbone_invalid", str(exc), recovery="skip"
         )
+        if strict_tools:
+            raise ScientificToolExecutionError(
+                "ligandmpnn", f"malformed backbone: {exc}"
+            ) from exc
         return []
     binder_chain = str(binder_chain or "").strip()
     if binder_chain not in layout:
@@ -407,6 +457,10 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=None, binder_chain=None,
             f"{backbone_pdb}: binder chain {binder_chain!r} is absent",
             recovery="skip",
         )
+        if strict_tools:
+            raise ScientificToolExecutionError(
+                "ligandmpnn", f"binder chain {binder_chain!r} is absent"
+            )
         return []
     batch_size, number_of_batches = _ligandmpnn_batch_plan(n_seq)
     cmd = _build_ligandmpnn_command(
@@ -436,7 +490,7 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=None, binder_chain=None,
             return []
         return _collect_ligandmpnn_sequences(
             output_dir, n_seq, binder_chain, layout, input_sequences,
-            backbone_pdb,
+            backbone_pdb, strict_tools=strict_tools,
         )
     except (subprocess.SubprocessError, OSError, ValueError) as e:
         EvidenceLogger.error("design", "ligandmpnn_exception", str(e))
@@ -696,8 +750,8 @@ def _run_refold_subprocess(
                 f"refold PDB sequence diverged from input: {e}")
         else:
             EvidenceLogger.error("design", "refold_exception", str(e))
-            if strict_tools:
-                raise ScientificToolExecutionError("afcycdesign_refold", str(e)) from e
+        if strict_tools:
+            raise ScientificToolExecutionError("afcycdesign_refold", str(e)) from e
         return None
     except (subprocess.SubprocessError, OSError, RuntimeError) as e:
         if isinstance(e, ScientificToolExecutionError):

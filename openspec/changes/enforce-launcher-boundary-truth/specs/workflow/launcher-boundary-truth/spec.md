@@ -5,7 +5,7 @@ Defines the Design and Prediction owner evidence required for Launcher to advanc
 ## ADDED Requirements
 
 ### Requirement: Initial Design completion requires usable candidates
-Launcher SHALL treat an initial Design invocation as completed only when exactly one correlated completion receipt references a non-empty set of existing candidates and all of its formal references are valid. The Design owner MUST distinguish a normal, successfully executed zero-result from a classified scientific-tool failure before writing a terminal receipt. A normal zero-result SHALL use `initial_design_no_valid_candidates`; a tool failure SHALL use `initial_design_scientific_tool_failed` and MUST NOT be represented as a zero-result. Launcher SHALL NOT invoke Prediction for either blocker.
+Launcher SHALL treat an initial Design invocation as completed only when exactly one correlated completion receipt references a non-empty set of existing candidates and all of its formal references are valid. The Design owner MUST distinguish a normal, successfully generated zero-result from a classified scientific-tool or required-output failure before writing a terminal receipt. Required generation succeeds only when RFdiffusion emits the expected parseable backbone outputs, every required backbone has a usable binder chain, the configured LigandMPNN runtime/model inputs are available, and LigandMPNN emits parseable generated sequences. A normal zero-result SHALL use `initial_design_no_valid_candidates`; a tool/output failure SHALL use `initial_design_scientific_tool_failed` and MUST NOT be represented as a zero-result. Launcher SHALL NOT invoke Prediction for either blocker. Candidate publication for the invocation MUST be atomic through the existing CandidateUpdate and Store transaction boundary.
 
 #### Scenario: Non-empty Design result advances
 - **WHEN** the correlated initial Design invocation has one valid start and one valid completion receipt referencing at least one existing candidate
@@ -18,6 +18,22 @@ Launcher SHALL treat an initial Design invocation as completed only when exactly
 #### Scenario: Scientific-tool failure is not a zero-result
 - **WHEN** RFdiffusion, LigandMPNN, or refold reports a classified execution failure on the Launcher initial path
 - **THEN** Design records one correlated `design_initial_failure` with `initial_design_scientific_tool_failed`, records no completion, and does not report `initial_design_no_valid_candidates`
+
+#### Scenario: Successful tool exit without required output is failure
+- **WHEN** RFdiffusion exits successfully without the expected backbone set, a required backbone is malformed or lacks a binder chain, LigandMPNN configuration is unavailable, or LigandMPNN exits successfully without parseable generated sequences
+- **THEN** Design records `initial_design_scientific_tool_failed` and MUST NOT report `initial_design_no_valid_candidates`
+
+#### Scenario: Scientific elimination after valid generation is a normal zero-result
+- **WHEN** every required generation postcondition succeeds but all generated sequences are removed by subsequent deduplication, scientific filtering, quality, or closure validation
+- **THEN** Design records `initial_design_no_valid_candidates`
+
+#### Scenario: Later failure does not leak an earlier candidate
+- **WHEN** candidate A reaches the strict route publication point but a later candidate or job has a classified tool/output failure
+- **THEN** Initial Design records the correlated scientific-tool failure, Candidate A is absent from the formal Candidate Store, no authoritative `candidate_registered` exists for A, later cross-batch deduplication cannot observe A, and the failed invocation is not retried automatically
+
+#### Scenario: Successful invocation publishes candidates atomically
+- **WHEN** all Initial Design jobs and candidate postconditions succeed
+- **THEN** the existing Store transaction boundary atomically publishes all staged CandidateUpdates, their authoritative `candidate_registered` Evidence, and the correlated completion receipt
 
 #### Scenario: Unknown interruption remains ambiguous
 - **WHEN** Design starts but exits through an unclassified exception before a terminal receipt is durable

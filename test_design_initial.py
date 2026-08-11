@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 from agents.design import (
     Design,
@@ -21,6 +21,8 @@ from agents.design.runtime import (
     _run_refold_subprocess,
     _run_rfdiff,
 )
+from contracts.candidate_update import CandidateUpdate
+from agents.design.service import _load_existing_sequences
 from storage import SQLiteStore
 from target_bootstrap import config_digest
 
@@ -88,14 +90,16 @@ class InitialDesignContractTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def _route_result(self, **_kwargs):
+    def _route_result(self, *, candidate_updates=None, **_kwargs):
         candidate = {
             "candidate_id": "C0001",
             "sequence": "ACDEFGHI",
             "source_route": "route_A_target_a",
             "status": "designed",
         }
-        self.store.upsert(candidate, duplicate_policy="insert_only")
+        if candidate_updates is None:
+            raise AssertionError("Initial Design must provide a CandidateUpdate stage")
+        candidate_updates.append(CandidateUpdate(candidate))
         return [candidate]
 
     def test_identity_mapping_is_fixed_reversible_and_rejects_non_uuid_payload(self):
@@ -109,12 +113,12 @@ class InitialDesignContractTests(unittest.TestCase):
     def test_start_receipt_is_durable_before_route_and_completion_is_bound(self):
         observed = []
 
-        def route(**_kwargs):
+        def route(**kwargs):
             starts = self.store.query(
                 agent="design", event_type="design_initial_invocation_started"
             )
             observed.append(starts)
-            return self._route_result()
+            return self._route_result(**kwargs)
 
         with patch.object(self.design, "design_rfpeptides_initial", side_effect=route) as route_call:
             result = self.design.run_initial(self.correlation, store=self.store)
@@ -189,6 +193,24 @@ class InitialDesignContractTests(unittest.TestCase):
         retry.assert_not_called()
         self.assertEqual(repeated.exception.code, "initial_design_no_valid_candidates")
 
+    def test_valid_generation_eliminated_by_scientific_filter_is_normal_zero_result(self):
+        generation = ([(Path("bb.pdb"), "B", ["ACDEFGHI"])], 1)
+        with patch(
+            "experience.apply_experience_preference",
+            side_effect=lambda design_config, **_kwargs: (design_config, None),
+        ), patch(
+            "agents.design.route_a._route_a_generate_backbones",
+            return_value=generation,
+        ), patch(
+            "agents.design.route_a._load_existing_sequences", return_value=set()
+        ), patch(
+            "agents.design.route_a._cheap_filter_sequences", return_value=[]
+        ), patch("agents.design.route_a.EvidenceLogger.design_batch"):
+            with self.assertRaises(InitialDesignContractError) as raised:
+                self.design.run_initial(self.correlation, store=self.store)
+        self.assertEqual(raised.exception.code, "initial_design_no_valid_candidates")
+        self.assertEqual(self.store.list(), [])
+
     def test_classified_tool_failure_is_never_reported_as_zero_result(self):
         failure = ScientificToolExecutionError("rfdiffusion", "exit=1")
         with patch.object(
@@ -206,6 +228,74 @@ class InitialDesignContractTests(unittest.TestCase):
         )
         self.assertNotEqual(
             validation.blocker_code, "initial_design_no_valid_candidates"
+        )
+
+    def test_later_tool_failure_discards_staged_candidate_effects_and_never_retries(self):
+        candidate_a = {
+            "candidate_id": "C0001",
+            "sequence": "ACDEFGHI",
+            "source_route": "route_A_target_a",
+            "status": "designed",
+        }
+
+        def stage_a_then_fail(*, candidate_updates, **_kwargs):
+            candidate_updates.append(CandidateUpdate(candidate_a))
+            self.assertIsNone(self.store.get("C0001"))
+            self.assertEqual(
+                self.store.query(
+                    agent="design", event_type="candidate_registered"
+                ),
+                [],
+            )
+            raise ScientificToolExecutionError("afcycdesign_refold", "candidate B")
+
+        with patch.object(
+            self.design,
+            "design_rfpeptides_initial",
+            side_effect=stage_a_then_fail,
+        ) as route_call:
+            with self.assertRaises(InitialDesignContractError) as raised:
+                self.design.run_initial(self.correlation, store=self.store)
+        self.assertEqual(raised.exception.code, "initial_design_scientific_tool_failed")
+        self.assertEqual(route_call.call_count, 1)
+        self.assertIsNone(self.store.get("C0001"))
+        self.assertEqual(
+            self.store.query(agent="design", event_type="candidate_registered"), []
+        )
+        with patch(
+            "agents.design.service.CandidateIndex.load",
+            return_value=self.store.list(),
+        ):
+            self.assertNotIn("ACDEFGHI", _load_existing_sequences())
+
+        with patch.object(self.design, "design_rfpeptides_initial") as retry:
+            with self.assertRaises(InitialDesignContractError) as repeated:
+                self.design.run_initial(self.correlation, store=self.store)
+        retry.assert_not_called()
+        self.assertEqual(
+            repeated.exception.code, "initial_design_scientific_tool_failed"
+        )
+
+    def test_success_atomically_publishes_candidate_registration_and_completion(self):
+        with patch.object(
+            self.design, "design_rfpeptides_initial", side_effect=self._route_result
+        ):
+            result = self.design.run_initial(self.correlation, store=self.store)
+
+        self.assertEqual(result.candidate_ids, ("C0001",))
+        self.assertIsNotNone(self.store.get("C0001"))
+        registrations = self.store.query(
+            agent="design", event_type="candidate_registered"
+        )
+        completions = self.store.query(
+            agent="design", event_type="design_initial_completion"
+        )
+        self.assertEqual(len(registrations), 1)
+        self.assertEqual(len(completions), 1)
+        self.assertTrue(completions[0].get("transaction_id"))
+        self.assertEqual(
+            registrations[0].get("transaction_id"),
+            completions[0].get("transaction_id"),
         )
 
     def test_failure_receipt_persistence_failure_remains_recovery_ambiguous(self):
@@ -355,6 +445,7 @@ class InitialDesignContractTests(unittest.TestCase):
             self.design.design_rfpeptides()
             legacy_call = route_core.call_args
         self.assertTrue(strict_call.kwargs["strict_tools"])
+        self.assertEqual(strict_call.kwargs["candidate_updates"], [])
         self.assertNotIn("strict_tools", legacy_call.kwargs)
 
     def test_scientific_tool_fallbacks_are_legacy_only(self):
@@ -409,6 +500,166 @@ class InitialDesignContractTests(unittest.TestCase):
                     strict_tools=True,
                 )
         self.assertIsNone(legacy)
+
+    def test_strict_rfdiff_exit_zero_requires_expected_backbone_output(self):
+        succeeded = SimpleNamespace(returncode=0, stderr="", stdout="")
+        prefix = str(Path(self.temp.name) / "missing-backbones" / "bb")
+        Path(prefix).parent.mkdir(parents=True)
+        with patch("agents.design.runtime.subprocess.run", return_value=succeeded):
+            self.assertTrue(_run_rfdiff("target.pdb", 8, 2, prefix, "contig"))
+            with self.assertRaises(ScientificToolExecutionError):
+                _run_rfdiff(
+                    "target.pdb", 8, 2, prefix, "contig", strict_tools=True
+                )
+            Path(f"{prefix}_0.pdb").write_text("ATOM\n", encoding="utf-8")
+            with self.assertRaises(ScientificToolExecutionError):
+                _run_rfdiff(
+                    "target.pdb", 8, 2, prefix, "contig", strict_tools=True
+                )
+
+    def test_strict_ligandmpnn_rejects_unavailable_model_and_exit_zero_no_output(self):
+        with patch(
+            "agents.design.runtime.config.LIGANDMPNN_MODEL_TYPE", "unsupported"
+        ):
+            self.assertEqual(
+                _run_ligandmpnn("bb.pdb", self.temp.name, binder_chain="B"), []
+            )
+            with self.assertRaises(ScientificToolExecutionError):
+                _run_ligandmpnn(
+                    "bb.pdb", self.temp.name, binder_chain="B", strict_tools=True
+                )
+
+        runtime_root = Path(self.temp.name) / "ligandmpnn-runtime"
+        runtime_root.mkdir()
+        run_py = runtime_root / "run.py"
+        checkpoint = runtime_root / "checkpoint.pt"
+        run_py.write_text("# test entrypoint\n", encoding="utf-8")
+        checkpoint.write_text("test checkpoint\n", encoding="utf-8")
+        succeeded = SimpleNamespace(returncode=0, stderr="", stdout="")
+        output_dir = Path(self.temp.name) / "empty-mpnn-output"
+        with patch(
+            "agents.design.runtime.config.LIGANDMPNN_DIR", str(runtime_root)
+        ), patch(
+            "agents.design.runtime.config.LIGANDMPNN_CHECKPOINT", str(checkpoint)
+        ), patch(
+            "agents.design.runtime._pdb_chain_residue_layout",
+            return_value={"B": [1]},
+        ), patch(
+            "agents.design.runtime._pdb_chain_sequences",
+            return_value={"B": "A"},
+        ), patch("agents.design.runtime.subprocess.run", return_value=succeeded):
+            self.assertEqual(
+                _run_ligandmpnn("bb.pdb", str(output_dir), binder_chain="B"), []
+            )
+            with self.assertRaises(ScientificToolExecutionError):
+                _run_ligandmpnn(
+                    "bb.pdb",
+                    str(output_dir),
+                    binder_chain="B",
+                    strict_tools=True,
+                )
+
+        def succeed_with_malformed_output(*_args, **_kwargs):
+            malformed_dir = output_dir / "seqs"
+            malformed_dir.mkdir(parents=True, exist_ok=True)
+            (malformed_dir / "bb.fa").write_text(
+                ">reference, id=0\nA\n>design, id=1\n?\n",
+                encoding="utf-8",
+            )
+            return succeeded
+
+        with patch(
+            "agents.design.runtime.config.LIGANDMPNN_DIR", str(runtime_root)
+        ), patch(
+            "agents.design.runtime.config.LIGANDMPNN_CHECKPOINT", str(checkpoint)
+        ), patch(
+            "agents.design.runtime._pdb_chain_residue_layout",
+            return_value={"B": [1]},
+        ), patch(
+            "agents.design.runtime._pdb_chain_sequences",
+            return_value={"B": "A"},
+        ), patch(
+            "agents.design.runtime.subprocess.run",
+            side_effect=succeed_with_malformed_output,
+        ), patch("agents.design.runtime.EvidenceLogger.error"):
+            self.assertEqual(
+                _run_ligandmpnn("bb.pdb", str(output_dir), binder_chain="B"), []
+            )
+            with self.assertRaises(ScientificToolExecutionError):
+                _run_ligandmpnn(
+                    "bb.pdb",
+                    str(output_dir),
+                    binder_chain="B",
+                    strict_tools=True,
+                )
+
+    def test_strict_ligandmpnn_rejects_malformed_backbone_and_missing_binder_chain(self):
+        runtime_root = Path(self.temp.name) / "ligandmpnn-validation-runtime"
+        runtime_root.mkdir()
+        (runtime_root / "run.py").write_text("# test entrypoint\n", encoding="utf-8")
+        checkpoint = runtime_root / "checkpoint.pt"
+        checkpoint.write_text("test checkpoint\n", encoding="utf-8")
+        runtime_patches = (
+            patch("agents.design.runtime.config.LIGANDMPNN_DIR", str(runtime_root)),
+            patch(
+                "agents.design.runtime.config.LIGANDMPNN_CHECKPOINT",
+                str(checkpoint),
+            ),
+        )
+
+        with runtime_patches[0], runtime_patches[1], patch(
+            "agents.design.runtime._pdb_chain_residue_layout",
+            side_effect=ValueError("malformed PDB"),
+        ), patch("agents.design.runtime.EvidenceLogger.error"):
+            self.assertEqual(
+                _run_ligandmpnn("bb.pdb", self.temp.name, binder_chain="B"), []
+            )
+            with self.assertRaises(ScientificToolExecutionError):
+                _run_ligandmpnn(
+                    "bb.pdb", self.temp.name, binder_chain="B", strict_tools=True
+                )
+
+        with patch(
+            "agents.design.runtime.config.LIGANDMPNN_DIR", str(runtime_root)
+        ), patch(
+            "agents.design.runtime.config.LIGANDMPNN_CHECKPOINT", str(checkpoint)
+        ), patch(
+            "agents.design.runtime._pdb_chain_residue_layout",
+            return_value={"A": [1]},
+        ), patch(
+            "agents.design.runtime._pdb_chain_sequences", return_value={"A": "A"}
+        ), patch("agents.design.runtime.EvidenceLogger.error"):
+            self.assertEqual(
+                _run_ligandmpnn("bb.pdb", self.temp.name, binder_chain="B"), []
+            )
+            with self.assertRaises(ScientificToolExecutionError):
+                _run_ligandmpnn(
+                    "bb.pdb", self.temp.name, binder_chain="B", strict_tools=True
+                )
+
+    def test_strict_refold_rejects_malformed_required_output(self):
+        succeeded = SimpleNamespace(returncode=0, stderr="", stdout="")
+        with patch("agents.design.runtime.subprocess.run", return_value=succeeded), patch(
+            "agents.design.runtime.os.path.isfile", return_value=True
+        ), patch(
+            "agents.design.runtime._verify_fixed_sequence_pdb",
+            side_effect=ValueError("malformed refold PDB"),
+        ), patch("builtins.open", mock_open(read_data="0.91")), patch(
+            "agents.design.runtime.EvidenceLogger.error"
+        ):
+            self.assertIsNone(
+                _run_refold_subprocess(
+                    "refold.py", "refold.pdb", "refold.plddt", "ACDEFGHI"
+                )
+            )
+            with self.assertRaises(ScientificToolExecutionError):
+                _run_refold_subprocess(
+                    "refold.py",
+                    "refold.pdb",
+                    "refold.plddt",
+                    "ACDEFGHI",
+                    strict_tools=True,
+                )
 
 
 if __name__ == "__main__":

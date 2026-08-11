@@ -39,3 +39,21 @@
   - Result: final scoped diff and `git diff --check` passed; this change modifies no Critic project-binding implementation file, and `workflow/service.py` required no change.
 - [x] 5.4 Re-run the real approved-project Launcher lifecycle on the target machine and capture formal evidence that it either reaches the next legitimate boundary or stops with the owning stable blocker across both `launch` and `status`.
   - Result: target-machine run `launcher_c9235ba8f0f347f196ba95aa2500be08` classified the missing RFdiffusion runtime as `initial_design_scientific_tool_failed` at Design; launch, status, resume, and subsequent status preserved that owner blocker and did not enter Prediction. Preserved run `launcher_03a8ecab979a43b6bc56055e16fc9723` was re-read as `prediction_execution_incomplete` at Prediction across status/resume/status and did not re-enter Critic.
+
+## 6. Close Design review P1s
+
+- [x] 6.1 Add strict postcondition regressions for RFdiffusion exit-zero missing/partial backbone output, malformed backbone or missing binder chain, unavailable LigandMPNN model/config, and exit-zero missing/malformed generated sequence output while preserving all legacy fallbacks.
+  - Result: strict adapter regressions cover every required RFdiffusion, LigandMPNN, and refold postcondition; each paired legacy assertion preserves the historical fallback.
+- [x] 6.2 Make the Launcher strict route raise the existing typed scientific-tool/output failure for every failed required postcondition; allow `initial_design_no_valid_candidates` only after required generation succeeds and later scientific filtering/quality/closure eliminates all candidates.
+  - Result: strict failures propagate as `ScientificToolExecutionError`; a generated sequence set eliminated by the existing scientific filter remains the distinct normal zero-result path.
+- [x] 6.3 Route Launcher Initial Design candidate publication into an invocation-owned collection of existing `CandidateUpdate` effects and atomically commit candidates, authoritative candidate-registration Evidence, and completion through the existing Store transaction seam.
+  - Result: the strict adapter stages CandidateUpdates and `SQLiteStore.commit_transaction` publishes the candidates, authoritative registrations, and completion together.
+- [x] 6.4 Add the partial-publication regression: stage candidate A, fail candidate B or a later job, prove the tool-failure blocker, no formal A candidate/event, no dedup visibility, and no automatic retry.
+  - Result: the regression proves all seven required observations, including no Store row/event/dedup visibility and no second route invocation.
+- [x] 6.5 Prove the successful path publishes all staged candidates and completion in one formal transaction, while legacy `design_rfpeptides()` behavior and non-authoritative intermediate files remain unchanged.
+  - Result: success asserts one shared committed transaction; the unchanged legacy entry point still calls the core route without strict or staging arguments.
+
+## 7. Re-verify PR 68
+
+- [ ] 7.1 Run Design focused tests, the full unittest suite, Architecture Gate, strict OpenSpec validation, configured lint/type checks, and `git diff --check`.
+- [ ] 7.2 Synchronize the PR head with the latest `integration/data-integrity-transaction`, rerun affected gates if the base changed, and review the final PR diff for P0/P1 findings without expanding scope.

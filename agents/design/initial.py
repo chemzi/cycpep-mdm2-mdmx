@@ -12,7 +12,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from contracts.candidate_update import CandidateUpdate
 from contracts.event import EvidenceEvent
+from contracts.transaction import TransactionContext, TransactionStatus
 from project_config import target_slug
 
 from .config import (
@@ -321,6 +323,29 @@ def validate_initial_invocation(
     }
     if any(evidence_id not in known_evidence for evidence_id in evidence_ids):
         return _conflict(correlation, "initial Design evidence reference is missing")
+    transaction_id = completion.get("transaction_id")
+    if transaction_id:
+        if formal_store.get_transaction_status(transaction_id) != "COMMITTED":
+            return _conflict(correlation, "initial Design transaction is not committed")
+        registrations = formal_store.query(
+            project_id=correlation.project_id,
+            transaction_id=transaction_id,
+            agent="design",
+            event_type="candidate_registered",
+        )
+        registered_ids = []
+        for event in registrations:
+            candidate = event.get("candidate")
+            if not isinstance(candidate, Mapping):
+                return _conflict(
+                    correlation, "initial Design candidate registration is malformed"
+                )
+            registered_ids.append(str(candidate.get("candidate_id") or ""))
+        if tuple(sorted(registered_ids)) != tuple(sorted(candidate_ids)):
+            return _conflict(
+                correlation,
+                "initial Design transaction candidate registrations do not match completion",
+            )
 
     return InitialDesignValidation(
         status="completed",
@@ -390,11 +415,8 @@ def materialize_initial_jobs(design) -> tuple[dict[str, Any], ...]:
 
 
 def _formal_references(
-    store,
     candidates: list[Mapping[str, Any]],
     start_event_id: str,
-    *,
-    project_id: str,
 ):
     candidate_ids = tuple(str(candidate["candidate_id"]) for candidate in candidates)
     if len(candidate_ids) != len(set(candidate_ids)):
@@ -410,17 +432,70 @@ def _formal_references(
         artifact_ids.extend(str(value) for value in candidate_artifacts)
     artifact_ids = list(dict.fromkeys(artifact_ids))
 
-    candidate_events = []
-    for event in store.query(
-        project_id=project_id,
-        agent="design",
-        event_type="candidate_registered",
-    ):
-        candidate = event.get("candidate")
-        if isinstance(candidate, Mapping) and candidate.get("candidate_id") in candidate_ids:
-            candidate_events.append(event["event_id"])
-    evidence_ids = tuple(dict.fromkeys([start_event_id, *candidate_events]))
+    evidence_ids = (start_event_id,)
     return candidate_ids, tuple(artifact_ids), evidence_ids
+
+
+def _commit_success(
+    store,
+    correlation: InitialDesignCorrelation,
+    jobs: tuple[dict[str, Any], ...],
+    candidates: list[Mapping[str, Any]],
+    candidate_updates: list[CandidateUpdate],
+    *,
+    start_event_id: str,
+    targets: tuple[str, ...],
+) -> str:
+    candidate_ids, artifact_ids, evidence_ids = _formal_references(
+        candidates, start_event_id
+    )
+    update_ids = tuple(update.candidate_id for update in candidate_updates)
+    if update_ids != candidate_ids or any(
+        dict(update.candidate) != dict(candidate)
+        for update, candidate in zip(candidate_updates, candidates)
+    ):
+        raise InitialDesignContractError(
+            DESIGN_RECOVERY_AMBIGUOUS,
+            "initial Design returned candidates do not match staged CandidateUpdates",
+        )
+    completion = _event(
+        DESIGN_INITIAL_COMPLETED,
+        {
+            **correlation.to_payload(),
+            "jobs": list(jobs),
+            "candidate_ids": list(candidate_ids),
+            "artifact_ids": list(artifact_ids),
+            "evidence_ids": list(evidence_ids),
+        },
+        targets=targets,
+    )
+    context = TransactionContext.create(
+        transaction_id=f"tx-{correlation.design_invocation_id}",
+        workflow_id=correlation.launcher_run_id,
+        run_id=correlation.launcher_run_id,
+        task_id="T000",
+        attempt_id="T000-A01",
+        action="initial_design",
+        metadata={"project_id": correlation.project_id},
+    )
+    context.transition(TransactionStatus.STAGING)
+    context.transition(TransactionStatus.VALIDATING)
+    context.transition(TransactionStatus.COMMITTING)
+    event_ids = store.commit_transaction(
+        context=context.to_dict(),
+        candidate_updates=[update.to_dict() for update in candidate_updates],
+        candidate_patches=(),
+        state_updates={},
+        state_appends=(),
+        artifacts=(),
+        evidence_events=(completion,),
+    )
+    if completion["event_id"] not in event_ids:
+        raise InitialDesignContractError(
+            DESIGN_RECOVERY_AMBIGUOUS,
+            "initial Design atomic completion receipt is missing",
+        )
+    return str(completion["event_id"])
 
 
 def _persist_failure(
@@ -485,6 +560,7 @@ def run_initial(design, correlation: InitialDesignCorrelation, *, store=None) ->
     )
 
     candidates: list[Mapping[str, Any]] = []
+    candidate_updates: list[CandidateUpdate] = []
     try:
         for job in jobs:
             controls = job["config"]
@@ -495,6 +571,7 @@ def run_initial(design, correlation: InitialDesignCorrelation, *, store=None) ->
                     "n": controls["n"],
                     "seed": controls["seed"],
                 },
+                candidate_updates=candidate_updates,
             )
             candidates.extend(result)
     except ScientificToolExecutionError as exc:
@@ -511,6 +588,11 @@ def run_initial(design, correlation: InitialDesignCorrelation, *, store=None) ->
         ) from exc
 
     if not candidates:
+        if candidate_updates:
+            raise InitialDesignContractError(
+                DESIGN_RECOVERY_AMBIGUOUS,
+                "initial Design staged candidates but returned a zero-result",
+            )
         message = "initial Design completed normally without a valid candidate"
         _persist_failure(
             formal_store,
@@ -524,21 +606,14 @@ def run_initial(design, correlation: InitialDesignCorrelation, *, store=None) ->
             INITIAL_DESIGN_NO_VALID_CANDIDATES, message
         )
 
-    candidate_ids, artifact_ids, evidence_ids = _formal_references(
+    completion_event_id = _commit_success(
         formal_store,
+        correlation,
+        jobs,
         candidates,
-        start_event_id,
-        project_id=correlation.project_id,
-    )
-    completion_payload = {
-        **correlation.to_payload(),
-        "jobs": list(jobs),
-        "candidate_ids": list(candidate_ids),
-        "artifact_ids": list(artifact_ids),
-        "evidence_ids": list(evidence_ids),
-    }
-    completion_event_id = formal_store.append(
-        _event(DESIGN_INITIAL_COMPLETED, completion_payload, targets=targets)
+        candidate_updates,
+        start_event_id=start_event_id,
+        targets=targets,
     )
     validation = validate_initial_invocation(correlation, store=formal_store)
     if validation.status != "completed":
