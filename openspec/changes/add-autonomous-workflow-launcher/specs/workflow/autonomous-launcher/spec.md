@@ -348,6 +348,14 @@ The initial diagnostic SHALL durably store the exact resolved internal data, Evi
 - **WHEN** the original runtime locator binding is missing, invalid, conflicting with the approved project locator, or cannot safely open its formal Store
 - **THEN** status or resume returns a structured recovery blocker and does not fall back to ambient paths, repository defaults, or a new database
 
+#### Scenario: Original formal Store is missing
+- **WHEN** a later status or resume command resolves the original database locator but that formal Store no longer exists
+- **THEN** it returns `launcher_runtime_locator_unavailable` before constructing the workflow runtime, does not create or initialize a replacement database, and invokes no scientific or Worker action
+
+#### Scenario: Crash after initial journal but before formal Store initialization
+- **WHEN** initial diagnostic persistence succeeds but the process exits before the formal Store has been opened
+- **THEN** later status or resume fails closed with `launcher_runtime_locator_unavailable`; it does not infer `not_started`, create a database, or begin Research from journal state
+
 #### Scenario: Runtime locator persistence fails before science
 - **WHEN** the initial diagnostic cannot durably persist the complete runtime locator binding
 - **THEN** launch exits non-zero before Research or any other formal or scientific side effect
@@ -363,6 +371,13 @@ The initial diagnostic SHALL durably store the exact resolved internal data, Evi
 #### Scenario: Write-once locator binding is unavailable
 - **WHEN** the directly addressed locator binding is missing, invalid, or conflicts with the journal/project binding
 - **THEN** status or resume fails closed and does not use the mutable journal or ambient environment to choose a replacement Store
+
+### Requirement: Status opens formal persistence read-only
+The status command SHALL use a Store-owned read-only opening/inspection seam that cannot create a database, initialize schema, register a project, update rows, or otherwise mutate formal persistence. Diagnostic observation writes remain permitted because they are not formal workflow authority.
+
+#### Scenario: Status inspects an existing run
+- **WHEN** status revalidates Agent, Orchestrator, Evidence, and transaction boundaries for an existing launcher run
+- **THEN** the formal database bytes and rows are unchanged while the diagnostic journal may record sanitized observations or failures
 
 ### Requirement: Latest Planner plan contract is preserved
 Launcher SHALL pass through and validate the current immutable Planner plan without deleting, reconstructing, or downgrading `decision_metadata`, compute estimates, budget metadata, plan identity, or approval-bound fields. Approval validation and Orchestrator initialization SHALL receive the same current plan contract produced by Planner.

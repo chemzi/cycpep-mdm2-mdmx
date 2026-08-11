@@ -506,13 +506,16 @@ def ensure_transaction_recovery_clean(
 
 
 def inspect_transaction_recovery(
-    *, config: ExecutionConfig | None = None, run_id: str | None = None
+    *,
+    config: ExecutionConfig | None = None,
+    run_id: str | None = None,
+    store=None,
 ):
     """Inspect one run's formal recovery state without mutating it."""
 
     config = config or ExecutionConfig.from_environment()
     transaction_worker = ExecutionWorker(
-        get_storage_backend(),
+        store or get_storage_backend(read_only=True),
         config.execution_root / ".staging",
         config.execution_root / "artifacts",
     )

@@ -287,7 +287,15 @@ Launcher constructs or loads the same official `ProjectContext` and resolved `Pr
 
 The first launch also serializes an internal `RuntimeLocatorBinding` into the initial diagnostic before Research. It contains the already resolved data directory, Evidence directory, formal database path, and approved project path needed to reconstruct the same `ProjectContext` in another process. `status` and `resume` load this binding first and construct the context from it without re-reading `CYCPEP_DATA_DIR`, `CYCPEP_EVIDENCE_DIR`, `CYCPEP_DB_PATH`, `NP_DATA`, or repository defaults. Missing, malformed, conflicting, or inaccessible bindings fail closed. The binding is location metadata only: it selects the Store and project contract to query but never asserts boundary completion. Its path values are internal and are omitted from `BrowserResult` and generic Frontend Evidence presentation.
 
-### 15. Recovery gating covers every active Orchestrator state
+Context restoration validates that the original database file already exists before constructing `DefaultWorkflowRuntime`. It never uses SQLite's create-on-connect behavior as recovery. A crash after the diagnostic/sidecar pair but before the Store was first initialized therefore produces the same structured unavailable blocker as a later missing Store; the launcher cannot distinguish those cases from formal state and must not infer that Research is safe to start.
+
+`status` additionally opens formal persistence through a Store-owned read-only mode. That mode requires an existing database and performs neither schema initialization nor project registration/update. Resume uses the normal writable owner seam only after the same existence check. This keeps database lifecycle and query behavior in Store while preventing a read command from mutating formal persistence.
+
+### 15. Coordination modules remain reviewable
+
+The application service remains the public use-case entry point, but approval/execution continuation and diagnostic failure/result projection are split into focused internal modules when the core file reaches the repository's size threshold. The extraction is behavior-preserving: it introduces no new state, policy, public CLI, or authority and keeps dependency direction toward existing owner contracts.
+
+### 16. Recovery gating covers every active Orchestrator state
 
 Once a formal Orchestrator run exists, Launcher first merges its `workflow_id`, `run_id`, and `plan_id` into the accumulated diagnostic trace without replacing any known task, attempt, or transaction identifiers. This trace synchronization is observation only and does not mark a boundary complete.
 
@@ -301,11 +309,11 @@ For `ready`, `running`, and `pending`, both commands call the owner-side read-on
 
 Launcher never implements marker, lease, compensation, or owner-liveness policy. It consumes the typed result of Execution's existing inspection/recovery contracts. A prior diagnostic transaction failure is cleared through `clear_failure` only after this owner contract returns clean for the corresponding condition. Ordinary observations continue preserving failures.
 
-### 16. Critic legacy fallback distinguishes absence from ambiguity
+### 17. Critic legacy fallback distinguishes absence from ambiguity
 
 Critic inspection continues to prefer explicit current-run Evidence. When no such event exists, it evaluates legacy records only far enough to determine whether each can belong to the current Prediction. A legacy record proven unrelated is ignored even when its artifact is unavailable. If no current or possibly-current record remains, the current Critic boundary is `not_started` and Launcher may invoke Critic once. A legacy record that can be proven current is validated normally; one that might be current but cannot be proven either way remains a fail-closed ambiguity. Explicit current broken or conflicting records also remain blockers.
 
-### 17. Planner compatibility follows the immutable current schema
+### 18. Planner compatibility follows the immutable current schema
 
 Launcher passes the Planner-produced immutable plan path and identity through existing Planner inspection, approval validation, and Orchestrator initialization. It does not rebuild a reduced plan dictionary. Current `decision_metadata`, compute estimates, budget status and limits, plan digest, task scope, and approval bindings therefore remain owned by Planner and Approval contracts. Compatibility tests cover the latest integration plan shape.
 

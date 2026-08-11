@@ -12,7 +12,13 @@ from .boundaries import FormalBoundaryInspector
 class DefaultWorkflowRuntime:
     """One project-bound view over the existing workflow authorities."""
 
-    def __init__(self, context: ProjectContext, launcher_run_id: str):
+    def __init__(
+        self,
+        context: ProjectContext,
+        launcher_run_id: str,
+        *,
+        read_only: bool = False,
+    ):
         from agents import orchestrator, research
         from agents.design import Design, DesignContext
         from agents.design.initial import (
@@ -25,7 +31,7 @@ class DefaultWorkflowRuntime:
 
         self.context = context
         self.launcher_run_id = launcher_run_id
-        self.store = get_storage_backend()
+        self.store = get_storage_backend(read_only=read_only)
         self.research = research
         binding = _approved_binding(context)
         payload = launcher_run_id.removeprefix("launcher_")

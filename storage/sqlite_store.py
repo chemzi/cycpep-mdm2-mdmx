@@ -53,26 +53,50 @@ def _path_value(value: Any, path: Iterable[str]) -> Any:
 class SQLiteStore(Store):
     """Single-writer/multi-reader store with explicit atomic write boundaries."""
 
-    def __init__(self, path: str | Path, *, project_id: str = "default"):
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        project_id: str = "default",
+        read_only: bool = False,
+    ):
         self.path = Path(path)
         self.project_id = project_id
-        self.initialize()
+        self.read_only = read_only
+        if read_only:
+            if not self.path.is_file():
+                raise FileNotFoundError(f"formal Store does not exist: {self.path}")
+        else:
+            self.initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(
-            self.path,
-            timeout=_BUSY_TIMEOUT_MS / 1000,
-            isolation_level=None,
-        )
+        if self.read_only:
+            connection = sqlite3.connect(
+                f"file:{self.path.resolve().as_posix()}?mode=ro",
+                uri=True,
+                timeout=_BUSY_TIMEOUT_MS / 1000,
+                isolation_level=None,
+            )
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(
+                self.path,
+                timeout=_BUSY_TIMEOUT_MS / 1000,
+                isolation_level=None,
+            )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
+        if self.read_only:
+            connection.execute("PRAGMA query_only = ON")
+        else:
+            connection.execute("PRAGMA journal_mode = WAL")
         connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
         return connection
 
     @contextmanager
     def _write(self):
+        if self.read_only:
+            raise RuntimeError("formal Store is read-only")
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")

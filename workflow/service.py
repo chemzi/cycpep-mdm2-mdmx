@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-import logging
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -16,27 +15,33 @@ from .boundaries import FormalBoundary, FormalBoundaryInspector
 from .diagnostics import DiagnosticStore, resolve_diagnostics_root
 from .errors import DiagnosticContractError, normalize_error
 from .models import (
-    BrowserResult,
     DiagnosticReport,
     LauncherCommandResult,
     RuntimeLocatorBinding,
-    StructuredError,
 )
 from .observations import (
     mirror_prediction_identity as _mirror_prediction_identity,
     observe as _observe,
     with_plan_trace as _with_plan_trace,
 )
+from .outcomes import (
+    _block,
+    _block_or_invalid,
+    _clear_resolved_failure,
+    _formal_outcome,
+    _log_operational_failure,
+    _record_failure,
+    _result,
+    _unbound_failure,
+    _worker_failure,
+)
 from .runtime_context import bind_project_context
 from .runtime_locator import (
     ContextRestorer,
+    require_formal_store,
     require_runtime_locator,
     restore_project_context,
 )
-
-
-_LOGGER = logging.getLogger(__name__)
-
 
 @dataclass(frozen=True)
 class LauncherServiceDependencies:
@@ -47,6 +52,8 @@ class LauncherServiceDependencies:
     runtime_factory: Callable[[ProjectContext, str], Any]
     launcher_id: Callable[[], str]
     restore_context: ContextRestorer | None = None
+    read_only_runtime_factory: Callable[[ProjectContext, str], Any] | None = None
+    validate_formal_store: Callable[[RuntimeLocatorBinding], None] | None = None
 
 
 def launch_project(
@@ -71,7 +78,9 @@ def launch_project(
         # This durable create is deliberately before Data Layer binding and
         # before constructing an Agent runtime that could perform side effects.
         deps.diagnostics.create(report)
-        return _coordinate_locked(deps, launcher_run_id, (), execute=True)
+        return _coordinate_locked(
+            deps, launcher_run_id, (), execute=True, allow_missing_store=True
+        )
     except Exception as error:
         return _unbound_failure(error, launcher_run_id=launcher_run_id)
 
@@ -107,16 +116,24 @@ def _coordinate_locked(
     approval_paths: tuple[str | Path, ...],
     *,
     execute: bool,
+    allow_missing_store: bool = False,
 ) -> LauncherCommandResult:
     with deps.diagnostics.locked(launcher_run_id) as session:
         report = session.read()
         try:
             binding = require_runtime_locator(report)
+            if not allow_missing_store and deps.validate_formal_store is not None:
+                deps.validate_formal_store(binding)
             context = _restore_bound_context(deps, binding)
             deps.validate_project(dict(context.config))
             _validate_resume_binding(report, context)
             with deps.bind_context(context):
-                runtime = deps.runtime_factory(context, report.launcher_run_id)
+                runtime_factory = (
+                    deps.read_only_runtime_factory
+                    if not execute and deps.read_only_runtime_factory is not None
+                    else deps.runtime_factory
+                )
+                runtime = runtime_factory(context, report.launcher_run_id)
                 return _advance(
                     runtime,
                     report,
@@ -125,7 +142,19 @@ def _coordinate_locked(
                     execute=execute,
                 )
         except Exception as error:
-            return _record_failure(session, report, error, report.current_boundary or "launcher")
+            exit_code = (
+                3
+                if getattr(error, "code", None)
+                == "launcher_runtime_locator_unavailable"
+                else 2
+            )
+            return _record_failure(
+                session,
+                report,
+                error,
+                report.current_boundary or "launcher",
+                exit_code=exit_code,
+            )
 
 
 def _advance(
@@ -513,31 +542,6 @@ def _clear_transaction_recovery_failure(report):
     return report
 
 
-def _worker_failure(runtime, session, report, orchestrator, plan, error):
-    refreshed = runtime.inspect_orchestrator(plan)
-    if refreshed.status == "completed":
-        report = _observe(report, "orchestrator", refreshed)
-        orchestrator = refreshed
-    formal_failure = runtime.inspect_execution_failure(orchestrator)
-    if formal_failure.status == "completed":
-        report = _observe(report, "execution", formal_failure)
-    failed = report.with_failure(
-        boundary="execution",
-        error=normalize_error(error, component="execution"),
-        formal_status=orchestrator.references.get("formal_status"),
-    )
-    try:
-        session.write(failed)
-    except Exception as write_error:
-        _log_operational_failure(write_error, component="launcher")
-        failed = report.with_failure(
-            boundary="execution",
-            error=normalize_error(write_error, component="launcher"),
-            formal_status=orchestrator.references.get("formal_status"),
-        )
-    return _result(failed, "failed", 2)
-
-
 def _resolve_boundary(
     session: Any,
     report: DiagnosticReport,
@@ -575,148 +579,6 @@ def _resolve_boundary(
         _log_operational_failure(error, component="launcher")
         return report, LauncherCommandResult(failed.browser_projection(status="failed"), 2)
     return report, None
-
-
-def _clear_resolved_failure(
-    report: DiagnosticReport, boundary: str, formal: FormalBoundary
-) -> DiagnosticReport:
-    if report.failed_boundary == boundary and formal.status == "completed":
-        return report.clear_failure()
-    return report
-
-
-def _block_or_invalid(
-    session: Any, report: DiagnosticReport, formal: FormalBoundary, boundary: str
-) -> LauncherCommandResult:
-    if formal.status == "blocked":
-        return _block(session, report, formal)
-    error = DiagnosticContractError(
-        f"{boundary}_completion_unproven",
-        f"{boundary} returned without uniquely proven formal completion",
-    )
-    return _record_failure(session, report, error, boundary, exit_code=3)
-
-
-def _block(
-    session: Any, report: DiagnosticReport, formal: FormalBoundary
-) -> LauncherCommandResult:
-    error = StructuredError(
-        code=formal.blocker_code or f"{formal.boundary}_recovery_blocked",
-        component=formal.boundary,
-        message=formal.message or "Formal recovery requires operator action.",
-    )
-    failed = report.with_failure(boundary=formal.boundary, error=error)
-    try:
-        session.write(failed)
-    except Exception as write_error:
-        _log_operational_failure(write_error, component="launcher")
-    return _result(failed, "blocked", 3)
-
-
-def _record_failure(
-    session: Any,
-    report: DiagnosticReport,
-    error: BaseException,
-    boundary: str,
-    *,
-    exit_code: int = 2,
-) -> LauncherCommandResult:
-    failed = report.with_failure(
-        boundary=boundary, error=normalize_error(error, component=boundary)
-    )
-    try:
-        session.write(failed)
-    except Exception as write_error:
-        _log_operational_failure(write_error, component="launcher")
-        failed = report.with_failure(
-            boundary=boundary,
-            error=normalize_error(write_error, component="launcher"),
-        )
-    return _result(failed, "failed" if exit_code == 2 else "blocked", exit_code)
-
-
-def _formal_outcome(
-    report: DiagnosticReport,
-    status: str,
-    orchestrator: FormalBoundary,
-    plan: Mapping[str, Any],
-) -> LauncherCommandResult:
-    summary = orchestrator.references.get("summary") or {}
-    task_status_counts = summary.get("task_status_counts") or {}
-    required_task_ids = ()
-    if status == "awaiting_approval":
-        required_task_ids = tuple(
-            (plan.get("approval_request") or {}).get("required_task_ids", ())
-        )
-    if status == "blocked":
-        return _result(
-            report,
-            status,
-            3,
-            required_task_ids=required_task_ids,
-            task_status_counts=task_status_counts,
-        )
-    if status == "failed":
-        return _result(
-            report,
-            status,
-            2,
-            required_task_ids=required_task_ids,
-            task_status_counts=task_status_counts,
-        )
-    return _result(
-        report,
-        status,
-        0,
-        required_task_ids=required_task_ids,
-        task_status_counts=task_status_counts,
-    )
-
-
-def _result(
-    report: DiagnosticReport,
-    status: str,
-    exit_code: int,
-    *,
-    required_task_ids: tuple[str, ...] = (),
-    task_status_counts: Mapping[str, int] | None = None,
-) -> LauncherCommandResult:
-    return LauncherCommandResult(
-        report.browser_projection(
-            status=status,
-            required_task_ids=required_task_ids,
-            task_status_counts=task_status_counts,
-        ),
-        exit_code,
-    )
-
-
-def _unbound_failure(
-    error: BaseException, *, launcher_run_id: str | None = None
-) -> LauncherCommandResult:
-    normalized = normalize_error(error, component="launcher")
-    _log_normalized_failure(normalized)
-    return LauncherCommandResult(
-        BrowserResult(
-            status="failed",
-            launcher_run_id=launcher_run_id,
-            error=normalized,
-        ),
-        2,
-    )
-
-
-def _log_operational_failure(error: BaseException, *, component: str) -> None:
-    _log_normalized_failure(normalize_error(error, component=component))
-
-
-def _log_normalized_failure(error: StructuredError) -> None:
-    _LOGGER.error(
-        "launcher command failed: code=%s component=%s message=%s",
-        error.code,
-        error.component,
-        error.message,
-    )
 
 
 def _approved_binding(context: ProjectContext) -> str:
@@ -772,6 +634,10 @@ def _default_dependencies() -> LauncherServiceDependencies:
         ),
         launcher_id=lambda: f"launcher_{uuid.uuid4().hex}",
         restore_context=restore_project_context,
+        read_only_runtime_factory=lambda context, launcher_run_id: DefaultWorkflowRuntime(
+            context, launcher_run_id, read_only=True
+        ),
+        validate_formal_store=require_formal_store,
     )
 
 

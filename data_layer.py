@@ -203,12 +203,13 @@ class _LazyClassAttribute:
         return self._value
 
 
-def get_storage_backend():
+def get_storage_backend(*, read_only: bool = False):
     """Return the sole formal backend; files are one-way projections only."""
     db_path = _module_attr("SQLITE_DB_PATH")
     return SQLiteStore(
         db_path,
         project_id=_module_attr("ACTIVE_PROJECT_CONFIG")["project_id"],
+        read_only=read_only,
     )
 
 

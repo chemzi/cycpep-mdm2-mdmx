@@ -56,6 +56,16 @@ def restore_project_context(
         ) from error
 
 
+def require_formal_store(binding: RuntimeLocatorBinding) -> None:
+    """Fail closed unless the original formal database already exists."""
+
+    if not Path(binding.database_path).is_file():
+        raise DiagnosticContractError(
+            "launcher_runtime_locator_unavailable",
+            "The original Launcher formal Store is unavailable.",
+        )
+
+
 def _canonical(value: str) -> Path:
     return Path(value).expanduser().resolve()
 
@@ -63,6 +73,7 @@ def _canonical(value: str) -> Path:
 __all__ = [
     "ContextLoader",
     "ContextRestorer",
+    "require_formal_store",
     "require_runtime_locator",
     "restore_project_context",
 ]
