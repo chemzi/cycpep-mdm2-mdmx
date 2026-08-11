@@ -31,11 +31,15 @@ class PredictionPersistence:
         required_targets: tuple[str, ...],
         defer_formal_writes: bool,
         artifact_id_prefix: str,
+        launcher_correlation: dict[str, str] | None = None,
     ) -> None:
         self.run_id = run_id
         self.required_targets = required_targets
         self.deferred = defer_formal_writes
         self.artifact_id_prefix = artifact_id_prefix
+        self.launcher_correlation = (
+            dict(launcher_correlation) if launcher_correlation is not None else None
+        )
         self.candidate_patches: list[dict] = []
         self.state_updates: dict[str, Any] = {}
         self.state_appends: list[dict] = []
@@ -247,6 +251,7 @@ class PredictionPersistence:
                 "handoff_sha256": file_sha256(handoff_path),
             }
         )
+        correlation = self.launcher_correlation or {}
         self.record_event(
             "prediction_handoff_ready",
             {
@@ -254,6 +259,7 @@ class PredictionPersistence:
                 "status_counts": summary["status_counts"],
                 "protocol_identity": protocol_binding(),
                 **reference,
+                **correlation,
             },
         )
 

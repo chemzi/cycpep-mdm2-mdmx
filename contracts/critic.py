@@ -49,6 +49,7 @@ def critic_persistence_effects(
         "metrics": report["metrics_snapshot"],
         "report_id": report["report_id"],
         "report_sha256": report_digest,
+        "prediction_run_id": report["source"]["prediction_run_id"],
         "history_entry": history_entry,
     }
     if report_artifact_id is not None:

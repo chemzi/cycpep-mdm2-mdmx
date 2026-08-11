@@ -248,6 +248,7 @@ PR. Maintainers regenerate the baseline with
 ### Architecture
 
 - [可迁移流程](./docs/transferable_pipeline.md)
+- [Workflow Launcher operator guide](./docs/workflow_launcher.md)
 - [数据层使用手册](./数据层使用手册.md)
 - [工程标准](./ENGINEERING_STANDARD.md)
 - [前端 API contract](./docs/frontend_api_contract.md)

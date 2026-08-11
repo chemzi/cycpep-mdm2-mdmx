@@ -124,6 +124,7 @@ class PredictionPipeline(MetricCollectorsMixin):
         require_protocol_compatibility: bool = True,
         defer_formal_writes: bool = False,
         artifact_id_prefix: str | None = None,
+        launcher_correlation: dict[str, str] | None = None,
     ):
         self.config = config or PredictionConfig()
         self.project = project
@@ -183,6 +184,9 @@ class PredictionPipeline(MetricCollectorsMixin):
             raise ContractError("run_id_invalid", f"unsafe run_id: {run_id!r}")
         self.run_id = run_id
         self.artifact_id_prefix = artifact_id_prefix or run_id
+        self.launcher_correlation = (
+            dict(launcher_correlation) if launcher_correlation is not None else None
+        )
         self.run_dir = self.run_root / run_id
         self.records_dir = self.run_dir / "records"
         self.handoff_path = self.run_dir / "prediction_handoff.json"
@@ -192,6 +196,7 @@ class PredictionPipeline(MetricCollectorsMixin):
             required_targets=self.required_targets,
             defer_formal_writes=self.defer_formal_writes,
             artifact_id_prefix=self.artifact_id_prefix,
+            launcher_correlation=self.launcher_correlation,
         )
 
     def _canonical_target_numbering(
@@ -238,8 +243,9 @@ class PredictionPipeline(MetricCollectorsMixin):
             "reference_sha256": observed_sha,
         }
 
-    def _run_manifest(self) -> dict:
-        return {
+    def run_manifest(self) -> dict:
+        """Return the exact manifest expected for this immutable run."""
+        manifest = {
             "schema_version": RUN_SCHEMA_VERSION,
             "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
@@ -253,10 +259,17 @@ class PredictionPipeline(MetricCollectorsMixin):
             "required_targets": list(self.required_targets),
             "artifacts_root": str(self.artifacts_root),
         }
+        if self.launcher_correlation is not None:
+            manifest.update(self.launcher_correlation)
+        return manifest
+
+    def _run_manifest(self) -> dict:
+        """Compatibility alias for existing internal callers and tests."""
+        return self.run_manifest()
 
     def _prepare_run(self) -> None:
         manifest_path = self.run_dir / "run_manifest.json"
-        expected = self._run_manifest()
+        expected = self.run_manifest()
         if self.run_dir.exists():
             if not self.resume:
                 raise ContractError(
@@ -854,6 +867,8 @@ class PredictionPipeline(MetricCollectorsMixin):
                 "candidate_index_is_summary": True,
             },
         }
+        if self.launcher_correlation is not None:
+            handoff.update(self.launcher_correlation)
         _atomic_json(self.handoff_path, handoff)
         summary = {
             "run_id": self.run_id,

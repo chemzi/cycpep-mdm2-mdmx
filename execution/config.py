@@ -54,14 +54,22 @@ class ExecutionConfig:
     post_relax_timeout_seconds: int = 3600
 
     @classmethod
+    def resolve_execution_root(cls) -> Path:
+        """Resolve only the staging root without probing unrelated tools."""
+
+        data_root = _path(
+            "NP_DATA",
+            os.environ.get("CYCPEP_DATA_DIR", ROOT / "data"),
+        )
+        return _path("CYCPEP_EXECUTION_ROOT", data_root / "execution_runs")
+
+    @classmethod
     def from_environment(cls) -> "ExecutionConfig":
         data_root = _path(
             "NP_DATA",
             os.environ.get("CYCPEP_DATA_DIR", ROOT / "data"),
         )
-        execution_root = _path(
-            "CYCPEP_EXECUTION_ROOT", data_root / "execution_runs"
-        )
+        execution_root = cls.resolve_execution_root()
         core_default = Path(sys.executable).resolve()
         prediction_default = Path(
             "/root/damodel-tmp/envs/cycpep-prediction/bin/python"

@@ -35,6 +35,29 @@ CLOSED = "closed"
 OPEN = "open"
 UNKNOWN = "unknown"
 
+_COMMIT_WINDOW_MARKER_STATUSES = frozenset({
+    "PREPARED",
+    "COMMITTED",
+    "RECOVERY_UNRESOLVED",
+})
+_COMPENSATION_MARKER_STATUSES = frozenset({
+    "COMPENSATING",
+    "COMPENSATION_FAILED",
+    "COMPENSATION_CONFLICT",
+    "COMPENSATION_UNRESOLVED",
+})
+_PENDING_MARKER_STATUSES = (
+    _COMMIT_WINDOW_MARKER_STATUSES | _COMPENSATION_MARKER_STATUSES
+)
+_UNRESOLVED_DATABASE_STATUSES = frozenset({
+    "COMMITTING",
+    "RECOVERY_UNRESOLVED",
+    "COMPENSATING",
+    "COMPENSATION_FAILED",
+    "COMPENSATION_CONFLICT",
+    "COMPENSATION_UNRESOLVED",
+})
+
 # Owner lease verdicts.  Unlike a boolean, UNKNOWN cannot accidentally be
 # treated as proof that a process is dead.
 OWNER_LIVE = "live"
@@ -305,6 +328,74 @@ class RecoveryManager:
             skipped_active=tuple(skipped_active),
         )
 
+    def inspect_pending(
+        self,
+        staging_root: str | Path,
+        *,
+        orchestrator_state: OrchestratorProbe | None = None,
+        run_id: str | None = None,
+        now: datetime | float | None = None,
+    ) -> RecoveryResult:
+        """Inspect recovery authority without mutating markers or formal rows."""
+
+        probe = orchestrator_state or probe_orchestrator_state
+        now_utc = self._normalize_now(now)
+        unresolved = [
+            str(transaction["transaction_id"])
+            for transaction in self.store.list_transactions(run_id=run_id)
+            if transaction.get("transaction_id")
+            and transaction.get("status") in _UNRESOLVED_DATABASE_STATUSES
+        ]
+        marker_errors: list[dict[str, str]] = []
+        skipped_active: list[str] = []
+        for marker in Path(staging_root).glob("*/metadata/commit.json"):
+            payload, marker_error = _read_marker_payload(marker)
+            if marker_error is not None:
+                marker_errors.append(marker_error)
+                continue
+            assert payload is not None
+            if payload.get("status") not in _PENDING_MARKER_STATUSES:
+                continue
+            context = payload.get("context") or {}
+            if (
+                run_id is not None
+                and isinstance(context, Mapping)
+                and context.get("run_id") not in {None, run_id}
+            ):
+                continue
+            transaction_id = payload.get("transaction_id")
+            if not transaction_id:
+                marker_errors.append(
+                    {"path": str(marker), "code": "missing_transaction_id"}
+                )
+                continue
+            transaction_id = str(transaction_id)
+            if self._owner_liveness(payload, now_utc) == OWNER_LIVE:
+                skipped_active.append(transaction_id)
+                continue
+            if self._inspection_requires_recovery(payload, probe):
+                unresolved.append(transaction_id)
+        return RecoveryResult(
+            unresolved=tuple(dict.fromkeys(unresolved)),
+            marker_errors=tuple(marker_errors),
+            skipped_active=tuple(dict.fromkeys(skipped_active)),
+        )
+
+    def _inspection_requires_recovery(
+        self, payload: Mapping[str, object], probe: OrchestratorProbe
+    ) -> bool:
+        """Return whether a non-live marker still needs owner reconciliation."""
+
+        if payload.get("status") in _COMPENSATION_MARKER_STATUSES:
+            return True
+        transaction_id = str(payload["transaction_id"])
+        if self.store.get_transaction_status(transaction_id) != "COMMITTED":
+            return True
+        context = payload.get("context") or {}
+        if not isinstance(context, Mapping):
+            return True
+        return probe(context) != CLOSED
+
     def _recover_marker(
         self,
         marker: Path,
@@ -313,14 +404,9 @@ class RecoveryManager:
         now: datetime,
     ) -> str | None:
         status = payload.get("status")
-        if status in {"PREPARED", "COMMITTED", "RECOVERY_UNRESOLVED"}:
+        if status in _COMMIT_WINDOW_MARKER_STATUSES:
             return self._recover_commit_window(marker, payload, probe, now)
-        if status in {
-            "COMPENSATING",
-            "COMPENSATION_FAILED",
-            "COMPENSATION_CONFLICT",
-            "COMPENSATION_UNRESOLVED",
-        }:
+        if status in _COMPENSATION_MARKER_STATUSES:
             return self._finish_compensation(marker, payload)
         return None
 
@@ -510,13 +596,9 @@ class RecoveryManager:
                     temporary.unlink()
 
     def _read_marker(self, marker: Path) -> dict | None:
-        try:
-            payload = json.loads(marker.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            self._record_marker_error(marker, exc)
-            return None
-        if not isinstance(payload, dict):
-            self._record_marker_error(marker, ValueError("marker must be a JSON object"))
+        payload, marker_error = _read_marker_payload(marker)
+        if marker_error is not None:
+            self.marker_errors.append(marker_error)
             return None
         return payload
 
@@ -530,3 +612,21 @@ class RecoveryManager:
 
 class _SkippedActive(Exception):
     """Internal signal: a marker's owner still looks alive; do not touch it."""
+
+
+def _read_marker_payload(
+    marker: Path,
+) -> tuple[dict[str, object] | None, dict[str, str] | None]:
+    """Decode one marker for both mutating recovery and read-only inspection."""
+
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("marker must be a JSON object")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return None, {
+            "path": str(marker),
+            "code": exc.__class__.__name__,
+            "message": str(exc),
+        }
+    return payload, None
