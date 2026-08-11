@@ -166,10 +166,12 @@ class RuntimeLocatorModelTests(unittest.TestCase):
 
             restored = DiagnosticReport.from_dict(report.to_dict())
             browser = restored.browser_projection(status="pending").to_dict()
+            encoded_browser = json.dumps(browser)
+            encoded_internal_root = json.dumps(str(internal_root))[1:-1]
 
             self.assertEqual(restored.runtime_locator_binding, binding)
             self.assertNotIn("runtime_locator_binding", browser)
-            self.assertNotIn(str(internal_root), json.dumps(browser))
+            self.assertNotIn(encoded_internal_root, encoded_browser)
             self.assertFalse(hasattr(binding, "status"))
             self.assertFalse(hasattr(binding, "authorize_transition"))
 
