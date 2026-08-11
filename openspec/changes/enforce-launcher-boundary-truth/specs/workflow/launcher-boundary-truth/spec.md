@@ -20,7 +20,7 @@ Launcher SHALL treat an initial Design invocation as completed only when exactly
 - **THEN** Design records one correlated `design_initial_failure` with `initial_design_scientific_tool_failed`, records no completion, and does not report `initial_design_no_valid_candidates`
 
 #### Scenario: Successful tool exit without required output is failure
-- **WHEN** RFdiffusion exits successfully without the expected backbone set, a required backbone is malformed or lacks a binder chain, LigandMPNN configuration is unavailable, or LigandMPNN exits successfully without parseable generated sequences
+- **WHEN** RFdiffusion exits successfully without the expected backbone set, a required backbone is malformed or lacks a binder chain, LigandMPNN configuration is unavailable, LigandMPNN exits successfully without parseable generated sequences, or refold runtime preparation/output validation fails
 - **THEN** Design records `initial_design_scientific_tool_failed` and MUST NOT report `initial_design_no_valid_candidates`
 
 #### Scenario: Scientific elimination after valid generation is a normal zero-result

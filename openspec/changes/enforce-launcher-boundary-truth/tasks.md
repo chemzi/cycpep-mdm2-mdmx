@@ -42,18 +42,20 @@
 
 ## 6. Close Design review P1s
 
-- [x] 6.1 Add strict postcondition regressions for RFdiffusion exit-zero missing/partial backbone output, malformed backbone or missing binder chain, unavailable LigandMPNN model/config, and exit-zero missing/malformed generated sequence output while preserving all legacy fallbacks.
-  - Result: strict adapter regressions cover every required RFdiffusion, LigandMPNN, and refold postcondition; each paired legacy assertion preserves the historical fallback.
+- [x] 6.1 Add strict postcondition regressions for RFdiffusion exit-zero missing/partial backbone output, malformed backbone or missing binder chain, unavailable LigandMPNN model/config, exit-zero missing/malformed generated sequence output, and refold preparation/output failures while preserving all legacy fallbacks.
+  - Result: strict adapter regressions cover every required RFdiffusion, LigandMPNN, and refold preparation/output postcondition; paired legacy assertions preserve the historical behavior.
 - [x] 6.2 Make the Launcher strict route raise the existing typed scientific-tool/output failure for every failed required postcondition; allow `initial_design_no_valid_candidates` only after required generation succeeds and later scientific filtering/quality/closure eliminates all candidates.
   - Result: strict failures propagate as `ScientificToolExecutionError`; a generated sequence set eliminated by the existing scientific filter remains the distinct normal zero-result path.
 - [x] 6.3 Route Launcher Initial Design candidate publication into an invocation-owned collection of existing `CandidateUpdate` effects and atomically commit candidates, authoritative candidate-registration Evidence, and completion through the existing Store transaction seam.
   - Result: the strict adapter stages CandidateUpdates and `SQLiteStore.commit_transaction` publishes the candidates, authoritative registrations, and completion together.
 - [x] 6.4 Add the partial-publication regression: stage candidate A, fail candidate B or a later job, prove the tool-failure blocker, no formal A candidate/event, no dedup visibility, and no automatic retry.
-  - Result: the regression proves all seven required observations, including no Store row/event/dedup visibility and no second route invocation.
+  - Result: the regression drives two sequences through the real Route A registration path, proves candidate A reaches `_publish_candidate`, then proves all seven required observations after candidate B refold fails.
 - [x] 6.5 Prove the successful path publishes all staged candidates and completion in one formal transaction, while legacy `design_rfpeptides()` behavior and non-authoritative intermediate files remain unchanged.
   - Result: success asserts one shared committed transaction; the unchanged legacy entry point still calls the core route without strict or staging arguments.
 
 ## 7. Re-verify PR 68
 
-- [ ] 7.1 Run Design focused tests, the full unittest suite, Architecture Gate, strict OpenSpec validation, configured lint/type checks, and `git diff --check`.
-- [ ] 7.2 Synchronize the PR head with the latest `integration/data-integrity-transaction`, rerun affected gates if the base changed, and review the final PR diff for P0/P1 findings without expanding scope.
+- [x] 7.1 Run Design focused tests, the full unittest suite, Architecture Gate, strict OpenSpec validation, configured lint/type checks, and `git diff --check`.
+  - Result: focused 92 tests and full 689 tests passed with 4 skips; Architecture Gate reported no new violations; strict OpenSpec, compile, web lint/typecheck, and diff check passed.
+- [x] 7.2 Synchronize the PR head with the latest `integration/data-integrity-transaction`, rerun affected gates if the base changed, and review the final PR diff for P0/P1 findings without expanding scope.
+  - Result: merged integration head `dc28e8e`, reran the full and affected gates, and completed independent Standards and Spec reviews with P0=0/P1=0 after closing their Design-only findings.

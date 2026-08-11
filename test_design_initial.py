@@ -15,9 +15,11 @@ from agents.design import (
     InitialDesignCorrelation,
     design_initial_invocation_id,
 )
+from agents.design import candidates as candidate_module
 from agents.design.runtime import (
     ScientificToolExecutionError,
     _run_ligandmpnn,
+    _run_refold,
     _run_refold_subprocess,
     _run_rfdiff,
 )
@@ -237,27 +239,62 @@ class InitialDesignContractTests(unittest.TestCase):
             "source_route": "route_A_target_a",
             "status": "designed",
         }
+        generation = ([
+            (Path("bb.pdb"), "B", ["ACDEFGHI", "LMNPQRST"]),
+        ], 1)
 
-        def stage_a_then_fail(*, candidate_updates, **_kwargs):
-            candidate_updates.append(CandidateUpdate(candidate_a))
-            self.assertIsNone(self.store.get("C0001"))
-            self.assertEqual(
-                self.store.query(
-                    agent="design", event_type="candidate_registered"
-                ),
-                [],
-            )
-            raise ScientificToolExecutionError("afcycdesign_refold", "candidate B")
+        def manifest(candidate_id, sequence, *_args, **_kwargs):
+            return {"candidate_id": candidate_id, "sequence": sequence}
 
-        with patch.object(
-            self.design,
-            "design_rfpeptides_initial",
-            side_effect=stage_a_then_fail,
-        ) as route_call:
+        refold_calls = 0
+
+        def refold(sequence, output_pdb, **_kwargs):
+            nonlocal refold_calls
+            refold_calls += 1
+            if refold_calls == 2:
+                raise ScientificToolExecutionError(
+                    "afcycdesign_refold", "candidate B"
+                )
+            Path(output_pdb).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_pdb).write_text("MODEL\n", encoding="utf-8")
+            return 0.9
+
+        with patch(
+            "experience.apply_experience_preference",
+            side_effect=lambda design_config, **_kwargs: (design_config, None),
+        ), patch(
+            "agents.design.route_a._route_a_generate_backbones",
+            return_value=generation,
+        ), patch(
+            "agents.design.route_a._load_existing_sequences", return_value=set()
+        ), patch(
+            "agents.design.route_a._cheap_filter_sequences",
+            return_value=[("ACDEFGHI", 0.9), ("LMNPQRST", 0.8)],
+        ), patch(
+            "agents.design.route_a._next_candidate_id",
+            side_effect=["C0001", "C0002"],
+        ), patch(
+            "agents.design.candidates._run_refold",
+            side_effect=refold,
+        ), patch(
+            "agents.design.candidates._ring_closure_check",
+            return_value={"pass": True},
+        ), patch(
+            "agents.design.candidates._write_manifest", side_effect=manifest
+        ), patch(
+            "agents.design.candidates._candidate_from_manifest",
+            return_value=candidate_a,
+        ), patch(
+            "agents.design.candidates._publish_candidate",
+            wraps=candidate_module._publish_candidate,
+        ) as publisher, patch(
+            "agents.design.candidates.CandidateIndex.add"
+        ) as legacy_publish:
             with self.assertRaises(InitialDesignContractError) as raised:
                 self.design.run_initial(self.correlation, store=self.store)
         self.assertEqual(raised.exception.code, "initial_design_scientific_tool_failed")
-        self.assertEqual(route_call.call_count, 1)
+        publisher.assert_called_once()
+        legacy_publish.assert_not_called()
         self.assertIsNone(self.store.get("C0001"))
         self.assertEqual(
             self.store.query(agent="design", event_type="candidate_registered"), []
@@ -660,6 +697,38 @@ class InitialDesignContractTests(unittest.TestCase):
                     "ACDEFGHI",
                     strict_tools=True,
                 )
+
+    def test_strict_refold_classifies_preparation_failure(self):
+        failure = OSError("cannot prepare refold runtime")
+        with patch(
+            "agents.design.runtime.config.get_verified_runtime_signature",
+            return_value=None,
+        ), patch(
+            "agents.design.runtime._verify_colabdesign_runtime",
+            side_effect=failure,
+        ):
+            with self.assertRaises(OSError):
+                _run_refold("ACDEFGHI", "refold.pdb")
+            with self.assertRaises(ScientificToolExecutionError):
+                _run_refold(
+                    "ACDEFGHI", "refold.pdb", strict_tools=True
+                )
+
+    def test_strict_refold_rejects_failed_runtime_verification(self):
+        failed_smoke = SimpleNamespace(returncode=1, stderr="smoke failed", stdout="")
+        with patch(
+            "agents.design.runtime.config.get_verified_runtime_signature",
+            return_value=None,
+        ), patch(
+            "agents.design.runtime.subprocess.run", return_value=failed_smoke
+        ), patch(
+            "agents.design.runtime._build_refold_script"
+        ) as build_script, patch("agents.design.runtime.EvidenceLogger.error"):
+            with self.assertRaises(ScientificToolExecutionError):
+                _run_refold(
+                    "ACDEFGHI", "refold.pdb", strict_tools=True
+                )
+        build_script.assert_not_called()
 
 
 if __name__ == "__main__":

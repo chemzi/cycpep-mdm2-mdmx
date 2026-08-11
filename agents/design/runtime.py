@@ -768,15 +768,36 @@ def _run_refold(sequence, output_pdb, *, strict_tools=False):
     Only basic fold verification is done here; the final pLDDT > 0.8 gate is
     owned by the Prediction Agent's L1 layer.
     """
-    # Lazily verify ColabDesign cyclic-offset wiring once per process (P1-3).
-    if config.get_verified_runtime_signature() is None:
-        _verify_colabdesign_runtime()
-    script = _build_refold_script(sequence, output_pdb)
-    spath = _refold_script_path(sequence)
-    plddt_file = f"{output_pdb}.plddt"
-    _clear_refold_artifacts(output_pdb, plddt_file)
-    with open(spath, "w") as f:
-        f.write(script)
+    try:
+        # Lazily verify ColabDesign cyclic-offset wiring once per process (P1-3).
+        if strict_tools or config.get_verified_runtime_signature() is None:
+            _verify_colabdesign_runtime()
+        if strict_tools and os.environ.get("CYCPEP_SKIP_COLABDESIGN_VERIFY") != "1":
+            expected_signature = (
+                config.CYCPEP_PYTHON,
+                config.COLABDESIGN_DIR,
+                config.COLABDESIGN_PARAMS,
+            )
+            if config.get_verified_runtime_signature() != expected_signature:
+                raise ScientificToolExecutionError(
+                    "afcycdesign_refold",
+                    "runtime verification did not establish a verified signature",
+                )
+        script = _build_refold_script(sequence, output_pdb)
+        spath = _refold_script_path(sequence)
+        plddt_file = f"{output_pdb}.plddt"
+        _clear_refold_artifacts(output_pdb, plddt_file)
+        with open(spath, "w") as f:
+            f.write(script)
+    except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
+        if isinstance(exc, ScientificToolExecutionError):
+            raise
+        EvidenceLogger.error("design", "refold_preparation_failed", str(exc))
+        if strict_tools:
+            raise ScientificToolExecutionError(
+                "afcycdesign_refold", str(exc)
+            ) from exc
+        raise
     try:
         return _run_refold_subprocess(
             spath, output_pdb, plddt_file, sequence, strict_tools=strict_tools
