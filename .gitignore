@@ -81,4 +81,5 @@ data_layer_v5_backup.py
 test_chain_fix.py
 
 # 演示快照（运行时产物）
-demo/snapshot/
+demo/snapshot/*.json
+demo/snapshot/demo_run/

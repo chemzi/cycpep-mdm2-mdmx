@@ -1,4 +1,4 @@
-# 答辩 FAQ（初稿）
+# 答辩 FAQ（定稿）
 
 > 面向评委常见追问。原则：不宣称越跑越聪明、不伪造 scientific pass，只讲可验证的事实。
 
@@ -20,11 +20,11 @@
 
 ## 5. 协议化可复现怎么证明？
 
-protocol name/version/sha256 → 参数变更 → artifact 复用被拒。协议注册表（`protocols/design_v1.json`、`prediction_v1.json`）与 artifact 溯源（`contracts/artifact.py`）已有工程基础；等真实候选/artifact 数据接入后即可在 UI 演示完整链路。
+一条可验证链：artifact（文件 sha256）→ 产出任务 → protocol（name/version/integrity_identity），且 artifact 文件自身内嵌 `protocol` + `protocol_sha256`，脱离数据库也能自证来源。demo fixture 已按此绑定（design 2.1 / prediction 1.3 / critic 1.0 / calibration 1.2），一键校验：`python demo/scripts/verify_protocol_trace.py`——它对每个 artifact 重算磁盘 sha256 并与库内记录比对，全过才返回 0。真实数据接入后同一链路直接复用。
 
-## 6. 演示数据为什么是旧的？
+## 6. 演示数据为什么是合成的？
 
-当前两轮数据用的是旧阈值（L2/L3/L6 暂定、L5 缺失），适合做流程证明，不适合做最终科学结论。P0-D 会用标定后阈值重跑小批量，产出 demo-quality 样本后再用于正式演示。
+本地 fixture 是合成数据：七层裁决由真实 `evaluate_battery` 按当前 `state.json` 阈值实时计算（7 个有效标定项 + 8 个暂定项），C0101/C0102 真实通过全部七层、C0103 挂 L3/L4/L5/L6、C0104 待预测。它证明的是流程链路，不是最终科学结论；P0-D 会用标定后阈值重跑小批量真实样本，产出 demo-quality 数据后再用于正式演示。
 
 ## 7. 换靶点要重新登记吗？
 
@@ -32,7 +32,7 @@ protocol name/version/sha256 → 参数变更 → artifact 复用被拒。协议
 
 ## 8. 演示环境怎么启动？
 
-后端读模型一条命令：`python demo/scripts/verify_demo_stack.py`（同时校验 workbench 与 results 两个读模型）；完整栈：`cd web-gui && .\start-local.ps1`（见 `demo/README.md`）。
+后端读模型一条命令：`python demo/scripts/verify_demo_stack.py`（同时校验 workbench 与 results 两个读模型）；可复现链路：`python demo/scripts/verify_protocol_trace.py`；完整栈：`cd web-gui && .\start-local.ps1`（见 `demo/README.md`）。
 
 ## 9. 工作台和结果页有什么区别？
 
@@ -40,4 +40,4 @@ protocol name/version/sha256 → 参数变更 → artifact 复用被拒。协议
 
 ## 10. 演示数据是怎么来的？会不会污染真实结果？
 
-`demo/snapshot/seed_demo_fixture.py` 只写本地 `data/store.db` 与 `demo/snapshot/demo_run/`，所有行都带 `demo_fixture=true` 标记或 `DEMO` 前缀；重跑会先删除上次的 fixture 行。它不碰服务器、git 或任何公共资源。结果页通过 `data_basis=demo_fixture` 显式标注，不会被误认为真实科学结论。
+`demo/scripts/seed_demo_fixture.py` 只写本地 `data/store.db` 与 `demo/snapshot/demo_run/`，所有行都带 `demo_fixture=true` 标记或 `DEMO` 前缀；重跑会先删除上次的 fixture 行。它不碰服务器、git 或任何公共资源。结果页通过 `data_basis=demo_fixture` 显式标注，不会被误认为真实科学结论。
