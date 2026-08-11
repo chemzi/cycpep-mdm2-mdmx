@@ -19,7 +19,7 @@ from .sqlite_ownership import (
     assert_transaction_transition,
     patch_candidate_value,
 )
-from .sqlite_schema import ensure_schema
+from .sqlite_schema import ensure_schema, validate_schema
 
 
 _BUSY_TIMEOUT_MS = 30_000
@@ -39,6 +39,10 @@ def _mapping(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 _MISSING = object()
+
+
+class StorageUnavailableError(RuntimeError):
+    """The requested formal Store cannot be safely opened read-only."""
 
 
 def _path_value(value: Any, path: Iterable[str]) -> Any:
@@ -64,8 +68,17 @@ class SQLiteStore(Store):
         self.project_id = project_id
         self.read_only = read_only
         if read_only:
-            if not self.path.is_file():
-                raise FileNotFoundError(f"formal Store does not exist: {self.path}")
+            try:
+                if not self.path.is_file():
+                    raise FileNotFoundError(
+                        f"formal Store does not exist: {self.path}"
+                    )
+                with self._read() as connection:
+                    validate_schema(connection, project_id=self.project_id)
+            except (OSError, sqlite3.DatabaseError) as error:
+                raise StorageUnavailableError(
+                    "formal Store cannot be safely opened read-only"
+                ) from error
         else:
             self.initialize()
 

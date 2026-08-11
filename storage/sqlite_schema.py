@@ -106,6 +106,23 @@ CREATE INDEX IF NOT EXISTS idx_evidence_transaction ON evidence_events(transacti
 """
 
 
+REQUIRED_TABLES = frozenset(
+    {
+        "projects",
+        "states",
+        "state_key_versions",
+        "candidate_sequences",
+        "candidates",
+        "candidate_versions",
+        "evidence_events",
+        "artifacts",
+        "workflow_runs",
+        "tasks",
+        "execution_transactions",
+    }
+)
+
+
 def ensure_schema(connection: sqlite3.Connection) -> None:
     """Create current tables, upgrade old columns, then create dependent indexes."""
     connection.executescript(BASE_SCHEMA)
@@ -127,3 +144,21 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
     if "transaction_id" not in evidence_columns:
         connection.execute("ALTER TABLE evidence_events ADD COLUMN transaction_id TEXT")
     connection.executescript(INDEXES)
+
+
+def validate_schema(connection: sqlite3.Connection, *, project_id: str) -> None:
+    """Prove the current formal schema and expected project without writing."""
+
+    observed = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    if not REQUIRED_TABLES.issubset(observed):
+        raise sqlite3.DatabaseError("formal Store schema is incomplete")
+    project = connection.execute(
+        "SELECT 1 FROM projects WHERE project_id = ?", (project_id,)
+    ).fetchone()
+    if project is None:
+        raise sqlite3.DatabaseError("formal Store project binding is missing")

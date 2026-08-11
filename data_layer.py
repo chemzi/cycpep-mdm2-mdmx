@@ -213,6 +213,14 @@ def get_storage_backend(*, read_only: bool = False):
     )
 
 
+def validate_storage_backend(
+    database_path: str | Path, *, project_id: str
+) -> None:
+    """Prove one exact formal Store can be opened without writes."""
+
+    SQLiteStore(database_path, project_id=project_id, read_only=True)
+
+
 def _project_id() -> str:
     return str(_module_attr("ACTIVE_PROJECT_CONFIG")["project_id"])
 

@@ -352,6 +352,10 @@ The initial diagnostic SHALL durably store the exact resolved internal data, Evi
 - **WHEN** a later status or resume command resolves the original database locator but that formal Store no longer exists
 - **THEN** it returns `launcher_runtime_locator_unavailable` before constructing the workflow runtime, does not create or initialize a replacement database, and invokes no scientific or Worker action
 
+#### Scenario: Original formal Store is empty or incomplete
+- **WHEN** the bound database path exists but a Store-owned read-only validation cannot prove the required formal schema and expected project binding
+- **THEN** status or resume returns `launcher_runtime_locator_unavailable`, leaves the database bytes unchanged, does not initialize or migrate it, and invokes no runtime, scientific, or Worker action
+
 #### Scenario: Crash after initial journal but before formal Store initialization
 - **WHEN** initial diagnostic persistence succeeds but the process exits before the formal Store has been opened
 - **THEN** later status or resume fails closed with `launcher_runtime_locator_unavailable`; it does not infer `not_started`, create a database, or begin Research from journal state

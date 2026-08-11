@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from storage import SQLiteStore
+from storage import SQLiteStore, StorageUnavailableError
 
 
 class SQLiteStoreReadOnlyTests(unittest.TestCase):
@@ -14,11 +14,29 @@ class SQLiteStoreReadOnlyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             database = Path(tmp) / "missing" / "store.db"
 
-            with self.assertRaises(FileNotFoundError):
+            with self.assertRaises(StorageUnavailableError):
                 SQLiteStore(database, project_id="project-1", read_only=True)
 
             self.assertFalse(database.exists())
             self.assertFalse(database.parent.exists())
+
+    def test_empty_or_wrong_project_store_is_rejected_without_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            empty = root / "empty.db"
+            empty.write_bytes(b"")
+
+            with self.assertRaises(StorageUnavailableError):
+                SQLiteStore(empty, project_id="project-1", read_only=True)
+
+            self.assertEqual(empty.read_bytes(), b"")
+
+            database = root / "wrong-project.db"
+            SQLiteStore(database, project_id="project-other")
+            before = database.read_bytes()
+            with self.assertRaises(StorageUnavailableError):
+                SQLiteStore(database, project_id="project-1", read_only=True)
+            self.assertEqual(database.read_bytes(), before)
 
     def test_read_only_queries_do_not_change_database(self):
         with tempfile.TemporaryDirectory() as tmp:

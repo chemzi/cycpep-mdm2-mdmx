@@ -53,7 +53,9 @@ class LauncherServiceDependencies:
     launcher_id: Callable[[], str]
     restore_context: ContextRestorer | None = None
     read_only_runtime_factory: Callable[[ProjectContext, str], Any] | None = None
-    validate_formal_store: Callable[[RuntimeLocatorBinding], None] | None = None
+    validate_formal_store: (
+        Callable[[RuntimeLocatorBinding, ProjectContext], None] | None
+    ) = None
 
 
 def launch_project(
@@ -122,9 +124,9 @@ def _coordinate_locked(
         report = session.read()
         try:
             binding = require_runtime_locator(report)
-            if not allow_missing_store and deps.validate_formal_store is not None:
-                deps.validate_formal_store(binding)
             context = _restore_bound_context(deps, binding)
+            if not allow_missing_store and deps.validate_formal_store is not None:
+                deps.validate_formal_store(binding, context)
             deps.validate_project(dict(context.config))
             _validate_resume_binding(report, context)
             with deps.bind_context(context):

@@ -56,14 +56,23 @@ def restore_project_context(
         ) from error
 
 
-def require_formal_store(binding: RuntimeLocatorBinding) -> None:
-    """Fail closed unless the original formal database already exists."""
+def require_formal_store(
+    binding: RuntimeLocatorBinding, context: ProjectContext
+) -> None:
+    """Fail closed unless the original formal Store validates read-only."""
 
-    if not Path(binding.database_path).is_file():
+    from data_layer import validate_storage_backend
+    from storage import StorageUnavailableError
+
+    try:
+        validate_storage_backend(
+            binding.database_path, project_id=context.project_id
+        )
+    except (OSError, StorageUnavailableError) as error:
         raise DiagnosticContractError(
             "launcher_runtime_locator_unavailable",
             "The original Launcher formal Store is unavailable.",
-        )
+        ) from error
 
 
 def _canonical(value: str) -> Path:
