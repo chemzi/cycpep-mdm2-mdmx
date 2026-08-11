@@ -40,6 +40,24 @@ def candidate(candidate_id, status="evaluated", metrics=None, demo_fixture=True)
     }
 
 
+def full_layer_values(plddt, ipsae_mdm2, ipsae_mdmx, **overrides):
+    """A complete nine-key layer_values dict (every METRIC_SPECS layer)."""
+    values = {
+        "L1_plddt": plddt,
+        "L2_ipsae_mdm2": ipsae_mdm2,
+        "L2_ipsae_mdmx": ipsae_mdmx,
+        "L3_dg_mdm2": -12.5, "L3_dg_mdmx": -11.8,
+        "L3_sc_mdm2": 0.71, "L3_sc_mdmx": 0.69,
+        "L3_dsasa_mdm2": 520.0, "L3_dsasa_mdmx": 480.0,
+        "L4_nc_distance_pre": 0.9, "L4_nc_distance_post": 1.1,
+        "L5_hotspot_cov_mdm2": 0.92, "L5_hotspot_cov_mdmx": 0.86,
+        "L6_pose_rmsd_mdm2": 1.0, "L6_pose_rmsd_mdmx": 1.2,
+        "L7_scrmsd": 1.3,
+    }
+    values.update(overrides)
+    return values
+
+
 def battery(candidate_id, layer_values, passed=True, failed_layers=(), targets=("MDM2", "MDMX"), demo_fixture=True):
     return {
         "event_id": f"ev-{candidate_id}",
@@ -82,8 +100,8 @@ class ResultsReaderTests(unittest.TestCase):
                 candidate("C0103", metrics={"L1_plddt": 0.79, "L2_ipsae_mdm2": 0.60}),
             ],
             evidence=[
-                battery("C0101", {"L1_plddt": 0.87, "L2_ipsae_mdm2": 0.74}),
-                battery("C0102", {"L1_plddt": 0.82, "L2_ipsae_mdm2": 0.71}),
+                battery("C0101", full_layer_values(0.87, 0.94, 0.92)),
+                battery("C0102", full_layer_values(0.82, 0.93, 0.91)),
                 battery(
                     "C0103", {"L1_plddt": 0.79, "L2_ipsae_mdm2": 0.60},
                     passed=False, failed_layers=["l2_pass"],
@@ -157,7 +175,7 @@ class ResultsReaderTests(unittest.TestCase):
         store = FakeStore(
             state=BASE_STATE,
             candidates=[candidate("C0201"), candidate("C0202")],
-            evidence=[battery("C0201", {"L1_plddt": 0.80})],
+            evidence=[battery("C0201", full_layer_values(0.80, 0.90, 0.95))],
         )
         result = ResultsReader(store).read()
         summary = result["summary"]
@@ -227,6 +245,26 @@ class ResultsReaderTests(unittest.TestCase):
         self.assertEqual(threshold_by_target["MDM2"]["value"], 0.8)
         self.assertEqual(threshold_by_target["MDM2"]["calibration_status"], "calibrated")
         self.assertEqual(l2["threshold"]["calibration_status"], "provisional")
+
+    def test_hard_clearance_requires_all_seven_layers_evidence(self):
+        # A battery row claiming passed without L3 layer values must NOT count
+        # as hard cleared (guards the demo-fixture fabrication regression).
+        store = FakeStore(
+            state=BASE_STATE,
+            candidates=[candidate("C0501")],
+            evidence=[battery(
+                "C0501", {"L1_plddt": 0.87, "L2_ipsae_mdm2": 0.94}, passed=True,
+            )],
+        )
+        result = ResultsReader(store).read()
+        summary = result["summary"]
+        self.assertEqual(summary["candidates_evaluated"], 1)
+        self.assertEqual(summary["hard_cleared"], 0)
+        self.assertEqual(summary["hard_clearance_rate"], 0.0)
+        self.assertFalse(result["finalists"][0]["hard_cleared"])
+        layers = {layer["key"]: layer for layer in result["layers"]}
+        self.assertEqual(layers["L3_dg"]["evaluated"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

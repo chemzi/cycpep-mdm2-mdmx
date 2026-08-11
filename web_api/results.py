@@ -225,7 +225,20 @@ class ResultsReader:
                 latest[str(candidate_id)] = row
 
         evaluated_ids = set(latest)
-        hard_cleared_ids = {candidate_id for candidate_id, row in latest.items() if row.get("passed")}
+        # Hard clearance must be backed by layer evidence for every metric:
+        # a battery row that claims passed while missing layer_values for any
+        # METRIC_SPECS key (e.g. a hand-written demo row with no L3) is not
+        # counted as cleared. Genuine evaluate_battery rows always carry all
+        # nine layer keys, so this only rejects incomplete/fabricated rows.
+        required_layer_keys = set(METRIC_SPECS)
+        hard_cleared_ids = {
+            candidate_id
+            for candidate_id, row in latest.items()
+            if row.get("passed")
+            and required_layer_keys.issubset({
+                split_layer_key(key)[0] for key in (row.get("layer_values") or {})
+            })
+        }
         pending_ids = set(candidates_by_id) - evaluated_ids
 
         shortlist = exploration_shortlist(
@@ -254,7 +267,7 @@ class ResultsReader:
                 "sequence": candidate.get("sequence"),
                 "status": candidate.get("status") or candidate.get("final_status"),
                 "source_route": candidate.get("source_route"),
-                "hard_cleared": bool(row.get("passed")),
+                "hard_cleared": candidate_id in hard_cleared_ids,
                 "failed_layers": list(row.get("failed_layers") or []),
                 "desirability": desirability_by_id.get(candidate_id),
                 "pareto_front": candidate_id in pareto_ids,

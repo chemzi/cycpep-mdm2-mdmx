@@ -468,14 +468,39 @@ def compute_pareto_front(
         if candidate.get("candidate_id") and all(value is not None for value in values):
             valid.append((candidate["candidate_id"], values))
 
-    front = []
+    # Candidates that share an identical value vector dominate exactly the same
+    # set, so the Pareto decision is per unique vector: dedupe first, run the
+    # incremental skyline on the unique vectors (typically small), then expand
+    # the result back to every candidate id. Dominance is transitive, so a
+    # front member dropped because a later vector dominates it stays dropped
+    # even if that vector is itself dominated by yet another one.
+    by_values: dict[tuple, list[str]] = {}
     for candidate_id, values in valid:
-        dominated = any(
+        by_values.setdefault(values, []).append(candidate_id)
+    unique_vectors = list(by_values)
+
+    running: list[tuple] = []
+    for values in unique_vectors:
+        if any(
             all(other >= current for other, current in zip(other_values, values))
             and any(other > current for other, current in zip(other_values, values))
-            for other_id, other_values in valid
-            if other_id != candidate_id
-        )
-        if not dominated:
-            front.append(candidate_id)
-    return front
+            for other_values in running
+        ):
+            continue
+        running = [
+            other_values
+            for other_values in running
+            if not (
+                all(current >= other for current, other in zip(values, other_values))
+                and any(current > other for current, other in zip(values, other_values))
+            )
+        ]
+        running.append(values)
+
+    front_ids = {
+        candidate_id
+        for values in running
+        for candidate_id in by_values[values]
+    }
+    # Preserve input order exactly like the legacy pairwise scan.
+    return [candidate_id for candidate_id, _values in valid if candidate_id in front_ids]
