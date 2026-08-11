@@ -20,6 +20,7 @@ class DefaultWorkflowRuntime:
         *,
         read_only: bool = False,
         execution_config: ExecutionConfig | None = None,
+        execution_root: Path | None = None,
     ):
         from agents import orchestrator, research
         from agents.design import Design, DesignContext
@@ -32,7 +33,8 @@ class DefaultWorkflowRuntime:
         from data_layer import get_storage_backend
         self.context = context
         self.launcher_run_id = launcher_run_id
-        self.execution_config = execution_config or ExecutionConfig.from_environment()
+        self._execution_config = execution_config
+        self._execution_root = execution_root
         self.store = get_storage_backend(read_only=read_only)
         self.research = research
         binding = _approved_binding(context)
@@ -63,6 +65,18 @@ class DefaultWorkflowRuntime:
             prediction_validator=validate_prediction_invocation,
             orchestrator_status=orchestrator.status,
         )
+
+    @property
+    def execution_config(self) -> ExecutionConfig:
+        if self._execution_config is None:
+            from .runtime_locator import restore_execution_config
+
+            self._execution_config = (
+                ExecutionConfig.from_environment()
+                if self._execution_root is None
+                else restore_execution_config(self._execution_root)
+            )
+        return self._execution_config
 
     def inspect_research(self):
         return self.inspector.research(self.research_correlation)

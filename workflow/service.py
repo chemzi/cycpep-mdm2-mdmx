@@ -41,7 +41,6 @@ from .runtime_locator import (
     require_formal_store,
     require_runtime_locator,
     resolve_execution_root,
-    restore_execution_config,
     restore_project_context,
 )
 
@@ -665,7 +664,7 @@ def _default_dependencies() -> LauncherServiceDependencies:
             context,
             launcher_run_id,
             read_only=read_only,
-            execution_config=restore_execution_config(binding),
+            execution_root=Path(binding.execution_root),
         ),
         execution_root_resolver=resolve_execution_root,
     )

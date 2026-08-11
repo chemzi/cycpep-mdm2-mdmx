@@ -21,17 +21,17 @@ def resolve_execution_root() -> Path:
 
     from execution.config import ExecutionConfig
 
-    return ExecutionConfig.from_environment().execution_root
+    return ExecutionConfig.resolve_execution_root()
 
 
-def restore_execution_config(binding: RuntimeLocatorBinding):
+def restore_execution_config(execution_root: str | Path):
     """Restore only the durable Launcher staging root on the current config."""
 
     from execution.config import ExecutionConfig
 
     return replace(
         ExecutionConfig.from_environment(),
-        execution_root=Path(binding.execution_root),
+        execution_root=Path(execution_root),
     )
 
 

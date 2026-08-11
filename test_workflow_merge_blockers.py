@@ -6,9 +6,9 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from execution.config import ExecutionConfig
 from execution.recovery import RecoveryResult
 from test_workflow_service import LAUNCHER_ID, _Runtime, _World, _dependencies
 from workflow.adapters import DefaultWorkflowRuntime
@@ -65,7 +65,8 @@ def _tracing_dependencies(root, world):
 
 def _adapter_runtime() -> DefaultWorkflowRuntime:
     runtime = object.__new__(DefaultWorkflowRuntime)
-    runtime.execution_config = ExecutionConfig.from_environment()
+    runtime._execution_config = SimpleNamespace(execution_root=Path.cwd())
+    runtime._execution_root = None
     return runtime
 
 
@@ -96,9 +97,8 @@ class WorkflowMergeBlockerCharacterizationTests(unittest.TestCase):
                 return {"status": "blocked"}
 
             runtime = object.__new__(DefaultWorkflowRuntime)
-            runtime.execution_config = replace(
-                ExecutionConfig.from_environment(), execution_root=execution_a
-            )
+            runtime._execution_config = SimpleNamespace(execution_root=execution_a)
+            runtime._execution_root = None
             orchestrator = FormalBoundary.completed("orchestrator", run_id="run-1")
 
             with (

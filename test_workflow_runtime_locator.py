@@ -277,7 +277,11 @@ class RuntimeLocatorServiceTests(unittest.TestCase):
                     launcher_run_id,
                     stores,
                     invocations,
-                    execution_config=kwargs["execution_config"],
+                    execution_config=type(
+                        "ExecutionRootOnly",
+                        (),
+                        {"execution_root": kwargs["execution_root"]},
+                    )(),
                     inspected=inspected,
                     recovered=recovered,
                     drained=drained,
@@ -355,7 +359,7 @@ class RuntimeLocatorServiceTests(unittest.TestCase):
 
             def runtime(context, launcher_run_id, **_kwargs):
                 runtime_modes.append(bool(_kwargs.get("read_only")))
-                execution_roots.append(_kwargs["execution_config"].execution_root)
+                execution_roots.append(_kwargs["execution_root"])
                 return _StoreReceiptRuntime(
                     world, context, launcher_run_id, stores, invocations
                 )
