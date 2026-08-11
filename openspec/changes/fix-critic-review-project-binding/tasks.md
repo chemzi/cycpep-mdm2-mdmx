@@ -34,3 +34,16 @@
 - Missing complete Prediction artifacts and threshold calibration remain independent data/scientific blockers. This change did not generate, bypass, or reinterpret them.
 - **Future Work / Identified Capability Gap — Automated Structure Selection:** selecting the appropriate experimental structure for a target/site remains an approved-project scientific decision. A future separately approved change should evaluate structure candidates, deterministic constraints, scientific trade-offs, evidence, provenance, and review/approval. This is not a Launcher bug and was not implemented here.
 - **Future Work / Identified Capability Gap — Deterministic Structure Materialization:** converting an already selected PDB/chain into controlled, validated, provenance-bound Design input remains a pre-Design engineering capability gap. The preserved E2E used explicitly materialized curated 1YCR/3DAB inputs only to continue main-chain acceptance. A general materializer was not implemented here and requires a separate change/PR.
+
+## 5. Merge-Blocker Contract Closure
+
+- [x] 5.1 Add a negative inspector regression proving an event-bound project cannot authorize a report whose immutable `source.project_id` differs from the inspected project.
+- [x] 5.2 Require the Critic inspector to validate immutable report-source project identity without relaxing its project-scoped query or ambiguity policy.
+- [x] 5.3 Add a transaction regression proving event/Worker trace project conflict prevents commit, stores no Critic Evidence, and exposes no State mutation.
+- [x] 5.4 Reuse `EvidenceEvent` trace conflict semantics during Worker formalization before commit; do not change transaction ownership or Store schema.
+- [x] 5.5 Add shared effect regressions for non-empty but formally invalid `source.project_id` values.
+- [x] 5.6 Validate `source.project_id` with the shared formal Trace ID validator before returning persistence effects.
+- [x] 5.7 Add writer regressions proving `EvidenceLogger.critic_review()` rejects missing/invalid project binding and persists a valid binding.
+- [x] 5.8 Add transactional Prediction regressions proving formal `run_id` remains the Orchestrator run, `prediction_run_id` preserves the distinct Prediction identity, formal validation succeeds, and Launcher correlation does not regress.
+- [x] 5.9 Normalize only deferred Prediction Evidence identity from reserved payload `run_id` to `prediction_run_id` at the transaction adapter boundary.
+- [x] 5.10 Close the legacy writer and incidental field repair, then rerun focused/full Python tests, Architecture Gate, strict OpenSpec, `git diff --check`, and final Spec/Standards review.

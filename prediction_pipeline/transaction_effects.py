@@ -105,6 +105,10 @@ class PredictionPersistence:
                 phase="evaluate",
             )
             return
+        payload = dict(payload)
+        if "run_id" in payload:
+            payload.pop("run_id")
+            payload["prediction_run_id"] = self.run_id
         event = {
             "agent": "prediction",
             "event_type": event_type,

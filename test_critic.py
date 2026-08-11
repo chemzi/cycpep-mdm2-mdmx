@@ -477,15 +477,15 @@ class CriticTests(unittest.TestCase):
             candidate_rows=rows,
             config=config,
         )
-        data_layer.EvidenceLogger.log(
-            "critic",
-            "critic_review",
+        data_layer.get_storage_backend().append(
             {
+                "agent": "critic",
+                "event_type": "critic_review",
+                "phase": "critic",
                 "report_id": expected_report["report_id"],
                 "prediction_run_id": expected_report["source"]["prediction_run_id"],
                 "report_sha256": "legacy-unbound-digest",
-            },
-            phase="critic",
+            }
         )
         legacy = data_layer.EvidenceLogger.filter(event_type="critic_review")[0]
 

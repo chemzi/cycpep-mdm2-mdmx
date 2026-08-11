@@ -7,8 +7,10 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from contracts.critic import critic_persistence_effects
+from data_layer import EvidenceLogger
 from prediction_pipeline.contracts import file_sha256
 from workflow.boundaries import FormalBoundaryInspector
 
@@ -53,9 +55,18 @@ def _inspector(events, *, store_type=_Store):
     )
 
 
-def _write_report(root: Path, name: str, run_id: str) -> tuple[Path, dict]:
+def _write_report(
+    root: Path,
+    name: str,
+    run_id: str,
+    *,
+    project_id: str = "project-current",
+) -> tuple[Path, dict]:
     path = root / f"{name}.json"
-    report = {"report_id": name, "source": {"prediction_run_id": run_id}}
+    report = {
+        "report_id": name,
+        "source": {"project_id": project_id, "prediction_run_id": run_id},
+    }
     path.write_text(json.dumps(report), encoding="utf-8")
     return path, report
 
@@ -138,6 +149,67 @@ class CriticCorrelationCharacterizationTests(unittest.TestCase):
                 state={},
             )
 
+    def test_critic_persistence_rejects_invalid_report_source_project_id(self):
+        report = {
+            "critic_version": "test",
+            "report_id": "critic-current",
+            "source": {
+                "project_id": "project current",
+                "prediction_run_id": "prediction-current",
+            },
+            "verdict": "clear",
+            "passed": True,
+            "issue_counts": {},
+            "recommendations": [],
+            "issues": {},
+            "summary": "clear",
+            "metrics_snapshot": {},
+        }
+
+        with self.assertRaisesRegex(ValueError, "source.project_id"):
+            critic_persistence_effects(
+                report=report,
+                report_path="critic-current.json",
+                report_digest="report-digest",
+                state={},
+            )
+
+    def test_legacy_writer_requires_valid_project_binding(self):
+        arguments = {
+            "issues": [],
+            "passed": True,
+            "summary": "clear",
+            "recommendation": "continue",
+            "metrics": {},
+        }
+        with patch.object(EvidenceLogger, "_write") as write:
+            with self.assertRaisesRegex(ValueError, "project_id"):
+                EvidenceLogger.critic_review(**arguments)
+            with self.assertRaisesRegex(ValueError, "project_id"):
+                EvidenceLogger.critic_review(
+                    **arguments, project_id="project current"
+                )
+            write.assert_not_called()
+
+            EvidenceLogger.critic_review(
+                **arguments, project_id="project-current"
+            )
+
+        entry = write.call_args.args[0]
+        self.assertEqual(entry["project_id"], "project-current")
+
+    def test_generic_logger_cannot_bypass_critic_project_binding(self):
+        with patch.object(EvidenceLogger, "_write") as write:
+            for project_id in (None, "project current"):
+                with self.subTest(project_id=project_id), self.assertRaisesRegex(
+                    ValueError, "project_id"
+                ):
+                    payload = {}
+                    if project_id is not None:
+                        payload["project_id"] = project_id
+                    EvidenceLogger.log("critic", "critic_review", payload)
+            write.assert_not_called()
+
     def test_unrelated_broken_legacy_history_does_not_block_explicit_current_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -186,6 +258,26 @@ class CriticCorrelationCharacterizationTests(unittest.TestCase):
             )
 
             self.assertEqual(result.status, "not_started")
+
+    def test_event_project_cannot_authorize_different_report_source_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path, report = _write_report(
+                Path(tmp),
+                "critic-current",
+                "prediction-current",
+                project_id="project-other",
+            )
+            event = _event(
+                report_path, report, run_id_marker="prediction-current"
+            )
+
+            result = _inspector([event]).critic(
+                project_id="project-current",
+                prediction_run_id="prediction-current",
+            )
+
+            self.assertEqual(result.status, "blocked")
+            self.assertEqual(result.blocker_code, "critic_recovery_ambiguous")
 
     def test_old_broken_legacy_history_does_not_block_first_critic_for_current_run(self):
         with tempfile.TemporaryDirectory() as tmp:

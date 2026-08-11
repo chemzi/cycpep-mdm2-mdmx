@@ -16,8 +16,8 @@ The preserved run also constrains recovery: direct Critic persistence currently 
 **Non-Goals:**
 
 - Do not change Launcher queries, recovery ordering, blocker policy, or CLI output.
-- Do not generate Prediction artifacts, calibrate thresholds, or reinterpret pending-only Prediction as scientific completion.
-- Do not change Planner, Orchestrator, Worker, transaction ownership, Store schema, or scientific protocols.
+- Do not generate Prediction artifacts, change Prediction run generation, readiness/completion decisions, or scientific behavior, calibrate thresholds, or reinterpret pending-only Prediction as scientific completion.
+- Do not change Planner, Orchestrator, transaction ownership/commit semantics, Store schema, or scientific protocols. Worker changes are limited to validating event/trace agreement before formalization.
 - Do not mutate, delete, or backfill the preserved unbound event.
 
 ## Decisions
@@ -46,11 +46,35 @@ The inspector's project-scoped query and immutable-document validation are the d
 
 Relaxing the inspector to accept projectless events was rejected because it would turn ambiguous legacy data into transition authority.
 
+### 5. Bind the immutable report source to the inspected project
+
+After resolving and reading the immutable report, the Critic inspector will require `report.source.project_id` to equal the inspected `project_id` in addition to the existing Evidence query, prediction-run, report identity, and digest checks. A mismatch marks the candidate record invalid and therefore fails closed under the existing ambiguity outcome; the inspector query and recovery policy remain unchanged.
+
+### 6. Reuse Evidence trace conflict semantics before transaction commit
+
+Transactional Evidence formalization will construct an `EvidenceEvent` with the Worker `TraceContext` while retaining event-supplied trace keys in the payload passed to that contract. `EvidenceEvent.to_dict()` already rejects a payload trace field that disagrees with its trace context, so the Worker will reuse that behavior before Store commit rather than silently applying `{**event, **trace}` precedence or defining another identifier rule. The failure occurs before formal commit and therefore preserves existing transaction rollback/state atomicity.
+
+### 7. Validate report project identity with the formal Trace ID contract
+
+`critic_persistence_effects()` will validate `source.project_id` through the shared trace identifier validator before constructing State, history, or Evidence effects. It will not copy or restate the trace regex. This preserves the immutable report source as the sole identity authority while ensuring direct persistence cannot mutate formal State before a later writer rejects an invalid identifier.
+
+### 8. Close the legacy Critic writer for new events
+
+`EvidenceLogger.critic_review()` will require `project_id` for every new call and include it in the event. The generic `EvidenceLogger.log()` boundary will apply the shared Trace ID validation whenever `event_type == "critic_review"`, so neither the convenience method nor a direct generic call can create new unbound Critic Evidence. Direct Critic remains on the shared effect contract and generic logger seam. Historical unbound rows remain readable through legacy Store ingestion and are neither rewritten nor backfilled.
+
+### 9. Keep Prediction identity out of the formal trace namespace
+
+Strengthened Worker validation exposes a pre-existing collision in deferred Prediction Evidence: the Prediction domain run identity is emitted as payload `run_id`, while formal `TraceContext.run_id` is the distinct Orchestrator run identity. The transaction Evidence adapter will normalize only that payload field to `prediction_run_id` before the event reaches Worker formalization. Worker will continue validating every `TRACE_KEYS` field without agent-specific exceptions; committed top-level `run_id` remains the Orchestrator trace and `prediction_run_id` preserves the Prediction identity.
+
+Writing both keys, teaching Worker to skip Prediction conflicts, or making readers infer which identity a `run_id` represents were rejected because each preserves the ambiguity. Prediction run generation, artifacts, readiness/completion logic, and Launcher inspection remain unchanged.
+
 ## Risks / Trade-offs
 
 - **[Risk] Existing tests construct Critic reports without `source.project_id`.** → Update only fixtures that exercise new persistence; keep pure report-reading compatibility tests unchanged where persistence is not invoked.
 - **[Risk] A retry could append duplicate events.** → Define current idempotency with the minimal full binding and test two consecutive reruns.
 - **[Risk] The preserved run also contains missing Prediction evidence.** → Resume acceptance proves only that Critic completion becomes visible and Planner is reached or returns its own formal outcome; it does not claim scientific completion.
+- **[Risk] Worker trace validation accidentally changes transaction ownership.** → Reuse `EvidenceEvent` conflict behavior before commit and assert no Critic event or State mutation on mismatch; do not change Store/commit ownership.
+- **[Risk] Correcting the deferred Prediction field could alter Prediction behavior.** → Normalize only the transaction Evidence payload at its adapter boundary and characterize both identities plus existing Launcher correlation; leave manifests, run directories, scientific logic, and completion readers unchanged.
 
 ## Migration Plan
 

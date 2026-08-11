@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Mapping
 
+from contracts.trace import TRACE_ID_RE
+
 
 def critic_persistence_effects(
     *,
@@ -26,8 +28,8 @@ def critic_persistence_effects(
         raise ValueError("report_artifact_id or report_path is required")
     source = report.get("source")
     project_id = source.get("project_id") if isinstance(source, Mapping) else None
-    if not isinstance(project_id, str) or not project_id.strip():
-        raise ValueError("Critic report source.project_id is required")
+    if not isinstance(project_id, str) or not TRACE_ID_RE.fullmatch(project_id):
+        raise ValueError("Critic report source.project_id must be a valid trace ID")
     summary = {
         "critic_version": report["critic_version"],
         "report_id": report["report_id"],
