@@ -115,3 +115,4 @@
 - [x] 10.18 Re-run the complete gates and all three fresh reviews from the corrected fixed point; require behind=0, P0=0, P1=0, and Strict score >=85.
 - [x] 10.19 Extend Store-owned read-only validation to every column and index that writable schema initialization would create or migrate, add default status/resume no-migration coverage, and preserve the explicit changed-project blocker by validating resume binding before the Store project probe.
 - [x] 10.20 Re-run complete gates and fresh fixed-point Spec, Standards, and Strict reviews with the same merge thresholds.
+- [x] 10.21 Replace the Windows-only runtime-locator model fixture with platform-native absolute paths, then re-run the full Python suite and strict OpenSpec validation before updating the Draft PR.

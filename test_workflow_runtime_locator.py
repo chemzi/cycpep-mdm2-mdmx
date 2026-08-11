@@ -148,28 +148,30 @@ class _StoreReceiptRuntime(_Runtime):
 
 class RuntimeLocatorModelTests(unittest.TestCase):
     def test_locator_round_trip_is_internal_and_carries_no_authority(self):
-        binding = RuntimeLocatorBinding(
-            project_locator="C:/internal/approved/project.json",
-            data_dir="C:/internal/data",
-            evidence_dir="C:/internal/evidence",
-            database_path="C:/internal/formal/store.db",
-        )
-        report = DiagnosticReport.initial(
-            launcher_run_id=LAUNCHER_ID,
-            project_id="project-1",
-            approved_content_binding="approved-content",
-            project_locator=binding.project_locator,
-            runtime_locator_binding=binding,
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            internal_root = Path(tmp).resolve()
+            binding = RuntimeLocatorBinding(
+                project_locator=str(internal_root / "approved" / "project.json"),
+                data_dir=str(internal_root / "data"),
+                evidence_dir=str(internal_root / "evidence"),
+                database_path=str(internal_root / "formal" / "store.db"),
+            )
+            report = DiagnosticReport.initial(
+                launcher_run_id=LAUNCHER_ID,
+                project_id="project-1",
+                approved_content_binding="approved-content",
+                project_locator=binding.project_locator,
+                runtime_locator_binding=binding,
+            )
 
-        restored = DiagnosticReport.from_dict(report.to_dict())
-        browser = restored.browser_projection(status="pending").to_dict()
+            restored = DiagnosticReport.from_dict(report.to_dict())
+            browser = restored.browser_projection(status="pending").to_dict()
 
-        self.assertEqual(restored.runtime_locator_binding, binding)
-        self.assertNotIn("runtime_locator_binding", browser)
-        self.assertNotIn("C:/internal", json.dumps(browser))
-        self.assertFalse(hasattr(binding, "status"))
-        self.assertFalse(hasattr(binding, "authorize_transition"))
+            self.assertEqual(restored.runtime_locator_binding, binding)
+            self.assertNotIn("runtime_locator_binding", browser)
+            self.assertNotIn(str(internal_root), json.dumps(browser))
+            self.assertFalse(hasattr(binding, "status"))
+            self.assertFalse(hasattr(binding, "authorize_transition"))
 
     def test_default_restore_ignores_changed_runtime_environment(self):
         with tempfile.TemporaryDirectory() as tmp:
