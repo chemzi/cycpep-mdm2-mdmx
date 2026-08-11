@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from core.context import ProjectContext
+from execution.config import ExecutionConfig
 
 from .boundaries import FormalBoundaryInspector
 
@@ -18,6 +19,7 @@ class DefaultWorkflowRuntime:
         launcher_run_id: str,
         *,
         read_only: bool = False,
+        execution_config: ExecutionConfig | None = None,
     ):
         from agents import orchestrator, research
         from agents.design import Design, DesignContext
@@ -28,9 +30,9 @@ class DefaultWorkflowRuntime:
         from agents.prediction import validate_prediction_invocation
         from agents.prediction_contract import PredictionCorrelation
         from data_layer import get_storage_backend
-
         self.context = context
         self.launcher_run_id = launcher_run_id
+        self.execution_config = execution_config or ExecutionConfig.from_environment()
         self.store = get_storage_backend(read_only=read_only)
         self.research = research
         binding = _approved_binding(context)
@@ -143,11 +145,11 @@ class DefaultWorkflowRuntime:
             run_id=orchestrator.references["run_id"]
         )
 
-    @staticmethod
-    def inspect_transaction_recovery(orchestrator):
+    def inspect_transaction_recovery(self, orchestrator):
         from execution import inspect_transaction_recovery
 
         recovery = inspect_transaction_recovery(
+            config=self.execution_config,
             run_id=orchestrator.references.get("run_id")
         )
         from .boundaries import FormalBoundary
@@ -186,17 +188,19 @@ class DefaultWorkflowRuntime:
             "formal transaction recovery requires operator action",
         )
 
-    @staticmethod
-    def recover_transactions():
+    def recover_transactions(self):
         from execution import ensure_transaction_recovery_clean
 
-        return ensure_transaction_recovery_clean()
+        return ensure_transaction_recovery_clean(config=self.execution_config)
 
-    @staticmethod
-    def drain(run_path):
+    def drain(self, run_path):
         from execution.worker import drain_run
 
-        return drain_run(run_path=run_path, worker_id="workflow-launcher")
+        return drain_run(
+            run_path=run_path,
+            worker_id="workflow-launcher",
+            config=self.execution_config,
+        )
 
 
 def _approved_binding(context: ProjectContext) -> str:

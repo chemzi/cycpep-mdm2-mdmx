@@ -136,16 +136,27 @@ class RuntimeLocatorBinding:
     data_dir: str
     evidence_dir: str
     database_path: str
+    execution_root: str
 
     def __post_init__(self) -> None:
-        for name in ("project_locator", "data_dir", "evidence_dir", "database_path"):
+        for name in (
+            "project_locator",
+            "data_dir",
+            "evidence_dir",
+            "database_path",
+            "execution_root",
+        ):
             value = _optional_text(getattr(self, name), name)
             if value is None or not Path(value).expanduser().is_absolute():
                 raise ValueError(f"{name} must be an absolute path")
 
     @classmethod
     def from_context(
-        cls, context: ProjectContext, project_locator: str | Path
+        cls,
+        context: ProjectContext,
+        project_locator: str | Path,
+        *,
+        execution_root: str | Path,
     ) -> "RuntimeLocatorBinding":
         resolved = context.resolve_paths()
         if (
@@ -159,6 +170,7 @@ class RuntimeLocatorBinding:
             data_dir=str(Path(resolved.data_dir).expanduser().resolve()),
             evidence_dir=str(Path(resolved.evidence_dir).expanduser().resolve()),
             database_path=str(Path(resolved.database_path).expanduser().resolve()),
+            execution_root=str(Path(execution_root).expanduser().resolve()),
         )
 
     def project_paths(self) -> ProjectPaths:
@@ -174,6 +186,7 @@ class RuntimeLocatorBinding:
             "data_dir": self.data_dir,
             "evidence_dir": self.evidence_dir,
             "database_path": self.database_path,
+            "execution_root": self.execution_root,
         }
 
     @classmethod
@@ -185,6 +198,7 @@ class RuntimeLocatorBinding:
             data_dir=value.get("data_dir"),
             evidence_dir=value.get("evidence_dir"),
             database_path=value.get("database_path"),
+            execution_root=value.get("execution_root"),
         )
 
 

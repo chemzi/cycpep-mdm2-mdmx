@@ -40,6 +40,8 @@ from .runtime_locator import (
     ContextRestorer,
     require_formal_store,
     require_runtime_locator,
+    resolve_execution_root,
+    restore_execution_config,
     restore_project_context,
 )
 
@@ -56,6 +58,10 @@ class LauncherServiceDependencies:
     validate_formal_store: (
         Callable[[RuntimeLocatorBinding, ProjectContext], None] | None
     ) = None
+    runtime_factory_with_locator: (
+        Callable[[ProjectContext, str, RuntimeLocatorBinding, bool], Any] | None
+    ) = None
+    execution_root_resolver: Callable[[], Path] | None = None
 
 
 def launch_project(
@@ -69,7 +75,14 @@ def launch_project(
         binding = _approved_binding(context)
         launcher_run_id = deps.launcher_id()
         project_locator = str(Path(project_path).expanduser().resolve())
-        runtime_locator = RuntimeLocatorBinding.from_context(context, project_locator)
+        execution_root = (
+            deps.execution_root_resolver()
+            if deps.execution_root_resolver is not None
+            else resolve_execution_root()
+        )
+        runtime_locator = RuntimeLocatorBinding.from_context(
+            context, project_locator, execution_root=execution_root
+        )
         report = DiagnosticReport.initial(
             launcher_run_id=launcher_run_id,
             project_id=context.project_id,
@@ -130,12 +143,20 @@ def _coordinate_locked(
             if not allow_missing_store and deps.validate_formal_store is not None:
                 deps.validate_formal_store(binding, context)
             with deps.bind_context(context):
-                runtime_factory = (
-                    deps.read_only_runtime_factory
-                    if not execute and deps.read_only_runtime_factory is not None
-                    else deps.runtime_factory
-                )
-                runtime = runtime_factory(context, report.launcher_run_id)
+                if deps.runtime_factory_with_locator is not None:
+                    runtime = deps.runtime_factory_with_locator(
+                        context,
+                        report.launcher_run_id,
+                        binding,
+                        not execute,
+                    )
+                else:
+                    runtime_factory = (
+                        deps.read_only_runtime_factory
+                        if not execute and deps.read_only_runtime_factory is not None
+                        else deps.runtime_factory
+                    )
+                    runtime = runtime_factory(context, report.launcher_run_id)
                 return _advance(
                     runtime,
                     report,
@@ -640,6 +661,13 @@ def _default_dependencies() -> LauncherServiceDependencies:
             context, launcher_run_id, read_only=True
         ),
         validate_formal_store=require_formal_store,
+        runtime_factory_with_locator=lambda context, launcher_run_id, binding, read_only: DefaultWorkflowRuntime(
+            context,
+            launcher_run_id,
+            read_only=read_only,
+            execution_config=restore_execution_config(binding),
+        ),
+        execution_root_resolver=resolve_execution_root,
     )
 
 

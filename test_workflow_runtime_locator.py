@@ -146,6 +146,34 @@ class _StoreReceiptRuntime(_Runtime):
         )
 
 
+class _ExecutionRootRecoveryRuntime(_StoreReceiptRuntime):
+    def __init__(self, *args, execution_config, inspected, recovered, drained):
+        super().__init__(*args)
+        self.execution_config = execution_config
+        self._inspected = inspected
+        self._recovered = recovered
+        self._drained = drained
+
+    def inspect_transaction_recovery(self, _orchestrator=None):
+        execution_root = self.execution_config.execution_root
+        self._inspected.append(execution_root)
+        marker = execution_root / ".staging" / "TX123" / "metadata" / "commit.json"
+        if marker.is_file():
+            return FormalBoundary.blocked(
+                "transaction",
+                "transaction_recovery_unresolved",
+                "formal transaction recovery requires operator action",
+                transaction_id="TX123",
+            )
+        return FormalBoundary.completed("transaction")
+
+    def recover_transactions(self):
+        self._recovered.append(self.execution_config.execution_root)
+
+    def drain(self, run_path):
+        self._drained.append((self.execution_config.execution_root, run_path))
+
+
 class RuntimeLocatorModelTests(unittest.TestCase):
     def test_locator_round_trip_is_internal_and_carries_no_authority(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -155,6 +183,7 @@ class RuntimeLocatorModelTests(unittest.TestCase):
                 data_dir=str(internal_root / "data"),
                 evidence_dir=str(internal_root / "evidence"),
                 database_path=str(internal_root / "formal" / "store.db"),
+                execution_root=str(internal_root / "execution"),
             )
             report = DiagnosticReport.initial(
                 launcher_run_id=LAUNCHER_ID,
@@ -183,7 +212,11 @@ class RuntimeLocatorModelTests(unittest.TestCase):
             project_path.write_text(
                 json.dumps(dict(context.config)), encoding="utf-8"
             )
-            binding = RuntimeLocatorBinding.from_context(context, project_path)
+            binding = RuntimeLocatorBinding.from_context(
+                context,
+                project_path,
+                execution_root=root / "runtime-a" / "execution",
+            )
             environment_b = {
                 "CYCPEP_DATA_DIR": str(root / "runtime-b" / "data"),
                 "CYCPEP_EVIDENCE_DIR": str(root / "runtime-b" / "evidence"),
@@ -202,6 +235,90 @@ class RuntimeLocatorModelTests(unittest.TestCase):
 
 
 class RuntimeLocatorServiceTests(unittest.TestCase):
+    def test_status_and_resume_keep_transaction_recovery_on_original_execution_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project_path = root / "approved-project.json"
+            project_path.write_text(
+                json.dumps(dict(_context(root / "unused").config)), encoding="utf-8"
+            )
+            runtime_a = root / "runtime-a"
+            runtime_b = root / "runtime-b"
+            environment_a = {
+                "CYCPEP_DATA_DIR": str(runtime_a / "data"),
+                "CYCPEP_EVIDENCE_DIR": str(runtime_a / "evidence"),
+                "CYCPEP_DB_PATH": str(runtime_a / "formal" / "store.db"),
+                "CYCPEP_EXECUTION_ROOT": str(runtime_a / "execution"),
+                "NP_DATA": str(runtime_a),
+            }
+            environment_b = {
+                "CYCPEP_DATA_DIR": str(runtime_b / "data"),
+                "CYCPEP_EVIDENCE_DIR": str(runtime_b / "evidence"),
+                "CYCPEP_DB_PATH": str(runtime_b / "formal" / "store.db"),
+                "CYCPEP_EXECUTION_ROOT": str(runtime_b / "execution"),
+                "NP_DATA": str(runtime_b),
+            }
+            world = _World()
+            stores = []
+            invocations = []
+            inspected = []
+            recovered = []
+            drained = []
+
+            def diagnostic_root():
+                return resolve_diagnostics_root(
+                    env=os.environ, repository_root=root / "repository"
+                )
+
+            def runtime(context, launcher_run_id, **kwargs):
+                return _ExecutionRootRecoveryRuntime(
+                    world,
+                    context,
+                    launcher_run_id,
+                    stores,
+                    invocations,
+                    execution_config=kwargs["execution_config"],
+                    inspected=inspected,
+                    recovered=recovered,
+                    drained=drained,
+                )
+
+            with (
+                patch("workflow.service.resolve_diagnostics_root", diagnostic_root),
+                patch("workflow.service.assert_project_approved", lambda _config: None),
+                patch("workflow.adapters.DefaultWorkflowRuntime", runtime),
+                patch("workflow.service.uuid.uuid4") as launcher_uuid,
+            ):
+                launcher_uuid.return_value.hex = LAUNCHER_ID.removeprefix("launcher_")
+                with patch.dict(os.environ, environment_a, clear=False):
+                    launched = launch_project(project_path=project_path)
+                    marker = (
+                        runtime_a
+                        / "execution"
+                        / ".staging"
+                        / "TX123"
+                        / "metadata"
+                        / "commit.json"
+                    )
+                    marker.parent.mkdir(parents=True)
+                    marker.write_text('{"status":"COMMITTED"}', encoding="utf-8")
+                    world.statuses["orchestrator"] = "completed"
+                    world.orchestrator_status = "running"
+                with patch.dict(os.environ, environment_b, clear=False):
+                    status = status_launcher_run(launcher_run_id=LAUNCHER_ID)
+                    resumed = resume_launcher_run(launcher_run_id=LAUNCHER_ID)
+
+            execution_a = (runtime_a / "execution").resolve()
+            self.assertEqual(launched.payload.status, "awaiting_approval")
+            self.assertEqual(status.payload.error.code, "transaction_recovery_unresolved")
+            self.assertEqual(resumed.payload.error.code, "transaction_recovery_unresolved")
+            self.assertEqual(status.payload.formal_trace.transaction_id, "TX123")
+            self.assertEqual(resumed.payload.formal_trace.transaction_id, "TX123")
+            self.assertEqual(inspected, [execution_a, execution_a, execution_a])
+            self.assertEqual(recovered, [execution_a])
+            self.assertEqual(drained, [])
+            self.assertFalse((runtime_b / "execution").exists())
+
     def test_default_dependencies_find_run_after_np_data_drift(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -216,17 +333,20 @@ class RuntimeLocatorServiceTests(unittest.TestCase):
                 "CYCPEP_EVIDENCE_DIR": str(runtime_a / "evidence"),
                 "CYCPEP_DB_PATH": str(runtime_a / "formal" / "store.db"),
                 "NP_DATA": str(runtime_a),
+                "CYCPEP_EXECUTION_ROOT": str(runtime_a / "execution"),
             }
             environment_b = {
                 "CYCPEP_DATA_DIR": str(runtime_b / "data"),
                 "CYCPEP_EVIDENCE_DIR": str(runtime_b / "evidence"),
                 "CYCPEP_DB_PATH": str(runtime_b / "formal" / "store.db"),
                 "NP_DATA": str(runtime_b),
+                "CYCPEP_EXECUTION_ROOT": str(runtime_b / "execution"),
             }
             world = _World()
             stores = []
             invocations = []
             runtime_modes = []
+            execution_roots = []
 
             def diagnostic_root():
                 return resolve_diagnostics_root(
@@ -235,6 +355,7 @@ class RuntimeLocatorServiceTests(unittest.TestCase):
 
             def runtime(context, launcher_run_id, **_kwargs):
                 runtime_modes.append(bool(_kwargs.get("read_only")))
+                execution_roots.append(_kwargs["execution_config"].execution_root)
                 return _StoreReceiptRuntime(
                     world, context, launcher_run_id, stores, invocations
                 )
@@ -257,6 +378,9 @@ class RuntimeLocatorServiceTests(unittest.TestCase):
             self.assertEqual(resumed.payload.status, "awaiting_approval")
             self.assertEqual(invocations, ["research"])
             self.assertEqual(runtime_modes, [False, True, False])
+            self.assertEqual(
+                execution_roots, [(runtime_a / "execution").resolve()] * 3
+            )
             self.assertEqual(
                 [store.path for store in stores],
                 [(runtime_a / "formal" / "store.db").resolve()] * 3,
@@ -548,7 +672,13 @@ class RuntimeLocatorServiceTests(unittest.TestCase):
             self.assertEqual(world.calls, [])
             self.assertEqual(
                 set(attempted[0]),
-                {"project_locator", "data_dir", "evidence_dir", "database_path"},
+                {
+                    "project_locator",
+                    "data_dir",
+                    "evidence_dir",
+                    "database_path",
+                    "execution_root",
+                },
             )
 
     def test_status_and_resume_restore_original_locator_without_ambient_loader(self):
@@ -606,7 +736,9 @@ class RuntimeLocatorServiceTests(unittest.TestCase):
                 approved_content_binding="approved-content",
                 project_locator=str(root / "approved.json"),
                 runtime_locator_binding=RuntimeLocatorBinding.from_context(
-                    _context(root / "runtime-a"), root / "approved.json"
+                    _context(root / "runtime-a"),
+                    root / "approved.json",
+                    execution_root=root / "runtime-a" / "execution",
                 ),
             )
             diagnostics.create(report)
@@ -647,7 +779,9 @@ class RuntimeLocatorServiceTests(unittest.TestCase):
                     approved_content_binding="approved-content",
                     project_locator=str((root / "approved.json").resolve()),
                     runtime_locator_binding=RuntimeLocatorBinding.from_context(
-                        _context(root / "runtime-a"), root / "approved.json"
+                        _context(root / "runtime-a"),
+                        root / "approved.json",
+                        execution_root=root / "runtime-a" / "execution",
                     ),
                 )
                 diagnostics.create(report)
@@ -656,8 +790,8 @@ class RuntimeLocatorServiceTests(unittest.TestCase):
                 if case == "invalid":
                     raw["runtime_locator_binding"]["database_path"] = "relative/store.db"
                 else:
-                    raw["runtime_locator_binding"]["database_path"] = str(
-                        (root / "different-runtime" / "formal" / "store.db").resolve()
+                    raw["runtime_locator_binding"]["execution_root"] = str(
+                        (root / "different-runtime" / "execution").resolve()
                     )
                 path.write_text(json.dumps(raw), encoding="utf-8")
                 deps = LauncherServiceDependencies(
@@ -690,7 +824,9 @@ class RuntimeLocatorServiceTests(unittest.TestCase):
                 approved_content_binding="approved-content",
                 project_locator=str((root / "approved.json").resolve()),
                 runtime_locator_binding=RuntimeLocatorBinding.from_context(
-                    _context(root / "runtime-a"), root / "approved.json"
+                    _context(root / "runtime-a"),
+                    root / "approved.json",
+                    execution_root=root / "runtime-a" / "execution",
                 ),
             )
             diagnostics.create(report)

@@ -338,11 +338,15 @@ Launcher, Research, Design, Prediction, and Store SHALL use the same officially 
 - **THEN** all previous process runtime bindings are restored and no second Store is selected
 
 ### Requirement: Runtime locator binding survives command boundaries
-The initial diagnostic SHALL durably store the exact resolved internal data, Evidence, formal database, and approved-project locators before any formal Research or scientific side effect. Later `status` and `resume` commands SHALL reconstruct their `ProjectContext` from that durable locator binding and SHALL NOT re-resolve formal storage from current ambient path selectors. The locator binding selects where formal authorities are queried but MUST NOT declare any workflow, scientific, task, or transaction state, and browser-safe output MUST omit its internal paths.
+The initial diagnostic SHALL durably store the exact resolved internal data, Evidence, formal database, approved-project, and Execution root locators before any formal Research, Worker, or scientific side effect. Later `status` and `resume` commands SHALL reconstruct their `ProjectContext` and Launcher-specific `ExecutionConfig` override from that durable locator binding and SHALL NOT re-resolve formal storage or transaction staging roots from current ambient path selectors. The same restored `execution_root` SHALL be supplied to transaction inspection, mutating recovery, and Worker drain. The locator binding selects where formal authorities are queried but MUST NOT declare any workflow, scientific, task, or transaction state, and browser-safe output MUST omit its internal paths.
 
 #### Scenario: Ambient runtime paths change after launch
 - **WHEN** launch writes formal receipts using runtime locator set A and a later process supplies different data, Evidence, or database environment selectors for set B
 - **THEN** status and resume use the durable locator set A, never classify the boundaries as `not_started` from Store B, and never rerun Research, Design, Prediction, or Worker work in B
+
+#### Scenario: Execution root changes after launch
+- **WHEN** launch binds Execution root A and a later status or resume process supplies Execution root B while a transaction marker for the formal run exists only under A
+- **THEN** transaction inspection, mutating recovery when required, and Worker drain use one `ExecutionConfig` whose `execution_root` is restored from A; B is not inspected or used and no scientific or Worker action is duplicated
 
 #### Scenario: Durable runtime locator cannot be restored
 - **WHEN** the original runtime locator binding is missing, invalid, conflicting with the approved project locator, or cannot safely open its formal Store
@@ -371,6 +375,10 @@ The initial diagnostic SHALL durably store the exact resolved internal data, Evi
 #### Scenario: Mutable journal attempts an absolute Store redirect
 - **WHEN** the diagnostic journal's mirrored data, Evidence, or database locator is edited to another valid absolute location
 - **THEN** DiagnosticStore rejects the mismatch against its write-once locator binding before constructing runtime or invoking any scientific or Worker action
+
+#### Scenario: Mutable journal attempts an Execution root redirect
+- **WHEN** the diagnostic journal's mirrored `execution_root` differs from the write-once locator sidecar
+- **THEN** DiagnosticStore returns `launcher_runtime_locator_conflict` and does not fall back to the current environment for transaction inspection, recovery, or Worker drain
 
 #### Scenario: Write-once locator binding is unavailable
 - **WHEN** the directly addressed locator binding is missing, invalid, or conflicts with the journal/project binding

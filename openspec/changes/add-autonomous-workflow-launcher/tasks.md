@@ -116,3 +116,5 @@
 - [x] 10.19 Extend Store-owned read-only validation to every column and index that writable schema initialization would create or migrate, add default status/resume no-migration coverage, and preserve the explicit changed-project blocker by validating resume binding before the Store project probe.
 - [x] 10.20 Re-run complete gates and fresh fixed-point Spec, Standards, and Strict reviews with the same merge thresholds.
 - [x] 10.21 Replace the Windows-only runtime-locator model fixture with platform-native absolute paths, then re-run the full Python suite and strict OpenSpec validation before updating the Draft PR.
+- [x] 10.22 Durably bind `execution_root`, restore it into one Launcher-specific `ExecutionConfig`, and prove status, recovery, and drain cannot drift to a later ambient staging root while tampered journal mirrors fail closed.
+- [ ] 10.23 Run the requested focused/full/Architecture/OpenSpec gates and fresh Spec/Standards reviews, require behind=0 and no P0/P1, then stop PR #62 development without merging.

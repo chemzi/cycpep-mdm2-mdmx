@@ -5,8 +5,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
+from execution.config import ExecutionConfig
 from execution.recovery import RecoveryResult
 from test_workflow_service import LAUNCHER_ID, _Runtime, _World, _dependencies
 from workflow.adapters import DefaultWorkflowRuntime
@@ -61,7 +63,57 @@ def _tracing_dependencies(root, world):
     )
 
 
+def _adapter_runtime() -> DefaultWorkflowRuntime:
+    runtime = object.__new__(DefaultWorkflowRuntime)
+    runtime.execution_config = ExecutionConfig.from_environment()
+    return runtime
+
+
 class WorkflowMergeBlockerCharacterizationTests(unittest.TestCase):
+    def test_launcher_execution_config_is_shared_by_inspection_recovery_and_drain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            execution_a = (root / "runtime-a" / "execution").resolve()
+            marker = execution_a / ".staging" / "TX123" / "metadata" / "commit.json"
+            marker.parent.mkdir(parents=True)
+            marker.write_text('{"status":"COMMITTED"}', encoding="utf-8")
+            seen_roots = []
+
+            def inspect(*, config=None, run_id=None):
+                del run_id
+                seen_roots.append(None if config is None else config.execution_root)
+                if config is not None and marker.is_file():
+                    return RecoveryResult(unresolved=("TX123",))
+                return RecoveryResult()
+
+            def recover(*, config=None):
+                seen_roots.append(None if config is None else config.execution_root)
+                return RecoveryResult(unresolved=("TX123",))
+
+            def drain(*, run_path, worker_id, config=None):
+                del run_path, worker_id
+                seen_roots.append(None if config is None else config.execution_root)
+                return {"status": "blocked"}
+
+            runtime = object.__new__(DefaultWorkflowRuntime)
+            runtime.execution_config = replace(
+                ExecutionConfig.from_environment(), execution_root=execution_a
+            )
+            orchestrator = FormalBoundary.completed("orchestrator", run_id="run-1")
+
+            with (
+                patch("execution.inspect_transaction_recovery", side_effect=inspect),
+                patch("execution.ensure_transaction_recovery_clean", side_effect=recover),
+                patch("execution.worker.drain_run", side_effect=drain),
+            ):
+                transaction = runtime.inspect_transaction_recovery(orchestrator)
+                runtime.recover_transactions()
+                runtime.drain(root / "orchestrator.json")
+
+            self.assertEqual(transaction.status, "blocked")
+            self.assertEqual(transaction.references["transaction_id"], "TX123")
+            self.assertEqual(seen_roots, [execution_a, execution_a, execution_a])
+
     def test_adapter_blocks_live_owner_with_stale_unresolved_transaction(self):
         recovery = RecoveryResult(
             unresolved=("TX-stale",),
@@ -72,9 +124,7 @@ class WorkflowMergeBlockerCharacterizationTests(unittest.TestCase):
         with patch(
             "execution.inspect_transaction_recovery", return_value=recovery
         ):
-            transaction = DefaultWorkflowRuntime.inspect_transaction_recovery(
-                orchestrator
-            )
+            transaction = _adapter_runtime().inspect_transaction_recovery(orchestrator)
 
         self.assertEqual(transaction.status, "blocked")
         self.assertEqual(
@@ -99,9 +149,7 @@ class WorkflowMergeBlockerCharacterizationTests(unittest.TestCase):
         with patch(
             "execution.inspect_transaction_recovery", return_value=recovery
         ):
-            transaction = DefaultWorkflowRuntime.inspect_transaction_recovery(
-                orchestrator
-            )
+            transaction = _adapter_runtime().inspect_transaction_recovery(orchestrator)
 
         self.assertEqual(transaction.status, "blocked")
         self.assertEqual(
@@ -121,9 +169,7 @@ class WorkflowMergeBlockerCharacterizationTests(unittest.TestCase):
         with patch(
             "execution.inspect_transaction_recovery", return_value=recovery
         ):
-            transaction = DefaultWorkflowRuntime.inspect_transaction_recovery(
-                orchestrator
-            )
+            transaction = _adapter_runtime().inspect_transaction_recovery(orchestrator)
 
         self.assertEqual(transaction.status, "active")
         self.assertTrue(transaction.references.get("live_owner"))

@@ -16,6 +16,25 @@ ContextLoader = Callable[[str | Path], ProjectContext]
 ContextRestorer = Callable[[RuntimeLocatorBinding], ProjectContext]
 
 
+def resolve_execution_root() -> Path:
+    """Resolve the initial Launcher root through Execution's public parser."""
+
+    from execution.config import ExecutionConfig
+
+    return ExecutionConfig.from_environment().execution_root
+
+
+def restore_execution_config(binding: RuntimeLocatorBinding):
+    """Restore only the durable Launcher staging root on the current config."""
+
+    from execution.config import ExecutionConfig
+
+    return replace(
+        ExecutionConfig.from_environment(),
+        execution_root=Path(binding.execution_root),
+    )
+
+
 def require_runtime_locator(report: DiagnosticReport) -> RuntimeLocatorBinding:
     """Return a complete report-bound locator or fail without ambient fallback."""
 
@@ -84,5 +103,7 @@ __all__ = [
     "ContextRestorer",
     "require_formal_store",
     "require_runtime_locator",
+    "resolve_execution_root",
+    "restore_execution_config",
     "restore_project_context",
 ]

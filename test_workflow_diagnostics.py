@@ -45,6 +45,7 @@ def _bound_report(root: Path) -> DiagnosticReport:
             data_dir=str((root / "runtime" / "data").resolve()),
             evidence_dir=str((root / "runtime" / "evidence").resolve()),
             database_path=str((root / "runtime" / "formal" / "store.db").resolve()),
+            execution_root=str((root / "runtime" / "execution").resolve()),
         ),
     )
 
