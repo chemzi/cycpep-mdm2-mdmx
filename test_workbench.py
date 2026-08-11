@@ -387,6 +387,38 @@ class WorkbenchReaderTests(unittest.TestCase):
         self.assertNotIn("file://", str(result))
         self.assertNotIn("content_link", result["artifacts"]["items"][0])
 
+    def test_prediction_start_receipt_does_not_expose_internal_run_root(self):
+        store = FakeStore(
+            state={"project_id": "project-1"},
+            evidence=[{
+                "event_id": "e1",
+                "event_type": "prediction_invocation_started",
+                "project_id": "project-1",
+                "launcher_run_id": "launcher-1",
+                "prediction_invocation_id": "prediction-invocation-1",
+                "prediction_run_id": "prediction-run-1",
+                "prediction_run_root": "C:/internal/prediction/root",
+                "prediction_run_locator": {
+                    "root": "C:/internal/prediction/root",
+                    "run_id": "prediction-run-1",
+                },
+                "runtime_locator_binding": {
+                    "project_locator": "C:/internal/project.json",
+                    "data_dir": "C:/internal/data",
+                    "evidence_dir": "C:/internal/evidence",
+                    "database_path": "C:/internal/formal/store.db",
+                },
+            }],
+        )
+
+        evidence = WorkbenchReader(store).read()["evidence"]["items"][0]
+
+        self.assertEqual(evidence["event_type"], "prediction_invocation_started")
+        self.assertNotIn("prediction_run_root", evidence)
+        self.assertNotIn("prediction_run_locator", evidence)
+        self.assertNotIn("runtime_locator_binding", evidence)
+        self.assertNotIn("C:/internal", str(evidence))
+
 
 if __name__ == "__main__":
     unittest.main()

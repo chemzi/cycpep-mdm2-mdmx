@@ -29,19 +29,36 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from data_layer import CandidateIndex, State  # noqa: E402
+from data_layer import CandidateIndex, EvidenceLogger, State, get_storage_backend  # noqa: E402
 from prediction_pipeline import PredictionConfig, PredictionPipeline  # noqa: E402
 from prediction_pipeline.contracts import ContractError  # noqa: E402
+from agents.prediction_contract import (  # noqa: E402
+    PredictionCorrelation,
+    PredictionInvocationInputs,
+    PredictionInvocationRecovery,
+    start_receipt_payload,
+    validate_prediction_invocation as _validate_prediction_invocation,
+)
+
+
+def resolve_prediction_run_root(
+    run_root: str | Path | None = None,
+) -> Path:
+    """Resolve Prediction's run root without creating or inspecting runs."""
+    if run_root is not None:
+        return Path(run_root).expanduser().resolve()
+    explicit = os.environ.get("CYCPEP_PREDICTION_ROOT")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    data_root = os.environ.get("NP_DATA")
+    if data_root:
+        return (Path(data_root).expanduser() / "prediction_runs").resolve()
+    return (ROOT / "data" / "prediction_runs").resolve()
 
 
 def _default_run_root() -> Path:
-    explicit = os.environ.get("CYCPEP_PREDICTION_ROOT")
-    if explicit:
-        return Path(explicit)
-    data_root = os.environ.get("NP_DATA")
-    if data_root:
-        return Path(data_root) / "prediction_runs"
-    return ROOT / "data" / "prediction_runs"
+    """Compatibility helper for the existing CLI default."""
+    return resolve_prediction_run_root()
 
 
 def _default_artifacts_root() -> Path:
@@ -66,6 +83,7 @@ def run(
     project_config: dict | None = None,
     effects_output: str | Path | None = None,
     transaction_id: str | None = None,
+    correlation: PredictionCorrelation | None = None,
 ) -> dict:
     """Run Prediction for existing Design candidates.
 
@@ -97,19 +115,60 @@ def run(
             "prediction_transaction_missing",
             "transaction_id is required when emitting Prediction effects",
         )
+    if correlation is not None:
+        approved_binding = str((project.get("review") or {}).get("approved_digest") or "")
+        if (
+            correlation.project_id != str(project.get("project_id") or "")
+            or correlation.approved_content_binding != approved_binding
+            or run_id != correlation.prediction_run_id
+        ):
+            raise ContractError(
+                "prediction_correlation_mismatch",
+                "Prediction correlation does not match project approval or run identity",
+            )
+        if run_root is None:
+            raise ContractError(
+                "prediction_locator_missing",
+                "Launcher-correlated Prediction requires an explicit resolved run root",
+            )
     pipeline = PredictionPipeline(
         candidate_rows=CandidateIndex.load(),
         project=project,
         thresholds=thresholds,
         artifacts_root=artifacts_root or _default_artifacts_root(),
-        run_root=run_root or _default_run_root(),
+        run_root=resolve_prediction_run_root(run_root),
         config=config,
         candidate_ids=candidate_ids,
         run_id=run_id,
         resume=resume,
         defer_formal_writes=effects_output is not None,
         artifact_id_prefix=transaction_id,
+        launcher_correlation=(correlation.receipt_fields() if correlation else None),
     )
+    if correlation is not None:
+        inputs = PredictionInvocationInputs.from_pipeline(pipeline)
+        existing = _validate_prediction_invocation(
+            correlation,
+            store=get_storage_backend(),
+            expected_inputs=inputs,
+        )
+        if existing.status != "not_started":
+            raise ContractError(
+                existing.blocker_code or "prediction_recovery_ambiguous",
+                "Prediction invocation has already started; validate recovery before retrying",
+            )
+        EvidenceLogger.log(
+            "prediction",
+            "prediction_invocation_started",
+            start_receipt_payload(
+                correlation,
+                run_root=pipeline.run_root,
+                inputs=inputs,
+                expected_run_manifest=pipeline.run_manifest(),
+            ),
+            targets=list(pipeline.required_targets),
+            phase="evaluate",
+        )
     summary = pipeline.run()
     if effects_output is not None:
         destination = Path(effects_output).expanduser().resolve()
@@ -124,6 +183,20 @@ def run(
             encoding="utf-8",
         )
     return summary
+
+
+def validate_prediction_invocation(
+    correlation: PredictionCorrelation,
+    *,
+    store=None,
+    expected_inputs: PredictionInvocationInputs | None = None,
+) -> PredictionInvocationRecovery:
+    """Read and validate Prediction formal state for one Launcher invocation."""
+    return _validate_prediction_invocation(
+        correlation,
+        store=store or get_storage_backend(),
+        expected_inputs=expected_inputs,
+    )
 
 
 def _load_config(path: str | None) -> PredictionConfig:

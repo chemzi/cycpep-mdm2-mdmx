@@ -36,6 +36,35 @@ export interface ArtifactTraceInspectorProps {
   onSelectArtifact: (artifactId: string) => void;
 }
 
+export function ArtifactRecordDetail({
+  artifact,
+}: {
+  artifact: ArtifactView | null;
+}) {
+  if (!artifact) {
+    return <p className="domain-empty">Select an artifact to inspect formal provenance.</p>;
+  }
+  return (
+    <article className="artifact-detail">
+      <header><h3>{artifact.artifact_id ?? "Artifact"}</h3></header>
+      <dl className="domain-fields">
+        <div><dt>Type</dt><dd>{artifact.artifact_type ?? "Unavailable"}</dd></div>
+        <div><dt>Role</dt><dd>{artifact.role ?? "Unavailable"}</dd></div>
+        <div><dt>Schema</dt><dd>{artifact.schema_version ?? "Unavailable"}</dd></div>
+        <div><dt>Size</dt><dd>{artifact.size_bytes ?? "Unavailable"}</dd></div>
+        <div><dt>Integrity identity</dt><dd><code>{artifact.sha256 ?? "Unavailable"}</code></dd></div>
+        <div><dt>Producer task</dt><dd><code>{artifact.producer_task_id ?? "Unavailable"}</code></dd></div>
+        <div><dt>Input artifacts</dt><dd>{artifact.input_artifact_ids?.join(", ") || "None returned"}</dd></div>
+      </dl>
+      <h4>Protocol</h4>
+      <ProtocolDetail protocol={artifact.protocol} />
+      <h4>Trace</h4>
+      <TraceDetail trace={artifact.trace} />
+      <StructureViewer artifact={artifact} />
+    </article>
+  );
+}
+
 export function ArtifactTraceInspector({
   artifacts,
   protocols,
@@ -76,27 +105,7 @@ export function ArtifactTraceInspector({
             })}
           </ul>
 
-          {!selected ? (
-            <p className="domain-empty">Select an artifact to inspect formal provenance.</p>
-          ) : (
-            <article className="artifact-detail">
-              <header><h3>{selected.artifact_id ?? "Artifact"}</h3></header>
-              <dl className="domain-fields">
-                <div><dt>Type</dt><dd>{selected.artifact_type ?? "Unavailable"}</dd></div>
-                <div><dt>Role</dt><dd>{selected.role ?? "Unavailable"}</dd></div>
-                <div><dt>Schema</dt><dd>{selected.schema_version ?? "Unavailable"}</dd></div>
-                <div><dt>Size</dt><dd>{selected.size_bytes ?? "Unavailable"}</dd></div>
-                <div><dt>Integrity identity</dt><dd><code>{selected.sha256 ?? "Unavailable"}</code></dd></div>
-                <div><dt>Producer task</dt><dd><code>{selected.producer_task_id ?? "Unavailable"}</code></dd></div>
-                <div><dt>Input artifacts</dt><dd>{selected.input_artifact_ids?.join(", ") || "None returned"}</dd></div>
-              </dl>
-              <h4>Protocol</h4>
-              <ProtocolDetail protocol={selected.protocol} />
-              <h4>Trace</h4>
-              <TraceDetail trace={selected.trace} />
-              <StructureViewer artifact={selected} />
-            </article>
-          )}
+          <ArtifactRecordDetail artifact={selected} />
         </div>
       )}
 

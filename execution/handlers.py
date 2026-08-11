@@ -559,6 +559,7 @@ def review_prediction_handoff(context: HandlerContext) -> HandlerOutcome:
                 "recommendation": evidence["recommendation"],
                 "metrics_snapshot": evidence["metrics"],
                 "report_id": evidence["report_id"],
+                "prediction_run_id": evidence["prediction_run_id"],
             },),
             outputs=(("critic_report", output),),
         )

@@ -86,6 +86,40 @@ class ProjectContextTests(unittest.TestCase):
         )
         self.assertEqual(pc.resolve_paths().data_dir, TEST_ROOT / "custom")
         self.assertIn("keap1", str(pc.resolve_paths().evidence_dir))
+        self.assertEqual(
+            pc.resolve_paths().database_path,
+            TEST_ROOT / "custom" / "store.db",
+        )
+
+    def test_runtime_loader_freezes_all_documented_paths(self):
+        runtime_root = TEST_ROOT / "runtime-loader"
+        environ = {
+            "CYCPEP_DATA_DIR": str(runtime_root / "data"),
+            "CYCPEP_EVIDENCE_DIR": str(runtime_root / "evidence"),
+            "CYCPEP_DB_PATH": str(runtime_root / "database" / "project.sqlite3"),
+        }
+
+        pc = ProjectContext.from_runtime_config(
+            {"project_id": "keap1", "targets": [{"id": "KEAP1"}]},
+            environ=environ,
+        )
+        resolved = pc.resolve_paths()
+
+        self.assertEqual(resolved.data_dir, runtime_root / "data")
+        self.assertEqual(resolved.evidence_dir, runtime_root / "evidence")
+        self.assertEqual(
+            resolved.database_path,
+            runtime_root / "database" / "project.sqlite3",
+        )
+
+    def test_runtime_loader_database_defaults_to_resolved_data(self):
+        runtime_data = TEST_ROOT / "runtime-default-database"
+        pc = ProjectContext.from_runtime_config(
+            {"project_id": "keap1", "targets": [{"id": "KEAP1"}]},
+            environ={"CYCPEP_DATA_DIR": str(runtime_data)},
+        )
+
+        self.assertEqual(pc.resolve_paths().database_path, runtime_data / "store.db")
 
 
 class DataLayerLazyTests(unittest.TestCase):

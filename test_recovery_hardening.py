@@ -28,6 +28,7 @@ class _LeaseStore:
         self.commit_release = threading.Event()
         self.block_commit = False
         self.commit_then_raise = False
+        self.transactions: list[dict] = []
 
     def commit_transaction(
         self,
@@ -68,6 +69,16 @@ class _LeaseStore:
         self.statuses[transaction_id] = "ROLLED_BACK"
         self.artifacts.clear()
         return []
+
+    def list_transactions(self, **filters):
+        return [
+            transaction
+            for transaction in self.transactions
+            if all(
+                expected is None or transaction.get(name) == expected
+                for name, expected in filters.items()
+            )
+        ]
 
 
 class RecoveryHardeningTests(unittest.TestCase):
@@ -123,6 +134,144 @@ class RecoveryHardeningTests(unittest.TestCase):
             "artifacts": [{"artifact_id": "artifact", "path": str(path)}],
             **lease,
         }
+
+    def test_read_only_inspection_reports_pending_marker_without_mutation(self):
+        store = _LeaseStore()
+        transaction_id = "TX123"
+        marker = self._write_marker(
+            transaction_id,
+            {
+                "transaction_id": transaction_id,
+                "status": "RECOVERY_UNRESOLVED",
+                "compensation_error": {"code": "operator_required"},
+            },
+        )
+        before = marker.read_bytes()
+
+        result = RecoveryManager(store).inspect_pending(self.staging_root)
+
+        self.assertFalse(result.clean)
+        self.assertEqual(result.unresolved, (transaction_id,))
+        self.assertEqual(result.marker_errors, ())
+        self.assertEqual(marker.read_bytes(), before)
+        self.assertEqual(store.rollback_calls, [])
+
+    def test_read_only_inspection_reports_db_only_unresolved_transaction(self):
+        store = _LeaseStore()
+        store.transactions.append({
+            "transaction_id": "TX-DB-ONLY",
+            "status": "COMPENSATION_CONFLICT",
+        })
+
+        result = RecoveryManager(store).inspect_pending(self.staging_root)
+
+        self.assertEqual(result.unresolved, ("TX-DB-ONLY",))
+
+    def test_read_only_inspection_does_not_block_a_live_owner(self):
+        store = _LeaseStore()
+        transaction_id = "TX-LIVE"
+        marker = {
+            "transaction_id": transaction_id,
+            "status": "PREPARED",
+            **owner_lease(worker_id="live-worker", instance_id="live-instance"),
+        }
+        self._write_marker(transaction_id, marker)
+
+        result = RecoveryManager(store).inspect_pending(self.staging_root)
+
+        self.assertTrue(result.clean)
+        self.assertEqual(result.skipped_active, (transaction_id,))
+
+    def test_read_only_inspection_preserves_live_and_stale_unresolved_ids(self):
+        store = _LeaseStore()
+        store.transactions.append({
+            "transaction_id": "TX-STALE",
+            "run_id": "run-current",
+            "status": "COMPENSATION_CONFLICT",
+        })
+        self._write_marker(
+            "TX-LIVE",
+            {
+                "transaction_id": "TX-LIVE",
+                "context": {"run_id": "run-current"},
+                "status": "PREPARED",
+                **owner_lease(
+                    worker_id="live-worker", instance_id="live-instance"
+                ),
+            },
+        )
+
+        result = RecoveryManager(store).inspect_pending(
+            self.staging_root, run_id="run-current"
+        )
+
+        self.assertFalse(result.clean)
+        self.assertEqual(result.unresolved, ("TX-STALE",))
+        self.assertEqual(result.skipped_active, ("TX-LIVE",))
+
+    def test_read_only_inspection_preserves_live_id_with_marker_error(self):
+        store = _LeaseStore()
+        self._write_marker(
+            "TX-LIVE",
+            {
+                "transaction_id": "TX-LIVE",
+                "status": "PREPARED",
+                **owner_lease(
+                    worker_id="live-worker", instance_id="live-instance"
+                ),
+            },
+        )
+        broken = self._marker_path("TX-BROKEN")
+        broken.parent.mkdir(parents=True, exist_ok=True)
+        broken.write_text("not-json", encoding="utf-8")
+
+        result = RecoveryManager(store).inspect_pending(self.staging_root)
+
+        self.assertFalse(result.clean)
+        self.assertEqual(result.skipped_active, ("TX-LIVE",))
+        self.assertEqual(len(result.marker_errors), 1)
+
+    def test_read_only_inspection_accepts_formally_closed_committed_marker(self):
+        store = _LeaseStore()
+        transaction_id = "TX-CLOSED"
+        store.statuses[transaction_id] = "COMMITTED"
+        marker = self._dead_owner_marker(
+            transaction_id, "COMMITTED", self.artifact_root / "artifact.json"
+        )
+        marker["context"] = {"transaction_id": transaction_id, "run_id": "run-1"}
+        path = self._write_marker(transaction_id, marker)
+        before = path.read_bytes()
+
+        result = RecoveryManager(store).inspect_pending(
+            self.staging_root, orchestrator_state=lambda _context: "closed"
+        )
+
+        self.assertTrue(result.clean)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_read_only_inspection_is_scoped_to_the_current_formal_run(self):
+        store = _LeaseStore()
+        store.transactions.append({
+            "transaction_id": "TX-OTHER-DB",
+            "run_id": "run-other",
+            "status": "COMPENSATION_CONFLICT",
+        })
+        marker = self._dead_owner_marker(
+            "TX-OTHER-MARKER", "RECOVERY_UNRESOLVED", self.root / "other.json"
+        )
+        marker["context"] = {
+            "transaction_id": "TX-OTHER-MARKER",
+            "run_id": "run-other",
+        }
+        self._write_marker("TX-OTHER-MARKER", marker)
+
+        result = RecoveryManager(store).inspect_pending(
+            self.staging_root,
+            run_id="run-current",
+        )
+
+        self.assertTrue(result.clean)
+        self.assertEqual(result.unresolved, ())
 
     @unittest.skipUnless(
         sys.platform.startswith("linux"),

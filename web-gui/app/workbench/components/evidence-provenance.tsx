@@ -13,6 +13,36 @@ function returnedList(values?: string[]): string {
   return values?.length ? values.join(", ") : "None returned";
 }
 
+export function EvidenceRecordDetail({
+  evidence,
+}: {
+  evidence: EvidenceView | null;
+}) {
+  if (!evidence) {
+    return <p className="domain-empty">Select an Evidence record to inspect it.</p>;
+  }
+  return (
+    <article className="evidence-detail" aria-live="polite">
+      <header>
+        <h3>{evidence.event_type ?? "unknown_event"}</h3>
+        <code>{evidence.event_id ?? "Unavailable"}</code>
+      </header>
+      <dl className="domain-fields">
+        <div><dt>Timestamp</dt><dd>{evidence.timestamp ?? "Unavailable"}</dd></div>
+        <div><dt>Agent</dt><dd>{evidence.agent ?? "Unavailable"}</dd></div>
+        <div><dt>Round</dt><dd>{evidence.round ?? "Unavailable"}</dd></div>
+        <div><dt>Targets</dt><dd>{returnedList(evidence.targets)}</dd></div>
+        <div><dt>Run relationship</dt><dd>{evidence.run_relation.replaceAll("_", " ")}</dd></div>
+        <div><dt>Message</dt><dd>{evidence.message ?? "No message returned"}</dd></div>
+      </dl>
+      <h4>Protocol</h4>
+      <ProtocolDetail protocol={evidence.protocol} />
+      <h4>Trace</h4>
+      <TraceDetail trace={evidence.trace} />
+    </article>
+  );
+}
+
 export function EvidenceProvenance({
   evidence,
   selectedEvidenceId,
@@ -56,25 +86,7 @@ export function EvidenceProvenance({
             ))}
           </ol>
 
-          {!selected ? (
-            <p className="domain-empty">Select an Evidence record to inspect it.</p>
-          ) : (
-            <article className="evidence-detail" aria-live="polite">
-              <header><h3>{selected.event_type ?? "unknown_event"}</h3><code>{selected.event_id ?? "Unavailable"}</code></header>
-              <dl className="domain-fields">
-                <div><dt>Timestamp</dt><dd>{selected.timestamp ?? "Unavailable"}</dd></div>
-                <div><dt>Agent</dt><dd>{selected.agent ?? "Unavailable"}</dd></div>
-                <div><dt>Round</dt><dd>{selected.round ?? "Unavailable"}</dd></div>
-                <div><dt>Targets</dt><dd>{returnedList(selected.targets)}</dd></div>
-                <div><dt>Run relationship</dt><dd>{selected.run_relation.replaceAll("_", " ")}</dd></div>
-                <div><dt>Message</dt><dd>{selected.message ?? "No message returned"}</dd></div>
-              </dl>
-              <h4>Protocol</h4>
-              <ProtocolDetail protocol={selected.protocol} />
-              <h4>Trace</h4>
-              <TraceDetail trace={selected.trace} />
-            </article>
-          )}
+          <EvidenceRecordDetail evidence={selected} />
         </div>
       )}
     </section>

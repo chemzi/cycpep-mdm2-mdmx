@@ -22,7 +22,7 @@ from execution.contracts import (
 )
 from execution.handlers import _artifact_bundle_complete
 from execution.supervisor import _terminate_group, run_process
-from execution.worker import _orchestrator_state_for_transaction, execute_task
+from execution.worker import RecoveryError, _orchestrator_state_for_transaction, execute_task
 from execution.results import ExecutionActionResult
 from prediction_pipeline.contracts import object_sha256
 from storage import SQLiteStore
@@ -37,6 +37,24 @@ POLICY_CONSTRAINTS = [
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_transaction_recovery_blocks_before_orchestrator_claim(self):
+        blocker = RecoveryError("recovery unresolved", unresolved=("tx-1",))
+        with (
+            patch(
+                "execution.worker.ensure_transaction_recovery_clean",
+                side_effect=blocker,
+            ),
+            patch("execution.worker.claim") as claim,
+        ):
+            with self.assertRaises(RecoveryError):
+                execute_task(
+                    run_path="unused.json",
+                    task_id="task-1",
+                    worker_id="test-worker",
+                    config=object(),  # recovery gate runs before config is consumed
+                )
+        claim.assert_not_called()
+
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="execution-test-"))
         self.original_paths = (
