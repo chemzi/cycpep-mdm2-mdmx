@@ -113,3 +113,5 @@
 - [ ] 10.16 Re-run all focused/full/frontend/architecture/OpenSpec gates and three fresh fixed-point reviews; require behind=0, P0=0, P1=0, and Strict score >=85 while keeping PR #62 Draft and unmerged.
 - [x] 10.17 Add default-production RED coverage for a bound empty/schema-incomplete Store, then require Store-owned read-only schema and expected-project validation before status or writable resume runtime construction, with unchanged DB bytes and zero scientific/Worker action on failure.
 - [ ] 10.18 Re-run the complete gates and all three fresh reviews from the corrected fixed point; require behind=0, P0=0, P1=0, and Strict score >=85.
+- [x] 10.19 Extend Store-owned read-only validation to every column and index that writable schema initialization would create or migrate, add default status/resume no-migration coverage, and preserve the explicit changed-project blocker by validating resume binding before the Store project probe.
+- [ ] 10.20 Re-run complete gates and fresh fixed-point Spec, Standards, and Strict reviews with the same merge thresholds.

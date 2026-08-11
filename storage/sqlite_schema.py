@@ -122,6 +122,55 @@ REQUIRED_TABLES = frozenset(
     }
 )
 
+REQUIRED_COLUMNS = {
+    "projects": {"project_id", "created_at", "updated_at"},
+    "states": {
+        "project_id", "phase", "round", "active_workflow_id", "updated_at",
+        "payload_json",
+    },
+    "state_key_versions": {
+        "project_id", "key", "revision", "last_writer_transaction_id",
+    },
+    "candidate_sequences": {"project_id", "current_value"},
+    "candidates": {
+        "candidate_id", "project_id", "sequence", "status", "metrics_json",
+        "created_at", "updated_at", "payload_json",
+    },
+    "candidate_versions": {
+        "project_id", "candidate_id", "revision", "last_writer_transaction_id",
+    },
+    "evidence_events": {
+        "event_id", "transaction_id", "workflow_id", "run_id", "task_id",
+        "candidate_id", "agent", "event_type", "timestamp", "payload_json",
+    },
+    "artifacts": {
+        "artifact_id", "artifact_type", "path", "size_bytes", "sha256",
+        "producer_task_id", "created_at",
+    },
+    "workflow_runs": {
+        "run_id", "workflow_id", "status", "created_at", "updated_at",
+        "payload_json",
+    },
+    "tasks": {
+        "task_id", "workflow_id", "action", "status", "created_at",
+        "updated_at", "payload_json",
+    },
+    "execution_transactions": {
+        "transaction_id", "task_id", "attempt_id", "status", "created_at",
+        "updated_at", "payload_json",
+    },
+}
+
+REQUIRED_INDEXES = frozenset(
+    {
+        "idx_candidates_project",
+        "idx_evidence_workflow",
+        "idx_evidence_task",
+        "idx_evidence_candidate",
+        "idx_evidence_transaction",
+    }
+)
+
 
 def ensure_schema(connection: sqlite3.Connection) -> None:
     """Create current tables, upgrade old columns, then create dependent indexes."""
@@ -156,6 +205,21 @@ def validate_schema(connection: sqlite3.Connection, *, project_id: str) -> None:
         )
     }
     if not REQUIRED_TABLES.issubset(observed):
+        raise sqlite3.DatabaseError("formal Store schema is incomplete")
+    for table, required in REQUIRED_COLUMNS.items():
+        columns = {
+            str(row[1])
+            for row in connection.execute(f"PRAGMA table_info({table})")
+        }
+        if not required.issubset(columns):
+            raise sqlite3.DatabaseError("formal Store schema is incomplete")
+    indexes = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'"
+        )
+    }
+    if not REQUIRED_INDEXES.issubset(indexes):
         raise sqlite3.DatabaseError("formal Store schema is incomplete")
     project = connection.execute(
         "SELECT 1 FROM projects WHERE project_id = ?", (project_id,)

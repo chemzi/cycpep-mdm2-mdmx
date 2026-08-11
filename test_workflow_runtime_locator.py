@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from contextlib import nullcontext
@@ -380,6 +381,73 @@ class RuntimeLocatorServiceTests(unittest.TestCase):
             self.assertEqual(runtime_calls, [False])
             self.assertEqual(invocations, ["research"])
             self.assertEqual(database.read_bytes(), b"")
+
+    def test_default_commands_do_not_migrate_an_incomplete_original_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project_path = root / "approved-project.json"
+            project_path.write_text(
+                json.dumps(dict(_context(root / "unused").config)), encoding="utf-8"
+            )
+            runtime_root = root / "runtime-a"
+            environment = {
+                "CYCPEP_DATA_DIR": str(runtime_root / "data"),
+                "CYCPEP_EVIDENCE_DIR": str(runtime_root / "evidence"),
+                "CYCPEP_DB_PATH": str(runtime_root / "formal" / "store.db"),
+                "NP_DATA": str(runtime_root),
+            }
+            world = _World()
+            stores = []
+            invocations = []
+            runtime_calls = []
+
+            def diagnostic_root():
+                return resolve_diagnostics_root(
+                    env=os.environ, repository_root=root / "repository"
+                )
+
+            def runtime(context, launcher_run_id, **kwargs):
+                runtime_calls.append(kwargs.get("read_only", False))
+                return _StoreReceiptRuntime(
+                    world, context, launcher_run_id, stores, invocations
+                )
+
+            with (
+                patch("workflow.service.resolve_diagnostics_root", diagnostic_root),
+                patch("workflow.service.assert_project_approved", lambda _config: None),
+                patch("workflow.adapters.DefaultWorkflowRuntime", runtime),
+                patch("workflow.service.uuid.uuid4") as launcher_uuid,
+                patch.dict(os.environ, environment, clear=False),
+            ):
+                launcher_uuid.return_value.hex = LAUNCHER_ID.removeprefix("launcher_")
+                launched = launch_project(project_path=project_path)
+                database = runtime_root / "formal" / "store.db"
+                connection = sqlite3.connect(database)
+                try:
+                    connection.execute("DROP INDEX idx_evidence_transaction")
+                    connection.execute(
+                        "ALTER TABLE evidence_events DROP COLUMN transaction_id"
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                before = database.read_bytes()
+
+                status = status_launcher_run(launcher_run_id=LAUNCHER_ID)
+                resumed = resume_launcher_run(launcher_run_id=LAUNCHER_ID)
+
+            self.assertEqual(launched.payload.status, "awaiting_approval")
+            self.assertEqual(status.exit_code, 3)
+            self.assertEqual(resumed.exit_code, 3)
+            self.assertEqual(
+                status.payload.error.code, "launcher_runtime_locator_unavailable"
+            )
+            self.assertEqual(
+                resumed.payload.error.code, "launcher_runtime_locator_unavailable"
+            )
+            self.assertEqual(runtime_calls, [False])
+            self.assertEqual(invocations, ["research"])
+            self.assertEqual(database.read_bytes(), before)
 
     def test_real_store_receipt_stays_on_runtime_a_across_status_and_resume(self):
         with tempfile.TemporaryDirectory() as tmp:

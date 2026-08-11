@@ -125,10 +125,10 @@ def _coordinate_locked(
         try:
             binding = require_runtime_locator(report)
             context = _restore_bound_context(deps, binding)
-            if not allow_missing_store and deps.validate_formal_store is not None:
-                deps.validate_formal_store(binding, context)
             deps.validate_project(dict(context.config))
             _validate_resume_binding(report, context)
+            if not allow_missing_store and deps.validate_formal_store is not None:
+                deps.validate_formal_store(binding, context)
             with deps.bind_context(context):
                 runtime_factory = (
                     deps.read_only_runtime_factory

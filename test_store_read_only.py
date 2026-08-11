@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import sqlite3
 from pathlib import Path
 
 from storage import SQLiteStore, StorageUnavailableError
@@ -36,6 +37,43 @@ class SQLiteStoreReadOnlyTests(unittest.TestCase):
             before = database.read_bytes()
             with self.assertRaises(StorageUnavailableError):
                 SQLiteStore(database, project_id="project-1", read_only=True)
+            self.assertEqual(database.read_bytes(), before)
+
+    def test_schema_migration_is_required_before_read_only_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "incomplete.db"
+            SQLiteStore(database, project_id="project-1")
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute("DROP INDEX idx_evidence_transaction")
+                connection.execute(
+                    "ALTER TABLE evidence_events DROP COLUMN transaction_id"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            before = database.read_bytes()
+
+            with self.assertRaises(StorageUnavailableError):
+                SQLiteStore(database, project_id="project-1", read_only=True)
+
+            self.assertEqual(database.read_bytes(), before)
+
+    def test_missing_required_index_is_rejected_without_recreation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "missing-index.db"
+            SQLiteStore(database, project_id="project-1")
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute("DROP INDEX idx_evidence_transaction")
+                connection.commit()
+            finally:
+                connection.close()
+            before = database.read_bytes()
+
+            with self.assertRaises(StorageUnavailableError):
+                SQLiteStore(database, project_id="project-1", read_only=True)
+
             self.assertEqual(database.read_bytes(), before)
 
     def test_read_only_queries_do_not_change_database(self):
