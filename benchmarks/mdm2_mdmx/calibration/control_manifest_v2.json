@@ -1,0 +1,454 @@
+{
+  "schema_version": 2,
+  "manifest_kind": "mdm2_mdmx_control_manifest",
+  "benchmark_id": "mdm2_mdmx_published_binder_series_v1",
+  "target_id": [
+    "MDM2",
+    "MDMX"
+  ],
+  "target_uniprot": {
+    "MDM2": "Q00987",
+    "MDMX": "O15151"
+  },
+  "cyclization_type": "head_to_tail_amide",
+  "negatives_per_positive": null,
+  "seed": 20260811,
+  "scoring_protocol_expected": {
+    "model": "af2+boltz-2.2.1+prodigy+rosetta-interfaceanalyzer",
+    "seeds": 101,
+    "tool": "prediction-stack-v1"
+  },
+  "notes": [
+    "6 literature positives + 28 in-silico negatives (16 hotspot Ala mutants + 12 composition-preserving shuffles).",
+    "Negatives are presumed negatives with construction provenance; not experimentally validated as non-binders.",
+    "FPR resolution at n_neg=28 is ~3.6%, sufficient for the FPR<=5% claim.",
+    "Calibration is per-target independent (MDM2 / MDMX).",
+    "Binding metadata (project_id/approved_digest/protocol) is filled at scoring time by scripts/score_control_dataset.py; nothing is baked in."
+  ],
+  "controls": [
+    {
+      "control_id": "C9001",
+      "label": "positive",
+      "role": "literature_positive_control",
+      "sequence": "ETFSDLWKLLPE",
+      "source": {
+        "pdb_id": "1YCR",
+        "method": "published MDM2 binder; p53 transactivation domain core (17-28)",
+        "name": "p53 12mer",
+        "doi": "10.1126/science.274.5289.948"
+      }
+    },
+    {
+      "control_id": "C9002",
+      "label": "positive",
+      "role": "literature_positive_control",
+      "sequence": "SQETFSDLWKLLPEN",
+      "source": {
+        "pdb_id": "1YCR",
+        "method": "published MDM2 binder; p53 transactivation domain (15-29)",
+        "name": "p53 15mer",
+        "doi": "10.1126/science.274.5289.948"
+      }
+    },
+    {
+      "control_id": "C9003",
+      "label": "positive",
+      "role": "literature_positive_control",
+      "sequence": "TSFAEYWNLLSP",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "published high-affinity MDM2/MDMX dual peptide binder (phage display)",
+        "name": "PMI",
+        "doi": "10.1073/pnas.0903360106"
+      }
+    },
+    {
+      "control_id": "C9004",
+      "label": "positive",
+      "role": "literature_positive_control",
+      "sequence": "LTFLEYWAQLMQ",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "published PMI-family MDM2/MDMX dual inhibitor series; exact per-sequence reference to be confirmed by data owner",
+        "name": "PMI-M3",
+        "note": "exact reference to be confirmed by data owner before submission"
+      }
+    },
+    {
+      "control_id": "C9005",
+      "label": "positive",
+      "role": "literature_positive_control",
+      "sequence": "LTFEHYWAQLTS",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "published PMI-family MDM2/MDMX dual inhibitor series; exact per-sequence reference to be confirmed by data owner",
+        "name": "pDI",
+        "note": "exact reference to be confirmed by data owner before submission"
+      }
+    },
+    {
+      "control_id": "C9006",
+      "label": "positive",
+      "role": "literature_positive_control",
+      "sequence": "ETFEHWWSQLLS",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "published PMI-family MDM2/MDMX dual inhibitor series; exact per-sequence reference to be confirmed by data owner",
+        "name": "pDIQ",
+        "note": "exact reference to be confirmed by data owner before submission"
+      }
+    },
+    {
+      "control_id": "C9101",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "ETASDLWKLLPE",
+      "source": {
+        "pdb_id": "1YCR",
+        "method": "in-silico hotspot Ala mutant (F3A) of C9001 (p53 12mer); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9001",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder",
+        "doi": "10.1126/science.274.5289.948"
+      }
+    },
+    {
+      "control_id": "C9102",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "ETFSDLAKLLPE",
+      "source": {
+        "pdb_id": "1YCR",
+        "method": "in-silico hotspot Ala mutant (W7A) of C9001 (p53 12mer); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9001",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder",
+        "doi": "10.1126/science.274.5289.948"
+      }
+    },
+    {
+      "control_id": "C9103",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "ETFSDLWKLAPE",
+      "source": {
+        "pdb_id": "1YCR",
+        "method": "in-silico hotspot Ala mutant (L10A) of C9001 (p53 12mer); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9001",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder",
+        "doi": "10.1126/science.274.5289.948"
+      }
+    },
+    {
+      "control_id": "C9104",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "ETASDLAKLLPE",
+      "source": {
+        "pdb_id": "1YCR",
+        "method": "in-silico hotspot Ala mutant (F3A+W7A) of C9001 (p53 12mer); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9001",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder",
+        "doi": "10.1126/science.274.5289.948"
+      }
+    },
+    {
+      "control_id": "C9105",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "SQETASDLWKLLPEN",
+      "source": {
+        "pdb_id": "1YCR",
+        "method": "in-silico hotspot Ala mutant (F5A) of C9002 (p53 15mer); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9002",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder",
+        "doi": "10.1126/science.274.5289.948"
+      }
+    },
+    {
+      "control_id": "C9106",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "SQETFSDLAKLLPEN",
+      "source": {
+        "pdb_id": "1YCR",
+        "method": "in-silico hotspot Ala mutant (W9A) of C9002 (p53 15mer); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9002",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder",
+        "doi": "10.1126/science.274.5289.948"
+      }
+    },
+    {
+      "control_id": "C9107",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "SQETFSDLWKLAPEN",
+      "source": {
+        "pdb_id": "1YCR",
+        "method": "in-silico hotspot Ala mutant (L12A) of C9002 (p53 15mer); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9002",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder",
+        "doi": "10.1126/science.274.5289.948"
+      }
+    },
+    {
+      "control_id": "C9108",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "TSAAEYWNLLSP",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "in-silico hotspot Ala mutant (F3A) of C9003 (PMI); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9003",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder",
+        "doi": "10.1073/pnas.0903360106"
+      }
+    },
+    {
+      "control_id": "C9109",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "TSFAEYANLLSP",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "in-silico hotspot Ala mutant (W7A) of C9003 (PMI); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9003",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder",
+        "doi": "10.1073/pnas.0903360106"
+      }
+    },
+    {
+      "control_id": "C9110",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "TSFAEYWNLASP",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "in-silico hotspot Ala mutant (L10A) of C9003 (PMI); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9003",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder",
+        "doi": "10.1073/pnas.0903360106"
+      }
+    },
+    {
+      "control_id": "C9111",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "LTALEYWAQLMQ",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "in-silico hotspot Ala mutant (F3A) of C9004 (PMI-M3); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9004",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder"
+      }
+    },
+    {
+      "control_id": "C9112",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "LTFLEYAAQLMQ",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "in-silico hotspot Ala mutant (W7A) of C9004 (PMI-M3); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9004",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder"
+      }
+    },
+    {
+      "control_id": "C9113",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "LTAEHYWAQLTS",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "in-silico hotspot Ala mutant (F3A) of C9005 (pDI); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9005",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder"
+      }
+    },
+    {
+      "control_id": "C9114",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "LTFEHYAAQLTS",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "in-silico hotspot Ala mutant (W7A) of C9005 (pDI); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9005",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder"
+      }
+    },
+    {
+      "control_id": "C9115",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "ETAEHWWSQLLS",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "in-silico hotspot Ala mutant (F3A) of C9006 (pDIQ); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9006",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder"
+      }
+    },
+    {
+      "control_id": "C9116",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "ETFEHWASQLLS",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "in-silico hotspot Ala mutant (W7A) of C9006 (pDIQ); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9006",
+        "note": "presumed negative by documented hotspot ablation; not experimentally validated as non-binder"
+      }
+    },
+    {
+      "control_id": "C9117",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "FLWSKTPEDELL",
+      "source": {
+        "pdb_id": "1YCR",
+        "method": "composition-preserving shuffle of C9001 (p53 12mer), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9001",
+        "note": "presumed negative; not experimentally validated as non-binder",
+        "doi": "10.1126/science.274.5289.948"
+      }
+    },
+    {
+      "control_id": "C9118",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "LTKFELSPEDLW",
+      "source": {
+        "pdb_id": "1YCR",
+        "method": "composition-preserving shuffle of C9001 (p53 12mer), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9001",
+        "note": "presumed negative; not experimentally validated as non-binder",
+        "doi": "10.1126/science.274.5289.948"
+      }
+    },
+    {
+      "control_id": "C9119",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "NLKLSTWEEQPFSDL",
+      "source": {
+        "pdb_id": "1YCR",
+        "method": "composition-preserving shuffle of C9002 (p53 15mer), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9002",
+        "note": "presumed negative; not experimentally validated as non-binder",
+        "doi": "10.1126/science.274.5289.948"
+      }
+    },
+    {
+      "control_id": "C9120",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "DLENLWESSPTKLQF",
+      "source": {
+        "pdb_id": "1YCR",
+        "method": "composition-preserving shuffle of C9002 (p53 15mer), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9002",
+        "note": "presumed negative; not experimentally validated as non-binder",
+        "doi": "10.1126/science.274.5289.948"
+      }
+    },
+    {
+      "control_id": "C9121",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "TASEYPLWFNLS",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "composition-preserving shuffle of C9003 (PMI), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9003",
+        "note": "presumed negative; not experimentally validated as non-binder",
+        "doi": "10.1073/pnas.0903360106"
+      }
+    },
+    {
+      "control_id": "C9122",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "SLAWLTYPENFS",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "composition-preserving shuffle of C9003 (PMI), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9003",
+        "note": "presumed negative; not experimentally validated as non-binder",
+        "doi": "10.1073/pnas.0903360106"
+      }
+    },
+    {
+      "control_id": "C9123",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "EAQQWFTLLYLM",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "composition-preserving shuffle of C9004 (PMI-M3), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9004",
+        "note": "presumed negative; not experimentally validated as non-binder"
+      }
+    },
+    {
+      "control_id": "C9124",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "QTLAFLMQEYLW",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "composition-preserving shuffle of C9004 (PMI-M3), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9004",
+        "note": "presumed negative; not experimentally validated as non-binder"
+      }
+    },
+    {
+      "control_id": "C9125",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "HETWFLAYLSQT",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "composition-preserving shuffle of C9005 (pDI), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9005",
+        "note": "presumed negative; not experimentally validated as non-binder"
+      }
+    },
+    {
+      "control_id": "C9126",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "WSQTATLEYLHF",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "composition-preserving shuffle of C9005 (pDI), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9005",
+        "note": "presumed negative; not experimentally validated as non-binder"
+      }
+    },
+    {
+      "control_id": "C9127",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "WLHLSTESFQEW",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "composition-preserving shuffle of C9006 (pDIQ), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9006",
+        "note": "presumed negative; not experimentally validated as non-binder"
+      }
+    },
+    {
+      "control_id": "C9128",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "LLSWSEHQEWTF",
+      "source": {
+        "pdb_id": "3DAB",
+        "method": "composition-preserving shuffle of C9006 (pDIQ), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9006",
+        "note": "presumed negative; not experimentally validated as non-binder"
+      }
+    }
+  ]
+}
