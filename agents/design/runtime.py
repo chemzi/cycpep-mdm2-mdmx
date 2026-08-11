@@ -433,7 +433,12 @@ def _run_ligandmpnn(backbone_pdb, output_dir, n_seq=None, binder_chain=None,
             Path(config.LIGANDMPNN_DIR) / "run.py",
             Path(config.LIGANDMPNN_CHECKPOINT),
         )
-        missing = [str(path) for path in required_paths if not path.is_file()]
+        try:
+            missing = [str(path) for path in required_paths if not path.is_file()]
+        except OSError as exc:
+            raise ScientificToolExecutionError(
+                "ligandmpnn", f"required runtime/model unavailable: {exc}"
+            ) from exc
         if missing:
             raise ScientificToolExecutionError(
                 "ligandmpnn", f"required runtime/model unavailable: {missing}"

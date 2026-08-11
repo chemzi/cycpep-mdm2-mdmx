@@ -566,6 +566,15 @@ class InitialDesignContractTests(unittest.TestCase):
                     "bb.pdb", self.temp.name, binder_chain="B", strict_tools=True
                 )
 
+        with patch(
+            "agents.design.runtime.Path.is_file",
+            side_effect=PermissionError("runtime path is inaccessible"),
+        ):
+            with self.assertRaises(ScientificToolExecutionError):
+                _run_ligandmpnn(
+                    "bb.pdb", self.temp.name, binder_chain="B", strict_tools=True
+                )
+
         runtime_root = Path(self.temp.name) / "ligandmpnn-runtime"
         runtime_root.mkdir()
         run_py = runtime_root / "run.py"
