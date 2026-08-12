@@ -745,15 +745,18 @@ def validate_prodigy_runtime(executable: str | Path, expected_version: str) -> s
     result = run_command(
         [
             str(python), "-c",
-            "import prodigy, importlib.metadata as m; "
-            "names=('prodigy-prot','prodigy'); "
-            "print(next((d.version for d in m.distributions() "
-            "if (d.metadata.get('Name') or '').lower() in names), ''))",
+            "import prodigy_prot, importlib.metadata as m; "
+            "print(m.version('prodigy-prot'))",
         ],
         timeout=60,
     )
     installed = result.stdout.strip()
-    if result.exit_code or installed != expected_version:
+    if result.exit_code:
+        raise ContractError(
+            "prodigy_runtime_probe_failed",
+            f"PRODIGY runtime probe failed: {result.stderr[-500:]}",
+        )
+    if installed != expected_version:
         raise ContractError(
             "prodigy_version_mismatch",
             f"PRODIGY {expected_version} is required; found {installed!r}",
