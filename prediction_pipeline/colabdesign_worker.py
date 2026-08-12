@@ -91,6 +91,21 @@ def _assert_cyclic_offset_supported(repository: Path, use_multimer: bool) -> Non
         )
 
 
+def validate_colabdesign_runtime(
+    repository: str | Path, *, expected_commit: str
+) -> str:
+    """Validate the existing pinned checkout and return its observed commit."""
+    path = Path(repository).expanduser().resolve()
+    observed = _git_head(path)
+    if observed != expected_commit:
+        raise ContractError(
+            "colabdesign_commit_mismatch",
+            f"expected {expected_commit}, observed {observed}",
+        )
+    _assert_clean_checkout(path)
+    return observed
+
+
 def _cyclic_offset(length: int) -> np.ndarray:
     indices = np.arange(length)
     doubled = np.stack([indices, indices + length], axis=-1)
@@ -129,13 +144,9 @@ def run(args: argparse.Namespace) -> dict:
             f"{MAX_CYCLIC_PEPTIDE_LENGTH} standard amino acids",
         )
     colabdesign_dir = Path(args.colabdesign_dir).expanduser().resolve()
-    observed_commit = _git_head(colabdesign_dir)
-    if observed_commit != args.expected_commit:
-        raise ContractError(
-            "colabdesign_commit_mismatch",
-            f"expected {args.expected_commit}, observed {observed_commit}",
-        )
-    _assert_clean_checkout(colabdesign_dir)
+    observed_commit = validate_colabdesign_runtime(
+        colabdesign_dir, expected_commit=args.expected_commit
+    )
     _assert_cyclic_offset_supported(
         colabdesign_dir, use_multimer=bool(args.target_pdb and args.use_multimer)
     )

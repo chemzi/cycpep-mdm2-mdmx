@@ -21,6 +21,7 @@ from contracts.transaction import TransactionContext, TransactionStatus
 from execution.adapters import adapter_for
 from execution.config import ExecutionConfig
 from execution.contracts import ExecutionContractError
+import execution.handlers as execution_handlers
 from execution.handlers import HandlerContext, evaluate_new_design_candidates
 from execution.prediction_effects import load_prediction_transaction_effects
 from execution.results import (
@@ -195,6 +196,7 @@ class PredictionTransactionalTests(unittest.TestCase):
 
     @staticmethod
     def _typed_result(effects: dict, handoff: Path) -> ExecutionActionResult:
+        identity = build_prediction_execution_identity()
         return ExecutionActionResult(
             candidate_patches=tuple(
                 CandidatePatchMutation(item["candidate_id"], item["patch"])
@@ -212,6 +214,11 @@ class PredictionTransactionalTests(unittest.TestCase):
             ),
             evidence_events=tuple(effects["evidence_events"]),
             outputs=(("prediction_handoff", handoff),),
+            processes=({
+                "label": "prediction_runtime_test",
+                "elapsed_seconds": 0.0,
+                "observed_execution_identity": identity,
+            },),
         )
 
     def _handler(self, *, tamper_record: bool = False, with_record_input: bool = False):
@@ -227,6 +234,7 @@ class PredictionTransactionalTests(unittest.TestCase):
                 run_id=run_id,
                 defer_formal_writes=True,
                 artifact_id_prefix=context.transaction_id,
+                execution_identity=build_prediction_execution_identity(),
             )
             pipeline.run()
             if with_record_input:
@@ -270,6 +278,9 @@ class PredictionTransactionalTests(unittest.TestCase):
                 run_id=values[values.index("--run-id") + 1],
                 effects_output=effects_path,
                 transaction_id=values[values.index("--transaction-id") + 1],
+                execution_identity=json.loads(Path(
+                    values[values.index("--execution-identity") + 1]
+                ).read_text(encoding="utf-8")),
             )
             if mutate_effects is not None:
                 effects = json.loads(Path(effects_path).read_text(encoding="utf-8"))
@@ -584,6 +595,10 @@ class PredictionTransactionalTests(unittest.TestCase):
         packet = self._packet()
         packet["task_attempt"] = 1
         packet["task"]["parameters"]["reuse_complete_evidence"] = True
+        (existing / "execution_identity.json").write_text(
+            json.dumps(packet["task"]["parameters"]["execution_identity"]),
+            encoding="utf-8",
+        )
 
         handler_context = HandlerContext(
             packet=packet,
@@ -622,11 +637,39 @@ class PredictionTransactionalTests(unittest.TestCase):
         self.assertTrue(result.evidence_events)
         self.assertTrue(result.outputs[0][1].is_file())
 
+    def test_handler_rejects_missing_observed_identity_before_prediction_ingest(self):
+        root = self.root / "missing-observed-identity"
+        packet = self._packet()
+        handler_context = HandlerContext(
+            packet=packet,
+            config=self._config(root),
+            task_dir=root / "task",
+            project_config=self.project,
+            transaction_managed=True,
+            transaction_id="tx-missing-observed",
+        )
+        with patch(
+            "execution.handlers.State.load", return_value=self.state
+        ), patch(
+            "execution.handlers._prepare_prediction_candidate_artifacts",
+            return_value=(root / "staging", [], None),
+        ), patch(
+            "execution.handlers.run_process",
+            side_effect=AssertionError("Prediction ingest must not run"),
+        ):
+            with self.assertRaises(ExecutionContractError) as raised:
+                evaluate_new_design_candidates(handler_context)
+        self.assertEqual(raised.exception.code, "prediction_execution_identity_missing")
+
     def test_malicious_effects_cannot_patch_candidate_identity(self):
         root = self.root / "malicious-effects"
         (root / "prediction_artifacts" / "C0001").mkdir(parents=True)
         packet = self._packet()
         packet["task"]["parameters"]["reuse_complete_evidence"] = True
+        (root / "prediction_artifacts" / "C0001" / "execution_identity.json").write_text(
+            json.dumps(packet["task"]["parameters"]["execution_identity"]),
+            encoding="utf-8",
+        )
 
         def inject_identity_patch(effects):
             effects["candidate_patches"][0]["patch"]["sequence"] = "AAAAAAA"
@@ -769,6 +812,72 @@ class PredictionTransactionalTests(unittest.TestCase):
         self.assertEqual(store.get("C0001")["final_status"], "pending")
         self.assertEqual(store.query(event_type="prediction_recorded"), [])
         self.assertFalse(any((root / "execution" / "artifacts").rglob("*.json")))
+
+    def test_missing_observed_identity_is_not_filled_from_expected(self):
+        root = self.root / "missing-observed-identity"
+
+        def handler(context):
+            result = self._handler()(context)
+            handoff_path = result.outputs[0][1]
+            handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+            handoff.pop("execution_identity", None)
+            handoff_path.write_text(json.dumps(handoff), encoding="utf-8")
+            return result
+
+        with self.assertRaises(ExecutionContractError) as raised:
+            self._run(root, handler=handler)
+        self.assertEqual(
+            raised.exception.code, "prediction_execution_identity_mismatch"
+        )
+        store = SQLiteStore(root / "store.db", project_id="prediction_test")
+        self.assertEqual(store.query(event_type="prediction_recorded"), [])
+
+    def test_runtime_observation_records_boltz_no_kernels_and_real_versions(self):
+        root = self.root / "runtime-observation"
+        config = self._config(root)
+        for path in (
+            root / "boltz", root / "checkpoint", root / "prodigy", root / "python",
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+        config = ExecutionConfig(
+            **{
+                **config.__dict__,
+                "boltz_executable": root / "boltz",
+                "boltz_cache": root,
+                "boltz_checkpoint": root / "checkpoint",
+                "prodigy_executable": root / "prodigy",
+                "pyrosetta_python": root / "python",
+                "boltz_no_kernels": True,
+            }
+        )
+        expected = build_prediction_execution_identity()
+        with patch(
+            "prediction_pipeline.colabdesign_worker.validate_colabdesign_runtime",
+            return_value=expected["colabdesign"]["commit"],
+        ), patch(
+            "prediction_pipeline.boltz_worker.validate_boltz_runtime",
+            return_value={
+                "version": expected["boltz"]["version"],
+                "checkpoint_sha256": expected["boltz"]["checkpoint_sha256"],
+            },
+        ), patch(
+            "prediction_pipeline.rosetta_worker.validate_pyrosetta_runtime",
+            return_value=expected["pyrosetta"]["version"],
+        ), patch(
+            "prediction_pipeline.adapters.validate_prodigy_runtime",
+            return_value=expected["prodigy"]["version"],
+        ):
+            observed, metadata = execution_handlers._observe_prediction_runtime(
+                config, expected
+            )
+        self.assertEqual(observed, expected)
+        self.assertTrue(metadata["boltz_no_kernels"])
+        self.assertEqual(metadata["boltz_version"], "2.2.1")
+        self.assertEqual(
+            metadata["boltz_checkpoint_sha256"],
+            expected["boltz"]["checkpoint_sha256"],
+        )
 
     def test_subprocess_failure_has_no_formal_prediction_effects(self):
         root = self.root / "subprocess-failure"

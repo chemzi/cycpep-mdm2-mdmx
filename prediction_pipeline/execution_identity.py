@@ -32,17 +32,23 @@ _IDENTITY_KEYS = frozenset({
     "boltz",
     "pyrosetta",
     "prodigy",
+    "prediction_config",
     "configuration_digest",
 })
 
 
-def _identity_payload(config: PredictionConfig) -> dict[str, Any]:
+def _identity_payload(
+    config: PredictionConfig, observations: Mapping[str, str] | None = None
+) -> dict[str, Any]:
+    observed = dict(observations or {})
     af2 = PREDICTION_PROTOCOL["parameters"]["af2_prodigy"]
     boltz = PREDICTION_PROTOCOL["parameters"]["boltz"]
     return {
         "schema_version": EXECUTION_IDENTITY_SCHEMA_VERSION,
         "prediction_protocol": protocol_binding(),
-        "colabdesign": {"commit": config.colabdesign_commit},
+        "colabdesign": {
+            "commit": observed.get("colabdesign_commit", config.colabdesign_commit)
+        },
         "af2": {
             "model_family": "AlphaFold2",
             "model_ids": [
@@ -53,22 +59,29 @@ def _identity_payload(config: PredictionConfig) -> dict[str, Any]:
             "num_recycles": af2["num_recycles"],
         },
         "boltz": {
-            "version": BOLTZ_VERSION,
+            "version": observed.get("boltz_version", BOLTZ_VERSION),
             "model_family": BOLTZ_MODEL_FAMILY,
             "model_id": BOLTZ_MODEL_ID,
-            "checkpoint_sha256": BOLTZ2_CHECKPOINT_SHA256,
+            "checkpoint_sha256": observed.get(
+                "boltz_checkpoint_sha256", BOLTZ2_CHECKPOINT_SHA256
+            ),
             "diffusion_samples": boltz["diffusion_samples"],
         },
-        "pyrosetta": {"version": PYROSETTA_VERSION},
-        "prodigy": {"version": PRODIGY_VERSION},
+        "pyrosetta": {
+            "version": observed.get("pyrosetta_version", PYROSETTA_VERSION)
+        },
+        "prodigy": {"version": observed.get("prodigy_version", PRODIGY_VERSION)},
+        "prediction_config": config.to_dict(),
     }
 
 
 def build_prediction_execution_identity(
     config: PredictionConfig | None = None,
+    *,
+    observations: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Return the current protocol/tool/model identity without locators."""
-    payload = _identity_payload(config or PredictionConfig())
+    payload = _identity_payload(config or PredictionConfig(), observations)
     return {**payload, "configuration_digest": object_sha256(payload)}
 
 

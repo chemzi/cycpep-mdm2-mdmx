@@ -12,6 +12,14 @@ record expected and observed identity. Historical unstarted tasks lacking the
 identity remain readable but cannot start and must be replanned from their
 immutable source.
 
+Observed identity is independently built from the selected runtime before GPU
+work; it is never copied from expected identity or supplied by the transaction
+adapter. Preflight validates the ColabDesign checkout, installed Boltz,
+PyRosetta import/version, installed PRODIGY version, checkpoint binding, and
+canonical `PredictionConfig`. Python virtual-environment entrypoints retain
+their symlink path so invocation preserves the environment. Runtime metadata
+also records the Boltz version, checkpoint binding, and `no_kernels` mode.
+
 Deployment must configure the existing Prediction executables, checkpoint,
 cache, and source checkout before approval is exercised. The existing handler
 and tool adapters perform preflight; no bootstrap-specific probe or runner is

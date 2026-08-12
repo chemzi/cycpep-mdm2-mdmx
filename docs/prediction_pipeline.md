@@ -12,6 +12,17 @@ is `prediction_run_id`. Execution readiness reuses the existing Prediction
 record, battery, handoff, and `CRITIC_READY_STATUSES` contracts and does not
 redefine L1-L7 or thresholds.
 
+Transaction-managed records and handoffs carry the independently observed
+execution identity. Formal recovery requires the exact candidate set's unique
+committed `prediction_record` Artifacts, one transaction-bound
+`prediction_recorded` event per candidate, and one bound
+`prediction_handoff_ready` event. Project/workflow/run/plan/task/attempt/
+transaction/Prediction-run/execution-identity correlation must be complete
+before Critic can run; missing or altered proof blocks recovery.
+The additive optional `execution_identity` argument on `agents.prediction.run`
+and `PredictionPipeline` is supplied only by the validated Worker invocation;
+omitting it preserves the existing direct/non-Launcher API behavior.
+
 ## 1. 边界与数据流
 
 Prediction 只处理 Design 已登记到 `CandidateIndex` 的候选。生产路径不创建候选、不填 demo 阈值、不生成伪分数。

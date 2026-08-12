@@ -74,3 +74,24 @@
 - **Spec — PASS.** Review found and closed the bootstrap-to-Critic correlation bug, direct/bootstrap dual-authority ambiguity, incomplete plan/run/receipt/Artifact correlation, and incomplete retry-chain recovery proof. The resulting flow uses the existing registered `evaluate_new_design_candidates` handler as the sole scientific executor and preserves direct Prediction only for legacy/non-Launcher callers.
 - **Standards — PASS.** Public interface changes are additive and documented; transaction ownership, action closed-world, and ProjectContext boundaries remain intact. Bootstrap coordination was extracted from `workflow/service.py`, and Prediction completion validation was decomposed so Architecture Gate reports no new file/function complexity violation. No P0/P1 finding remains.
 - **Scope — PASS.** No new materializer/prober, no L1-L7/Critic/threshold/Store-schema/scientific behavior change, no candidate reduction, no automatic approval/retry, and no historical run mutation were introduced.
+
+## 8. Close PR73 P1 Contract Gaps
+
+- [x] 8.1 Add failing regressions proving observed execution identity is runtime-derived rather than copied, missing observed identity is rejected by the transaction adapter, installed PRODIGY mismatch fails validation, a `venv/bin/python` symlink retains virtual-environment semantics with real PyRosetta import/version preflight, every metric-affecting canonical PredictionConfig field changes identity, and Boltz version/checkpoint/`no_kernels` are auditable runtime metadata.
+- [x] 8.2 Implement the narrow shared identity repair using existing protocol/tool/model/checkpoint observation and validation seams; reject mismatch before commit and as early as existing preflight permits, without adding an executor, generic path abstraction, or generic identity/probing framework.
+- [x] 8.3 Add failing recovery regressions proving every exact-scope candidate requires one authoritative `prediction_record` Artifact and one transaction-bound battery/record Evidence plus handoff-ready Evidence, with complete project/workflow/run/plan/task/attempt/transaction/prediction-run/execution-identity correlation; deletion or tampering blocks Critic.
+- [x] 8.4 Strengthen `prediction_execution()` formal recovery at its existing boundary without changing owner readiness, L1-L7, Critic, Store schema, or candidate scope.
+- [x] 8.5 Add failing retry regressions for missing, active, `COMMITTING`, `COMMITTED`, compensation-conflict, unknown, mismatched, or failure-Evidence-less transactions.
+- [x] 8.6 Require a complete, matching, explicitly retryable terminal transaction and formal failure Evidence before publishing a retry plan; preserve prior executions and transaction ownership.
+- [x] 8.7 Run focused and full Python suites, compile checks, Architecture Gate, strict OpenSpec, diff check, OpenSpec Verify Change, and final Spec/Standards review; resolve only P0/P1 and stop.
+
+### P1 Closeout Verification
+
+- Focused P1 regressions: `python -m unittest test_prediction_execution_identity test_prediction_transactional test_workflow_boundaries test_planner_bootstrap_prediction` — **36 passed**.
+- Relevant Store/transaction/recovery/Worker/Launcher suite — **335 passed, 3 skipped**.
+- Full Python suite: `python -m unittest discover` — **725 passed, 4 skipped**.
+- Compilation: `python -m compileall -q agents execution prediction_pipeline workflow ...` — **passed**.
+- Architecture: `python scripts/architecture_gate.py --baseline architecture_baseline.json` — **passed, 0 new violations on every axis**.
+- OpenSpec: `openspec validate approval-gated-initial-prediction-execution --strict` — **passed**.
+- Whitespace: `git diff --check` — **passed** (platform line-ending notices only).
+- Final Spec review — **PASS, P0/P1=0**. Final Standards review — **PASS, P0/P1=0**.

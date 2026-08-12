@@ -106,6 +106,8 @@ Because `evaluate_new_design_candidates` is shared, every newly generated task u
 
 Changing a path alone cannot create a new scientific identity; changing a validated tool version, source commit, model/checkpoint content identity, or protocol configuration does. A new path whose observed identity cannot be proven equal fails preflight rather than being trusted because the file exists.
 
+The observed identity is constructed only from actual runtime observation at the existing Prediction adapter/worker boundary. It is never copied from the expected plan identity and is never synthesized when a handoff or record omits it. Existing tool/model/checkpoint validation supplies the observations, with PyRosetta import/version and installed PRODIGY version validated rather than inferred from path existence. `ExecutionConfig` preserves a Python virtual-environment entrypoint such as `venv/bin/python` instead of resolving its symlink to the base interpreter. The canonical configuration component includes every scientific `PredictionConfig` field whose value can affect a metric; changing any such field changes the configuration digest. Boltz runtime metadata records its observed version, existing checkpoint identity, and execution flags such as `no_kernels`, without treating a machine path as scientific identity. Expected-versus-observed mismatch fails before transaction commit and, where observation is available during preflight, before expensive GPU execution.
+
 This is not a new integrity scheme: it composes the repository's existing protocol binding and existing model/checkpoint/tool-version validations into one shared contract. It does not add hashes for files that are not already scientific inputs.
 
 Alternative considered: put `ExecutionConfig` paths into the plan. Rejected because approvals would become host-specific and moving an identical runtime would spuriously change scientific identity. Alternative considered: record only `prediction protocol 1.0`. Rejected because it would not bind tool/model versions already required by the production evidence contract.
@@ -123,6 +125,8 @@ New bootstrap runs do not write the direct `prediction_invocation_started` recei
 - Prediction `prediction_run_id` and authoritative records referenced by the handoff.
 
 The validator first proves task/transaction/output correlation, then reuses the same public owner readiness logic used by direct Launcher invocation validation. It returns `completed` only if every exact-scope record recomputes to a status in the existing `CRITIC_READY_STATUSES`. A coherent pending battery returns `prediction_execution_incomplete`; missing or contradictory formal bindings retain their specific execution, transaction, correlation, or integrity blocker.
+
+Recovery proves the complete formal publication set, not only the committed handoff. For every candidate in the exact approved scope there must be exactly one authoritative `prediction_record` Artifact and exactly one transaction-bound Prediction battery/record Evidence event, plus formal handoff-ready Evidence. Project, workflow, Orchestrator run, plan, task, attempt, transaction, Prediction domain run, and observed execution identity must agree across those sources. Missing, duplicate, deleted, or tampered formal Evidence or record Artifacts blocks recovery before Critic.
 
 Formal event envelope `run_id` comes exclusively from Worker `TraceContext` and remains the Orchestrator identity. The domain run stays `prediction_run_id` in payloads. Existing TRACE_KEYS conflict validation remains generic; no Prediction exception or dual-written `run_id` is introduced.
 
@@ -176,10 +180,12 @@ Existing Launcher runs with direct Prediction evidence remain on the direct corr
 Use the existing immutable plan, approval, Orchestrator, and Worker contracts rather than reopening a failed task attempt. A bootstrap task failure remains terminal under ordinary `launch`, `status`, and `resume`. Add one explicit Launcher resume option for operator intent, for example `resume --retry-bootstrap-prediction`, which is accepted only when:
 
 - the current bootstrap task is formally terminal failed;
-- its transaction is rolled back/terminal and transaction recovery is clean;
+- its complete transaction is terminal, explicitly retryable under the existing transaction contract, and transaction recovery is clean;
 - no task is active or ambiguously claimed;
 - no Critic-ready Prediction execution already exists;
 - the original Initial Design completion, committed transaction, project approval, and exact candidate set still validate.
+
+The transaction and formal failure Evidence must match the failed execution's project, workflow, run, task, attempt, and action. A missing transaction, active or `COMMITTING` transaction, `COMMITTED` transaction, compensation conflict, unknown state, mismatched binding, or absent/mismatched failure Evidence fails closed and publishes no retry plan.
 
 The explicit request asks Planner to create one new immutable bootstrap plan. Its source repeats the same Design authority and adds a retry binding containing the prior plan, Orchestrator run, task/attempt, terminal failure, and monotonic retry index. The task candidate scope is byte-for-byte/canonically the same exact set. The new plan uses the current validated Prediction execution identity; a repaired path with the same scientific runtime leaves identity equal, while a real tool/model/protocol change produces a different identity and is visible in the new approval contract.
 

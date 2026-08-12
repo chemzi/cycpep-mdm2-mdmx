@@ -102,6 +102,26 @@ The bootstrap invocation, immutable plan, approved task, and execution receipts 
 - **WHEN** an immutable historical Prediction task without the new execution identity has not begun scientific execution after the upgraded contract is deployed
 - **THEN** it remains readable audit history but fails closed for new execution and must be regenerated from its immutable source rather than rewritten or implicitly upgraded
 
+#### Scenario: Observed identity is independently measured
+- **WHEN** Worker validates a Prediction execution
+- **THEN** `observed_execution_identity` is built from actual runtime/tool/model/checkpoint/config observations, including installed PyRosetta and PRODIGY versions, and MUST NOT be copied from the expected identity
+
+#### Scenario: Virtual-environment interpreter semantics are preserved
+- **WHEN** the configured Python entrypoint is a `venv/bin/python` symlink to a base interpreter
+- **THEN** preflight invokes the virtual-environment entrypoint without symlink canonicalization and validates PyRosetta import/version in that environment
+
+#### Scenario: Missing observed identity is not repaired by the adapter
+- **WHEN** a Prediction handoff or record lacks its observed execution identity
+- **THEN** the transaction adapter rejects the output before commit and MUST NOT populate the missing value from the expected plan identity
+
+#### Scenario: Every metric-affecting PredictionConfig field is identity-bearing
+- **WHEN** any canonical scientific PredictionConfig field capable of changing a metric changes while paths remain unchanged
+- **THEN** the canonical configuration digest and execution identity change
+
+#### Scenario: Boltz runtime mode is auditable
+- **WHEN** Boltz executes with an operational flag such as `no_kernels`
+- **THEN** formal runtime/execution metadata records the observed Boltz version, checkpoint identity, and flag value without making an absolute path the scientific identity
+
 ### Requirement: Launcher recovers Prediction from formal execution proof
 After bootstrap execution, Launcher SHALL resolve Prediction only from the immutable bootstrap plan, approved Orchestrator run, exact task and attempt, task output binding, committed transaction, formal Artifacts and Evidence, and Prediction owner records and handoff. It SHALL NOT infer completion from diagnostics, process logs, State phase, CSV/JSON projections, filesystem enumeration, or an ambient artifact root.
 
@@ -131,6 +151,18 @@ Launcher SHALL invoke Critic only after the Prediction owner validator confirms 
 #### Scenario: Integrity contradiction retains its specific blocker
 - **WHEN** task output, transaction, Artifact, Evidence, handoff, record, candidate scope, project, protocol, or run binding contradicts another formal source
 - **THEN** Launcher reports the existing specific correlation, integrity, transaction, or recovery blocker rather than treating the state as scientific incompletion
+
+#### Scenario: Exact-scope record publication is required
+- **WHEN** the committed handoff exists but any exact-scope candidate lacks a unique authoritative `prediction_record` Artifact or transaction-bound battery/record Evidence, or formal handoff-ready Evidence is absent
+- **THEN** Prediction formal recovery is blocked and Critic is not invoked
+
+#### Scenario: Formal Prediction proof shares one complete binding
+- **WHEN** any record Artifact or Prediction Evidence disagrees on project, workflow, Orchestrator run, plan, task, attempt, transaction, Prediction domain run, or observed execution identity
+- **THEN** recovery fails closed before Critic
+
+#### Scenario: Deleted or tampered formal proof blocks recovery
+- **WHEN** any required Prediction Evidence or exact-scope record Artifact is deleted or altered after publication
+- **THEN** `prediction_execution()` returns a formal integrity or correlation blocker and Critic does not run
 
 ### Requirement: Command recovery is consistent and legacy runs remain immutable
 For the same formal state, `launch`, read-only `status`, and `resume` SHALL return consistent bootstrap plan, approval, execution, Prediction readiness, and downstream attribution. Existing Launcher runs that already contain direct Prediction invocation evidence SHALL remain under their existing recovery contract and MUST NOT be converted, backfilled, or restarted through the bootstrap path.
@@ -173,3 +205,11 @@ A formally failed bootstrap Prediction plan, Orchestrator run, task attempt, and
 #### Scenario: Ambiguous or active execution cannot be retried
 - **WHEN** the prior execution is running, claimed, partially staged, unresolved, or lacks unambiguous formal terminal failure and transaction proof
 - **THEN** the retry request fails closed and does not create a new plan or task attempt
+
+#### Scenario: Retry requires an explicitly retryable terminal transaction
+- **WHEN** the prior transaction is missing, active, `COMMITTING`, `COMMITTED`, in compensation conflict, unknown, or otherwise not explicitly retryable
+- **THEN** retry fails closed and publishes no new plan, approval request, run, task, or attempt
+
+#### Scenario: Retry transaction and failure Evidence match the execution
+- **WHEN** transaction project, workflow, run, task, attempt, action, or formal failure Evidence does not match the failed bootstrap execution
+- **THEN** retry fails closed without mutating the prior execution

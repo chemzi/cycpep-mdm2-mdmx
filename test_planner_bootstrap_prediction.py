@@ -122,6 +122,9 @@ class PlannerBootstrapPredictionTests(unittest.TestCase):
                         "plan_id": "placeholder",
                         "run_id": "orchestrator-failed", "task_id": "T001",
                         "attempt_id": "T001-A01", "transaction_id": "tx-failed",
+                        "workflow_id": "workflow-placeholder",
+                        "action": "evaluate_new_design_candidates",
+                        "retryable": True,
                     },
                 ]
 
@@ -133,6 +136,29 @@ class PlannerBootstrapPredictionTests(unittest.TestCase):
 
             def get_transaction_status(self, transaction_id):
                 return "COMMITTED" if transaction_id == source["design_transaction_id"] else None
+
+            def get_transaction(self, transaction_id):
+                if transaction_id != "tx-failed":
+                    return None
+                return {
+                    "transaction_id": transaction_id,
+                    "project_id": source["project_id"],
+                    "workflow_id": next(
+                        event["workflow_id"] for event in self.base
+                        if event.get("event_id") == "failure-1"
+                    ),
+                    "run_id": "orchestrator-failed", "task_id": "T001",
+                    "attempt_id": "T001-A01",
+                    "action": "evaluate_new_design_candidates",
+                    "status": "FAILED", "error": {"retryable": True},
+                    "metadata": {
+                        "project_id": source["project_id"],
+                        "plan_id": next(
+                            event["plan_id"] for event in self.base
+                            if event.get("event_id") == "failure-1"
+                        ),
+                    },
+                }
 
         store = Store()
 
@@ -154,7 +180,10 @@ class PlannerBootstrapPredictionTests(unittest.TestCase):
             self.assertEqual(len(store.published), 1)
             next(
                 event for event in store.base if event.get("event_id") == "failure-1"
-            )["plan_id"] = first["plan"]["plan_id"]
+            ).update({
+                "plan_id": first["plan"]["plan_id"],
+                "workflow_id": first["plan"]["workflow_id"],
+            })
 
             for key, value in (
                 ("approved_content_binding", "changed-approval"),
@@ -177,6 +206,7 @@ class PlannerBootstrapPredictionTests(unittest.TestCase):
                 failed_plan=first["plan"],
                 failure={
                     "plan_id": first["plan"]["plan_id"],
+                    "workflow_id": first["plan"]["workflow_id"],
                     "run_id": "orchestrator-failed", "task_id": "T001",
                     "attempt_id": "T001-A01", "transaction_id": "tx-failed",
                     "evidence_id": "failure-1",
@@ -191,6 +221,65 @@ class PlannerBootstrapPredictionTests(unittest.TestCase):
                 first["plan"]["source"]["candidate_ids"],
             )
             self.assertEqual(retried["plan"]["source"]["retry"]["prior_plan_id"], first["plan"]["plan_id"])
+
+    def test_retry_rejects_non_retryable_or_unbound_transaction_states(self):
+        plan = build_initial_prediction_bootstrap_plan(source=_source(("C0001",)))
+        failure = {
+            "plan_id": plan["plan_id"], "workflow_id": plan["workflow_id"],
+            "run_id": "orchestrator-failed", "task_id": "T001",
+            "attempt_id": "T001-A01", "transaction_id": "tx-failed",
+            "evidence_id": "failure-1",
+        }
+        event = {
+            **failure, "event_id": "failure-1", "project_id": "project-1",
+            "agent": "execution", "event_type": "execution_task_failed",
+            "action": "evaluate_new_design_candidates", "retryable": True,
+        }
+        event.pop("evidence_id")
+
+        class Store:
+            transaction = None
+
+            def query(self, **filters):
+                return [event] if all(event.get(k) == v for k, v in filters.items()) else []
+
+            def get_transaction(self, _transaction_id):
+                return self.transaction
+
+        base_transaction = {
+            "transaction_id": "tx-failed", "project_id": "project-1",
+            "workflow_id": plan["workflow_id"], "run_id": "orchestrator-failed",
+            "task_id": "T001", "attempt_id": "T001-A01",
+            "action": "evaluate_new_design_candidates",
+            "status": "FAILED", "error": {"retryable": True},
+            "metadata": {"project_id": "project-1", "plan_id": plan["plan_id"]},
+        }
+        store = Store()
+        cases = (
+            ("missing", None),
+            ("active", {**base_transaction, "status": "STAGING"}),
+            ("committing", {**base_transaction, "status": "COMMITTING"}),
+            ("committed", {**base_transaction, "status": "COMMITTED"}),
+            ("conflict", {**base_transaction, "status": "COMPENSATION_CONFLICT"}),
+            ("unknown", {**base_transaction, "status": "UNKNOWN"}),
+            ("not-retryable", {**base_transaction, "error": {"retryable": False}}),
+            ("wrong-action", {**base_transaction, "action": "iterate_design"}),
+            ("wrong-plan", {
+                **base_transaction,
+                "metadata": {"project_id": "project-1", "plan_id": "plan-other"},
+            }),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            for label, transaction in cases:
+                with self.subTest(label=label):
+                    store.transaction = transaction
+                    with self.assertRaisesRegex(
+                        PlannerContractError, "retry failure proof"
+                    ):
+                        retry_initial_prediction_bootstrap(
+                            failed_plan=plan, failure=failure,
+                            output_root=tmp, store=store,
+                        )
 
 
 if __name__ == "__main__":

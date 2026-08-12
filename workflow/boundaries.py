@@ -17,6 +17,10 @@ from typing import Any, Callable, Iterable, Mapping
 
 from contracts.plan import validate_plan_for_approval
 from prediction_pipeline.contracts import file_sha256
+from workflow.prediction_publication import (
+    PredictionPublicationError,
+    validate_prediction_publication,
+)
 
 
 @dataclass(frozen=True)
@@ -432,12 +436,15 @@ class FormalBoundaryInspector:
         return FormalBoundary.completed(
             "execution",
             evidence_id=event.get("event_id"),
+            project_id=event.get("project_id"),
             workflow_id=event.get("workflow_id"),
             run_id=event.get("run_id"),
             plan_id=event.get("plan_id"),
             task_id=event.get("task_id"),
             attempt_id=event.get("attempt_id"),
             transaction_id=event.get("transaction_id"),
+            action=event.get("action"),
+            retryable=event.get("retryable"),
             formal_status="failed",
         )
 
@@ -466,6 +473,26 @@ class FormalBoundaryInspector:
             return handoff
         handoff_artifact_id, artifact, handoff_path, document = handoff
         task_id = str(task["task_id"])
+        try:
+            publication = validate_prediction_publication(
+                self.store,
+                project_id=project_id,
+                plan=plan,
+                orchestrator_run_id=str(orchestrator.references.get("run_id") or ""),
+                task=task,
+                attempt_id=attempt_id,
+                transaction_id=transaction_id,
+                handoff_artifact_id=handoff_artifact_id,
+                handoff=document,
+            )
+        except PredictionPublicationError as exc:
+            return FormalBoundary.blocked(
+                "prediction",
+                "prediction_execution_correlation_invalid",
+                str(exc),
+            )
+        record_artifact_ids = publication.artifact_ids
+        prediction_evidence_ids = publication.evidence_ids
         from agents.prediction_contract import validate_prediction_owner_readiness
         prediction_run_id = str(document.get("run_id") or "")
         readiness = validate_prediction_owner_readiness(
@@ -493,8 +520,13 @@ class FormalBoundaryInspector:
             transaction_id=transaction_id,
             task_id=task_id,
             attempt_id=attempt_id,
-            artifact_ids=(str(artifact.get("artifact_id") or handoff_artifact_id),),
-            evidence_ids=(str(receipt.get("event_id") or ""),),
+            artifact_ids=(
+                str(artifact.get("artifact_id") or handoff_artifact_id),
+                *record_artifact_ids,
+            ),
+            evidence_ids=(
+                str(receipt.get("event_id") or ""), *prediction_evidence_ids
+            ),
         )
 
 

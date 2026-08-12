@@ -18,6 +18,12 @@ plan over the same Design completion, committed transaction, and exact set. It
 does not rerun Research/Design or reuse the old approval. Active, ambiguous, or
 transaction-unresolved executions cannot be retried.
 
+Retry additionally requires the complete prior transaction to exist in an
+explicitly retryable terminal state and to match the failed project, workflow,
+run, task, attempt, action, and formal failure Evidence. Missing, active,
+`COMMITTING`, `COMMITTED`, compensation-conflict, unknown, or mismatched
+transactions remain immutable blockers.
+
 Plans and receipts record path-independent protocol/tool/model/checkpoint
 identity. Executable, repository, cache, checkpoint-location, and output paths
 remain internal deployment locators and do not define scientific identity.

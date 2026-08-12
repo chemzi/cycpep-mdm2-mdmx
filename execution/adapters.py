@@ -33,6 +33,27 @@ def _semantic_output_inventory(result: ExecutionActionResult) -> list[dict]:
     ]
 
 
+def _observed_prediction_identity(
+    result: ExecutionActionResult, expected: dict
+) -> dict:
+    observations = [
+        item.get("observed_execution_identity")
+        for item in result.processes
+        if item.get("observed_execution_identity") is not None
+    ]
+    if len(observations) != 1:
+        raise ExecutionContractError(
+            "prediction_execution_identity_missing",
+            "Prediction result requires one observed runtime identity",
+        )
+    if observations[0] != expected:
+        raise ExecutionContractError(
+            "prediction_execution_identity_mismatch",
+            "observed Prediction runtime differs from the approved identity",
+        )
+    return observations[0]
+
+
 def _prediction_artifacts(
     result: ExecutionActionResult,
     context: TransactionContext,
@@ -55,12 +76,11 @@ def _prediction_artifacts(
             "Prediction handoff does not match the task protocol identity",
         )
     recorded_identity = handoff.get("execution_identity")
-    if recorded_identity not in (None, expected_execution_identity):
+    if recorded_identity != expected_execution_identity:
         raise ExecutionContractError(
             "prediction_execution_identity_mismatch",
             "Prediction handoff conflicts with the approved execution identity",
         )
-    handoff["execution_identity"] = expected_execution_identity
     staged = []
     committed_inputs: dict[tuple[str, str], tuple[str, str]] = {}
     record_shas: dict[str, str] = {}
@@ -97,12 +117,11 @@ def _prediction_artifacts(
                     f"Prediction record protocol mismatch for {candidate_id}",
                 )
             record_identity = record.get("execution_identity")
-            if record_identity not in (None, expected_execution_identity):
+            if record_identity != expected_execution_identity:
                 raise ExecutionContractError(
                     "prediction_execution_identity_mismatch",
                     f"Prediction record execution identity mismatch for {candidate_id}",
                 )
-            record["execution_identity"] = expected_execution_identity
             inventory = record.get("artifact_inventory") or []
             if not isinstance(inventory, list) or any(
                 not isinstance(artifact, dict) for artifact in inventory
@@ -262,12 +281,15 @@ def make_transactional_output_adapter(
         record_shas = {}
         is_prediction = packet["task"]["action"] == "evaluate_new_design_candidates"
         if is_prediction:
+            observed_identity = _observed_prediction_identity(
+                result, packet["task"]["parameters"]["execution_identity"]
+            )
             additional_staged, record_shas = _prediction_artifacts(
                 result,
                 context,
                 staging,
                 packet["task"]["parameters"]["predictor_protocol"],
-                packet["task"]["parameters"]["execution_identity"],
+                observed_identity,
                 config.execution_root / "artifacts",
             )
         staged = [
@@ -284,7 +306,7 @@ def make_transactional_output_adapter(
             candidate_patches, evidence_events = _prediction_committed_effects(
                 result,
                 record_shas,
-                packet["task"]["parameters"]["execution_identity"],
+                observed_identity,
             )
         else:
             candidate_patches = result.candidate_patches

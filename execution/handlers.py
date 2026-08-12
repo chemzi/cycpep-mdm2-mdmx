@@ -10,7 +10,12 @@ from typing import Callable
 
 from data_layer import CandidateIndex, State
 from calibration_baseline import unpublished_calibration_binding
-from prediction_pipeline.contracts import file_sha256, object_sha256
+from prediction_pipeline.contracts import ContractError, PredictionConfig, file_sha256, object_sha256
+from prediction_pipeline.execution_identity import (
+    PRODIGY_VERSION,
+    build_prediction_execution_identity,
+    validate_prediction_execution_identity,
+)
 from core.protocol import ProtocolError
 from prediction_pipeline.protocol import (
     PREDICTION_PROTOCOL,
@@ -369,6 +374,59 @@ def _require_prediction_tools(config: ExecutionConfig) -> None:
         )
 
 
+def _observe_prediction_runtime(
+    config: ExecutionConfig, expected_identity: dict
+) -> tuple[dict, dict]:
+    """Observe the existing pinned Prediction runtime before expensive work."""
+    from prediction_pipeline.adapters import validate_prodigy_runtime
+    from prediction_pipeline.boltz_worker import validate_boltz_runtime
+    from prediction_pipeline.colabdesign_worker import validate_colabdesign_runtime
+    from prediction_pipeline.rosetta_worker import validate_pyrosetta_runtime
+
+    _require_prediction_tools(config)
+    try:
+        prediction_config = PredictionConfig.from_dict(
+            expected_identity.get("prediction_config")
+        )
+        commit = validate_colabdesign_runtime(
+            config.colabdesign_dir,
+            expected_commit=prediction_config.colabdesign_commit,
+        )
+        boltz = validate_boltz_runtime(
+            config.boltz_executable,
+            config.boltz_checkpoint,
+            timeout=min(config.prediction_timeout_seconds, 60),
+        )
+        pyrosetta = validate_pyrosetta_runtime(config.pyrosetta_python)
+        prodigy = validate_prodigy_runtime(
+            config.prodigy_executable, PRODIGY_VERSION
+        )
+        observed = build_prediction_execution_identity(
+            prediction_config,
+            observations={
+                "colabdesign_commit": commit,
+                "boltz_version": boltz["version"],
+                "boltz_checkpoint_sha256": boltz["checkpoint_sha256"],
+                "pyrosetta_version": pyrosetta,
+                "prodigy_version": prodigy,
+            },
+        )
+        validate_prediction_execution_identity(observed, expected=expected_identity)
+    except ContractError as exc:
+        error = ExecutionContractError(exc.code, str(exc))
+        error.retryable = True
+        raise error from exc
+    metadata = {
+        "boltz_version": boltz["version"],
+        "boltz_checkpoint_sha256": boltz["checkpoint_sha256"],
+        "boltz_no_kernels": config.boltz_no_kernels,
+        "colabdesign_commit": commit,
+        "pyrosetta_version": pyrosetta,
+        "prodigy_version": prodigy,
+    }
+    return observed, metadata
+
+
 def _prediction_transaction_effects(
     context: HandlerContext,
     path: Path,
@@ -394,74 +452,104 @@ def _typed_prediction_result(
     return typed_prediction_result(effects, handoff, processes)
 
 
-def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
+def _prepare_prediction_candidate_artifacts(
+    context: HandlerContext,
+    candidate_ids: list[str],
+    required_targets: list[str],
+    execution_identity: dict,
+) -> tuple[Path, list[dict], dict]:
     params = context.parameters
-    execution_identity = params["execution_identity"]
-    candidate_ids = _prediction_candidate_ids(context)
-    state = State.load()
-    thresholds = state.get("thresholds") or {}
-    expected_calibration_binding = state.get("threshold_calibration_binding")
-    if expected_calibration_binding is None:
-        expected_calibration_binding = unpublished_calibration_binding(thresholds)
-    project = _resolve_project(context, state)
-    required_targets = [
-        str(item["id"]) for item in project.get("targets", []) if item.get("required", True)
-    ]
     staging_root = context.task_dir / "prediction_artifacts"
     base_root = context.task_dir / "base_prediction_artifacts"
     enrichment_root = context.task_dir / "enriched_prediction_artifacts"
-    processes = []
+    processes: list[dict] = []
     missing = []
+    observed = None
     for candidate_id in candidate_ids:
         existing_dir = context.config.prediction_artifacts_root / candidate_id
         bundle = existing_dir / "artifacts.json"
         if params["reuse_complete_evidence"] and _artifact_bundle_complete(
             bundle, required_targets, execution_identity
         ):
+            reused = _json_object(
+                bundle.with_name("execution_identity.json"),
+                "prediction execution identity",
+            )
+            if observed not in (None, reused):
+                raise ExecutionContractError(
+                    "prediction_execution_identity_mismatch",
+                    "reused bundles carry different observed execution identities",
+                )
+            observed = reused
             _link_candidate_artifacts(existing_dir, staging_root, candidate_id)
         else:
             missing.append(candidate_id)
-
     if missing and params["evidence_mode"] == "ingest_existing":
         raise ExecutionContractError(
             "prediction_artifacts_missing",
             f"complete existing artifacts are unavailable for {missing}",
         )
     if missing:
-        _require_prediction_tools(context.config)
-        argv = [
+        observed, generated_processes = _generate_prediction_artifacts(
+            context, missing, base_root, enrichment_root,
+            required_targets, execution_identity,
+        )
+        processes.extend(generated_processes)
+        for candidate_id in missing:
+            _link_candidate_artifacts(
+                enrichment_root / candidate_id, staging_root, candidate_id
+            )
+    if not processes:
+        processes.append({
+            "label": "prediction_runtime_reuse", "elapsed_seconds": 0.0,
+            "observed_execution_identity": observed,
+            "runtime_metadata": {"source": "validated_complete_bundle"},
+        })
+    return staging_root, processes, observed
+
+
+def _generate_prediction_artifacts(
+    context, missing, base_root, enrichment_root, required_targets, expected_identity
+):
+    observed, metadata = _observe_prediction_runtime(
+        context.config, expected_identity
+    )
+    processes = [{
+        "label": "prediction_runtime_preflight", "elapsed_seconds": 0.0,
+        "observed_execution_identity": observed, "runtime_metadata": metadata,
+    }]
+    argv = [
             context.config.prediction_python,
             context.config.repo_root / "scripts" / "run_prediction_predictors.py",
-            "--artifacts-root", base_root,
-            "--python", context.config.prediction_python,
+            "--artifacts-root", base_root, "--python", context.config.prediction_python,
             "--data-dir", context.config.colabdesign_params,
             "--colabdesign-dir", context.config.colabdesign_dir,
             "--cuda-data-dir", context.config.cuda_data_dir,
             "--seeds", ",".join(str(v) for v in _AF2_PRODIGY_PROTOCOL["seeds"]),
-            "--model-numbers", ",".join(str(v) for v in _AF2_PRODIGY_PROTOCOL["model_numbers"]),
+            "--model-numbers", ",".join(
+                str(v) for v in _AF2_PRODIGY_PROTOCOL["model_numbers"]
+            ),
             "--num-recycles", str(_AF2_PRODIGY_PROTOCOL["num_recycles"]),
             "--timeout", str(context.config.prediction_timeout_seconds),
             "--prodigy", context.config.prodigy_executable,
-        ]
-        for candidate_id in missing:
-            argv.extend(["--candidate", candidate_id])
-        processes.append(run_process(
-            argv,
-            cwd=context.config.repo_root,
+    ]
+    for candidate_id in missing:
+        argv.extend(["--candidate", candidate_id])
+    processes.append(run_process(
+            argv, cwd=context.config.repo_root,
             logs_dir=context.task_dir / "processes" / "af2_prodigy",
             timeout_seconds=max(
                 context.config.prediction_timeout_seconds,
                 context.config.prediction_timeout_seconds * len(missing),
             ),
             label="prediction_af2_prodigy",
-        ))
-        for offset, candidate_id in enumerate(missing):
-            source_bundle = base_root / candidate_id / "artifacts.json"
-            argv = [
+    ))
+    for offset, candidate_id in enumerate(missing):
+        source_bundle = base_root / candidate_id / "artifacts.json"
+        argv = [
                 context.config.core_python,
                 context.config.repo_root / "scripts" / "enrich_prediction_evidence.py",
-                "--source-bundle", source_bundle,
-                "--output-root", enrichment_root,
+                "--source-bundle", source_bundle, "--output-root", enrichment_root,
                 "--boltz", context.config.boltz_executable,
                 "--boltz-cache", context.config.boltz_cache,
                 "--boltz-checkpoint", context.config.boltz_checkpoint,
@@ -475,31 +563,45 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
                 "--timeout", str(context.config.prediction_timeout_seconds),
                 "--rosetta-timeout", str(context.config.rosetta_timeout_seconds),
                 "--post-relax-timeout", str(context.config.post_relax_timeout_seconds),
-            ]
-            processes.append(run_process(
-                argv,
-                cwd=context.config.repo_root,
+        ]
+        if context.config.boltz_no_kernels:
+            argv.append("--no-kernels")
+        processes.append(run_process(
+                argv, cwd=context.config.repo_root,
                 logs_dir=context.task_dir / "processes" / f"enrich_{candidate_id}",
-                timeout_seconds=(
-                    context.config.prediction_timeout_seconds
+                timeout_seconds=(context.config.prediction_timeout_seconds
                     + context.config.rosetta_timeout_seconds
-                    + context.config.post_relax_timeout_seconds
-                ),
+                    + context.config.post_relax_timeout_seconds),
                 label=f"prediction_enrichment[{candidate_id}]",
-            ))
-            completed_bundle = enrichment_root / candidate_id / "artifacts.json"
-            atomic_json(
-                completed_bundle.with_name("execution_identity.json"),
-                execution_identity,
+        ))
+        completed = enrichment_root / candidate_id / "artifacts.json"
+        atomic_json(completed.with_name("execution_identity.json"), observed)
+        if not _artifact_bundle_complete(completed, required_targets, expected_identity):
+            raise ExecutionContractError(
+                "prediction_enrichment_incomplete",
+                f"enrichment did not create full evidence for {candidate_id}",
             )
-            if not _artifact_bundle_complete(
-                completed_bundle, required_targets, execution_identity
-            ):
-                raise ExecutionContractError(
-                    "prediction_enrichment_incomplete",
-                    f"enrichment did not create full evidence for {candidate_id}",
-                )
-            _link_candidate_artifacts(completed_bundle.parent, staging_root, candidate_id)
+    return observed, processes
+
+
+def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
+    params = context.parameters
+    execution_identity = params["execution_identity"]
+    candidate_ids = _prediction_candidate_ids(context)
+    state = State.load()
+    thresholds = state.get("thresholds") or {}
+    expected_calibration_binding = state.get("threshold_calibration_binding")
+    if expected_calibration_binding is None:
+        expected_calibration_binding = unpublished_calibration_binding(thresholds)
+    project = _resolve_project(context, state)
+    required_targets = [
+        str(item["id"]) for item in project.get("targets", []) if item.get("required", True)
+    ]
+    staging_root, processes, observed_execution_identity = (
+        _prepare_prediction_candidate_artifacts(
+            context, candidate_ids, required_targets, execution_identity
+        )
+    )
 
     run_id = (
         f"prediction_exec_{context.packet['run_id'].removeprefix('orchestrator_')}"
@@ -507,6 +609,13 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
     )
     run_root = context.task_dir / "prediction_runs"
     effects_path = context.task_dir / "prediction_transaction_effects.json"
+    if observed_execution_identity is None:
+        raise ExecutionContractError(
+            "prediction_execution_identity_missing",
+            "Prediction runtime did not produce an observed execution identity",
+        )
+    identity_path = context.task_dir / "observed_execution_identity.json"
+    atomic_json(identity_path, observed_execution_identity)
     argv = [
         context.config.prediction_python,
         context.config.repo_root / "agents" / "prediction.py",
@@ -514,6 +623,7 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
         "--artifacts-root", staging_root,
         "--run-root", run_root,
         "--run-id", run_id,
+        "--execution-identity", identity_path,
     ]
     if context.transaction_managed:
         argv.extend([

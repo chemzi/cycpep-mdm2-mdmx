@@ -349,12 +349,17 @@ def retry_initial_prediction_bootstrap(
         raise PlannerContractError(
             "bootstrap_retry_source_invalid", "retry requires a bootstrap plan"
         )
-    required = ("plan_id", "run_id", "task_id", "attempt_id", "transaction_id")
+    required = (
+        "plan_id", "workflow_id", "run_id", "task_id", "attempt_id",
+        "transaction_id", "evidence_id",
+    )
+    event_binding_keys = tuple(key for key in required if key != "evidence_id")
     if any(not isinstance(failure.get(key), str) or not failure[key] for key in required):
         raise PlannerContractError(
             "bootstrap_retry_failure_invalid",
             "retry requires a fully bound terminal Worker failure",
         )
+    transaction = store.get_transaction(failure["transaction_id"])
     failure_events = [
         event for event in store.query(
             project_id=source.get("project_id"),
@@ -364,13 +369,27 @@ def retry_initial_prediction_bootstrap(
         if event.get("event_id") == failure.get("evidence_id")
     ]
     if (
-        len(failure_events) != 1
+        not isinstance(transaction, Mapping)
+        or transaction.get("status") not in {"FAILED", "ROLLED_BACK"}
+        or (transaction.get("error") or {}).get("retryable") is not True
+        or transaction.get("project_id") != source.get("project_id")
+        or transaction.get("workflow_id") != failure.get("workflow_id")
+        or transaction.get("run_id") != failure.get("run_id")
+        or transaction.get("task_id") != failure.get("task_id")
+        or transaction.get("attempt_id") != failure.get("attempt_id")
+        or transaction.get("action") != "evaluate_new_design_candidates"
+        or (transaction.get("metadata") or {}).get("plan_id")
+        != failed_plan.get("plan_id")
+        or len(failure_events) != 1
         or failure["plan_id"] != failed_plan.get("plan_id")
         or any(
             failure_events[0].get(key) != failure.get(key)
-            for key in required
+            for key in event_binding_keys
         )
-        or store.get_transaction_status(failure["transaction_id"]) == "COMMITTED"
+        or failure_events[0].get("event_id") != failure.get("evidence_id")
+        or failure_events[0].get("project_id") != source.get("project_id")
+        or failure_events[0].get("action") != "evaluate_new_design_candidates"
+        or failure_events[0].get("retryable") is not True
     ):
         raise PlannerContractError(
             "bootstrap_retry_failure_invalid",
