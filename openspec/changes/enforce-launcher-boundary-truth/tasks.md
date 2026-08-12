@@ -59,3 +59,12 @@
   - Result: focused 92 tests and full 689 tests passed with 4 skips; Architecture Gate reported no new violations; strict OpenSpec, compile, web lint/typecheck, and diff check passed.
 - [x] 7.2 Synchronize the PR head with the latest `integration/data-integrity-transaction`, rerun affected gates if the base changed, and review the final PR diff for P0/P1 findings without expanding scope.
   - Result: merged integration head `dc28e8e`, reran the full and affected gates, and completed independent Standards and Spec reviews with P0=0/P1=0 after closing their Design-only findings.
+
+## 8. Close final Design review P1s
+
+- [x] 8.1 Add a regression proving a non-empty completion without `transaction_id` is `design_recovery_ambiguous`, then require every successful completion to name a committed transaction whose same-transaction authoritative candidate IDs exactly equal the completion IDs.
+  - Result: the reader now rejects a missing/blank transaction binding, non-committed transaction, and any malformed or non-exact same-transaction candidate-registration set.
+- [x] 8.2 Add a regression with a complete stale RFdiffusion backbone set plus current exit-zero/no-write, then clean the strict output prefix before subprocess launch so the invocation reports `initial_design_scientific_tool_failed`.
+  - Result: strict RFdiffusion removes only its output-prefix PDBs before subprocess launch; the current exit-zero/no-write regression reaches the required-output failure.
+- [x] 8.3 Run focused tests, the full unittest suite, Architecture Gate, strict OpenSpec validation, scoped diff check, and final P0/P1 review; stop without expanding scope when P0/P1=0.
+  - Result: Initial Design 27 tests and legacy Design 18 groups passed; final full unittest discovery passed 693 tests with 4 skips; Architecture Gate reported zero new violations; strict OpenSpec and scoped diff check passed; independent Standards and Spec reviews both concluded P0=0/P1=0.

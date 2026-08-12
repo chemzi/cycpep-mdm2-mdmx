@@ -8,8 +8,12 @@ Defines the Design and Prediction owner evidence required for Launcher to advanc
 Launcher SHALL treat an initial Design invocation as completed only when exactly one correlated completion receipt references a non-empty set of existing candidates and all of its formal references are valid. The Design owner MUST distinguish a normal, successfully generated zero-result from a classified scientific-tool or required-output failure before writing a terminal receipt. Required generation succeeds only when RFdiffusion emits the expected parseable backbone outputs, every required backbone has a usable binder chain, the configured LigandMPNN runtime/model inputs are available, and LigandMPNN emits parseable generated sequences. A normal zero-result SHALL use `initial_design_no_valid_candidates`; a tool/output failure SHALL use `initial_design_scientific_tool_failed` and MUST NOT be represented as a zero-result. Launcher SHALL NOT invoke Prediction for either blocker. Candidate publication for the invocation MUST be atomic through the existing CandidateUpdate and Store transaction boundary.
 
 #### Scenario: Non-empty Design result advances
-- **WHEN** the correlated initial Design invocation has one valid start and one valid completion receipt referencing at least one existing candidate
+- **WHEN** the correlated initial Design invocation has one valid start and one valid completion receipt referencing at least one existing candidate, the completion names a non-empty committed transaction, and that transaction contains authoritative registrations for exactly the same candidate identifiers
 - **THEN** Launcher treats Design as completed and supplies exactly those candidate identifiers to Prediction
+
+#### Scenario: Non-empty completion without an atomic transaction fails closed
+- **WHEN** a non-empty completion omits its transaction identifier, names a non-committed transaction, or its same-transaction authoritative candidate registrations differ from the completion candidate identifiers
+- **THEN** the Design boundary reports `design_recovery_ambiguous` and Launcher does not advance
 
 #### Scenario: Zero-result Design is terminally blocked
 - **WHEN** every required scientific tool call finishes without a tool-execution failure and the supported initial Design job produces no valid candidate
@@ -22,6 +26,10 @@ Launcher SHALL treat an initial Design invocation as completed only when exactly
 #### Scenario: Successful tool exit without required output is failure
 - **WHEN** RFdiffusion exits successfully without the expected backbone set, a required backbone is malformed or lacks a binder chain, LigandMPNN configuration is unavailable, LigandMPNN exits successfully without parseable generated sequences, or refold runtime preparation/output validation fails
 - **THEN** Design records `initial_design_scientific_tool_failed` and MUST NOT report `initial_design_no_valid_candidates`
+
+#### Scenario: Stale RFdiffusion backbones cannot satisfy the current invocation
+- **WHEN** the strict RFdiffusion output prefix already contains a complete expected backbone set and the current subprocess exits successfully without writing any backbone
+- **THEN** the stale prefix files are removed before launch and Initial Design records `initial_design_scientific_tool_failed`
 
 #### Scenario: Scientific elimination after valid generation is a normal zero-result
 - **WHEN** every required generation postcondition succeeds but all generated sequences are removed by subsequent deduplication, scientific filtering, quality, or closure validation

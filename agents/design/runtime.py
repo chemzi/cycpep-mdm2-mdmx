@@ -189,6 +189,8 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
     except (ValueError, TypeError):
         _rfdiff_timeout = 3600
     try:
+        if strict_tools:
+            _clear_rfdiff_output_prefix(output_prefix)
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=_rfdiff_timeout,
             cwd=config.RFDIFF_DIR,
             env=_rfdiff_subprocess_env())
@@ -227,13 +229,18 @@ def _run_rfdiff(target_pdb, binder_len, n_designs, output_prefix, contig,
             raise ScientificToolExecutionError("rfdiffusion", str(e)) from e
         return False
 
-def _cleanup_partial_rfdiff_output(output_prefix):
-    """Remove incomplete PDB files left by a failed/timed-out RFdiffusion run."""
+def _clear_rfdiff_output_prefix(output_prefix):
+    """Remove PDBs owned by one RFdiffusion output prefix."""
     prefix_dir = os.path.dirname(output_prefix)
     prefix_name = os.path.basename(output_prefix)
+    for pdb in Path(prefix_dir).glob(f"{prefix_name}_*.pdb"):
+        pdb.unlink()
+
+
+def _cleanup_partial_rfdiff_output(output_prefix):
+    """Remove incomplete PDB files left by a failed/timed-out RFdiffusion run."""
     try:
-        for pdb in Path(prefix_dir).glob(f"{prefix_name}_*.pdb"):
-            pdb.unlink()
+        _clear_rfdiff_output_prefix(output_prefix)
     except OSError:
         pass
 

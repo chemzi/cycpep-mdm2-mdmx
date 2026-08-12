@@ -24,6 +24,7 @@ from agents.design.runtime import (
     _run_rfdiff,
 )
 from contracts.candidate_update import CandidateUpdate
+from contracts.transaction import TransactionContext, TransactionStatus
 from agents.design.service import _load_existing_sequences
 from storage import SQLiteStore
 from target_bootstrap import config_digest
@@ -426,6 +427,120 @@ class InitialDesignContractTests(unittest.TestCase):
         self.assertEqual(conflict.status, "conflict")
         self.assertEqual(conflict.blocker_code, "design_recovery_ambiguous")
 
+    def test_non_empty_completion_without_transaction_fails_closed(self):
+        jobs = self.design.materialize_initial_jobs()
+        start_id = self.store.append({
+            "agent": "design",
+            "event_type": "design_initial_invocation_started",
+            **self.correlation.to_payload(),
+            "jobs": list(jobs),
+        })
+        self.store.upsert({
+            "candidate_id": "C0001",
+            "sequence": "ACDEFGHI",
+            "status": "designed",
+        })
+        self.store.append({
+            "agent": "design",
+            "event_type": "design_initial_completion",
+            **self.correlation.to_payload(),
+            "jobs": list(jobs),
+            "candidate_ids": ["C0001"],
+            "artifact_ids": [],
+            "evidence_ids": [start_id],
+        })
+
+        validation = self.design.validate_initial_invocation(
+            self.correlation, store=self.store
+        )
+        self.assertEqual(validation.status, "conflict")
+        self.assertEqual(validation.blocker_code, "design_recovery_ambiguous")
+
+    def test_non_empty_completion_requires_committed_transaction(self):
+        jobs = self.design.materialize_initial_jobs()
+        start_id = self.store.append({
+            "agent": "design",
+            "event_type": "design_initial_invocation_started",
+            **self.correlation.to_payload(),
+            "jobs": list(jobs),
+        })
+        self.store.upsert({
+            "candidate_id": "C0001",
+            "sequence": "ACDEFGHI",
+            "status": "designed",
+        })
+        self.store.append({
+            "agent": "design",
+            "event_type": "design_initial_completion",
+            **self.correlation.to_payload(),
+            "transaction_id": "tx-not-committed",
+            "jobs": list(jobs),
+            "candidate_ids": ["C0001"],
+            "artifact_ids": [],
+            "evidence_ids": [start_id],
+        })
+
+        validation = self.design.validate_initial_invocation(
+            self.correlation, store=self.store
+        )
+        self.assertEqual(validation.status, "conflict")
+        self.assertEqual(validation.blocker_code, "design_recovery_ambiguous")
+
+    def test_completion_candidate_ids_must_match_transaction_registrations(self):
+        jobs = self.design.materialize_initial_jobs()
+        start_id = self.store.append({
+            "agent": "design",
+            "event_type": "design_initial_invocation_started",
+            **self.correlation.to_payload(),
+            "jobs": list(jobs),
+        })
+        self.store.upsert({
+            "candidate_id": "C0002",
+            "sequence": "LMNPQRST",
+            "status": "designed",
+        })
+        completion = {
+            "agent": "design",
+            "event_type": "design_initial_completion",
+            **self.correlation.to_payload(),
+            "jobs": list(jobs),
+            "candidate_ids": ["C0002"],
+            "artifact_ids": [],
+            "evidence_ids": [start_id],
+        }
+        context = TransactionContext.create(
+            transaction_id="tx-registration-mismatch",
+            workflow_id=LAUNCHER_RUN_ID,
+            run_id=LAUNCHER_RUN_ID,
+            task_id="T000",
+            attempt_id="T000-A01",
+            action="initial_design",
+        )
+        for status in (
+            TransactionStatus.STAGING,
+            TransactionStatus.VALIDATING,
+            TransactionStatus.COMMITTING,
+        ):
+            context.transition(status)
+        self.store.commit_transaction(
+            context=context.to_dict(),
+            candidate_updates=[{
+                "candidate_id": "C0001",
+                "sequence": "ACDEFGHI",
+                "status": "designed",
+            }],
+            state_updates={},
+            state_appends=(),
+            artifacts=(),
+            evidence_events=(completion,),
+        )
+
+        validation = self.design.validate_initial_invocation(
+            self.correlation, store=self.store
+        )
+        self.assertEqual(validation.status, "conflict")
+        self.assertEqual(validation.blocker_code, "design_recovery_ambiguous")
+
     def test_contract_gap_is_reported_before_route_or_start_receipt(self):
         invalid_context = DesignContext(
             project_config={
@@ -548,7 +663,36 @@ class InitialDesignContractTests(unittest.TestCase):
                 _run_rfdiff(
                     "target.pdb", 8, 2, prefix, "contig", strict_tools=True
                 )
+
+        def current_run_writes_one(*_args, **_kwargs):
             Path(f"{prefix}_0.pdb").write_text("ATOM\n", encoding="utf-8")
+            return succeeded
+
+        with patch(
+            "agents.design.runtime.subprocess.run",
+            side_effect=current_run_writes_one,
+        ):
+            with self.assertRaises(ScientificToolExecutionError):
+                _run_rfdiff(
+                    "target.pdb", 8, 2, prefix, "contig", strict_tools=True
+                )
+
+    def test_strict_rfdiff_clears_complete_stale_outputs_before_launch(self):
+        succeeded = SimpleNamespace(returncode=0, stderr="", stdout="")
+        prefix = str(Path(self.temp.name) / "stale-backbones" / "bb")
+        Path(prefix).parent.mkdir(parents=True)
+        stale_outputs = [Path(f"{prefix}_{index}.pdb") for index in range(2)]
+        for output in stale_outputs:
+            output.write_text("STALE\n", encoding="utf-8")
+
+        def current_run_writes_nothing(*_args, **_kwargs):
+            self.assertTrue(all(not output.exists() for output in stale_outputs))
+            return succeeded
+
+        with patch(
+            "agents.design.runtime.subprocess.run",
+            side_effect=current_run_writes_nothing,
+        ):
             with self.assertRaises(ScientificToolExecutionError):
                 _run_rfdiff(
                     "target.pdb", 8, 2, prefix, "contig", strict_tools=True

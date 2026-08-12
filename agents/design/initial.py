@@ -324,28 +324,29 @@ def validate_initial_invocation(
     if any(evidence_id not in known_evidence for evidence_id in evidence_ids):
         return _conflict(correlation, "initial Design evidence reference is missing")
     transaction_id = completion.get("transaction_id")
-    if transaction_id:
-        if formal_store.get_transaction_status(transaction_id) != "COMMITTED":
-            return _conflict(correlation, "initial Design transaction is not committed")
-        registrations = formal_store.query(
-            project_id=correlation.project_id,
-            transaction_id=transaction_id,
-            agent="design",
-            event_type="candidate_registered",
-        )
-        registered_ids = []
-        for event in registrations:
-            candidate = event.get("candidate")
-            if not isinstance(candidate, Mapping):
-                return _conflict(
-                    correlation, "initial Design candidate registration is malformed"
-                )
-            registered_ids.append(str(candidate.get("candidate_id") or ""))
-        if tuple(sorted(registered_ids)) != tuple(sorted(candidate_ids)):
+    if not isinstance(transaction_id, str) or not transaction_id.strip():
+        return _conflict(correlation, "initial Design transaction binding is missing")
+    if formal_store.get_transaction_status(transaction_id) != "COMMITTED":
+        return _conflict(correlation, "initial Design transaction is not committed")
+    registrations = formal_store.query(
+        project_id=correlation.project_id,
+        transaction_id=transaction_id,
+        agent="design",
+        event_type="candidate_registered",
+    )
+    registered_ids = []
+    for event in registrations:
+        candidate = event.get("candidate")
+        if not isinstance(candidate, Mapping):
             return _conflict(
-                correlation,
-                "initial Design transaction candidate registrations do not match completion",
+                correlation, "initial Design candidate registration is malformed"
             )
+        registered_ids.append(str(candidate.get("candidate_id") or ""))
+    if tuple(sorted(registered_ids)) != tuple(sorted(candidate_ids)):
+        return _conflict(
+            correlation,
+            "initial Design transaction candidate registrations do not match completion",
+        )
 
     return InitialDesignValidation(
         status="completed",
