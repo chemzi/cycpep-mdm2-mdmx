@@ -230,6 +230,7 @@ def _validate_evaluate_new_design_candidates_parameters(parameters: dict, action
         "reuse_complete_evidence",
         "evidence_mode",
         "predictor_protocol",
+        "execution_identity",
     }
     _require_exact_keys(parameters, allowed, "execution_parameters_invalid", action)
     if set(parameters) != allowed:
@@ -279,6 +280,21 @@ def _validate_evaluate_new_design_candidates_parameters(parameters: dict, action
             "predictor_protocol identity does not match the active "
             "protocol; execution can only run the active protocol",
         )
+    try:
+        from prediction_pipeline.execution_identity import (
+            build_prediction_execution_identity,
+            validate_prediction_execution_identity,
+        )
+
+        execution_identity = validate_prediction_execution_identity(
+            parameters.get("execution_identity"),
+            expected=build_prediction_execution_identity(),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ExecutionContractError(
+            getattr(exc, "code", "prediction_execution_identity_invalid"),
+            str(exc),
+        ) from exc
     normalized = {
         "reuse_complete_evidence": _require_bool(
             parameters.get("reuse_complete_evidence"),
@@ -287,6 +303,7 @@ def _validate_evaluate_new_design_candidates_parameters(parameters: dict, action
         ),
         "evidence_mode": evidence_mode,
         "predictor_protocol": dict(protocol),
+        "execution_identity": execution_identity,
     }
     return normalized
 

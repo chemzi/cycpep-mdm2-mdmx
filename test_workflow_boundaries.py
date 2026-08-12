@@ -8,15 +8,19 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from agents.planner import build_initial_prediction_bootstrap_plan
+from agents.prediction_contract import CRITIC_READY_STATUSES
 from prediction_pipeline.contracts import file_sha256
-from workflow.boundaries import FormalBoundaryInspector
+from prediction_pipeline.execution_identity import build_prediction_execution_identity
+from workflow.boundaries import FormalBoundary, FormalBoundaryInspector
 
 
 class _Store:
-    def __init__(self, events=(), transactions=(), artifacts=None):
+    def __init__(self, events=(), transactions=(), artifacts=None, statuses=None):
         self.events = list(events)
         self.transactions = list(transactions)
         self.artifacts = dict(artifacts or {})
+        self.statuses = dict(statuses or {})
 
     def query(self, **filters):
         return [
@@ -33,6 +37,9 @@ class _Store:
 
     def list_transactions(self):
         return list(self.transactions)
+
+    def get_transaction_status(self, transaction_id):
+        return self.statuses.get(transaction_id)
 
 
 def _inspector(store, *, research=None, design=None, prediction=None, status=None):
@@ -192,6 +199,209 @@ class FormalBoundaryInspectorTests(unittest.TestCase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.references["task_id"], "task-1")
         self.assertEqual(result.references["transaction_id"], "transaction-1")
+
+    def test_bootstrap_prediction_rejects_project_and_orchestrator_plan_drift(self):
+        plan = {
+            "plan_id": "planner_0123456789ab",
+            "workflow_id": "workflow-1",
+            "source": {
+                "kind": "initial_prediction_bootstrap",
+                "project_id": "project-1",
+                "candidate_ids": ["C0001"],
+                "execution_identity": {"identity": "expected"},
+            },
+            "tasks": [{
+                "task_id": "T001",
+                "action": "evaluate_new_design_candidates",
+                "candidate_scope": {"candidate_ids": ["C0001"]},
+                "parameters": {"execution_identity": {"identity": "expected"}},
+            }],
+        }
+        run = {
+            "workflow_id": "workflow-other",
+            "plan": {"plan_id": plan["plan_id"]},
+            "tasks": {"T001": {"status": "succeeded", "attempts": 1}},
+        }
+        orchestrator = FormalBoundary.completed(
+            "orchestrator",
+            plan_id=plan["plan_id"],
+            workflow_id="workflow-other",
+            run_id="run-1",
+            run_document=run,
+        )
+        inspector = _inspector(_Store())
+
+        wrong_project = inspector.prediction_execution(
+            project_id="project-other", plan=plan, orchestrator=orchestrator
+        )
+        wrong_run = inspector.prediction_execution(
+            project_id="project-1", plan=plan, orchestrator=orchestrator
+        )
+
+        self.assertEqual(wrong_project.blocker_code, "prediction_execution_plan_invalid")
+        self.assertEqual(wrong_run.blocker_code, "prediction_execution_correlation_invalid")
+
+    def test_duplicate_bootstrap_plan_publications_fail_closed(self):
+        launcher_id = "launcher_0123456789abcdef0123456789abcdef"
+        source = {
+            "project_id": "project-1",
+            "approved_content_binding": "approved-content",
+            "launcher_run_id": launcher_id,
+            "research_completion_event_id": "research-complete",
+            "design_invocation_id": "design_initial_0123456789abcdef0123456789abcdef",
+            "design_completion_event_id": "design-complete",
+            "design_transaction_id": "tx-design",
+            "candidate_ids": ["C0001"],
+            "execution_identity": build_prediction_execution_identity(),
+        }
+        plan = build_initial_prediction_bootstrap_plan(source=source)
+        with tempfile.TemporaryDirectory() as tmp:
+            events = []
+            for suffix in ("a", "b"):
+                path = Path(tmp) / f"plan-{suffix}.json"
+                path.write_text(json.dumps(plan), encoding="utf-8")
+                events.append({
+                    "event_id": f"plan-event-{suffix}",
+                    "agent": "planner",
+                    "event_type": "planner_plan",
+                    "source_kind": "initial_prediction_bootstrap",
+                    "launcher_run_id": launcher_id,
+                    "design_completion_event_id": "design-complete",
+                    "design_transaction_id": "tx-design",
+                    "candidate_ids": ["C0001"],
+                    "execution_identity": source["execution_identity"],
+                    "plan_id": plan["plan_id"],
+                    "plan_path": str(path),
+                    "plan_sha256": file_sha256(path),
+                })
+
+            result = _inspector(_Store(events)).bootstrap_prediction_plan(
+                project_id="project-1",
+                approved_content_binding="approved-content",
+                launcher_run_id=launcher_id,
+                design_invocation_id=source["design_invocation_id"],
+                design_completion_event_id="design-complete",
+                design_transaction_id="tx-design",
+                candidate_ids=("C0001",),
+            )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.blocker_code, "bootstrap_plan_recovery_ambiguous")
+
+    def test_bootstrap_prediction_completion_requires_one_bound_committed_output(self):
+        identity = build_prediction_execution_identity()
+        plan = {
+            "plan_id": "planner_0123456789ab",
+            "workflow_id": "workflow-1",
+            "source": {
+                "kind": "initial_prediction_bootstrap",
+                "project_id": "project-1",
+                "candidate_ids": ["C0001"],
+                "execution_identity": identity,
+            },
+            "tasks": [{
+                "task_id": "T001",
+                "action": "evaluate_new_design_candidates",
+                "candidate_scope": {"candidate_ids": ["C0001"]},
+                "parameters": {"execution_identity": identity},
+            }],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            record_path = root / "C0001.json"
+            record = {
+                "candidate": {"candidate_id": "C0001", "sequence": "ACDEFGHI"},
+                "run_id": "prediction-domain",
+                "pipeline_version": "test",
+                "status": "needs_optimization",
+                "battery": {
+                    "competition_clearance": False,
+                    "metric_clearance": False,
+                    "triage_status": "valid",
+                    "missing_evidence": [],
+                    "missing_thresholds": [],
+                },
+                "protocol_identity": identity["prediction_protocol"],
+                "execution_identity": identity,
+            }
+            record_path.write_text(json.dumps(record), encoding="utf-8")
+            handoff_path = root / "prediction_handoff.json"
+            handoff = {
+                "project_id": "project-1",
+                "run_id": "prediction-domain",
+                "pipeline_version": "test",
+                "protocol_identity": identity["prediction_protocol"],
+                "execution_identity": identity,
+                "downstream": {
+                    "critic_input_statuses": list(CRITIC_READY_STATUSES),
+                    "authoritative_record_field": "record_path",
+                },
+                "categories": {"needs_optimization": [{
+                    "candidate_id": "C0001",
+                    "record_path": str(record_path),
+                    "record_sha256": file_sha256(record_path),
+                }]},
+            }
+            handoff_path.write_text(json.dumps(handoff), encoding="utf-8")
+            run = {
+                "workflow_id": "workflow-1",
+                "plan": {"plan_id": plan["plan_id"]},
+                "tasks": {"T001": {
+                    "status": "succeeded",
+                    "attempts": 1,
+                    "outputs": [{
+                        "role": "prediction_handoff",
+                        "path": str(handoff_path),
+                        "sha256": file_sha256(handoff_path),
+                    }],
+                }},
+            }
+            orchestrator = FormalBoundary.completed(
+                "orchestrator",
+                plan_id=plan["plan_id"], workflow_id="workflow-1",
+                run_id="run-1", run_document=run,
+            )
+            completion = {
+                "event_id": "execution-complete",
+                "project_id": "project-1",
+                "agent": "execution",
+                "event_type": "execution_task_completed",
+                "workflow_id": "workflow-1",
+                "run_id": "run-1",
+                "plan_id": plan["plan_id"],
+                "task_id": "T001",
+                "attempt_id": "T001-A01",
+                "transaction_id": "tx-prediction",
+                "expected_execution_identity": identity,
+                "observed_execution_identity": identity,
+            }
+            store = _Store(
+                [completion],
+                artifacts={"tx-prediction-prediction_handoff": {
+                    "artifact_id": "tx-prediction-prediction_handoff",
+                    "path": str(handoff_path),
+                    "sha256": file_sha256(handoff_path),
+                    "producer_task_id": "T001",
+                }},
+                statuses={"tx-prediction": "COMMITTED"},
+            )
+            inspector = _inspector(store)
+
+            completed = inspector.prediction_execution(
+                project_id="project-1", plan=plan, orchestrator=orchestrator
+            )
+            self.assertEqual(completed.status, "completed")
+            self.assertEqual(
+                completed.references["prediction_run_id"], "prediction-domain"
+            )
+
+            completion["observed_execution_identity"] = {"wrong": True}
+            blocked = inspector.prediction_execution(
+                project_id="project-1", plan=plan, orchestrator=orchestrator
+            )
+            self.assertEqual(
+                blocked.blocker_code, "prediction_execution_correlation_invalid"
+            )
 
 
 if __name__ == "__main__":

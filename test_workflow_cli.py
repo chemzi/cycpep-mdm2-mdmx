@@ -59,7 +59,11 @@ class WorkflowCLITests(unittest.TestCase):
         self.assertEqual(calls[0], ("status", {"launcher_run_id": launcher_id}))
         self.assertEqual(
             calls[1],
-            ("resume", {"launcher_run_id": launcher_id, "approval_paths": ("a.json", "b.json")}),
+            ("resume", {
+                "launcher_run_id": launcher_id,
+                "approval_paths": ("a.json", "b.json"),
+                "retry_bootstrap_prediction": False,
+            }),
         )
 
     def test_invalid_cli_input_is_one_browser_safe_json_error(self):

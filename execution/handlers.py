@@ -292,7 +292,11 @@ def _prediction_candidate_ids(context: HandlerContext) -> list[str]:
     return explicit
 
 
-def _artifact_bundle_complete(path: Path, required_targets: list[str]) -> bool:
+def _artifact_bundle_complete(
+    path: Path,
+    required_targets: list[str],
+    expected_execution_identity: dict | None = None,
+) -> bool:
     if not path.is_file():
         return False
     try:
@@ -300,6 +304,14 @@ def _artifact_bundle_complete(path: Path, required_targets: list[str]) -> bool:
         # Execution gate: a bundle bound to an older protocol is readable but
         # not reusable by a run executing under the active protocol.
         validate_execution_compatibility(raw)
+        if expected_execution_identity is not None:
+            identity_path = path.with_name("execution_identity.json")
+            if (
+                not identity_path.is_file()
+                or _json_object(identity_path, "prediction execution identity")
+                != expected_execution_identity
+            ):
+                return False
         global_values = raw.get("global") or {}
         if not global_values.get("monomer_predictions"):
             return False
@@ -384,6 +396,7 @@ def _typed_prediction_result(
 
 def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
     params = context.parameters
+    execution_identity = params["execution_identity"]
     candidate_ids = _prediction_candidate_ids(context)
     state = State.load()
     thresholds = state.get("thresholds") or {}
@@ -402,7 +415,9 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
     for candidate_id in candidate_ids:
         existing_dir = context.config.prediction_artifacts_root / candidate_id
         bundle = existing_dir / "artifacts.json"
-        if params["reuse_complete_evidence"] and _artifact_bundle_complete(bundle, required_targets):
+        if params["reuse_complete_evidence"] and _artifact_bundle_complete(
+            bundle, required_targets, execution_identity
+        ):
             _link_candidate_artifacts(existing_dir, staging_root, candidate_id)
         else:
             missing.append(candidate_id)
@@ -473,7 +488,13 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
                 label=f"prediction_enrichment[{candidate_id}]",
             ))
             completed_bundle = enrichment_root / candidate_id / "artifacts.json"
-            if not _artifact_bundle_complete(completed_bundle, required_targets):
+            atomic_json(
+                completed_bundle.with_name("execution_identity.json"),
+                execution_identity,
+            )
+            if not _artifact_bundle_complete(
+                completed_bundle, required_targets, execution_identity
+            ):
                 raise ExecutionContractError(
                     "prediction_enrichment_incomplete",
                     f"enrichment did not create full evidence for {candidate_id}",

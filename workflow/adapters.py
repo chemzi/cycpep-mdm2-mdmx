@@ -114,10 +114,65 @@ class DefaultWorkflowRuntime:
             correlation=self.prediction_correlation,
         )
 
+    def inspect_bootstrap_planner(self, design):
+        return self.inspector.bootstrap_prediction_plan(
+            project_id=self.context.project_id,
+            approved_content_binding=_approved_binding(self.context),
+            launcher_run_id=self.launcher_run_id,
+            design_invocation_id=self.design_correlation.design_invocation_id,
+            design_completion_event_id=design.references["completion_event_id"],
+            design_transaction_id=design.references["transaction_id"],
+            candidate_ids=tuple(design.references["candidate_ids"]),
+        )
+
+    def run_bootstrap_planner(self, research, design):
+        from agents.planner import run_initial_prediction_bootstrap
+        from prediction_pipeline.execution_identity import (
+            build_prediction_execution_identity,
+        )
+
+        source = {
+            "project_id": self.context.project_id,
+            "approved_content_binding": _approved_binding(self.context),
+            "launcher_run_id": self.launcher_run_id,
+            "research_completion_event_id": research.references["completion_event_id"],
+            "design_invocation_id": self.design_correlation.design_invocation_id,
+            "design_completion_event_id": design.references["completion_event_id"],
+            "design_transaction_id": design.references["transaction_id"],
+            "candidate_ids": list(design.references["candidate_ids"]),
+            "execution_identity": build_prediction_execution_identity(),
+        }
+        output_root = self.execution_config.execution_root / "bootstrap_plans"
+        return run_initial_prediction_bootstrap(
+            source=source,
+            output_root=output_root,
+            store=self.store,
+        )
+
+    def retry_bootstrap_prediction(self, failed_plan, failure):
+        from agents.planner import retry_initial_prediction_bootstrap
+
+        return retry_initial_prediction_bootstrap(
+            failed_plan=failed_plan,
+            failure=dict(failure.references),
+            output_root=self.execution_config.execution_root / "bootstrap_plans",
+            store=self.store,
+        )
+
+    def inspect_bootstrap_prediction(self, plan, orchestrator):
+        return self.inspector.prediction_execution(
+            project_id=self.context.project_id,
+            plan=plan,
+            orchestrator=orchestrator,
+        )
+
     def inspect_critic(self, prediction):
         return self.inspector.critic(
             project_id=self.context.project_id,
-            prediction_run_id=self.prediction_run_id,
+            prediction_run_id=str(
+                prediction.references.get("prediction_run_id")
+                or self.prediction_run_id
+            ),
         )
 
     def run_critic(self, handoff_path):

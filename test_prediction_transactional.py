@@ -34,6 +34,7 @@ from exploration_decision import build_exploration_decision, record_exploration_
 from prediction_pipeline.contracts import file_sha256
 from prediction_pipeline.pipeline import PredictionPipeline
 from prediction_pipeline.protocol import protocol_binding
+from prediction_pipeline.execution_identity import build_prediction_execution_identity
 from storage import SQLiteStore
 from test_prediction_pipeline import SEQUENCE, project_config, write_monomer
 from threshold_contract import canonical_threshold_digest
@@ -123,6 +124,7 @@ class PredictionTransactionalTests(unittest.TestCase):
                     "reuse_complete_evidence": False,
                     "evidence_mode": "reuse_or_generate_full",
                     "predictor_protocol": protocol_binding(),
+                    "execution_identity": build_prediction_execution_identity(),
                 },
                 "candidate_scope": {
                     "candidate_ids": ["C0001"],

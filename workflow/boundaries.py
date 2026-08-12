@@ -94,6 +94,7 @@ class FormalBoundaryInspector:
             for name in (
                 "start_event_id",
                 "completion_event_id",
+                "transaction_id",
                 "research_evidence_ids",
                 "candidate_ids",
                 "artifact_ids",
@@ -209,6 +210,128 @@ class FormalBoundaryInspector:
             "planner", matches, invalid, "planner_recovery_ambiguous", "plan"
         )
 
+    def bootstrap_prediction_plan(
+        self,
+        *,
+        project_id: str,
+        approved_content_binding: str,
+        launcher_run_id: str,
+        design_invocation_id: str,
+        design_completion_event_id: str,
+        design_transaction_id: str,
+        candidate_ids: tuple[str, ...],
+    ) -> FormalBoundary:
+        """Resolve one formal pre-Critic Prediction plan for a Design completion."""
+        matches: list[tuple[dict[str, Any], dict[str, Any], Path]] = []
+        invalid = False
+        for event in self.store.query(
+            project_id=project_id, agent="planner", event_type="planner_plan"
+        ):
+            if event.get("source_kind") != "initial_prediction_bootstrap":
+                continue
+            if (
+                event.get("launcher_run_id") != launcher_run_id
+                or event.get("design_completion_event_id")
+                != design_completion_event_id
+            ):
+                continue
+            path = _formal_path(event, self.store, "plan_path", "plan_artifact_id")
+            document = _read_json_object(path)
+            if document is None:
+                invalid = True
+                continue
+            try:
+                validate_plan_for_approval(document, path)
+            except (ValueError, OSError):
+                invalid = True
+                continue
+            source = document.get("source") or {}
+            if (
+                source.get("kind") != "initial_prediction_bootstrap"
+                or source.get("project_id") != project_id
+                or source.get("approved_content_binding")
+                != approved_content_binding
+                or source.get("launcher_run_id") != launcher_run_id
+                or source.get("design_invocation_id") != design_invocation_id
+                or source.get("design_completion_event_id")
+                != design_completion_event_id
+                or source.get("design_transaction_id") != design_transaction_id
+                or source.get("candidate_ids") != sorted(candidate_ids)
+                or event.get("candidate_ids") != source.get("candidate_ids")
+                or event.get("design_transaction_id")
+                != source.get("design_transaction_id")
+                or event.get("execution_identity")
+                != source.get("execution_identity")
+                or event.get("retry") != source.get("retry")
+                or not _event_binds_document(event, document, path, "plan")
+            ):
+                invalid = True
+                continue
+            matches.append((event, document, path))
+        ordered = sorted(
+            matches,
+            key=lambda value: int(
+                ((value[1].get("source") or {}).get("retry") or {})
+                .get("retry_index") or 0
+            ),
+        )
+        if ordered:
+            indices = [
+                int(((document.get("source") or {}).get("retry") or {}).get("retry_index") or 0)
+                for _, document, _ in ordered
+            ]
+            if indices != list(range(len(ordered))):
+                invalid = True
+            immutable_source_keys = (
+                "project_id", "approved_content_binding", "launcher_run_id",
+                "research_completion_event_id", "design_invocation_id",
+                "design_completion_event_id", "design_transaction_id",
+                "candidate_ids",
+            )
+            initial_source = ordered[0][1].get("source") or {}
+            for index in range(1, len(ordered)):
+                retry = (ordered[index][1].get("source") or {}).get("retry") or {}
+                current_source = ordered[index][1].get("source") or {}
+                previous_plan = ordered[index - 1][1]
+                failure_events = [
+                    event for event in self.store.query(
+                        project_id=project_id,
+                        agent="execution",
+                        event_type="execution_task_failed",
+                    )
+                    if event.get("event_id") == retry.get("failure_event_id")
+                ]
+                expected_failure = {
+                    "plan_id": retry.get("prior_plan_id"),
+                    "run_id": retry.get("prior_run_id"),
+                    "task_id": retry.get("prior_task_id"),
+                    "attempt_id": retry.get("prior_attempt_id"),
+                    "transaction_id": retry.get("prior_transaction_id"),
+                }
+                if (
+                    retry.get("prior_plan_id") != previous_plan.get("plan_id")
+                    or any(
+                        current_source.get(key) != initial_source.get(key)
+                        for key in immutable_source_keys
+                    )
+                    or len(failure_events) != 1
+                    or any(
+                        failure_events[0].get(key) != value
+                        for key, value in expected_failure.items()
+                    )
+                    or self.store.get_transaction_status(
+                        str(retry.get("prior_transaction_id") or "")
+                    ) == "COMMITTED"
+                ):
+                    invalid = True
+        return _unique_document_boundary(
+            "planner",
+            ordered[-1:] if ordered else (),
+            invalid,
+            "bootstrap_plan_recovery_ambiguous",
+            "plan",
+        )
+
     def approvals(
         self, *, project_id: str, plan_id: str, plan_sha256: str
     ) -> FormalBoundary:
@@ -255,6 +378,7 @@ class FormalBoundaryInspector:
             plan_id=(run.get("plan") or {}).get("plan_id"),
             formal_status=run.get("status"),
             summary=result.get("summary") or {},
+            run_document=run,
         )
 
     def orchestrator_for_plan(
@@ -298,7 +422,13 @@ class FormalBoundaryInspector:
         )
         if not events:
             return FormalBoundary.not_started("execution")
-        event = events[-1]
+        if len(events) != 1:
+            return FormalBoundary.blocked(
+                "execution",
+                "execution_failure_recovery_ambiguous",
+                "formal Worker failure proof is missing or non-unique",
+            )
+        event = events[0]
         return FormalBoundary.completed(
             "execution",
             evidence_id=event.get("event_id"),
@@ -310,6 +440,178 @@ class FormalBoundaryInspector:
             transaction_id=event.get("transaction_id"),
             formal_status="failed",
         )
+
+    def prediction_execution(
+        self,
+        *,
+        project_id: str,
+        plan: Mapping[str, Any],
+        orchestrator: FormalBoundary,
+    ) -> FormalBoundary:
+        """Validate Worker-owned bootstrap Prediction completion end to end."""
+        context = _bootstrap_execution_context(project_id, plan, orchestrator)
+        if isinstance(context, FormalBoundary):
+            return context
+        task, state = context
+        completion = _bootstrap_execution_completion(
+            self.store, project_id, plan, orchestrator, task, state
+        )
+        if isinstance(completion, FormalBoundary):
+            return completion
+        receipt, transaction_id, attempt_id = completion
+        handoff = _bootstrap_prediction_handoff(
+            self.store, state, str(task["task_id"]), transaction_id
+        )
+        if isinstance(handoff, FormalBoundary):
+            return handoff
+        handoff_artifact_id, artifact, handoff_path, document = handoff
+        task_id = str(task["task_id"])
+        from agents.prediction_contract import validate_prediction_owner_readiness
+        prediction_run_id = str(document.get("run_id") or "")
+        readiness = validate_prediction_owner_readiness(
+            handoff_path=handoff_path,
+            project_id=project_id,
+            prediction_run_id=prediction_run_id,
+            candidate_ids=tuple((plan.get("source") or {}).get("candidate_ids") or ()),
+            expected_execution_identity=task["parameters"]["execution_identity"],
+        )
+        if readiness.status != "completed":
+            return FormalBoundary.blocked(
+                "prediction",
+                readiness.blocker_code or "prediction_recovery_ambiguous",
+                readiness.message or "Prediction owner readiness failed",
+                prediction_run_id=prediction_run_id,
+                handoff_path=str(handoff_path),
+                transaction_id=transaction_id,
+                task_id=task_id,
+                attempt_id=attempt_id,
+            )
+        return FormalBoundary.completed(
+            "prediction",
+            prediction_run_id=prediction_run_id,
+            handoff_path=str(handoff_path),
+            transaction_id=transaction_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            artifact_ids=(str(artifact.get("artifact_id") or handoff_artifact_id),),
+            evidence_ids=(str(receipt.get("event_id") or ""),),
+        )
+
+
+def _bootstrap_execution_context(project_id, plan, orchestrator):
+    source = plan.get("source") or {}
+    tasks = plan.get("tasks") or []
+    valid_task = (
+        len(tasks) == 1
+        and tasks[0].get("action") == "evaluate_new_design_candidates"
+        and (tasks[0].get("candidate_scope") or {}).get("candidate_ids")
+        == source.get("candidate_ids")
+        and (tasks[0].get("parameters") or {}).get("execution_identity")
+        == source.get("execution_identity")
+    )
+    if (
+        source.get("kind") != "initial_prediction_bootstrap"
+        or source.get("project_id") != project_id
+        or not valid_task
+    ):
+        return FormalBoundary.blocked(
+            "prediction", "prediction_execution_plan_invalid",
+            "bootstrap plan project, scope, action, or execution identity is invalid",
+        )
+    run = orchestrator.references.get("run_document")
+    states = run.get("tasks") if isinstance(run, Mapping) else None
+    run_plan = run.get("plan") if isinstance(run, Mapping) else None
+    if (
+        orchestrator.status != "completed"
+        or not isinstance(states, Mapping)
+        or not isinstance(run_plan, Mapping)
+        or orchestrator.references.get("plan_id") != plan.get("plan_id")
+        or orchestrator.references.get("workflow_id") != plan.get("workflow_id")
+        or run_plan.get("plan_id") != plan.get("plan_id")
+        or run.get("workflow_id") != plan.get("workflow_id")
+    ):
+        return FormalBoundary.blocked(
+            "prediction", "prediction_execution_correlation_invalid",
+            "Orchestrator run is not bound to the bootstrap plan",
+        )
+    state = states.get(tasks[0].get("task_id"))
+    return (tasks[0], state) if isinstance(state, Mapping) else FormalBoundary.not_started("prediction")
+
+
+def _bootstrap_execution_completion(store, project_id, plan, orchestrator, task, state):
+    task_id = str(task.get("task_id") or "")
+    status = state.get("status")
+    if status == "failed":
+        return FormalBoundary.blocked(
+            "prediction", "prediction_execution_failed",
+            "approved Prediction execution failed", task_id=task_id,
+        )
+    if status != "succeeded":
+        return FormalBoundary(
+            status="active", boundary="prediction",
+            references={"task_id": task_id, "formal_status": status},
+        )
+    from contracts.trace import TraceContext
+    attempt_id = TraceContext.attempt_id_for(task_id, int(state.get("attempts") or 0))
+    completions = [
+        event for event in store.query(
+            project_id=project_id,
+            run_id=str(orchestrator.references.get("run_id") or ""),
+            agent="execution", event_type="execution_task_completed",
+        )
+        if event.get("task_id") == task_id and event.get("attempt_id") == attempt_id
+    ]
+    if len(completions) != 1:
+        return FormalBoundary.blocked(
+            "prediction", "prediction_execution_correlation_invalid",
+            "Worker completion receipt is missing or non-unique",
+        )
+    receipt = completions[0]
+    transaction_id = receipt.get("transaction_id")
+    identity = task["parameters"]["execution_identity"]
+    if (
+        not isinstance(transaction_id, str)
+        or receipt.get("workflow_id") != plan.get("workflow_id")
+        or receipt.get("plan_id") != plan.get("plan_id")
+        or store.get_transaction_status(transaction_id) != "COMMITTED"
+        or receipt.get("expected_execution_identity") != identity
+        or receipt.get("observed_execution_identity") != identity
+    ):
+        return FormalBoundary.blocked(
+            "prediction", "prediction_execution_correlation_invalid",
+            "Worker receipt or committed transaction binding is invalid",
+            transaction_id=transaction_id,
+        )
+    return receipt, transaction_id, attempt_id
+
+
+def _bootstrap_prediction_handoff(store, state, task_id, transaction_id):
+    handoffs = [
+        item for item in (state.get("outputs") or [])
+        if item.get("role") == "prediction_handoff"
+    ]
+    artifact_id = f"{transaction_id}-prediction_handoff"
+    artifact = store.get_artifact(artifact_id)
+    if len(handoffs) != 1 or artifact is None:
+        return FormalBoundary.blocked(
+            "prediction", "prediction_execution_correlation_invalid",
+            "formal Prediction handoff Artifact is missing",
+        )
+    path = Path(str(artifact.get("path") or "")).expanduser().resolve()
+    document = _read_json_object(path)
+    digest = file_sha256(path) if document is not None else None
+    if (
+        document is None
+        or Path(str(handoffs[0].get("path") or "")).expanduser().resolve() != path
+        or handoffs[0].get("sha256") != digest
+        or artifact.get("sha256") != digest
+        or artifact.get("producer_task_id") != task_id
+    ):
+        return FormalBoundary.blocked(
+            "prediction", "prediction_execution_correlation_invalid",
+            "task output and committed handoff Artifact differ",
+        )
+    return artifact_id, artifact, path, document
 
 
 def _formal_path(

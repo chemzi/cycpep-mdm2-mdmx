@@ -1,5 +1,29 @@
 # Planner Agent v1.2
 
+## Initial Prediction bootstrap plan
+
+Before Critic exists, a formally committed Initial Design may use the additive
+public `run_initial_prediction_bootstrap()` entry. It publishes an immutable
+`source.kind=initial_prediction_bootstrap` plan containing exactly one
+`evaluate_new_design_candidates` task whose scope equals the complete committed
+candidate set and whose GPU budget requires explicit approval. This source and
+the existing Critic-report source are a strict tagged union;
+`run(critic_report_path=...)` remains unchanged.
+
+Terminal failure can produce a new plan only after an explicit Launcher retry
+request. The retry binds the prior failure and unchanged Design authority,
+requires a new approval and Orchestrator run, and never reopens the failed task.
+
+This is an additive public interface: `build_initial_prediction_bootstrap_plan`,
+`run_initial_prediction_bootstrap`, and `retry_initial_prediction_bootstrap`
+are exported by `agents.planner`; the existing `run(critic_report_path=...)`
+signature and Critic source remain unchanged. Repository callers of Planner
+plan construction and validation were searched and continue through the same
+canonical plan/approval contract. Older plan files remain readable audit
+history; an unstarted Prediction task without `execution_identity` is rejected
+by the execution contract and must be deterministically replanned from its
+immutable source rather than edited in place.
+
 Planner 位于 Critic 与未来 Orchestrator 之间。它读取一份冻结的
 `critic_report.json`，生成确定性的 `execution_plan.json`，把“需要改进界面”这类建议
 转换成带任务依赖、候选范围、资源请求、预算上限和审批要求的执行图。

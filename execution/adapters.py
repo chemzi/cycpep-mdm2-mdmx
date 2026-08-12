@@ -38,6 +38,7 @@ def _prediction_artifacts(
     context: TransactionContext,
     staging: StagingArea,
     expected_protocol: dict,
+    expected_execution_identity: dict,
     artifact_root: Path,
 ) -> tuple[list, dict[str, str]]:
     handoff_paths = [
@@ -53,6 +54,13 @@ def _prediction_artifacts(
             "prediction_protocol_mismatch",
             "Prediction handoff does not match the task protocol identity",
         )
+    recorded_identity = handoff.get("execution_identity")
+    if recorded_identity not in (None, expected_execution_identity):
+        raise ExecutionContractError(
+            "prediction_execution_identity_mismatch",
+            "Prediction handoff conflicts with the approved execution identity",
+        )
+    handoff["execution_identity"] = expected_execution_identity
     staged = []
     committed_inputs: dict[tuple[str, str], tuple[str, str]] = {}
     record_shas: dict[str, str] = {}
@@ -88,6 +96,13 @@ def _prediction_artifacts(
                     "prediction_protocol_mismatch",
                     f"Prediction record protocol mismatch for {candidate_id}",
                 )
+            record_identity = record.get("execution_identity")
+            if record_identity not in (None, expected_execution_identity):
+                raise ExecutionContractError(
+                    "prediction_execution_identity_mismatch",
+                    f"Prediction record execution identity mismatch for {candidate_id}",
+                )
+            record["execution_identity"] = expected_execution_identity
             inventory = record.get("artifact_inventory") or []
             if not isinstance(inventory, list) or any(
                 not isinstance(artifact, dict) for artifact in inventory
@@ -163,6 +178,7 @@ def _prediction_artifacts(
 def _prediction_committed_effects(
     result: ExecutionActionResult,
     record_shas: dict[str, str],
+    execution_identity: dict,
 ) -> tuple[tuple, tuple]:
     candidate_patches = []
     for mutation in result.candidate_patches:
@@ -183,12 +199,26 @@ def _prediction_committed_effects(
     evidence_events = []
     for event in result.evidence_events:
         value = dict(event)
+        # Prediction effects historically used reserved trace ``run_id`` for
+        # their domain run. At the transaction adapter boundary, preserve that
+        # identity only as ``prediction_run_id``; Worker supplies formal
+        # ``run_id`` from TraceContext.
+        domain_run_id = value.pop("run_id", None)
+        if domain_run_id is not None:
+            existing = value.get("prediction_run_id")
+            if existing not in (None, domain_run_id):
+                raise ExecutionContractError(
+                    "prediction_run_identity_conflict",
+                    "Prediction evidence carries conflicting domain run identities",
+                )
+            value["prediction_run_id"] = domain_run_id
         candidate_id = str(value.get("candidate_id") or "")
         if candidate_id in record_shas:
             if isinstance(value.get("tool_trace"), dict):
                 value["tool_trace"] = dict(
                     value["tool_trace"], output_hash=record_shas[candidate_id]
                 )
+        value["execution_identity"] = execution_identity
         evidence_events.append(value)
     return tuple(candidate_patches), tuple(evidence_events)
 
@@ -237,6 +267,7 @@ def make_transactional_output_adapter(
                 context,
                 staging,
                 packet["task"]["parameters"]["predictor_protocol"],
+                packet["task"]["parameters"]["execution_identity"],
                 config.execution_root / "artifacts",
             )
         staged = [
@@ -251,7 +282,9 @@ def make_transactional_output_adapter(
         artifact_ids = [artifact.artifact_id for artifact in staged]
         if is_prediction:
             candidate_patches, evidence_events = _prediction_committed_effects(
-                result, record_shas
+                result,
+                record_shas,
+                packet["task"]["parameters"]["execution_identity"],
             )
         else:
             candidate_patches = result.candidate_patches

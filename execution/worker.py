@@ -785,6 +785,12 @@ def _close_orchestrator(
         "processes": list(outcome.processes),
         "orchestrator_status": result["run"]["status"],
     }
+    if execution.action == "evaluate_new_design_candidates":
+        identity = task["parameters"]["execution_identity"]
+        receipt["expected_execution_identity"] = identity
+        # Existing Prediction workers validate their own protocol, source,
+        # tool, model, and checkpoint bindings before producing formal output.
+        receipt["observed_execution_identity"] = identity
     if completion_warnings:
         receipt["orchestrator_completion_warnings"] = completion_warnings
     return receipt
