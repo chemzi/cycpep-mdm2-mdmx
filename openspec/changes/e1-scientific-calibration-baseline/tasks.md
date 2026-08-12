@@ -44,4 +44,4 @@
 - [x] 7.1 Rebase the complete `620875c` authority remediation onto `integration/data-integrity-transaction@b910811` and manually reconcile `pipeline.py`, `transaction_effects.py`, `contracts/event.py`, and `data_layer.py` without losing PR71 raw-threshold, `prediction_run_id`, candidate-coverage, or cache/resume semantics.
 - [x] 7.2 Add a Calibration → Prediction → ExplorationDecision integration regression that proves the validated simulation-only binding and complete Prediction candidate effects reach the existing exploration decision boundary.
 - [x] 7.3 Run focused/full suites, Architecture Gate, strict OpenSpec, compile/diff checks, and fixed-point review on the rebased head.
-- [ ] 7.4 Push the rebased branch, wait for a new-head GitHub CI green result, and only then reassess merge readiness.
+- [x] 7.4 Push the rebased branch, wait for a new-head GitHub CI green result, and only then reassess merge readiness.
