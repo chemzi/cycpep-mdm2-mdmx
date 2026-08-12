@@ -11,6 +11,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from battery_evaluation import evaluate_battery
+from calibration_baseline import (
+    unpublished_calibration_binding,
+)
 from contracts.trace import TraceContext
 from contracts.event import EvidenceEvent
 from contracts.exploration_decision import ExplorationDecision
@@ -135,7 +138,10 @@ class PredictionTransactionalTests(unittest.TestCase):
             "trace_context": {"project_id": "prediction_test"},
         }
 
-    def _e2_from_committed_prediction(self, store: SQLiteStore) -> ExplorationDecision:
+    def _e2_from_committed_prediction(
+        self, store: SQLiteStore, *, thresholds: dict | None = None
+    ) -> ExplorationDecision:
+        threshold_snapshot = thresholds or {}
         events = store.query(
             workflow_id="workflow-prediction", run_id="run-prediction-typed"
         )
@@ -152,7 +158,7 @@ class PredictionTransactionalTests(unittest.TestCase):
             agent="critic",
             event_type="exploration_shortlist",
             payload=exploration_shortlist(
-                batteries, targets=["MDM2"], thresholds={}
+                batteries, targets=["MDM2"], thresholds=threshold_snapshot
             ),
             trace_context=TraceContext(
                 "prediction_test", "workflow-prediction", "run-prediction-typed"
@@ -175,7 +181,7 @@ class PredictionTransactionalTests(unittest.TestCase):
                 shortlist_event=shortlist,
                 prediction_handoff_event=handoff,
                 project_config=project,
-                thresholds={},
+                thresholds=threshold_snapshot,
                 project_id="prediction_test",
                 workflow_id="workflow-prediction",
                 run_id="run-prediction-typed",
@@ -281,12 +287,15 @@ class PredictionTransactionalTests(unittest.TestCase):
         store_class=SQLiteStore,
         handler=None,
         attempt: int = 1,
+        store_setup=None,
     ):
         root.mkdir(parents=True, exist_ok=True)
         store = store_class(root / "store.db", project_id="prediction_test")
         store.replace_state("prediction_test", self.state)
         if store.get("C0001") is None:
             store.upsert(self.row, duplicate_policy="insert_only")
+        if store_setup is not None:
+            store_setup(store)
         context = TransactionContext.create(
             workflow_id="workflow-prediction",
             run_id="run-prediction-typed",
@@ -490,6 +499,7 @@ class PredictionTransactionalTests(unittest.TestCase):
             run_id="prediction_battery_scope",
             transaction_id="tx-battery-scope",
             expected_protocol=protocol_binding(),
+            expected_calibration_binding=unpublished_calibration_binding({}),
         )
         self.assertTrue(any(
             event.get("event_type") == "battery_evaluated"
@@ -532,6 +542,7 @@ class PredictionTransactionalTests(unittest.TestCase):
                         run_id="prediction_battery_exact",
                         transaction_id="tx-battery-exact",
                         expected_protocol=protocol_binding(),
+                        expected_calibration_binding=unpublished_calibration_binding({}),
                     )
 
     def test_invalid_prediction_candidate_still_has_one_battery_authority(self):
@@ -554,6 +565,7 @@ class PredictionTransactionalTests(unittest.TestCase):
             run_id="prediction_invalid_battery",
             transaction_id="tx-invalid-battery",
             expected_protocol=protocol_binding(),
+            expected_calibration_binding=unpublished_calibration_binding({}),
         )
         batteries = [
             event for event in effects["evidence_events"]

@@ -377,6 +377,20 @@ class State:
         return backend.register_artifact(artifact)
 
     @classmethod
+    def publish_calibration(
+        cls, *, binding: dict, thresholds: dict, artifact: dict
+    ) -> dict:
+        """Publish one active calibration atomically, then refresh projection."""
+        backend = get_storage_backend()
+        result = backend.publish_calibration(
+            binding=binding,
+            thresholds=thresholds,
+            artifact=artifact,
+        )
+        _project_state_file(backend)
+        return result
+
+    @classmethod
     def sync_project_config(cls, config: dict) -> dict:
         """Make the approved config authoritative for target identity in state."""
         state = cls.load()

@@ -260,6 +260,17 @@ class ExplorationDecision:
                 or source.get("thresholds_digest") != self.threshold_digest
             ):
                 raise ExplorationDecisionContractError("source threshold identity is inconsistent")
+        handoff_binding = handoff.get("calibration_binding")
+        source_bindings = [source.get("calibration_binding") for source in sources]
+        if handoff_binding is not None or any(
+            binding is not None for binding in source_bindings
+        ):
+            if not isinstance(handoff_binding, Mapping) or any(
+                binding != handoff_binding for binding in source_bindings
+            ):
+                raise ExplorationDecisionContractError(
+                    "Prediction calibration binding is inconsistent"
+                )
         if (
             shortlist.get("agent") != "critic"
             or shortlist.get("phase") != "critic"

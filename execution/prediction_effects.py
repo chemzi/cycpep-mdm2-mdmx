@@ -6,6 +6,10 @@ import json
 from pathlib import Path
 
 import data_layer
+from calibration_baseline import (
+    CalibrationBaselineError,
+    validate_serialized_calibration_binding,
+)
 
 from .contracts import ExecutionContractError
 from .results import (
@@ -312,8 +316,10 @@ def _handoff_proposal(
 def _evidence_proposals(
     effects: dict,
     records: dict[str, dict],
+    prediction_metadata: dict[str, dict],
     handoff: dict,
     expected_protocol: dict,
+    expected_calibration_binding: dict,
     prediction_run_id: str,
 ) -> None:
     events = effects.get("evidence_events")
@@ -350,6 +356,31 @@ def _evidence_proposals(
                 "prediction_effects_scope_mismatch",
                 "Prediction handoff evidence does not match the handoff artifact",
             )
+    handoff_document, threshold_digest = _prediction_authority_events(
+        events=events,
+        records=records,
+        handoff=handoff,
+        prediction_run_id=prediction_run_id,
+    )
+    _calibration_authority(
+        effects=effects,
+        records=records,
+        prediction_metadata=prediction_metadata,
+        handoff_document=handoff_document,
+        events=events,
+        threshold_digest=threshold_digest,
+        expected_protocol=expected_protocol,
+        expected_calibration_binding=expected_calibration_binding,
+    )
+
+
+def _prediction_authority_events(
+    *,
+    events: list[dict],
+    records: dict[str, dict],
+    handoff: dict,
+    prediction_run_id: str,
+) -> tuple[dict, str]:
     handoff_events = [
         event for event in events
         if event.get("event_type") == "prediction_handoff_ready"
@@ -357,7 +388,6 @@ def _evidence_proposals(
     battery_events = [
         event for event in events if event.get("event_type") == "battery_evaluated"
     ]
-    handoff_document = _json_object(Path(handoff["path"]), "prediction handoff")
     if len(handoff_events) != 1:
         raise ExecutionContractError(
             "prediction_effects_scope_mismatch",
@@ -365,11 +395,12 @@ def _evidence_proposals(
         )
     authority = handoff_events[0]
     threshold_digest = authority.get("thresholds_digest")
-    battery_candidate_ids = [event.get("candidate_id") for event in battery_events]
+    handoff_document = _json_object(Path(handoff["path"]), "prediction handoff")
     if (
         authority.get("candidate_ids") != sorted(records)
         or authority.get("prediction_run_id") != prediction_run_id
-        or sorted(battery_candidate_ids) != sorted(records)
+        or sorted(event.get("candidate_id") for event in battery_events)
+        != sorted(records)
         or any(
             event.get("prediction_run_id") != prediction_run_id
             for event in battery_events
@@ -377,11 +408,62 @@ def _evidence_proposals(
         or not isinstance(threshold_digest, str)
         or len(threshold_digest) != 64
         or handoff_document.get("thresholds_digest") != threshold_digest
-        or any(event.get("thresholds_digest") != threshold_digest for event in battery_events)
+        or any(
+            event.get("thresholds_digest") != threshold_digest
+            for event in battery_events
+        )
     ):
         raise ExecutionContractError(
             "prediction_effects_scope_mismatch",
             "Prediction handoff/battery threshold or candidate authority is inconsistent",
+        )
+    return handoff_document, threshold_digest
+
+
+def _calibration_authority(
+    *,
+    effects: dict,
+    records: dict[str, dict],
+    prediction_metadata: dict[str, dict],
+    handoff_document: dict,
+    events: list[dict],
+    threshold_digest: str,
+    expected_protocol: dict,
+    expected_calibration_binding: dict,
+) -> None:
+    binding = handoff_document.get("calibration_binding")
+    try:
+        expected = validate_serialized_calibration_binding(
+            binding,
+            thresholds_sha256=threshold_digest,
+            protocol_identity=expected_protocol,
+        )
+    except CalibrationBaselineError as exc:
+        raise ExecutionContractError(
+            "prediction_effects_scope_mismatch", str(exc)
+        ) from exc
+    if expected != expected_calibration_binding:
+        raise ExecutionContractError(
+            "prediction_effects_scope_mismatch",
+            "Prediction calibration authority differs from formal State",
+        )
+    state_prediction = (effects.get("state_updates") or {}).get("prediction")
+    surfaces = [
+        *(event.get("calibration_binding") for event in events),
+        *(metadata.get("calibration_binding") for metadata in prediction_metadata.values()),
+        state_prediction.get("calibration_binding")
+        if isinstance(state_prediction, dict) else None,
+    ]
+    for record in records.values():
+        document = _json_object(Path(record["path"]), "prediction record")
+        surfaces.extend([
+            document.get("calibration_binding"),
+            (document.get("cache_key") or {}).get("calibration_binding"),
+        ])
+    if any(surface != expected for surface in surfaces):
+        raise ExecutionContractError(
+            "prediction_effects_scope_mismatch",
+            "Prediction calibration authority differs across staged effects",
         )
 
 
@@ -392,6 +474,7 @@ def load_prediction_transaction_effects(
     run_id: str,
     transaction_id: str,
     expected_protocol: dict,
+    expected_calibration_binding: dict,
 ) -> dict:
     effects = _json_object(path, "prediction transaction effects")
     if (
@@ -430,7 +513,9 @@ def load_prediction_transaction_effects(
         expected_protocol,
     )
     _evidence_proposals(
-        effects, records, handoff, expected_protocol, prediction_run_id=run_id
+        effects, records, prediction_metadata, handoff, expected_protocol,
+        expected_calibration_binding,
+        prediction_run_id=run_id,
     )
     return effects
 

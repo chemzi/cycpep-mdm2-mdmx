@@ -33,6 +33,7 @@ class PredictionPersistence:
         thresholds_digest: str,
         defer_formal_writes: bool,
         artifact_id_prefix: str,
+        calibration_binding: dict,
         launcher_correlation: dict[str, str] | None = None,
     ) -> None:
         self.run_id = run_id
@@ -41,6 +42,7 @@ class PredictionPersistence:
         self.thresholds_digest = thresholds_digest
         self.deferred = defer_formal_writes
         self.artifact_id_prefix = artifact_id_prefix
+        self.calibration_binding = dict(calibration_binding)
         self.launcher_correlation = (
             dict(launcher_correlation) if launcher_correlation is not None else None
         )
@@ -80,6 +82,7 @@ class PredictionPersistence:
             "evidence_status": evidence_status,
             "issues": record["issues"],
             "protocol_identity": protocol_binding(),
+            "calibration_binding": self.calibration_binding,
         }
         if self.deferred:
             value["record_artifact_id"] = self.record_artifact_id(candidate_id)
@@ -148,6 +151,7 @@ class PredictionPersistence:
             "target_pass": battery.get("target_pass") or {},
             "protocol_identity": protocol_binding(),
             "thresholds_digest": self.thresholds_digest,
+            "calibration_binding": self.calibration_binding,
         }
         self.record_event(
             "battery_evaluated",
@@ -182,6 +186,7 @@ class PredictionPersistence:
                     "tool_trace": tool_trace,
                     "passed": bool(battery[pass_key]),
                     "protocol_identity": protocol_binding(),
+                    "calibration_binding": self.calibration_binding,
                     **reference,
                 },
                 candidate_id=candidate_id,
@@ -193,13 +198,18 @@ class PredictionPersistence:
                 **reference,
                 "issues": record["issues"],
                 "protocol_identity": protocol_binding(),
+                "calibration_binding": self.calibration_binding,
             },
             candidate_id=candidate_id,
         )
         if record["status"] == "finalized":
             self.record_event(
                 "candidate_finalized",
-                {**reference, "protocol_identity": protocol_binding()},
+                {
+                    **reference,
+                    "protocol_identity": protocol_binding(),
+                    "calibration_binding": self.calibration_binding,
+                },
                 candidate_id=candidate_id,
             )
 
@@ -215,6 +225,7 @@ class PredictionPersistence:
                 ),
                 "issues": record["issues"],
                 "protocol_identity": protocol_binding(),
+                "calibration_binding": self.calibration_binding,
             },
             candidate_id=candidate_id if candidate_id != "unknown" else None,
         )
@@ -233,6 +244,7 @@ class PredictionPersistence:
             "candidate_count": candidate_count,
             "config_digest": config_digest,
             "protocol_identity": protocol_binding(),
+            "calibration_binding": self.calibration_binding,
         }
         if not self.deferred:
             payload["run_dir"] = str(run_dir)
@@ -270,6 +282,7 @@ class PredictionPersistence:
                 "protocol_identity": protocol_binding(),
                 "candidate_ids": list(self.candidate_ids),
                 "thresholds_digest": self.thresholds_digest,
+                "calibration_binding": self.calibration_binding,
                 **reference,
                 **correlation,
             },

@@ -24,6 +24,7 @@ VALID_PHASES = frozenset({
 
 VALID_EVENT_TYPES = frozenset({
     "research_targets", "research_cache_invalidated", "threshold_calibration",
+    "threshold_calibration_published",
     "research_invocation_started", "research_completion_receipt",
     "tool_call", "design_batch", "design_initial_invocation_started",
     "design_initial_completion", "design_initial_failure", "candidate_registered", "candidate_scored",

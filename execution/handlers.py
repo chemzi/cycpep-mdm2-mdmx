@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from data_layer import CandidateIndex, State
+from calibration_baseline import unpublished_calibration_binding
 from prediction_pipeline.contracts import file_sha256, object_sha256
 from core.protocol import ProtocolError
 from prediction_pipeline.protocol import (
@@ -361,6 +362,7 @@ def _prediction_transaction_effects(
     path: Path,
     candidate_ids: list[str],
     run_id: str,
+    expected_calibration_binding: dict,
 ) -> dict:
     return load_prediction_transaction_effects(
         path=path,
@@ -368,6 +370,7 @@ def _prediction_transaction_effects(
         run_id=run_id,
         transaction_id=str(context.transaction_id),
         expected_protocol=context.parameters["predictor_protocol"],
+        expected_calibration_binding=expected_calibration_binding,
     )
 
 
@@ -383,6 +386,10 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
     params = context.parameters
     candidate_ids = _prediction_candidate_ids(context)
     state = State.load()
+    thresholds = state.get("thresholds") or {}
+    expected_calibration_binding = state.get("threshold_calibration_binding")
+    if expected_calibration_binding is None:
+        expected_calibration_binding = unpublished_calibration_binding(thresholds)
     project = _resolve_project(context, state)
     required_targets = [
         str(item["id"]) for item in project.get("targets", []) if item.get("required", True)
@@ -508,7 +515,8 @@ def evaluate_new_design_candidates(context: HandlerContext) -> HandlerOutcome:
         )
     if context.transaction_managed:
         effects = _prediction_transaction_effects(
-            context, effects_path, candidate_ids, run_id
+            context, effects_path, candidate_ids, run_id,
+            expected_calibration_binding,
         )
         return _typed_prediction_result(effects, handoff, processes)
     return HandlerOutcome(

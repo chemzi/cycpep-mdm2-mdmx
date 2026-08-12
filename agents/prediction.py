@@ -32,6 +32,14 @@ if str(ROOT) not in sys.path:
 from data_layer import CandidateIndex, EvidenceLogger, State, get_storage_backend  # noqa: E402
 from prediction_pipeline import PredictionConfig, PredictionPipeline  # noqa: E402
 from prediction_pipeline.contracts import ContractError  # noqa: E402
+from prediction_pipeline.contracts import scoring_implementation_identity  # noqa: E402
+from prediction_pipeline.protocol import protocol_binding  # noqa: E402
+from calibration_baseline import (  # noqa: E402
+    CalibrationBaselineError,
+    thresholds_claim_formal_calibration,
+    unpublished_calibration_binding,
+    validate_calibration_consumption,
+)
 from agents.prediction_contract import (  # noqa: E402
     PredictionCorrelation,
     PredictionInvocationInputs,
@@ -109,7 +117,41 @@ def run(
                 "injected project config differs from State project ID",
             )
         project = project_config
-    thresholds = current_state.get("thresholds") or {}
+    backend = get_storage_backend()
+    formal_state = backend.get_state(str(project.get("project_id") or "")) or {}
+    formal_binding = formal_state.get("threshold_calibration_binding")
+    if formal_binding is not None:
+        thresholds = formal_state.get("thresholds") or {}
+        calibration_binding = formal_binding
+    else:
+        thresholds = current_state.get("thresholds") or {}
+        calibration_binding = current_state.get("threshold_calibration_binding")
+        if calibration_binding is not None:
+            raise ContractError(
+                "calibration_binding_inactive",
+                "calibration binding is not the active Store authority",
+            )
+    if calibration_binding is None:
+        if thresholds_claim_formal_calibration(thresholds):
+            raise ContractError(
+                "calibration_binding_missing",
+                "calibrated thresholds require a formal calibration binding",
+            )
+        consumed_calibration = unpublished_calibration_binding(thresholds)
+    else:
+        artifact_id = str(calibration_binding.get("artifact_id") or "")
+        artifact = backend.get_artifact(artifact_id) if artifact_id else None
+        try:
+            consumed_calibration = validate_calibration_consumption(
+                binding=calibration_binding,
+                thresholds=thresholds,
+                project=project,
+                artifact=artifact,
+                protocol_identity=protocol_binding(),
+                scoring_implementation=scoring_implementation_identity(),
+            )
+        except CalibrationBaselineError as exc:
+            raise ContractError("calibration_binding_invalid", str(exc)) from exc
     if effects_output is not None and not transaction_id:
         raise ContractError(
             "prediction_transaction_missing",
@@ -135,6 +177,7 @@ def run(
         candidate_rows=CandidateIndex.load(),
         project=project,
         thresholds=thresholds,
+        calibration_binding=consumed_calibration,
         artifacts_root=artifacts_root or _default_artifacts_root(),
         run_root=resolve_prediction_run_root(run_root),
         config=config,
