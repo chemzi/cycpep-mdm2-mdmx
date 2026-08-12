@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from types import MappingProxyType
+from typing import Callable
 
 from data_layer import EvidenceLogger
 from peptide_contract import MAX_CYCLIC_PEPTIDE_LENGTH, MIN_CYCLIC_PEPTIDE_LENGTH
@@ -37,20 +39,6 @@ class LengthPreferencePolicy:
             },
         }
 
-
-LENGTH_PREFERENCE_POLICY = LengthPreferencePolicy()
-
-
-def no_length_adjustment_reason(
-    policy: LengthPreferencePolicy = LENGTH_PREFERENCE_POLICY,
-) -> str:
-    """Return the deterministic explanation for conservative no-adjustment."""
-    return (
-        "current-round evidence did not satisfy the conservative length policy "
-        f"(at least {policy.minimum_evaluations_per_length} evaluations per "
-        f"compared length, worst failure >={policy.worst_failure_rate:.0%}, "
-        f"better failure <={policy.better_failure_rate:.0%})"
-    )
 
 _LAYER_PREFIX = {
     "L1": "l1_pass",
@@ -227,15 +215,11 @@ def summarize_failures(events=None, targets=None) -> dict:
     }
 
 
-def suggest_length_preference(
+def _suggest_length_preference_v1(
     summary: dict,
-    min_failures: int = LENGTH_PREFERENCE_POLICY.minimum_evaluations_per_length,
+    min_failures: int,
+    policy: LengthPreferencePolicy,
 ) -> dict | None:
-    """Emit a conservative length preference from failure statistics.
-
-    规则：仅考虑评估数 >= min_failures 的长度；若最差长度失败率 >= 70% 且
-    存在失败率 <= 30% 的更好长度，则建议迁移到更好长度；否则返回 None。
-    """
     if min_failures < 1:
         raise ValueError("min_failures must be >= 1")
     stats = summary.get("lengths") or {}
@@ -253,8 +237,8 @@ def suggest_length_preference(
     if best_key == worst_key or best_rate == worst_rate:
         return None
     if (
-        worst_rate >= LENGTH_PREFERENCE_POLICY.worst_failure_rate
-        and best_rate <= LENGTH_PREFERENCE_POLICY.better_failure_rate
+        worst_rate >= policy.worst_failure_rate
+        and best_rate <= policy.better_failure_rate
     ):
         best_length = _length_key(best_key)
         if (
@@ -270,6 +254,67 @@ def suggest_length_preference(
         )
         return {"lengths": [best_length], "reason": reason}
     return None
+
+
+@dataclass(frozen=True)
+class LengthPreferencePolicyDefinition:
+    """Frozen policy parameters plus the algorithm that interprets them."""
+
+    policy: LengthPreferencePolicy
+    evaluator: Callable[[dict, int, LengthPreferencePolicy], dict | None]
+
+
+LENGTH_PREFERENCE_POLICY_V1 = LengthPreferencePolicy()
+LENGTH_PREFERENCE_POLICY_DEFINITIONS = MappingProxyType({
+    (LENGTH_PREFERENCE_POLICY_V1.name, LENGTH_PREFERENCE_POLICY_V1.version):
+        LengthPreferencePolicyDefinition(
+            LENGTH_PREFERENCE_POLICY_V1, _suggest_length_preference_v1
+        ),
+})
+LENGTH_PREFERENCE_POLICY = LENGTH_PREFERENCE_POLICY_V1
+
+
+def length_preference_policy_definition(
+    name: str, version: str
+) -> LengthPreferencePolicyDefinition:
+    """Resolve one frozen historical parameter-and-algorithm definition."""
+    try:
+        return LENGTH_PREFERENCE_POLICY_DEFINITIONS[(name, version)]
+    except KeyError as exc:
+        raise ValueError(f"unsupported length preference policy: {name!r} {version!r}") from exc
+
+
+def length_preference_policy(name: str, version: str) -> LengthPreferencePolicy:
+    return length_preference_policy_definition(name, version).policy
+
+
+def no_length_adjustment_reason(
+    policy: LengthPreferencePolicy | None = None,
+) -> str:
+    """Return the deterministic explanation for conservative no-adjustment."""
+    policy = policy or LENGTH_PREFERENCE_POLICY
+    return (
+        "current-round evidence did not satisfy the conservative length policy "
+        f"(at least {policy.minimum_evaluations_per_length} evaluations per "
+        f"compared length, worst failure >={policy.worst_failure_rate:.0%}, "
+        f"better failure <={policy.better_failure_rate:.0%})"
+    )
+
+
+def suggest_length_preference(
+    summary: dict,
+    min_failures: int | None = None,
+    *,
+    policy: LengthPreferencePolicy | None = None,
+) -> dict | None:
+    """Evaluate a length preference through its frozen versioned algorithm."""
+    policy = policy or LENGTH_PREFERENCE_POLICY
+    if min_failures is None:
+        min_failures = policy.minimum_evaluations_per_length
+    definition = length_preference_policy_definition(policy.name, policy.version)
+    if definition.policy != policy:
+        raise ValueError("length preference policy parameters do not match registry")
+    return definition.evaluator(summary, min_failures, policy)
 
 
 def _validated_lengths(lengths):

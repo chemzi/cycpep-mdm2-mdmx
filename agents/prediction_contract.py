@@ -168,11 +168,8 @@ def _load_object(path: Path) -> dict[str, Any] | None:
 def _threshold_snapshot_matches_digest(
     thresholds: Mapping[str, Any], expected_digest: str
 ) -> bool:
-    """Accept canonical identity plus pre-migration raw receipts on read only."""
-    return (
-        canonical_threshold_digest(thresholds) == expected_digest
-        or object_sha256(dict(thresholds)) == expected_digest
-    )
+    """Match the exact Prediction-owned threshold snapshot identity."""
+    return canonical_threshold_digest(thresholds) == expected_digest
 
 
 def _relevant_start(event: Mapping[str, Any], expected: PredictionCorrelation) -> bool:

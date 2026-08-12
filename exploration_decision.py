@@ -96,6 +96,8 @@ def _battery_projection(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "event_id": row.get("event_id"),
         "event_type": row.get("event_type"),
+        "agent": row.get("agent"),
+        "phase": row.get("phase"),
         "project_id": row.get("project_id"),
         "workflow_id": row.get("workflow_id"),
         "run_id": row.get("run_id"),
@@ -122,6 +124,7 @@ def _handoff_projection(row: Mapping[str, Any]) -> dict[str, Any]:
         "event_id": row.get("event_id"),
         "event_type": row.get("event_type"),
         "agent": row.get("agent"),
+        "phase": row.get("phase"),
         "project_id": row.get("project_id"),
         "workflow_id": row.get("workflow_id"),
         "run_id": row.get("run_id"),
@@ -159,6 +162,8 @@ def _shortlist_projection(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "event_id": row.get("event_id"),
         "event_type": row.get("event_type"),
+        "agent": row.get("agent"),
+        "phase": row.get("phase"),
         "project_id": row.get("project_id"),
         "workflow_id": row.get("workflow_id"),
         "run_id": row.get("run_id"),
@@ -239,6 +244,10 @@ def _validate_battery_scope(
     for row in rows:
         if row.get("event_type") != EVENT_BATTERY:
             raise ExplorationDecisionContractError("source event is not battery_evaluated")
+        if row.get("agent") != "prediction" or row.get("phase") != "evaluate":
+            raise ExplorationDecisionContractError(
+                "battery authority must be prediction/evaluate Evidence"
+            )
         require_trace_id(row.get("event_id"), "source event_id")
         if tuple(row.get(key) for key in ("project_id", "workflow_id", "run_id")) != trace:
             raise ExplorationDecisionContractError("battery workflow trace mismatch")
@@ -267,8 +276,10 @@ def _validate_handoff_scope(
 ) -> tuple[dict[str, Any], tuple[str, ...], str, dict[str, Any], str]:
     if not isinstance(row, Mapping) or row.get("event_type") != EVENT_HANDOFF:
         raise ExplorationDecisionContractError("formal Prediction handoff is required")
-    if row.get("agent") != "prediction":
-        raise ExplorationDecisionContractError("handoff authority must be Prediction Evidence")
+    if row.get("agent") != "prediction" or row.get("phase") != "evaluate":
+        raise ExplorationDecisionContractError(
+            "handoff authority must be prediction/evaluate Evidence"
+        )
     require_trace_id(row.get("event_id"), "prediction handoff event_id")
     if tuple(row.get(key) for key in ("project_id", "workflow_id", "run_id")) != trace:
         raise ExplorationDecisionContractError("handoff workflow trace mismatch")
@@ -305,6 +316,10 @@ def _validate_shortlist_scope(
 ) -> dict[str, Any]:
     if not isinstance(row, Mapping) or row.get("event_type") != EVENT_SHORTLIST:
         raise ExplorationDecisionContractError("shortlist evidence is invalid")
+    if row.get("agent") != "critic" or row.get("phase") != "critic":
+        raise ExplorationDecisionContractError(
+            "shortlist authority must be critic/critic Evidence"
+        )
     require_trace_id(row.get("event_id"), "shortlist event_id")
     if tuple(row.get(key) for key in ("project_id", "workflow_id", "run_id")) != trace:
         raise ExplorationDecisionContractError("shortlist workflow trace mismatch")
@@ -337,6 +352,7 @@ def _failure_decision(
     hint = suggest_length_preference(
         summary,
         min_failures=LENGTH_PREFERENCE_POLICY.minimum_evaluations_per_length,
+        policy=LENGTH_PREFERENCE_POLICY,
     )
     baseline = [{"length": length, "weight": 1} for length in allowed]
     statistics = []
@@ -351,7 +367,7 @@ def _failure_decision(
             "eligible": n >= LENGTH_PREFERENCE_POLICY.minimum_evaluations_per_length,
         })
     if hint is None or hint.get("lengths", [None])[0] not in allowed:
-        reason = no_length_adjustment_reason()
+        reason = no_length_adjustment_reason(LENGTH_PREFERENCE_POLICY)
         return _DecisionAnalysis(
             summary, "no_adjustment", reason, baseline, baseline, [], statistics
         )

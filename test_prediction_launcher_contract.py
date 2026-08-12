@@ -19,7 +19,6 @@ from prediction_pipeline.contracts import (
     prediction_status_from_battery,
 )
 from prediction_pipeline.transaction_effects import PredictionPersistence
-from prediction_pipeline.contracts import object_sha256
 
 from _prediction_test_utils import project_config
 
@@ -559,19 +558,12 @@ class PredictionLauncherContractTests(unittest.TestCase):
         ).run()
         self.assertEqual(resumed["run_id"], "legacy_prediction")
 
-    def test_legacy_raw_threshold_digest_receipt_remains_recoverable(self):
-        legacy_thresholds = {
+    def test_raw_threshold_digest_receipt_remains_recoverable(self):
+        raw_thresholds = {
             "L4_ring_closure": {"value": 3.0, "operator": "<="}
         }
-        self.state["thresholds"] = legacy_thresholds
-        with patch(
-            "prediction_pipeline.pipeline.normalize_thresholds",
-            return_value=(legacy_thresholds, {}),
-        ), patch(
-            "prediction_pipeline.pipeline.canonical_threshold_digest",
-            side_effect=object_sha256,
-        ):
-            self._run()
+        self.state["thresholds"] = raw_thresholds
+        self._run()
 
         result = prediction.validate_prediction_invocation(
             self.correlation,

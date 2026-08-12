@@ -12,7 +12,9 @@ Prediction evidence, conservative failure statistics, and exploration shortlist 
 - Append a formal `exploration_decision` Evidence event through the existing Store-backed Evidence authority after the Decision validates successfully, with sequential retry idempotency by `decision_id` and canonical payload.
 - Make the dedicated writer the only supported formal append path for `exploration_decision`; the generic Evidence writer rejects this event type so source verification cannot be bypassed.
 - Bind the Decision to the existing formal `prediction_handoff_ready` authority, deriving the candidate set, Prediction run, protocol, and canonical threshold identity from that handoff rather than caller claims.
-- Propagate one canonical normalized threshold digest through Prediction battery/handoff Evidence into the Decision, and include the versioned conservative policy identity in Decision identity.
+- Propagate one canonical identity of the exact Prediction-consumed threshold snapshot through battery/handoff Evidence into the Decision, and include the versioned conservative policy identity in Decision identity.
+- Make fresh and cached/resumed transactional Prediction emit the same exactly-one canonical battery Evidence per handoff candidate, including the Prediction run identity.
+- Validate battery/shortlist formal owner and phase as semantic provenance, and keep every embedded policy version independently restorable after the default policy advances.
 - Preserve scientific pass, thresholds, Prediction records, and exploration shortlist semantics unchanged.
 - Leave legacy `experience_applied` and its direct Planner/Design consumption path in place for compatibility; E2 does not connect the new Decision to Planner, Design, Orchestrator, or Execution.
 

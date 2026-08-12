@@ -134,6 +134,7 @@ class PredictionPersistence:
         sequence = str(candidate_snapshot.get("sequence") or "")
         payload = {
             "candidate_id": candidate_snapshot.get("candidate_id"),
+            "prediction_run_id": self.run_id,
             "sequence": sequence,
             "length": len(sequence) if sequence else None,
             "route": candidate_snapshot.get("source_route"),

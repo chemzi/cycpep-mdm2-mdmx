@@ -243,6 +243,7 @@ class ExplorationDecision:
             handoff.get("event_id") != self.prediction_handoff_id
             or handoff.get("event_type") != "prediction_handoff_ready"
             or handoff.get("agent") != "prediction"
+            or handoff.get("phase") != "evaluate"
             or tuple(handoff.get(key) for key in ("project_id", "workflow_id", "run_id"))
             != (self.project_id, self.workflow_id, self.run_id)
             or handoff.get("prediction_run_id") != self.prediction_run_id
@@ -253,8 +254,17 @@ class ExplorationDecision:
         ):
             raise ExplorationDecisionContractError("Prediction handoff scope is inconsistent")
         for source in sources:
-            if source.get("thresholds_digest") != self.threshold_digest:
+            if (
+                source.get("agent") != "prediction"
+                or source.get("phase") != "evaluate"
+                or source.get("thresholds_digest") != self.threshold_digest
+            ):
                 raise ExplorationDecisionContractError("source threshold identity is inconsistent")
+        if (
+            shortlist.get("agent") != "critic"
+            or shortlist.get("phase") != "critic"
+        ):
+            raise ExplorationDecisionContractError("shortlist authority is inconsistent")
         protocol = self.protocol_identity
         if not isinstance(protocol, Mapping):
             raise ExplorationDecisionContractError("protocol_identity must be an object")
@@ -305,16 +315,23 @@ class ExplorationDecision:
     ) -> None:
         policy = self.evidence_support.get("policy")
         params = policy.get("parameters") if isinstance(policy, Mapping) else None
-        from experience import LENGTH_PREFERENCE_POLICY
+        from experience import length_preference_policy
 
         if not isinstance(policy, Mapping) or not isinstance(params, Mapping):
             raise ExplorationDecisionContractError("length preference policy is invalid")
-        if _thaw(policy) != LENGTH_PREFERENCE_POLICY.to_dict():
+        try:
+            expected_policy = length_preference_policy(
+                str(policy.get("name")), str(policy.get("version"))
+            )
+        except ValueError as exc:
+            raise ExplorationDecisionContractError(
+                "unsupported length preference policy"
+            ) from exc
+        if _thaw(policy) != expected_policy.to_dict():
             raise ExplorationDecisionContractError("unsupported length preference policy")
         minimum = params.get("minimum_evaluations_per_length")
         worst_limit = params.get("worst_failure_rate")
         better_limit = params.get("better_failure_rate")
-        expected_policy = LENGTH_PREFERENCE_POLICY
         if (
             minimum != expected_policy.minimum_evaluations_per_length
             or worst_limit != expected_policy.worst_failure_rate
@@ -324,7 +341,6 @@ class ExplorationDecision:
         statistics = self.evidence_support.get("length_statistics")
         if not isinstance(statistics, (list, tuple)) or len(statistics) != len(baseline):
             raise ExplorationDecisionContractError("length support statistics are incomplete")
-        rated = []
         observed = {length: {"n": 0, "failed": 0} for length in baseline}
         for source in self.evidence_support.get("source_evidence") or ():
             length = source.get("length") if isinstance(source, Mapping) else None
@@ -348,26 +364,24 @@ class ExplorationDecision:
             expected_rate = failed / n if n else None
             if item.get("failure_rate") != expected_rate or item.get("eligible") != (n >= minimum):
                 raise ExplorationDecisionContractError("length statistics are inconsistent")
-            if n >= minimum:
-                rated.append((length, expected_rate))
         summary_lengths = self.failure_summary.get("lengths")
         if not isinstance(summary_lengths, Mapping) or {
             str(length): observed[length] for length in baseline if observed[length]["n"]
         } != _thaw(summary_lengths):
             raise ExplorationDecisionContractError("failure summary length support is inconsistent")
-        expected = None
-        if len(rated) >= 2:
-            best = min(rated, key=lambda item: item[1])
-            worst = max(rated, key=lambda item: item[1])
-            if worst[1] >= worst_limit and best[1] <= better_limit and best[0] != worst[0]:
-                expected = best[0]
+        from experience import suggest_length_preference
+
+        hint = suggest_length_preference(
+            _thaw(self.failure_summary), policy=expected_policy
+        )
+        expected = hint["lengths"][0] if hint is not None else None
         if self.decision_status == "adjustment" and proposed != (expected,):
             raise ExplorationDecisionContractError("adjustment lacks conservative support")
         if self.decision_status == "no_adjustment" and expected is not None:
             raise ExplorationDecisionContractError("supported adjustment cannot be suppressed")
-        self._validate_canonical_analysis(expected)
+        self._validate_canonical_analysis(expected, expected_policy)
 
-    def _validate_canonical_analysis(self, expected_length: int | None) -> None:
+    def _validate_canonical_analysis(self, expected_length: int | None, policy) -> None:
         # Lazy import avoids a module-import cycle while keeping one scientific
         # implementation authoritative for legacy experience and E2.
         from experience import (
@@ -384,10 +398,10 @@ class ExplorationDecision:
         }
         if _thaw(self.failure_summary) != expected_summary:
             raise ExplorationDecisionContractError("failure_summary is not source-derived")
-        hint = suggest_length_preference(expected_summary)
+        hint = suggest_length_preference(expected_summary, policy=policy)
         if expected_length is None:
             expected_status = "no_adjustment"
-            expected_reason = no_length_adjustment_reason()
+            expected_reason = no_length_adjustment_reason(policy)
             expected_preferred = []
         else:
             if hint is None or hint.get("lengths") != [expected_length]:

@@ -80,15 +80,42 @@ Decision creation SHALL require workflow trace binding, `source_round`, and an e
 - **THEN** Decision creation or formal append fails and no `exploration_decision` is written
 
 ### Requirement: Authoritative canonical threshold identity
-Prediction SHALL compute one canonical threshold digest from the normalized effective threshold snapshot and record it on every `battery_evaluated` event and the corresponding `prediction_handoff_ready` authority. `ExplorationDecision.threshold_digest` SHALL equal that authority and every selected battery row. Caller-supplied thresholds SHALL only confirm this identity and SHALL NOT independently establish provenance.
+Prediction SHALL compute one canonical threshold digest from the exact threshold snapshot consumed by battery evaluation and record it on every `battery_evaluated` event and the corresponding `prediction_handoff_ready` authority. `ExplorationDecision.threshold_digest` SHALL equal that authority and every selected battery row. Caller-supplied thresholds SHALL only confirm this identity and SHALL NOT independently establish provenance.
+
+The digest SHALL identify the exact Prediction-owned threshold snapshot consumed by battery evaluation without changing legacy alias, duplicate-key, default-operator, pass, or fail semantics. Threshold scientific-semantic migration is outside E2.
 
 #### Scenario: Caller threshold snapshot differs from Prediction
 - **WHEN** batteries and handoff were produced under threshold snapshot A but E2 is supplied threshold snapshot B
 - **THEN** Decision creation fails closed
 
 #### Scenario: Authoritative threshold identity is preserved
-- **WHEN** batteries, formal handoff, and E2 input refer to the same effective Prediction threshold snapshot
+- **WHEN** batteries, formal handoff, and E2 input refer to the same exact Prediction-consumed threshold snapshot
 - **THEN** the Decision records exactly their shared canonical threshold digest
+
+### Requirement: Fresh and cached Prediction battery parity
+Transactional Prediction SHALL emit one `battery_evaluated` proposal per handoff candidate for both fresh scoring and cache/resume. Each proposal SHALL carry the canonical `prediction_run_id`. Cache reuse SHALL reconstruct the proposal from the immutable cached record. Before commit, the Prediction Execution boundary SHALL require the battery candidate multiset to equal the handoff candidate set exactly once.
+
+#### Scenario: Cache recovery reconstructs formal battery Evidence
+- **WHEN** a first attempt creates immutable Prediction records but its formal transaction does not commit and a retry reuses those cached records
+- **THEN** the retry commits exactly one battery verdict per handoff candidate and E2 can consume the formal handoff and batteries
+
+#### Scenario: Battery coverage is not exact
+- **WHEN** a Prediction transaction proposes a missing, extra, or duplicate `battery_evaluated` candidate
+- **THEN** the transaction fails closed before formal commit
+
+### Requirement: Historical policy versions remain validated
+ExplorationDecision restoration SHALL select frozen policy parameters and evaluator algorithm by embedded policy name/version rather than today's default singleton. Every supported historical version SHALL rerun its own scientific support and canonical-output validation. Unknown or mismatched versions SHALL fail closed. A new default version SHALL change new Decision identity without invalidating or changing sequential retries of prior formal Decisions.
+
+#### Scenario: V1 survives a V2 default
+- **WHEN** a V1 Decision is built and recorded and the current default advances to V2
+- **THEN** restoring and retrying the V1 Decision succeeds against frozen V1 rules and returns the original event ID, while a newly built V2 Decision has a different identity
+
+### Requirement: Evidence owner and phase are semantic provenance
+Selected battery Evidence SHALL be owned by agent `prediction` in phase `evaluate`; Prediction handoff Evidence SHALL be owned by agent `prediction` in phase `evaluate`; shortlist Evidence SHALL be owned by agent `critic` in phase `critic`. Agent and phase SHALL be included in semantic projections and revalidated against formal Evidence before append.
+
+#### Scenario: Owner or phase is wrong or later changes
+- **WHEN** a selected event has the wrong owner/phase, or a formal source no longer matches the owner/phase bound when the Decision was built
+- **THEN** Decision build or append fails closed
 
 ### Requirement: Shortlist and scientific pass remain distinct
 The system SHALL accept a valid current-round exploration shortlist even when zero of N candidates scientifically passed. It SHALL preserve every shortlist item's original `passed` value and SHALL NOT modify pass fields, threshold values, Prediction records, or shortlist Evidence.

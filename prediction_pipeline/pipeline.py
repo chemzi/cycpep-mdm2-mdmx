@@ -7,6 +7,7 @@ import os
 import re
 import uuid
 from collections import Counter
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ from typing import Any
 import data_layer
 from data_layer import evaluate_battery
 from project_config import target_slug
-from threshold_contract import canonical_threshold_digest, normalize_thresholds
+from threshold_contract import canonical_threshold_digest
 
 from .adapters import (
     ArtifactBundle,
@@ -132,7 +133,9 @@ class PredictionPipeline(MetricCollectorsMixin):
     ):
         self.config = config or PredictionConfig()
         self.project = project
-        self.thresholds, _threshold_audit = normalize_thresholds(thresholds or {})
+        # Preserve the evaluator's established raw-threshold semantics.  The
+        # provenance identity is computed separately from this exact snapshot.
+        self.thresholds = deepcopy(thresholds) if isinstance(thresholds, dict) else {}
         self.required_targets = validate_project(project)
         self.artifacts_root = Path(artifacts_root).expanduser().resolve()
         self.run_root = Path(run_root).expanduser().resolve()
@@ -688,6 +691,15 @@ class PredictionPipeline(MetricCollectorsMixin):
             artifact_digest=artifact_digest,
         )
         if cached is not None:
+            cached_battery = cached.get("battery")
+            if not isinstance(cached_battery, dict):
+                raise ContractError(
+                    "cached_battery_invalid",
+                    f"cached Prediction record lacks a battery verdict: {record_path}",
+                )
+            self.persistence.record_battery_evaluated(
+                cached["candidate"], cached_battery
+            )
             self.persistence.remember_record(
                 candidate.candidate_id,
                 record_path,
@@ -808,6 +820,21 @@ class PredictionPipeline(MetricCollectorsMixin):
         self.persistence.remember_record(
             candidate_id,
             record_path,
+        )
+        self.persistence.record_battery_evaluated(
+            record["candidate"],
+            {
+                "all_layers_pass": False,
+                "competition_clearance": False,
+                "failed_layers": [],
+                "hard_failures": [error.code],
+                "missing_thresholds": [],
+                "triage_status": "invalid",
+                "layer_values": {},
+                "target_pass": {
+                    target: False for target in self.required_targets
+                },
+            },
         )
         if candidate_id != "unknown":
             try:

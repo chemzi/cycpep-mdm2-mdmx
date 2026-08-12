@@ -29,8 +29,17 @@
 
 ## 6. PR 71 merge-ready provenance repair
 
-- [x] 6.1 Add a shared canonical normalized-threshold identity helper and propagate it through actual Prediction battery and `prediction_handoff_ready` Evidence without changing threshold science.
+- [x] 6.1 Add a shared canonical identity helper for the exact Prediction-consumed threshold snapshot and propagate it through actual Prediction battery and `prediction_handoff_ready` Evidence without changing threshold science.
 - [x] 6.2 Replace caller-declared handoff candidate scope with the existing formal Prediction handoff authority; bind project/workflow/run, Prediction run, protocol, candidates, and threshold identity.
 - [x] 6.3 Reject generic `exploration_decision` appends and preserve one dedicated source-validating writer with sequential idempotency.
 - [x] 6.4 Include complete conservative policy identity in Decision semantic identity and add the six requested regressions.
 - [x] 6.5 Run focused/full tests, Architecture Gate, strict OpenSpec validation, diff/compile/configured static gates, then independent Standards and Spec reviews; resolve all P0/P1 findings within frozen E2 scope.
+
+## 7. PR 71 real-producer and historical-policy repair
+
+- [x] 7.1 Emit canonical `prediction_run_id` on real fresh and cache-reconstructed transactional battery proposals; enforce exactly-one battery candidate coverage at the Execution Prediction boundary.
+- [x] 7.2 Add a real Store-backed transactional Prediction-to-E2 integration test plus interrupted-commit/cache-resume recovery coverage.
+- [x] 7.3 Replace current-singleton policy restoration with a frozen versioned parameter-and-algorithm registry and prove V1 restore/retry after an algorithmically distinct V2 default plus distinct V2 identity.
+- [x] 7.4 Freeze battery, handoff, and shortlist owner/phase in build, semantic projections, and formal append revalidation; add wrong-owner/phase and post-build tamper regressions.
+- [x] 7.5 Preserve raw Prediction threshold evaluation behavior while computing provenance identity separately; add alias/duplicate-key scientific pass/fail characterization.
+- [x] 7.6 Run focused/full suites, Architecture Gate, strict OpenSpec, diff/compile/static gates, and independent Standards/Spec reviews; require P0=0 and P1=0.

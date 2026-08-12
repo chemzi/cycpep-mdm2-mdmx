@@ -8,16 +8,22 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from types import MappingProxyType
 from unittest.mock import patch
 
 import data_layer
+import experience
 from contracts.exploration_decision import (
     ExplorationDecision,
     ExplorationDecisionContractError,
 )
 from contracts.trace import TraceContext
 from data_layer import EvidenceLogger, get_storage_backend
-from experience import LengthPreferencePolicy, suggest_length_preference
+from experience import (
+    LengthPreferencePolicy,
+    LengthPreferencePolicyDefinition,
+    suggest_length_preference,
+)
 from exploration import exploration_shortlist
 from exploration_decision import (
     EVENT_DECISION,
@@ -58,6 +64,8 @@ def decision_battery(candidate_id, length, passed, event_id):
     return {
         "event_id": event_id,
         "event_type": "battery_evaluated",
+        "agent": "prediction",
+        "phase": "evaluate",
         "project_id": PROJECT_ID,
         "workflow_id": WORKFLOW_ID,
         "run_id": RUN_ID,
@@ -99,6 +107,8 @@ def shortlist_row(rows, event_id="shortlist-e2"):
     return {
         "event_id": event_id,
         "event_type": "exploration_shortlist",
+        "agent": "critic",
+        "phase": "critic",
         "project_id": PROJECT_ID,
         "workflow_id": WORKFLOW_ID,
         "run_id": RUN_ID,
@@ -113,6 +123,7 @@ def handoff_row(rows, *, event_id="handoff-e2", prediction_run_id=PREDICTION_RUN
         "event_id": event_id,
         "event_type": "prediction_handoff_ready",
         "agent": "prediction",
+        "phase": "evaluate",
         "project_id": PROJECT_ID,
         "workflow_id": WORKFLOW_ID,
         "run_id": RUN_ID,
@@ -349,11 +360,58 @@ class ExplorationDecisionBuilderTests(unittest.TestCase):
         ):
             build_decision(rows, thresholds=changed)
 
+    def test_wrong_source_owner_or_phase_fails_closed(self):
+        rows = evidence_batch()
+        cases = []
+        wrong_battery = deepcopy(rows)
+        wrong_battery[0]["phase"] = "critic"
+        cases.append((wrong_battery, shortlist_row(wrong_battery), handoff_row(wrong_battery)))
+        wrong_battery_owner = deepcopy(rows)
+        wrong_battery_owner[0]["agent"] = "critic"
+        cases.append((
+            wrong_battery_owner,
+            shortlist_row(wrong_battery_owner),
+            handoff_row(wrong_battery_owner),
+        ))
+        wrong_shortlist = shortlist_row(rows)
+        wrong_shortlist["agent"] = "prediction"
+        cases.append((rows, wrong_shortlist, handoff_row(rows)))
+        wrong_shortlist_phase = shortlist_row(rows)
+        wrong_shortlist_phase["phase"] = "evaluate"
+        cases.append((rows, wrong_shortlist_phase, handoff_row(rows)))
+        wrong_handoff = handoff_row(rows)
+        wrong_handoff["phase"] = "critic"
+        cases.append((rows, shortlist_row(rows), wrong_handoff))
+        wrong_handoff_owner = handoff_row(rows)
+        wrong_handoff_owner["agent"] = "critic"
+        cases.append((rows, shortlist_row(rows), wrong_handoff_owner))
+        for source_rows, shortlist, handoff in cases:
+            with self.subTest(event_type=handoff["event_type"]):
+                with self.assertRaises(ExplorationDecisionContractError):
+                    build_decision(
+                        source_rows,
+                        shortlist_event=shortlist,
+                        prediction_handoff_event=handoff,
+                    )
+
     def test_policy_identity_changes_decision_digest(self):
         rows = evidence_batch()
         first = build_decision(rows)
         revised = LengthPreferencePolicy(version="2")
-        with patch("experience.LENGTH_PREFERENCE_POLICY", revised), patch(
+        registry = MappingProxyType({
+            (experience.LENGTH_PREFERENCE_POLICY_V1.name,
+             experience.LENGTH_PREFERENCE_POLICY_V1.version):
+                experience.LENGTH_PREFERENCE_POLICY_DEFINITIONS[
+                    (experience.LENGTH_PREFERENCE_POLICY_V1.name,
+                     experience.LENGTH_PREFERENCE_POLICY_V1.version)
+                ],
+            (revised.name, revised.version): LengthPreferencePolicyDefinition(
+                revised, experience._suggest_length_preference_v1
+            ),
+        })
+        with patch("experience.LENGTH_PREFERENCE_POLICY_DEFINITIONS", registry), patch(
+            "experience.LENGTH_PREFERENCE_POLICY", revised
+        ), patch(
             "exploration_decision.LENGTH_PREFERENCE_POLICY", revised
         ):
             second = build_decision(rows)
@@ -494,6 +552,56 @@ class ExplorationDecisionEvidenceTests(unittest.TestCase):
         formal_ids = {row["event_id"] for row in EvidenceLogger.get_all()}
         self.assertTrue(set(decision.source_event_ids).issubset(formal_ids))
         self.assertIn(decision.shortlist_event_id, formal_ids)
+
+    def test_v1_restore_and_retry_remain_valid_after_v2_default(self):
+        decision = self._formal_decision()
+        event_id = record_exploration_decision(decision)
+        revised = LengthPreferencePolicy(version="2")
+        def v2_algorithm(_summary, _minimum, _policy):
+            return None
+
+        registry = MappingProxyType({
+            (experience.LENGTH_PREFERENCE_POLICY_V1.name,
+             experience.LENGTH_PREFERENCE_POLICY_V1.version):
+                experience.LENGTH_PREFERENCE_POLICY_DEFINITIONS[
+                    (experience.LENGTH_PREFERENCE_POLICY_V1.name,
+                     experience.LENGTH_PREFERENCE_POLICY_V1.version)
+                ],
+            (revised.name, revised.version): LengthPreferencePolicyDefinition(
+                revised, v2_algorithm
+            ),
+        })
+        with patch("experience.LENGTH_PREFERENCE_POLICY_DEFINITIONS", registry), patch(
+            "experience.LENGTH_PREFERENCE_POLICY", revised
+        ), patch("exploration_decision.LENGTH_PREFERENCE_POLICY", revised):
+            restored = ExplorationDecision.from_dict(decision.to_dict())
+            self.assertEqual(record_exploration_decision(restored), event_id)
+            v2 = build_exploration_decision(
+                battery_events=decision.to_dict()["evidence_support"]["source_evidence"],
+                shortlist_event=decision.to_dict()["evidence_support"]["shortlist_evidence"],
+                prediction_handoff_event=decision.to_dict()["evidence_support"]["prediction_handoff_evidence"],
+                project_config=PROJECT,
+                thresholds=THRESHOLDS,
+                project_id=PROJECT_ID,
+                workflow_id=WORKFLOW_ID,
+                run_id=RUN_ID,
+                target_ids=TARGETS,
+                source_round=1,
+            )
+            self.assertEqual(v2.decision_status, "no_adjustment")
+        self.assertNotEqual(v2.decision_input_digest, decision.decision_input_digest)
+
+    def test_post_build_owner_phase_tamper_fails_formal_append(self):
+        decision = self._formal_decision()
+        rows = EvidenceLogger.get_all()
+        tampered = deepcopy(rows)
+        source_id = decision.source_event_ids[0]
+        next(row for row in tampered if row["event_id"] == source_id)["phase"] = "critic"
+        with patch.object(EvidenceLogger, "get_all", return_value=tampered):
+            with self.assertRaisesRegex(
+                ExplorationDecisionContractError, "formal source Evidence mismatch"
+            ):
+                record_exploration_decision(decision)
 
     def test_nonexistent_formal_handoff_fails_before_decision(self):
         rows = evidence_batch()
