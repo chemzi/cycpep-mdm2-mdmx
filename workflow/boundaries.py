@@ -297,20 +297,14 @@ class FormalBoundaryInspector:
                 retry = (ordered[index][1].get("source") or {}).get("retry") or {}
                 current_source = ordered[index][1].get("source") or {}
                 previous_plan = ordered[index - 1][1]
-                failure_events = [
-                    event for event in self.store.query(
-                        project_id=project_id,
-                        agent="execution",
-                        event_type="execution_task_failed",
-                    )
-                    if event.get("event_id") == retry.get("failure_event_id")
-                ]
                 expected_failure = {
                     "plan_id": retry.get("prior_plan_id"),
+                    "workflow_id": previous_plan.get("workflow_id"),
                     "run_id": retry.get("prior_run_id"),
                     "task_id": retry.get("prior_task_id"),
                     "attempt_id": retry.get("prior_attempt_id"),
                     "transaction_id": retry.get("prior_transaction_id"),
+                    "evidence_id": retry.get("failure_event_id"),
                 }
                 if (
                     retry.get("prior_plan_id") != previous_plan.get("plan_id")
@@ -318,14 +312,9 @@ class FormalBoundaryInspector:
                         current_source.get(key) != initial_source.get(key)
                         for key in immutable_source_keys
                     )
-                    or len(failure_events) != 1
-                    or any(
-                        failure_events[0].get(key) != value
-                        for key, value in expected_failure.items()
+                    or not _valid_retry_failure(
+                        self.store, previous_plan, expected_failure
                     )
-                    or self.store.get_transaction_status(
-                        str(retry.get("prior_transaction_id") or "")
-                    ) == "COMMITTED"
                 ):
                     invalid = True
         return _unique_document_boundary(
@@ -419,7 +408,9 @@ class FormalBoundaryInspector:
             )
         return result
 
-    def execution_failure(self, *, run_id: str) -> FormalBoundary:
+    def execution_failure(
+        self, *, run_id: str, failed_plan: Mapping[str, Any] | None = None
+    ) -> FormalBoundary:
         """Return the latest formal Worker failure trace, when one exists."""
         events = self.store.query(
             run_id=run_id, agent="execution", event_type="execution_task_failed"
@@ -433,6 +424,26 @@ class FormalBoundaryInspector:
                 "formal Worker failure proof is missing or non-unique",
             )
         event = events[0]
+        if failed_plan is not None:
+            from contracts.bootstrap_retry import (
+                BootstrapRetryProofError,
+                validate_bootstrap_retry_failure,
+            )
+            failure = {
+                **{key: event.get(key) for key in (
+                    "plan_id", "workflow_id", "run_id", "task_id", "attempt_id",
+                    "transaction_id",
+                )},
+                "evidence_id": event.get("event_id"),
+            }
+            try:
+                validate_bootstrap_retry_failure(
+                    self.store, failed_plan=failed_plan, failure=failure
+                )
+            except BootstrapRetryProofError as exc:
+                return FormalBoundary.blocked(
+                    "execution", "execution_failure_recovery_ambiguous", str(exc)
+                )
         return FormalBoundary.completed(
             "execution",
             evidence_id=event.get("event_id"),
@@ -655,6 +666,20 @@ def _formal_path(
         return Path(str(artifact["path"])).expanduser().resolve() if artifact else None
     value = event.get(path_key)
     return Path(str(value)).expanduser().resolve() if value else None
+
+
+def _valid_retry_failure(store, failed_plan, failure):
+    from contracts.bootstrap_retry import (
+        BootstrapRetryProofError,
+        validate_bootstrap_retry_failure,
+    )
+    try:
+        validate_bootstrap_retry_failure(
+            store, failed_plan=failed_plan, failure=failure
+        )
+    except BootstrapRetryProofError:
+        return False
+    return True
 
 
 def _read_json_object(path: Path | None) -> dict[str, Any] | None:

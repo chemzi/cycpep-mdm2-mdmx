@@ -95,3 +95,23 @@
 - OpenSpec: `openspec validate approval-gated-initial-prediction-execution --strict` — **passed**.
 - Whitespace: `git diff --check` — **passed** (platform line-ending notices only).
 - Final Spec review — **PASS, P0/P1=0**. Final Standards review — **PASS, P0/P1=0**.
+
+## 9. Close Post-PR71 Integration Blockers
+
+- [x] 9.1 Rebase onto latest `integration/data-integrity-transaction`, retain PR71 cache behavior, and add failing regressions for canonical PRODIGY `2.4.0` exact matching and inaccessible hardcoded Python fallback handling with venv entrypoint preservation.
+- [x] 9.2 Require exact-scope transaction-bound `battery_evaluated` Evidence alongside record/handoff proof and return its Evidence IDs; add missing, duplicate, extra-candidate, and trace/identity mismatch regressions.
+- [x] 9.3 Extract one shared terminal/retryable transaction plus failure Evidence validator used by retry inspection and retry creation; prove missing, active, `COMMITTING`, `COMMITTED`, compensation-conflict, unknown, and mismatched proofs fail closed at both seams.
+- [x] 9.4 Update the PR71 cache-retry regression to pass the same explicit execution identity to cached `PredictionPipeline`; do not weaken the production requirement.
+- [x] 9.5 Run focused and full Python suites, compile checks, Architecture Gate, strict OpenSpec, diff check, Verify Change, and final Spec/Standards review; resolve only P0/P1 and stop.
+
+### Post-PR71 Closeout Verification
+
+- Rebased onto `5c7c4bc`, the latest `origin/integration/data-integrity-transaction` containing PR71 and PR72; the conflict resolution preserved PR72 calibration binding and PR73 observed execution identity.
+- Focused contract and coordination regressions — **69 passed**; final retry-recovery subset — **40 passed**.
+- Relevant Store/transaction/recovery/Worker/Launcher suite — **345 passed, 3 skipped**.
+- Full Python suite after the final rebase — **794 passed, 4 skipped**. One initial Windows `os.replace` file-lock failure passed its isolated rerun and the complete clean rerun.
+- Compile checks — **passed**.
+- Architecture Gate — **passed, 0 new violations on every axis**.
+- Strict OpenSpec and `git diff --check` — **passed**.
+- OpenSpec Verify Change — **complete: 53/53 tasks, all requirements/scenarios mapped, no critical/warning issue**.
+- Final Spec and Standards reviews — **PASS, P0/P1=0**.

@@ -772,11 +772,13 @@ class PredictionTransactionalTests(unittest.TestCase):
     def test_cache_retry_reconstructs_battery_and_commits_once(self):
         root = self.root / "cache-recovery"
         shared_runs = root / "shared-prediction-runs"
+        identity = build_prediction_execution_identity()
         first = PredictionPipeline(
             candidate_rows=[self.row], project=self.project, thresholds={},
             artifacts_root=root / "missing-artifacts", run_root=shared_runs,
             run_id="prediction_cache_recovery", defer_formal_writes=True,
             artifact_id_prefix="uncommitted-first-attempt",
+            execution_identity=identity,
         )
         first.run()
 
@@ -786,6 +788,7 @@ class PredictionTransactionalTests(unittest.TestCase):
                 artifacts_root=root / "missing-artifacts", run_root=shared_runs,
                 run_id="prediction_cache_recovery", defer_formal_writes=True,
                 artifact_id_prefix=context.transaction_id, resume=True,
+                execution_identity=identity,
             )
             summary = retry.run()
             self.assertEqual(summary["cache_hits"], 1)

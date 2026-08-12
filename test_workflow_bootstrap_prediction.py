@@ -139,7 +139,7 @@ class _Runtime:
         if self.world.regular_plan == "not_started": return FormalBoundary.not_started("planner")
         return FormalBoundary.completed("planner", plan_id="planner_regular1", plan_path="regular.json", plan_sha256="digest", plan_document=_regular_plan())
     def run_planner(self, _report): self.world.calls.append("regular_plan"); self.world.regular_plan = "completed"
-    def inspect_execution_failure(self, _orchestrator):
+    def inspect_execution_failure(self, _orchestrator, _plan=None):
         if self.world.bootstrap_run_status != "failed": return FormalBoundary.not_started("execution")
         suffix = self.world.retry_index
         return FormalBoundary.completed("execution", evidence_id=f"failure-{suffix}", plan_id=_bootstrap_plan(suffix)["plan_id"], run_id=f"orchestrator-bootstrap-{suffix}", task_id="T001", attempt_id="T001-A01", transaction_id=f"tx-failed-{suffix}", formal_status="failed")

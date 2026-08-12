@@ -209,9 +209,9 @@ class DefaultWorkflowRuntime:
 
         return initialize(plan_path=plan_path, approval_paths=approvals)
 
-    def inspect_execution_failure(self, orchestrator):
+    def inspect_execution_failure(self, orchestrator, failed_plan=None):
         return self.inspector.execution_failure(
-            run_id=orchestrator.references["run_id"]
+            run_id=orchestrator.references["run_id"], failed_plan=failed_plan
         )
 
     def inspect_transaction_recovery(self, orchestrator):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -140,8 +141,39 @@ class PredictionExecutionIdentityTests(unittest.TestCase):
             observed = SimpleNamespace(exit_code=0, stdout="2.3\n", stderr="")
             with patch(
                 "prediction_pipeline.adapters.run_command", return_value=observed
-            ), self.assertRaisesRegex(ValueError, "2.4 is required"):
+            ), self.assertRaisesRegex(ValueError, "2.4.0 is required"):
                 validate_prodigy_runtime(executable, PRODIGY_VERSION)
+
+    def test_prodigy_installed_package_version_exactly_matches_canonical_identity(self):
+        self.assertEqual(PRODIGY_VERSION, "2.4.0")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            executable = root / "prodigy"
+            python = root / "python"
+            executable.write_text("", encoding="utf-8")
+            python.write_text("", encoding="utf-8")
+            observed = SimpleNamespace(exit_code=0, stdout="2.4.0\n", stderr="")
+            with patch(
+                "prediction_pipeline.adapters.run_command", return_value=observed
+            ):
+                self.assertEqual(
+                    validate_prodigy_runtime(executable, PRODIGY_VERSION), "2.4.0"
+                )
+
+    def test_inaccessible_prediction_python_fallback_uses_current_interpreter(self):
+        hardcoded = "/root/damodel-tmp/envs/cycpep-prediction/bin/python"
+        original = Path.is_file
+
+        def inaccessible(path):
+            if str(path) == hardcoded:
+                raise PermissionError("inaccessible deployment fallback")
+            return original(path)
+
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+            Path, "is_file", inaccessible
+        ):
+            config = ExecutionConfig.from_environment()
+        self.assertEqual(config.prediction_python, Path(sys.executable).absolute())
 
 
 if __name__ == "__main__":

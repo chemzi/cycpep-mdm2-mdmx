@@ -76,6 +76,61 @@ def _bootstrap_prediction_plan(identity):
     }
 
 
+def _retry_plan_recovery_fixture(root):
+    identity = build_prediction_execution_identity()
+    source = {
+        "project_id": "project-1", "approved_content_binding": "approved-content",
+        "launcher_run_id": "launcher_0123456789abcdef0123456789abcdef",
+        "research_completion_event_id": "research-complete",
+        "design_invocation_id": "design_initial_0123456789abcdef0123456789abcdef",
+        "design_completion_event_id": "design-complete",
+        "design_transaction_id": "tx-design", "candidate_ids": ["C0001"],
+        "execution_identity": identity,
+    }
+    initial = build_initial_prediction_bootstrap_plan(source=source)
+    retry_binding = {
+        "retry_index": 1, "prior_plan_id": initial["plan_id"],
+        "prior_run_id": "run-failed", "prior_task_id": "T001",
+        "prior_attempt_id": "T001-A01", "prior_transaction_id": "tx-failed",
+        "failure_event_id": "failure-1", "failure_status": "failed",
+    }
+    retry = build_initial_prediction_bootstrap_plan(
+        source={**source, "retry": retry_binding}
+    )
+    events = []
+    for plan in (initial, retry):
+        path = root / f"{plan['plan_id']}.json"
+        path.write_text(json.dumps(plan), encoding="utf-8")
+        plan_source = plan["source"]
+        events.append({
+            "event_id": f"event-{plan['plan_id']}", "agent": "planner",
+            "event_type": "planner_plan", "source_kind": "initial_prediction_bootstrap",
+            "project_id": "project-1", "launcher_run_id": source["launcher_run_id"],
+            "design_completion_event_id": "design-complete",
+            "design_transaction_id": "tx-design", "candidate_ids": ["C0001"],
+            "execution_identity": identity, "retry": plan_source.get("retry"),
+            "plan_id": plan["plan_id"], "plan_path": str(path),
+            "plan_sha256": file_sha256(path),
+        })
+    events.append({
+        "event_id": "failure-1", "agent": "execution",
+        "event_type": "execution_task_failed", "project_id": "project-1",
+        "workflow_id": initial["workflow_id"], "run_id": "run-failed",
+        "plan_id": initial["plan_id"], "task_id": "T001",
+        "attempt_id": "T001-A01", "transaction_id": "tx-failed",
+        "action": "evaluate_new_design_candidates", "retryable": True,
+    })
+    transaction = {
+        "transaction_id": "tx-failed", "project_id": "project-1",
+        "workflow_id": initial["workflow_id"], "run_id": "run-failed",
+        "task_id": "T001", "attempt_id": "T001-A01",
+        "action": "evaluate_new_design_candidates", "status": "FAILED",
+        "error": {"retryable": True},
+        "metadata": {"project_id": "project-1", "plan_id": initial["plan_id"]},
+    }
+    return source, events, transaction
+
+
 def _assert_prediction_proof_tampering_blocks(
     case, inspector, store, plan, orchestrator, record_artifact_id,
     prediction_events, record_path,
@@ -113,6 +168,24 @@ def _assert_prediction_proof_tampering_blocks(
     ).status, "blocked")
     handoff_event.clear()
     handoff_event.update(original_handoff_event)
+    battery_event = prediction_events[2]
+    store.events.remove(battery_event)
+    case.assertEqual(inspector.prediction_execution(
+        project_id="project-1", plan=plan, orchestrator=orchestrator
+    ).status, "blocked")
+    store.events.append(battery_event)
+    duplicate_battery = {**battery_event, "event_id": "battery-duplicate"}
+    store.events.append(duplicate_battery)
+    case.assertEqual(inspector.prediction_execution(
+        project_id="project-1", plan=plan, orchestrator=orchestrator
+    ).status, "blocked")
+    store.events.remove(duplicate_battery)
+    original_identity = battery_event["execution_identity"]
+    battery_event["execution_identity"] = {"wrong": True}
+    case.assertEqual(inspector.prediction_execution(
+        project_id="project-1", plan=plan, orchestrator=orchestrator
+    ).status, "blocked")
+    battery_event["execution_identity"] = original_identity
     original_record = record_path.read_text(encoding="utf-8")
     record_path.write_text("{}", encoding="utf-8")
     case.assertEqual(inspector.prediction_execution(
@@ -269,6 +342,43 @@ class FormalBoundaryInspectorTests(unittest.TestCase):
         self.assertEqual(result.references["task_id"], "task-1")
         self.assertEqual(result.references["transaction_id"], "transaction-1")
 
+    def test_retry_failure_recovery_requires_shared_retryable_terminal_proof(self):
+        identity = build_prediction_execution_identity()
+        plan = _bootstrap_prediction_plan(identity)
+        event = {
+            "event_id": "failure-evidence", "agent": "execution",
+            "event_type": "execution_task_failed", "project_id": "project-1",
+            "workflow_id": "workflow-1", "run_id": "run-1",
+            "plan_id": plan["plan_id"], "task_id": "T001",
+            "attempt_id": "T001-A01", "transaction_id": "transaction-1",
+            "action": "evaluate_new_design_candidates", "retryable": True,
+        }
+        transaction = {
+            **{key: event[key] for key in (
+                "project_id", "workflow_id", "run_id", "task_id",
+                "attempt_id", "transaction_id", "action",
+            )},
+            "status": "FAILED", "error": {"retryable": True},
+            "metadata": {"project_id": "project-1", "plan_id": plan["plan_id"]},
+        }
+        store = _Store([event], transactions=[transaction])
+        inspector = _inspector(store)
+        self.assertEqual(inspector.execution_failure(
+            run_id="run-1", failed_plan=plan
+        ).status, "completed")
+        for status in (
+            "STAGING", "COMMITTING", "COMMITTED", "COMPENSATION_CONFLICT", "UNKNOWN"
+        ):
+            with self.subTest(status=status):
+                transaction["status"] = status
+                self.assertEqual(inspector.execution_failure(
+                    run_id="run-1", failed_plan=plan
+                ).status, "blocked")
+        store.transactions.clear()
+        self.assertEqual(inspector.execution_failure(
+            run_id="run-1", failed_plan=plan
+        ).status, "blocked")
+
     def test_bootstrap_prediction_rejects_project_and_orchestrator_plan_drift(self):
         plan = {
             "plan_id": "planner_0123456789ab",
@@ -356,6 +466,36 @@ class FormalBoundaryInspectorTests(unittest.TestCase):
 
         self.assertEqual(result.status, "blocked")
         self.assertEqual(result.blocker_code, "bootstrap_plan_recovery_ambiguous")
+
+    def test_retry_plan_recovery_requires_shared_retryable_terminal_proof(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, events, transaction = _retry_plan_recovery_fixture(Path(tmp))
+            store = _Store(events, transactions=[transaction])
+            inspector = _inspector(store)
+            arguments = {
+                "project_id": "project-1",
+                "approved_content_binding": "approved-content",
+                "launcher_run_id": source["launcher_run_id"],
+                "design_invocation_id": source["design_invocation_id"],
+                "design_completion_event_id": "design-complete",
+                "design_transaction_id": "tx-design",
+                "candidate_ids": ("C0001",),
+            }
+            self.assertEqual(
+                inspector.bootstrap_prediction_plan(**arguments).status, "completed"
+            )
+            for status in (
+                "STAGING", "COMMITTING", "COMMITTED", "COMPENSATION_CONFLICT", "UNKNOWN"
+            ):
+                with self.subTest(status=status):
+                    transaction["status"] = status
+                    self.assertEqual(
+                        inspector.bootstrap_prediction_plan(**arguments).status, "blocked"
+                    )
+            store.transactions.clear()
+            self.assertEqual(
+                inspector.bootstrap_prediction_plan(**arguments).status, "blocked"
+            )
 
     def test_bootstrap_prediction_completion_requires_one_bound_committed_output(self):
         identity = build_prediction_execution_identity()
@@ -451,6 +591,9 @@ class FormalBoundaryInspectorTests(unittest.TestCase):
                 **common, "event_id": "handoff-ready", "agent": "prediction",
                 "event_type": "prediction_handoff_ready",
                 "handoff_artifact_id": "tx-prediction-prediction_handoff",
+            }, {
+                **common, "event_id": "battery-C0001", "agent": "prediction",
+                "event_type": "battery_evaluated", "candidate_id": "C0001",
             }]
             transaction = {
                 **common, "status": "COMMITTED",
@@ -489,9 +632,8 @@ class FormalBoundaryInspectorTests(unittest.TestCase):
                 project_id="project-1", plan=plan, orchestrator=orchestrator
             )
             self.assertEqual(completed.status, "completed")
-            self.assertEqual(
-                completed.references["prediction_run_id"], "prediction-domain"
-            )
+            self.assertEqual(completed.references["prediction_run_id"], "prediction-domain")
+            self.assertIn("battery-C0001", completed.references["evidence_ids"])
 
             _assert_prediction_proof_tampering_blocks(
                 self, inspector, store, plan, orchestrator,

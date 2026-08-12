@@ -15,10 +15,11 @@ redefine L1-L7 or thresholds.
 Transaction-managed records and handoffs carry the independently observed
 execution identity. Formal recovery requires the exact candidate set's unique
 committed `prediction_record` Artifacts, one transaction-bound
-`prediction_recorded` event per candidate, and one bound
+`prediction_recorded` and one `battery_evaluated` event per candidate, and one bound
 `prediction_handoff_ready` event. Project/workflow/run/plan/task/attempt/
 transaction/Prediction-run/execution-identity correlation must be complete
-before Critic can run; missing or altered proof blocks recovery.
+before Critic can run; recovery returns all three Evidence roles, and missing,
+duplicate, extra-candidate, or altered proof blocks recovery.
 The additive optional `execution_identity` argument on `agents.prediction.run`
 and `PredictionPipeline` is supplied only by the validated Worker invocation;
 omitting it preserves the existing direct/non-Launcher API behavior.

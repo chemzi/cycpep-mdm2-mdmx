@@ -19,6 +19,9 @@ PyRosetta import/version, installed PRODIGY version, checkpoint binding, and
 canonical `PredictionConfig`. Python virtual-environment entrypoints retain
 their symlink path so invocation preserves the environment. Runtime metadata
 also records the Boltz version, checkpoint binding, and `no_kernels` mode.
+PRODIGY package identity exact-matches installed distribution version `2.4.0`.
+An inaccessible hardcoded Prediction-Python fallback is skipped, while an
+explicit venv entrypoint remains unchanged for the later import preflight.
 
 Deployment must configure the existing Prediction executables, checkpoint,
 cache, and source checkout before approval is exercised. The existing handler

@@ -101,7 +101,7 @@ def _retry_failed_execution(runtime, report, session, planner, design, execute):
         return report, FormalBoundary.not_started("prediction"), _block_or_invalid(
             session, report, recovery, "transaction"
         )
-    failure = runtime.inspect_execution_failure(orchestrator)
+    failure = runtime.inspect_execution_failure(orchestrator, plan)
     if failure.status != "completed":
         return report, FormalBoundary.not_started("prediction"), _block_or_invalid(
             session, report, failure, "execution"

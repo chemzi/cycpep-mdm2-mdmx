@@ -23,10 +23,13 @@ explicitly retryable terminal state and to match the failed project, workflow,
 run, task, attempt, action, and formal failure Evidence. Missing, active,
 `COMMITTING`, `COMMITTED`, compensation-conflict, unknown, or mismatched
 transactions remain immutable blockers.
+Retry inspection and retry-plan creation use the same formal proof validator,
+so the two entry points cannot disagree about terminal/retryable eligibility.
 
 Plans and receipts record path-independent protocol/tool/model/checkpoint
 identity. Executable, repository, cache, checkpoint-location, and output paths
 remain internal deployment locators and do not define scientific identity.
+The formal PRODIGY distribution identity is exactly `2.4.0`.
 
 The additive resume option `--retry-bootstrap-prediction` is an operator
 request, not an automatic retry policy. It is accepted only for the latest

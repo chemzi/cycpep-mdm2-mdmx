@@ -135,23 +135,37 @@ def _validate_prediction_evidence(
 ):
     events = store.query(transaction_id=transaction_id, agent="prediction")
     records = [item for item in events if item.get("event_type") == "prediction_recorded"]
+    batteries = [item for item in events if item.get("event_type") == "battery_evaluated"]
     handoffs = [item for item in events if item.get("event_type") == "prediction_handoff_ready"]
-    by_candidate = {}
-    for event in records:
-        by_candidate.setdefault(str(event.get("candidate_id") or ""), []).append(event)
+    records_by_candidate = _events_by_candidate(records)
+    batteries_by_candidate = _events_by_candidate(batteries)
     if (
-        len(handoffs) != 1 or set(by_candidate) != set(candidate_ids)
-        or any(len(by_candidate[value]) != 1 for value in candidate_ids)
+        len(handoffs) != 1
+        or set(records_by_candidate) != set(candidate_ids)
+        or set(batteries_by_candidate) != set(candidate_ids)
+        or any(len(records_by_candidate[value]) != 1 for value in candidate_ids)
+        or any(len(batteries_by_candidate[value]) != 1 for value in candidate_ids)
     ):
         raise PredictionPublicationError(
-            "transaction-bound Prediction record or handoff-ready Evidence is missing"
+            "transaction-bound Prediction battery, record, or handoff Evidence is missing"
         )
-    required = [handoffs[0], *[by_candidate[value][0] for value in candidate_ids]]
+    required = [
+        handoffs[0],
+        *[records_by_candidate[value][0] for value in candidate_ids],
+        *[batteries_by_candidate[value][0] for value in candidate_ids],
+    ]
     for event in required:
         _validate_event(
             event, expected, plan, handoff, task, artifact_ids, handoff_artifact_id
         )
     return tuple(str(event.get("event_id") or "") for event in required)
+
+
+def _events_by_candidate(events):
+    result = {}
+    for event in events:
+        result.setdefault(str(event.get("candidate_id") or ""), []).append(event)
+    return result
 
 
 def _validate_event(event, expected, plan, handoff, task, artifact_ids, handoff_id):
@@ -169,12 +183,18 @@ def _validate_event(event, expected, plan, handoff, task, artifact_ids, handoff_
         and not event.get("record_artifact_id")
         and event.get("handoff_artifact_id") == handoff_id
     )
+    battery_binding_valid = (
+        event_type == "battery_evaluated"
+        and candidate_id in artifact_ids
+        and not event.get("record_artifact_id")
+        and not event.get("handoff_artifact_id")
+    )
     if (
         any(event.get(key) != value for key, value in expected.items())
         or event.get("plan_id") != plan.get("plan_id")
         or event.get("prediction_run_id") != handoff.get("run_id")
         or event.get("execution_identity") != task["parameters"]["execution_identity"]
-        or not (record_binding_valid or handoff_binding_valid)
+        or not (record_binding_valid or handoff_binding_valid or battery_binding_valid)
     ):
         raise PredictionPublicationError(
             "Prediction Evidence does not share the approved execution binding"

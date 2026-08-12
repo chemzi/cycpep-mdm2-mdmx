@@ -213,3 +213,26 @@ A formally failed bootstrap Prediction plan, Orchestrator run, task attempt, and
 #### Scenario: Retry transaction and failure Evidence match the execution
 - **WHEN** transaction project, workflow, run, task, attempt, action, or formal failure Evidence does not match the failed bootstrap execution
 - **THEN** retry fails closed without mutating the prior execution
+
+### Requirement: Integrated runtime and publication contracts remain exact
+The bootstrap Prediction phase SHALL use exact deployed scientific package identity, exact transaction-bound per-candidate publication proof, and one shared retry failure-proof validator without relaxing production identity requirements.
+
+#### Scenario: PRODIGY package identity exact-matches deployment
+- **WHEN** the runtime probes the installed PRODIGY distribution
+- **THEN** expected and observed identity both use formal package version `2.4.0`, and any other or abbreviated version fails before scientific execution
+
+#### Scenario: Every candidate has one formal battery verdict
+- **WHEN** formal Prediction execution recovery validates an exact committed candidate set
+- **THEN** every candidate has exactly one transaction-bound `battery_evaluated` Evidence sharing project, workflow, run, plan, task, attempt, transaction, Prediction run, and execution identity with its record and handoff proof, and those Evidence IDs are returned
+
+#### Scenario: Retry proof is identical at inspection and creation
+- **WHEN** Launcher inspects retry eligibility or Planner creates the explicit retry plan
+- **THEN** both use the same terminal/retryable transaction and matching failure Evidence validator, and missing, active, `COMMITTING`, `COMMITTED`, compensation-conflict, or unknown transactions fail closed
+
+#### Scenario: Inaccessible hardcoded Python fallback is skipped
+- **WHEN** `ExecutionConfig.from_environment()` encounters `PermissionError` or `OSError` while checking a hardcoded Prediction Python fallback
+- **THEN** configuration continues to the next valid locator without resolving an explicitly selected venv entrypoint to its base interpreter
+
+#### Scenario: Cached pipeline retains formal execution identity
+- **WHEN** PR71 cache-retry recovery reconstructs a cached Prediction pipeline
+- **THEN** it supplies the same explicit execution identity as the approved execution and production validation remains strict

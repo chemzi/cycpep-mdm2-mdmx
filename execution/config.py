@@ -27,7 +27,10 @@ def _optional_path(name: str, default: str | Path | None = None) -> Path | None:
     if default is None:
         return None
     path = Path(default).expanduser().resolve()
-    return path if path.exists() else None
+    try:
+        return path if path.exists() else None
+    except OSError:
+        return None
 
 
 def _python_path(name: str, default: str | Path) -> Path:
@@ -42,7 +45,17 @@ def _optional_python_path(name: str, default: str | Path | None = None) -> Path 
     if default is None:
         return None
     path = Path(os.path.abspath(Path(default).expanduser()))
-    return path if path.exists() else None
+    try:
+        return path if path.exists() else None
+    except OSError:
+        return None
+
+
+def _is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -90,7 +103,7 @@ class ExecutionConfig:
         prediction_default = Path(
             "/root/damodel-tmp/envs/cycpep-prediction/bin/python"
         )
-        if not prediction_default.is_file():
+        if not _is_file(prediction_default):
             prediction_default = core_default
         colabdesign_dir = _path(
             "COLABDESIGN_DIR", "/root/workspace/NovaPeptide/tools/ColabDesign"

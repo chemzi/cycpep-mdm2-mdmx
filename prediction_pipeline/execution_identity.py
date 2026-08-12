@@ -21,8 +21,8 @@ from .rosetta_worker import PYROSETTA_VERSION
 
 
 EXECUTION_IDENTITY_SCHEMA_VERSION = 1
-# The existing parser accepts and characterizes the PRODIGY 2.4 output contract.
-PRODIGY_VERSION = "2.4"
+# Canonical installed distribution version used by the deployed runtime.
+PRODIGY_VERSION = "2.4.0"
 
 _IDENTITY_KEYS = frozenset({
     "schema_version",
