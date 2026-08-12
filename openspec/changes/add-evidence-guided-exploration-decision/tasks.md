@@ -26,3 +26,11 @@
 - [x] 5.1 Run focused E2 and relevant experience/exploration/Evidence regression tests, then the full Python test suite.
 - [x] 5.2 Run the Architecture Gate, strict OpenSpec validation, and `git diff --check`; synchronize public contract/docstrings without adding a parallel specification.
 - [x] 5.3 Run separate Standards and Spec code reviews, resolve all merge blockers within E2 scope, and confirm no E3/E4/E5 integration or scientific-policy change entered the diff.
+
+## 6. PR 71 merge-ready provenance repair
+
+- [x] 6.1 Add a shared canonical normalized-threshold identity helper and propagate it through actual Prediction battery and `prediction_handoff_ready` Evidence without changing threshold science.
+- [x] 6.2 Replace caller-declared handoff candidate scope with the existing formal Prediction handoff authority; bind project/workflow/run, Prediction run, protocol, candidates, and threshold identity.
+- [x] 6.3 Reject generic `exploration_decision` appends and preserve one dedicated source-validating writer with sequential idempotency.
+- [x] 6.4 Include complete conservative policy identity in Decision semantic identity and add the six requested regressions.
+- [x] 6.5 Run focused/full tests, Architecture Gate, strict OpenSpec validation, diff/compile/configured static gates, then independent Standards and Spec reviews; resolve all P0/P1 findings within frozen E2 scope.

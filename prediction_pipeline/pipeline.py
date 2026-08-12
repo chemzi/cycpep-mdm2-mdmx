@@ -14,6 +14,7 @@ from typing import Any
 import data_layer
 from data_layer import evaluate_battery
 from project_config import target_slug
+from threshold_contract import canonical_threshold_digest, normalize_thresholds
 
 from .adapters import (
     ArtifactBundle,
@@ -131,7 +132,7 @@ class PredictionPipeline(MetricCollectorsMixin):
     ):
         self.config = config or PredictionConfig()
         self.project = project
-        self.thresholds = dict(thresholds or {})
+        self.thresholds, _threshold_audit = normalize_thresholds(thresholds or {})
         self.required_targets = validate_project(project)
         self.artifacts_root = Path(artifacts_root).expanduser().resolve()
         self.run_root = Path(run_root).expanduser().resolve()
@@ -162,7 +163,7 @@ class PredictionPipeline(MetricCollectorsMixin):
             )
 
         self.project_digest = object_sha256(project)
-        self.thresholds_digest = object_sha256(self.thresholds)
+        self.thresholds_digest = canonical_threshold_digest(self.thresholds)
         self.config_digest = object_sha256({
             "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "method_config": self.config.to_dict(),
@@ -197,6 +198,8 @@ class PredictionPipeline(MetricCollectorsMixin):
         self.persistence = PredictionPersistence(
             run_id=self.run_id,
             required_targets=self.required_targets,
+            candidate_ids=tuple(sorted(ids)),
+            thresholds_digest=self.thresholds_digest,
             defer_formal_writes=self.defer_formal_writes,
             artifact_id_prefix=self.artifact_id_prefix,
             launcher_correlation=self.launcher_correlation,
@@ -721,6 +724,7 @@ class PredictionPipeline(MetricCollectorsMixin):
             "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
             "protocol_identity": protocol_binding(),
+            "thresholds_digest": self.thresholds_digest,
             "created_at": _utcnow(),
             "candidate": candidate.snapshot(),
             "cache_key": {
@@ -842,6 +846,7 @@ class PredictionPipeline(MetricCollectorsMixin):
             "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
             "protocol_identity": protocol_binding(),
+            "thresholds_digest": self.thresholds_digest,
             "created_at": _utcnow(),
             "project_id": self.project.get("project_id"),
             "required_targets": list(self.required_targets),

@@ -17,7 +17,7 @@ from contracts.exploration_decision import (
 )
 from contracts.trace import TraceContext
 from data_layer import EvidenceLogger, get_storage_backend
-from experience import suggest_length_preference
+from experience import LengthPreferencePolicy, suggest_length_preference
 from exploration import exploration_shortlist
 from exploration_decision import (
     EVENT_DECISION,
@@ -25,18 +25,19 @@ from exploration_decision import (
     record_exploration_decision,
 )
 from target_bootstrap import config_digest
+from threshold_contract import canonical_threshold_digest
 
 
 PROJECT_ID = "mdm2_mdmx_reference"
 WORKFLOW_ID = "workflow_e2"
 RUN_ID = "orchestrator_e2"
 PREDICTION_RUN_ID = "prediction_e2"
-HANDOFF_ID = "handoff_e2"
 TARGETS = ("MDM2", "MDMX")
 PROTOCOL = {"name": "prediction", "version": "1", "sha256": "1" * 64}
 THRESHOLDS = {
     "L2_ipsae": {"value": 0.7, "operator": ">=", "calibration_status": "pending"}
 }
+THRESHOLD_DIGEST = canonical_threshold_digest(THRESHOLDS)
 PROJECT = {
     "project_id": PROJECT_ID,
     "targets": [
@@ -77,6 +78,7 @@ def decision_battery(candidate_id, length, passed, event_id):
         },
         "target_pass": {target: passed for target in TARGETS},
         "protocol_identity": dict(PROTOCOL),
+        "thresholds_digest": THRESHOLD_DIGEST,
     }
 
 
@@ -106,24 +108,40 @@ def shortlist_row(rows, event_id="shortlist-e2"):
     }
 
 
-def build_decision(rows, **overrides):
-    values = {
-        "battery_events": rows,
-        "shortlist_event": shortlist_row(rows),
-        "project_config": PROJECT,
-        "thresholds": THRESHOLDS,
-        "protocol_identity": PROTOCOL,
+def handoff_row(rows, *, event_id="handoff-e2", prediction_run_id=PREDICTION_RUN_ID):
+    return {
+        "event_id": event_id,
+        "event_type": "prediction_handoff_ready",
+        "agent": "prediction",
         "project_id": PROJECT_ID,
         "workflow_id": WORKFLOW_ID,
         "run_id": RUN_ID,
-        "prediction_run_id": PREDICTION_RUN_ID,
-        "prediction_handoff_id": HANDOFF_ID,
-        "handoff_candidate_ids": [row["candidate_id"] for row in rows],
+        "prediction_run_id": prediction_run_id,
+        "targets": list(TARGETS),
+        "candidate_ids": sorted(row["candidate_id"] for row in rows),
+        "protocol_identity": dict(PROTOCOL),
+        "thresholds_digest": THRESHOLD_DIGEST,
+        "handoff_artifact_id": "artifact-handoff-e2",
+    }
+
+
+def build_decision(rows, **overrides):
+    handoff = overrides.pop("prediction_handoff_event", handoff_row(rows))
+    values = {
+        "battery_events": rows,
+        "shortlist_event": shortlist_row(rows),
+        "prediction_handoff_event": handoff,
+        "project_config": PROJECT,
+        "thresholds": THRESHOLDS,
+        "project_id": PROJECT_ID,
+        "workflow_id": WORKFLOW_ID,
+        "run_id": RUN_ID,
         "target_ids": TARGETS,
         "source_round": 1,
     }
     values.update(overrides)
-    return build_exploration_decision(**values)
+    with patch("exploration_decision._require_formal_handoff", return_value=handoff):
+        return build_exploration_decision(**values)
 
 
 class ExistingPolicyCharacterizationTests(unittest.TestCase):
@@ -291,25 +309,55 @@ class ExplorationDecisionBuilderTests(unittest.TestCase):
     def test_candidate_set_missing_extra_duplicate_and_run_mismatch_fail_closed(self):
         rows = evidence_batch()
         cases = []
-        cases.append((rows[:-1], [item["candidate_id"] for item in rows]))
+        cases.append((rows[:-1], handoff_row(rows)))
         extra = deepcopy(rows)
         extra.append(decision_battery("C999", 12, True, "battery-extra"))
-        cases.append((extra, [item["candidate_id"] for item in rows]))
+        cases.append((extra, handoff_row(rows)))
         duplicate = deepcopy(rows)
         duplicate[-1]["candidate_id"] = duplicate[0]["candidate_id"]
-        cases.append((duplicate, [item["candidate_id"] for item in rows]))
+        cases.append((duplicate, handoff_row(rows)))
         wrong_run = deepcopy(rows)
         wrong_run[0]["prediction_run_id"] = "prediction_other"
-        cases.append((wrong_run, [item["candidate_id"] for item in wrong_run]))
+        cases.append((wrong_run, handoff_row(wrong_run)))
 
-        for scoped_rows, handoff_ids in cases:
+        for scoped_rows, handoff in cases:
             with self.subTest(size=len(scoped_rows)):
                 with self.assertRaises(ExplorationDecisionContractError):
                     build_decision(
                         scoped_rows,
                         shortlist_event=shortlist_row(scoped_rows),
-                        handoff_candidate_ids=handoff_ids,
+                        prediction_handoff_event=handoff,
                     )
+
+    def test_fake_or_cross_run_handoff_fails_closed(self):
+        rows = evidence_batch()
+        cross_run = handoff_row(rows, prediction_run_id="prediction_other")
+        with self.assertRaisesRegex(
+            ExplorationDecisionContractError, "prediction_run_id mismatch"
+        ):
+            build_decision(rows, prediction_handoff_event=cross_run)
+
+    def test_threshold_mismatch_fails_and_authoritative_identity_matches(self):
+        rows = evidence_batch()
+        decision = build_decision(rows)
+        self.assertEqual(decision.threshold_digest, THRESHOLD_DIGEST)
+
+        changed = deepcopy(THRESHOLDS)
+        changed["L2_ipsae"]["value"] = 0.8
+        with self.assertRaisesRegex(
+            ExplorationDecisionContractError, "differs from Prediction authority"
+        ):
+            build_decision(rows, thresholds=changed)
+
+    def test_policy_identity_changes_decision_digest(self):
+        rows = evidence_batch()
+        first = build_decision(rows)
+        revised = LengthPreferencePolicy(version="2")
+        with patch("experience.LENGTH_PREFERENCE_POLICY", revised), patch(
+            "exploration_decision.LENGTH_PREFERENCE_POLICY", revised
+        ):
+            second = build_decision(rows)
+        self.assertNotEqual(first.decision_input_digest, second.decision_input_digest)
 
     def test_builder_preserves_inputs_and_calls_no_downstream_agent(self):
         from execution.action_registry import ACTION_REGISTRY
@@ -393,10 +441,34 @@ class ExplorationDecisionEvidenceTests(unittest.TestCase):
         shortlist = next(
             row for row in EvidenceLogger.get_all() if row["event_id"] == shortlist_id
         )
-        decision = build_decision(
-            rows,
+        handoff_id = EvidenceLogger.log(
+            "prediction",
+            "prediction_handoff_ready",
+            {
+                "prediction_run_id": PREDICTION_RUN_ID,
+                "candidate_ids": sorted(row["candidate_id"] for row in rows),
+                "protocol_identity": dict(PROTOCOL),
+                "thresholds_digest": THRESHOLD_DIGEST,
+                "handoff_artifact_id": "artifact-handoff-formal",
+            },
+            targets=list(TARGETS),
+            phase="evaluate",
+            trace_context=self._trace(),
+        )
+        handoff = next(
+            row for row in EvidenceLogger.get_all() if row["event_id"] == handoff_id
+        )
+        decision = build_exploration_decision(
+            battery_events=rows,
             shortlist_event=shortlist,
-            handoff_candidate_ids=[row["candidate_id"] for row in rows],
+            prediction_handoff_event=handoff,
+            project_config=PROJECT,
+            thresholds=THRESHOLDS,
+            project_id=PROJECT_ID,
+            workflow_id=WORKFLOW_ID,
+            run_id=RUN_ID,
+            target_ids=TARGETS,
+            source_round=1,
         )
         return decision
 
@@ -422,6 +494,24 @@ class ExplorationDecisionEvidenceTests(unittest.TestCase):
         formal_ids = {row["event_id"] for row in EvidenceLogger.get_all()}
         self.assertTrue(set(decision.source_event_ids).issubset(formal_ids))
         self.assertIn(decision.shortlist_event_id, formal_ids)
+
+    def test_nonexistent_formal_handoff_fails_before_decision(self):
+        rows = evidence_batch()
+        with self.assertRaisesRegex(
+            ExplorationDecisionContractError, "formal Prediction handoff Evidence mismatch"
+        ):
+            build_exploration_decision(
+                battery_events=rows,
+                shortlist_event=shortlist_row(rows),
+                prediction_handoff_event=handoff_row(rows),
+                project_config=PROJECT,
+                thresholds=THRESHOLDS,
+                project_id=PROJECT_ID,
+                workflow_id=WORKFLOW_ID,
+                run_id=RUN_ID,
+                target_ids=TARGETS,
+                source_round=1,
+            )
 
     def test_same_decision_id_with_different_payload_fails_closed(self):
         decision = self._formal_decision()
@@ -452,11 +542,26 @@ class ExplorationDecisionEvidenceTests(unittest.TestCase):
 
     def test_generic_supported_writer_rejects_invalid_decision_payload(self):
         before = len(EvidenceLogger.get_all())
-        with self.assertRaises(ExplorationDecisionContractError):
+        with self.assertRaisesRegex(ValueError, "dedicated source-validating writer"):
             EvidenceLogger.log(
                 "critic",
                 EVENT_DECISION,
                 {"decision_id": "not-a-decision"},
+                targets=list(TARGETS),
+                phase="critic",
+                round_num=1,
+                trace_context=self._trace(),
+            )
+        self.assertEqual(len(EvidenceLogger.get_all()), before)
+
+    def test_generic_append_cannot_bypass_missing_formal_sources(self):
+        decision = build_decision(evidence_batch())
+        before = len(EvidenceLogger.get_all())
+        with self.assertRaisesRegex(ValueError, "dedicated source-validating writer"):
+            EvidenceLogger.log(
+                "critic",
+                EVENT_DECISION,
+                decision.to_dict(),
                 targets=list(TARGETS),
                 phase="critic",
                 round_num=1,
@@ -475,7 +580,7 @@ class ExplorationDecisionEvidenceTests(unittest.TestCase):
         ))
 
         decision = self._formal_decision()
-        with patch.object(EvidenceLogger, "log", side_effect=RuntimeError("store down")):
+        with patch.object(EvidenceLogger, "_write", side_effect=RuntimeError("store down")):
             with self.assertRaisesRegex(RuntimeError, "store down"):
                 record_exploration_decision(decision)
         self.assertFalse(any(

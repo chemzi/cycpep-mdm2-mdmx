@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
+import uuid
 
 from contracts.exploration_decision import (
     DECISION_ID_PREFIX,
@@ -17,6 +19,7 @@ from contracts.exploration_decision import (
     require_trace_id,
 )
 from contracts.trace import TraceContext
+from contracts.event import EvidenceEvent
 from data_layer import EvidenceLogger
 from experience import (
     LENGTH_PREFERENCE_POLICY,
@@ -26,11 +29,12 @@ from experience import (
 )
 from prediction_pipeline.contracts import canonical_json, object_sha256
 from target_bootstrap import config_digest
-from threshold_contract import normalize_thresholds
+from threshold_contract import canonical_threshold_digest
 
 
 EVENT_BATTERY = "battery_evaluated"
 EVENT_SHORTLIST = "exploration_shortlist"
+EVENT_HANDOFF = "prediction_handoff_ready"
 EVENT_DECISION = "exploration_decision"
 
 
@@ -109,7 +113,42 @@ def _battery_projection(row: Mapping[str, Any]) -> dict[str, Any]:
         "layer_values": _json_copy(row.get("layer_values") or {}),
         "target_pass": _json_copy(row.get("target_pass") or {}),
         "protocol_identity": _json_copy(row.get("protocol_identity") or {}),
+        "thresholds_digest": row.get("thresholds_digest"),
     }
+
+
+def _handoff_projection(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "event_id": row.get("event_id"),
+        "event_type": row.get("event_type"),
+        "agent": row.get("agent"),
+        "project_id": row.get("project_id"),
+        "workflow_id": row.get("workflow_id"),
+        "run_id": row.get("run_id"),
+        "prediction_run_id": row.get("prediction_run_id"),
+        "targets": sorted(row.get("targets") or []),
+        "candidate_ids": sorted(row.get("candidate_ids") or []),
+        "protocol_identity": _json_copy(row.get("protocol_identity") or {}),
+        "thresholds_digest": row.get("thresholds_digest"),
+        "handoff_artifact_id": row.get("handoff_artifact_id"),
+        "handoff_path": row.get("handoff_path"),
+        "handoff_sha256": row.get("handoff_sha256"),
+    }
+
+
+def _require_formal_handoff(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve one supplied handoff projection against formal Evidence."""
+    expected = _handoff_projection(row)
+    matches = [
+        item for item in EvidenceLogger.get_all()
+        if item.get("event_id") == expected["event_id"]
+        and item.get("event_type") == EVENT_HANDOFF
+    ]
+    if len(matches) != 1 or _handoff_projection(matches[0]) != expected:
+        raise ExplorationDecisionContractError(
+            "formal Prediction handoff Evidence mismatch"
+        )
+    return matches[0]
 
 
 def _shortlist_projection(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -184,6 +223,7 @@ def _validate_battery_scope(
     trace: tuple[str, str, str],
     prediction_run_id: str,
     protocol_identity: Mapping[str, Any],
+    threshold_digest: str,
     allowed_lengths: set[int],
 ) -> list[dict[str, Any]]:
     if any(not isinstance(row, Mapping) for row in rows):
@@ -208,6 +248,8 @@ def _validate_battery_scope(
             raise ExplorationDecisionContractError("battery target scope mismatch")
         if row.get("protocol_identity") != protocol_identity:
             raise ExplorationDecisionContractError("battery protocol identity mismatch")
+        if row.get("thresholds_digest") != threshold_digest:
+            raise ExplorationDecisionContractError("battery threshold identity mismatch")
         length = row.get("length")
         if isinstance(length, bool) or not isinstance(length, int) or length not in allowed_lengths:
             raise ExplorationDecisionContractError("battery length is outside policy envelope")
@@ -215,6 +257,41 @@ def _validate_battery_scope(
             raise ExplorationDecisionContractError("battery passed must be boolean")
         projections.append(_battery_projection(row))
     return sorted(projections, key=lambda item: item["event_id"])
+
+
+def _validate_handoff_scope(
+    row: Mapping[str, Any],
+    *,
+    trace: tuple[str, str, str],
+    target_ids: tuple[str, ...],
+) -> tuple[dict[str, Any], tuple[str, ...], str, dict[str, Any], str]:
+    if not isinstance(row, Mapping) or row.get("event_type") != EVENT_HANDOFF:
+        raise ExplorationDecisionContractError("formal Prediction handoff is required")
+    if row.get("agent") != "prediction":
+        raise ExplorationDecisionContractError("handoff authority must be Prediction Evidence")
+    require_trace_id(row.get("event_id"), "prediction handoff event_id")
+    if tuple(row.get(key) for key in ("project_id", "workflow_id", "run_id")) != trace:
+        raise ExplorationDecisionContractError("handoff workflow trace mismatch")
+    if set(row.get("targets") or ()) != set(target_ids):
+        raise ExplorationDecisionContractError("handoff target scope mismatch")
+    prediction_run_id = require_trace_id(
+        row.get("prediction_run_id"), "prediction_run_id"
+    )
+    candidate_ids = _ids(row.get("candidate_ids") or (), "handoff candidate_ids")
+    protocol = _json_copy(row.get("protocol_identity") or {})
+    if not all(isinstance(protocol.get(key), str) and protocol[key] for key in ("name", "version", "sha256")):
+        raise ExplorationDecisionContractError("handoff protocol identity is invalid")
+    threshold_digest = row.get("thresholds_digest")
+    if not isinstance(threshold_digest, str) or len(threshold_digest) != 64:
+        raise ExplorationDecisionContractError("handoff threshold identity is invalid")
+    artifact = row.get("handoff_artifact_id")
+    path_binding = row.get("handoff_path") and row.get("handoff_sha256")
+    if not artifact and not path_binding:
+        raise ExplorationDecisionContractError("handoff artifact binding is required")
+    return (
+        _handoff_projection(row), candidate_ids, prediction_run_id,
+        protocol, threshold_digest,
+    )
 
 
 def _validate_shortlist_scope(
@@ -289,6 +366,7 @@ def _semantic_inputs(
     scope: _DecisionScope,
     source_evidence: list[dict[str, Any]],
     shortlist_evidence: dict[str, Any],
+    handoff_evidence: dict[str, Any],
     envelope: dict[str, Any],
     threshold_digest: str,
     protocol_identity: dict[str, Any],
@@ -298,7 +376,9 @@ def _semantic_inputs(
         **scope.to_dict(),
         "source_evidence": source_evidence,
         "shortlist_evidence": shortlist_evidence,
+        "prediction_handoff_evidence": handoff_evidence,
         "policy_envelope": envelope,
+        "policy": LENGTH_PREFERENCE_POLICY.to_dict(),
         "threshold_digest": threshold_digest,
         "protocol_identity": protocol_identity,
     }
@@ -313,6 +393,7 @@ def _materialize_decision(
     protocol_identity: dict[str, Any],
     source_evidence: list[dict[str, Any]],
     shortlist_evidence: dict[str, Any],
+    handoff_evidence: dict[str, Any],
     envelope: dict[str, Any],
     analysis: _DecisionAnalysis,
 ) -> ExplorationDecision:
@@ -322,6 +403,7 @@ def _materialize_decision(
         "length_statistics": analysis.statistics,
         "source_evidence": source_evidence,
         "shortlist_evidence": shortlist_evidence,
+        "prediction_handoff_evidence": handoff_evidence,
     }
     return ExplorationDecision(
         schema_version=1,
@@ -358,53 +440,55 @@ def build_exploration_decision(
     *,
     battery_events: Iterable[Mapping[str, Any]],
     shortlist_event: Mapping[str, Any],
+    prediction_handoff_event: Mapping[str, Any],
     project_config: Mapping[str, Any],
     thresholds: Mapping[str, Any],
-    protocol_identity: Mapping[str, Any],
     project_id: str,
     workflow_id: str,
     run_id: str,
-    prediction_run_id: str,
-    prediction_handoff_id: str,
-    handoff_candidate_ids: Iterable[str],
     target_ids: Iterable[str],
     source_round: int,
 ) -> ExplorationDecision:
     """Return one deterministic Decision from explicit current-run inputs."""
     for label, value in {
         "project_id": project_id, "workflow_id": workflow_id, "run_id": run_id,
-        "prediction_run_id": prediction_run_id,
-        "prediction_handoff_id": prediction_handoff_id,
     }.items():
         require_trace_id(value, label)
     if isinstance(source_round, bool) or not isinstance(source_round, int) or source_round < 1:
         raise ExplorationDecisionContractError("source_round must be a positive integer")
-    candidates = _ids(handoff_candidate_ids, "handoff_candidate_ids")
     targets = _ids(target_ids, "target_ids")
     if project_config.get("project_id") != project_id:
         raise ExplorationDecisionContractError("project config identity mismatch")
-    protocol = _json_copy(protocol_identity)
     envelope = _policy_envelope(project_config, targets)
     rows = list(battery_events)
     trace = (project_id, workflow_id, run_id)
+    formal_handoff = _require_formal_handoff(prediction_handoff_event)
+    handoff_projection, candidates, prediction_run_id, protocol, authoritative_threshold = (
+        _validate_handoff_scope(
+            formal_handoff, trace=trace, target_ids=targets
+        )
+    )
+    supplied_threshold = canonical_threshold_digest(deepcopy(dict(thresholds)))
+    if supplied_threshold != authoritative_threshold:
+        raise ExplorationDecisionContractError("threshold snapshot differs from Prediction authority")
     source_projections = _validate_battery_scope(
         rows, candidate_ids=candidates, target_ids=targets, trace=trace,
         prediction_run_id=prediction_run_id, protocol_identity=protocol,
+        threshold_digest=authoritative_threshold,
         allowed_lengths=set(envelope["effective_allowed_lengths"]),
     )
     shortlist_projection = _validate_shortlist_scope(
         shortlist_event, source_rows=rows, source_projections=source_projections,
         target_ids=targets, trace=trace, source_round=source_round,
     )
-    normalized_thresholds, _audit = normalize_thresholds(deepcopy(dict(thresholds)))
     policy_digest = object_sha256(envelope)
-    threshold_digest = object_sha256(normalized_thresholds)
+    threshold_digest = authoritative_threshold
     scope = _DecisionScope(
         project_id, workflow_id, run_id, source_round, prediction_run_id,
-        prediction_handoff_id, candidates, targets,
+        handoff_projection["event_id"], candidates, targets,
     )
     semantic_inputs = _semantic_inputs(
-        scope, source_projections, shortlist_projection, envelope,
+        scope, source_projections, shortlist_projection, handoff_projection, envelope,
         threshold_digest, protocol,
     )
     input_digest = object_sha256(semantic_inputs)
@@ -417,6 +501,7 @@ def build_exploration_decision(
         protocol_identity=protocol,
         source_evidence=source_projections,
         shortlist_evidence=shortlist_projection,
+        handoff_evidence=handoff_projection,
         envelope=envelope,
         analysis=analysis,
     )
@@ -433,6 +518,10 @@ def _formal_sources_match(decision: ExplorationDecision, rows: list[dict[str, An
     observed = by_id.get(shortlist["event_id"])
     if observed is None or _shortlist_projection(observed) != shortlist:
         raise ExplorationDecisionContractError("formal shortlist Evidence mismatch")
+    handoff = support["prediction_handoff_evidence"]
+    observed = by_id.get(handoff["event_id"])
+    if observed is None or _handoff_projection(observed) != handoff:
+        raise ExplorationDecisionContractError("formal Prediction handoff Evidence mismatch")
 
 
 def _existing_decision_event(
@@ -470,12 +559,19 @@ def record_exploration_decision(decision: ExplorationDecision | Mapping[str, Any
         workflow_id=contract.workflow_id,
         run_id=contract.run_id,
     )
-    return EvidenceLogger.log(
-        "critic",
-        EVENT_DECISION,
-        payload,
-        targets=list(contract.target_ids),
+    event = EvidenceEvent(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        event_id=uuid.uuid4().hex[:12],
+        agent="critic",
+        event_type=EVENT_DECISION,
+        payload=payload,
+        trace_context=trace,
         phase="critic",
         round_num=contract.source_round,
-        trace_context=trace,
+        targets=contract.target_ids,
     )
+    entry = event.to_dict()
+    # Generic EvidenceLogger.log rejects this domain event. Reaching the Store
+    # through the internal append primitive is reserved for this verified path.
+    EvidenceLogger._write(entry)
+    return entry["event_id"]

@@ -10,6 +10,9 @@ Prediction evidence, conservative failure statistics, and exploration shortlist 
 - Require exactly one current `battery_evaluated` event for every candidate in the bound Prediction handoff; missing, extra, or duplicate candidate evidence fails closed.
 - Produce an auditable `no_adjustment` Decision when current-round evidence does not satisfy the existing minimum-sample and failure-rate rule.
 - Append a formal `exploration_decision` Evidence event through the existing Store-backed Evidence authority after the Decision validates successfully, with sequential retry idempotency by `decision_id` and canonical payload.
+- Make the dedicated writer the only supported formal append path for `exploration_decision`; the generic Evidence writer rejects this event type so source verification cannot be bypassed.
+- Bind the Decision to the existing formal `prediction_handoff_ready` authority, deriving the candidate set, Prediction run, protocol, and canonical threshold identity from that handoff rather than caller claims.
+- Propagate one canonical normalized threshold digest through Prediction battery/handoff Evidence into the Decision, and include the versioned conservative policy identity in Decision identity.
 - Preserve scientific pass, thresholds, Prediction records, and exploration shortlist semantics unchanged.
 - Leave legacy `experience_applied` and its direct Planner/Design consumption path in place for compatibility; E2 does not connect the new Decision to Planner, Design, Orchestrator, or Execution.
 

@@ -349,6 +349,32 @@ def _evidence_proposals(
                 "prediction_effects_scope_mismatch",
                 "Prediction handoff evidence does not match the handoff artifact",
             )
+    handoff_events = [
+        event for event in events
+        if event.get("event_type") == "prediction_handoff_ready"
+    ]
+    battery_events = [
+        event for event in events if event.get("event_type") == "battery_evaluated"
+    ]
+    handoff_document = _json_object(Path(handoff["path"]), "prediction handoff")
+    if len(handoff_events) != 1:
+        raise ExecutionContractError(
+            "prediction_effects_scope_mismatch",
+            "Prediction requires exactly one formal handoff authority",
+        )
+    authority = handoff_events[0]
+    threshold_digest = authority.get("thresholds_digest")
+    if (
+        authority.get("candidate_ids") != sorted(records)
+        or not isinstance(threshold_digest, str)
+        or len(threshold_digest) != 64
+        or handoff_document.get("thresholds_digest") != threshold_digest
+        or any(event.get("thresholds_digest") != threshold_digest for event in battery_events)
+    ):
+        raise ExecutionContractError(
+            "prediction_effects_scope_mismatch",
+            "Prediction handoff/battery threshold or candidate authority is inconsistent",
+        )
 
 
 def load_prediction_transaction_effects(

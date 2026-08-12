@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from battery_evaluation import evaluate_battery
 from contracts.trace import TraceContext
 from contracts.transaction import TransactionContext, TransactionStatus
 from execution.adapters import adapter_for
@@ -27,6 +28,8 @@ from prediction_pipeline.pipeline import PredictionPipeline
 from prediction_pipeline.protocol import protocol_binding
 from storage import SQLiteStore
 from test_prediction_pipeline import SEQUENCE, project_config, write_monomer
+from threshold_contract import canonical_threshold_digest
+from threshold_contract import normalize_thresholds
 
 
 class FailingCommitStore(SQLiteStore):
@@ -354,6 +357,42 @@ class PredictionTransactionalTests(unittest.TestCase):
         self.assertEqual(battery[0]["candidate_id"], self.row["candidate_id"])
         self.assertEqual(battery[0]["targets"], ["MDM2"])
         self.assertIn("failed_layers", battery[0])
+        self.assertEqual(
+            battery[0]["thresholds_digest"], canonical_threshold_digest({})
+        )
+        handoff = next(
+            event for event in events
+            if event.get("event_type") == "prediction_handoff_ready"
+        )
+        self.assertEqual(handoff["candidate_ids"], ["C0001"])
+        self.assertEqual(
+            handoff["thresholds_digest"], battery[0]["thresholds_digest"]
+        )
+        handoff_document = json.loads(
+            pipeline.handoff_path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            handoff_document["thresholds_digest"], battery[0]["thresholds_digest"]
+        )
+
+    def test_threshold_aliases_share_consumed_snapshot_and_identity(self):
+        alias = {"L4_ring_closure": {"value": 3.0}}
+        canonical = {"L4_nc_term_dist": {"value": 3.0}}
+        normalized_alias, _ = normalize_thresholds(alias)
+        normalized_canonical, _ = normalize_thresholds(canonical)
+        candidate = {"nc_distance_pre": 2.0, "nc_distance_post": 2.0}
+
+        self.assertEqual(normalized_alias, normalized_canonical)
+        self.assertEqual(
+            canonical_threshold_digest(alias), canonical_threshold_digest(canonical)
+        )
+        self.assertEqual(
+            evaluate_battery(candidate, normalized_alias, ("MDM2",))["l4_pass"],
+            evaluate_battery(candidate, normalized_canonical, ("MDM2",))["l4_pass"],
+        )
+        self.assertTrue(
+            evaluate_battery(candidate, normalized_alias, ("MDM2",))["l4_pass"]
+        )
 
     def test_battery_evaluated_passes_transaction_scope_validation(self):
         # PR44 回归：battery_evaluated 事件必须通过 Execution 边界

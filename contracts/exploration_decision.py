@@ -236,6 +236,25 @@ class ExplorationDecision:
             raise ExplorationDecisionContractError("shortlist event identity is inconsistent")
         if tuple(sorted(shortlist.get("source_event_ids") or ())) != self.source_event_ids:
             raise ExplorationDecisionContractError("shortlist sources are inconsistent")
+        handoff = self.evidence_support.get("prediction_handoff_evidence")
+        if not isinstance(handoff, Mapping):
+            raise ExplorationDecisionContractError("Prediction handoff evidence is required")
+        if (
+            handoff.get("event_id") != self.prediction_handoff_id
+            or handoff.get("event_type") != "prediction_handoff_ready"
+            or handoff.get("agent") != "prediction"
+            or tuple(handoff.get(key) for key in ("project_id", "workflow_id", "run_id"))
+            != (self.project_id, self.workflow_id, self.run_id)
+            or handoff.get("prediction_run_id") != self.prediction_run_id
+            or tuple(handoff.get("candidate_ids") or ()) != self.candidate_ids
+            or tuple(handoff.get("targets") or ()) != self.target_ids
+            or handoff.get("thresholds_digest") != self.threshold_digest
+            or handoff.get("protocol_identity") != self.protocol_identity
+        ):
+            raise ExplorationDecisionContractError("Prediction handoff scope is inconsistent")
+        for source in sources:
+            if source.get("thresholds_digest") != self.threshold_digest:
+                raise ExplorationDecisionContractError("source threshold identity is inconsistent")
         protocol = self.protocol_identity
         if not isinstance(protocol, Mapping):
             raise ExplorationDecisionContractError("protocol_identity must be an object")
@@ -272,7 +291,11 @@ class ExplorationDecision:
             "shortlist_evidence": _thaw(
                 self.evidence_support.get("shortlist_evidence")
             ),
+            "prediction_handoff_evidence": _thaw(
+                self.evidence_support.get("prediction_handoff_evidence")
+            ),
             "policy_envelope": self._policy_envelope(),
+            "policy": _thaw(self.evidence_support.get("policy")),
             "threshold_digest": self.threshold_digest,
             "protocol_identity": _thaw(self.protocol_identity),
         }
@@ -282,17 +305,21 @@ class ExplorationDecision:
     ) -> None:
         policy = self.evidence_support.get("policy")
         params = policy.get("parameters") if isinstance(policy, Mapping) else None
-        if (
-            not isinstance(policy, Mapping)
-            or policy.get("name") != "conservative_length_failure_preference"
-            or policy.get("version") != "1"
-            or not isinstance(params, Mapping)
-        ):
+        from experience import LENGTH_PREFERENCE_POLICY
+
+        if not isinstance(policy, Mapping) or not isinstance(params, Mapping):
             raise ExplorationDecisionContractError("length preference policy is invalid")
+        if _thaw(policy) != LENGTH_PREFERENCE_POLICY.to_dict():
+            raise ExplorationDecisionContractError("unsupported length preference policy")
         minimum = params.get("minimum_evaluations_per_length")
         worst_limit = params.get("worst_failure_rate")
         better_limit = params.get("better_failure_rate")
-        if minimum != 5 or worst_limit != 0.7 or better_limit != 0.3:
+        expected_policy = LENGTH_PREFERENCE_POLICY
+        if (
+            minimum != expected_policy.minimum_evaluations_per_length
+            or worst_limit != expected_policy.worst_failure_rate
+            or better_limit != expected_policy.better_failure_rate
+        ):
             raise ExplorationDecisionContractError("unsupported length preference policy")
         statistics = self.evidence_support.get("length_statistics")
         if not isinstance(statistics, (list, tuple)) or len(statistics) != len(baseline):

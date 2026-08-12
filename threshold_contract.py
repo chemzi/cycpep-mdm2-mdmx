@@ -26,6 +26,18 @@ THRESHOLD_KEY_ALIASES = {
     "L6_pose_convergence": "L6_pose_rmsd",
 }
 
+THRESHOLD_OPERATOR_DEFAULTS = {
+    "L1_plddt": ">",
+    "L2_ipsae": ">",
+    "L3_dg": "<",
+    "L3_sc": ">",
+    "L3_dsasa": ">",
+    "L4_nc_term_dist": "<",
+    "L5_hotspot_coverage": ">=",
+    "L6_pose_rmsd": "<",
+    "L7_scrmsd": "<",
+}
+
 THRESHOLD_FIELDS = (
     "value",
     "operator",
@@ -141,6 +153,14 @@ def normalize_thresholds(thresholds: Any, *, applicable_targets=None) -> tuple[d
             continue
         key = canonical_threshold_key(raw_key)
         candidate = normalize_threshold_entry(raw_entry, applicable_targets=applicable_targets)
+        if (
+            isinstance(raw_entry, dict)
+            and "operator" not in raw_entry
+            and key in THRESHOLD_OPERATOR_DEFAULTS
+        ):
+            # Materialize the evaluator's existing per-metric default so the
+            # canonical snapshot preserves pre-normalization verdict semantics.
+            candidate["operator"] = THRESHOLD_OPERATOR_DEFAULTS[key]
         if key not in normalized:
             normalized[key] = candidate
             sources[key] = str(raw_key)
@@ -175,6 +195,14 @@ def normalize_thresholds(thresholds: Any, *, applicable_targets=None) -> tuple[d
         "canonical_keys": list(normalized),
         "conflicts": conflicts,
     }
+
+
+def canonical_threshold_digest(thresholds: Any) -> str:
+    """Return the shared identity of the effective normalized snapshot."""
+    from prediction_pipeline.contracts import object_sha256
+
+    normalized, _audit = normalize_thresholds(thresholds)
+    return object_sha256(normalized)
 
 
 def merge_thresholds(existing: Any, incoming: Any) -> tuple[dict, dict]:

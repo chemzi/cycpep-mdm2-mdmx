@@ -61,6 +61,7 @@ Build one canonical input object containing:
 - project/workflow/run, prediction-run, handoff, candidate, target, and round bindings;
 - normalized per-target/effective allowed lengths and project approval binding;
 - the canonical threshold snapshot digest and expected protocol identity.
+- the complete versioned conservative length-policy identity and parameters.
 
 Use the repository's existing `object_sha256` once for the policy envelope, threshold snapshot, and complete input object. `decision_id` is `exploration_decision_` plus the complete decision-input digest. The event's own append ID and timestamp are deliberately excluded. Decision-relevant Evidence payload changes therefore change identity even if a test fixture reuses an event ID.
 
@@ -76,6 +77,8 @@ Add `exploration_decision` to the Evidence event allowlist and add a narrow writ
 
 Before appending, the writer also checks existing `exploration_decision` rows by `decision_id`. An identical canonical payload returns the existing formal event ID without another append; a different payload under the same ID raises a contract error. This is deliberately sequential retry idempotency only—no database unique index, concurrent serialization, or transaction refactor is introduced.
 
+`EvidenceLogger.log` rejects `exploration_decision`; the dedicated writer is the only supported append path and performs source, shortlist, and Prediction handoff verification before reaching the Store. This closes the generic-writer bypass without redesigning Evidence infrastructure.
+
 The Decision object and formal Evidence payload are the E2 artifact. No sidecar file or State projection becomes authority. Build/validation happens before append; a failed append propagates and produces no separate completion claim.
 
 Alternative considered: write a JSON Decision artifact first. Rejected because the task forbids JSON workflow authority and E2 has no transaction owner that could atomically register such an artifact with a later consumer.
@@ -86,7 +89,13 @@ The service treats source rows and shortlist data as immutable inputs, copies on
 
 ### D7. Public/data compatibility is additive
 
-Existing function signatures and event rows do not change. The new Python contract/service and event type are additive. Legacy `experience_applied` remains readable and its direct Planner/Design behavior remains unchanged until an explicit E3 migration decides how the Decision is consumed.
+Existing pre-E2 public function signatures do not change. Before PR merge, the new E2 builder boundary replaces caller-declared handoff identifiers/candidate IDs with one formal `prediction_handoff_ready` event. Prediction battery/handoff rows gain additive canonical threshold and candidate-scope fields. Legacy `experience_applied` remains readable and its direct Planner/Design behavior remains unchanged until an explicit E3 migration decides how the Decision is consumed.
+
+### D8. Bind handoff and thresholds to Prediction authority
+
+Reuse `prediction_handoff_ready` as the formal handoff authority. Prediction records its sorted candidate IDs and the canonical threshold digest on that event, and records the same digest on each `battery_evaluated` event. The immutable handoff document records the same digest. E2 receives the formal handoff event, derives `prediction_handoff_id`, candidate IDs, Prediction run, protocol, and threshold identity from it, and later verifies that projection against the ledger before formal Decision append. Caller-supplied candidate IDs are removed from the builder boundary.
+
+Canonical threshold identity is the repository canonical digest of the normalized effective threshold snapshot returned by `normalize_thresholds`. Prediction and E2 both call the same helper; raw and normalized-but-equivalent snapshots therefore cannot create two incomparable valid identities. Every selected battery row, the handoff authority, and `ExplorationDecision.threshold_digest` must match it.
 
 ## Risks / Trade-offs
 

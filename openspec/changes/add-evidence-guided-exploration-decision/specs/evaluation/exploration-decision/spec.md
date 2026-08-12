@@ -16,7 +16,7 @@ The system SHALL expose an immutable, versioned `ExplorationDecision` contract c
 - **THEN** contract construction fails and no valid Decision is returned
 
 ### Requirement: Deterministic Decision identity
-The system SHALL derive `decision_input_digest` with the repository's canonical object-digest facility from normalized decision inputs comprising the selected source Evidence semantics, shortlist semantics, approved policy envelope, threshold snapshot identity, and protocol identity. `decision_id` SHALL be derived solely from that digest and SHALL NOT depend on time, randomness, an event append identifier, or free-form model output.
+The system SHALL derive `decision_input_digest` with the repository's canonical object-digest facility from normalized decision inputs comprising the selected source Evidence semantics, shortlist semantics, approved policy envelope, authoritative threshold snapshot identity, protocol identity, and complete versioned conservative length-policy identity and parameters. `decision_id` SHALL be derived solely from that digest and SHALL NOT depend on time, randomness, an event append identifier, or free-form model output.
 
 #### Scenario: Same formal inputs reproduce identity
 - **WHEN** the same source Evidence, shortlist, approved envelope, threshold snapshot, and protocol identity are provided in a different input order
@@ -61,7 +61,7 @@ The only adaptive field the Decision SHALL change is peptide length allocation e
 - **THEN** it contains no adjustment for targets, routes, model parameters, thresholds, calibration, Prediction policy, Planner budget, or scientific strategy text
 
 ### Requirement: Explicit current-round Evidence scope
-Decision creation SHALL require an explicit `prediction_run_id`, workflow trace binding, `source_round`, current candidate identifiers, and current Prediction handoff identity. Exactly one primary `battery_evaluated` event SHALL exist for every candidate in the bound current handoff: the battery candidate-ID set SHALL equal the handoff candidate-ID set. Primary Evidence SHALL match the declared project/workflow/workflow-run, prediction run, target scope, and protocol identity. The referenced shortlist SHALL match `source_round` and SHALL consume exactly the selected battery event identifiers. A missing, extra, duplicate, cross-run, cross-candidate, or conflicting scope SHALL fail closed.
+Decision creation SHALL require workflow trace binding, `source_round`, and an existing formal `prediction_handoff_ready` authority. The system SHALL derive the Prediction run, handoff identity, and authoritative candidate set from that handoff rather than a caller-declared candidate list. Exactly one primary `battery_evaluated` event SHALL exist for every candidate in the bound current handoff: the battery candidate-ID set SHALL equal the handoff candidate-ID set. Primary Evidence SHALL match the declared project/workflow/workflow-run, prediction run, target scope, protocol identity, and canonical threshold identity. The referenced shortlist SHALL match `source_round` and SHALL consume exactly the selected battery event identifiers. A missing, extra, duplicate, cross-run, cross-candidate, cross-handoff, or conflicting scope SHALL fail closed.
 
 #### Scenario: Current prediction run and handoff match
 - **WHEN** every selected battery event belongs to the declared prediction run and current candidate/handoff scope and the shortlist names exactly those events
@@ -74,6 +74,21 @@ Decision creation SHALL require an explicit `prediction_run_id`, workflow trace 
 #### Scenario: Historical evidence is not an implicit input
 - **WHEN** the formal ledger contains older matching-target battery events not listed by the current shortlist
 - **THEN** those events do not contribute to statistics or identity
+
+#### Scenario: Fake or cross-run handoff fails closed
+- **WHEN** selected batteries belong to one Prediction run but the supplied formal handoff is absent, belongs to another run, or declares a different candidate/protocol scope
+- **THEN** Decision creation or formal append fails and no `exploration_decision` is written
+
+### Requirement: Authoritative canonical threshold identity
+Prediction SHALL compute one canonical threshold digest from the normalized effective threshold snapshot and record it on every `battery_evaluated` event and the corresponding `prediction_handoff_ready` authority. `ExplorationDecision.threshold_digest` SHALL equal that authority and every selected battery row. Caller-supplied thresholds SHALL only confirm this identity and SHALL NOT independently establish provenance.
+
+#### Scenario: Caller threshold snapshot differs from Prediction
+- **WHEN** batteries and handoff were produced under threshold snapshot A but E2 is supplied threshold snapshot B
+- **THEN** Decision creation fails closed
+
+#### Scenario: Authoritative threshold identity is preserved
+- **WHEN** batteries, formal handoff, and E2 input refer to the same effective Prediction threshold snapshot
+- **THEN** the Decision records exactly their shared canonical threshold digest
 
 ### Requirement: Shortlist and scientific pass remain distinct
 The system SHALL accept a valid current-round exploration shortlist even when zero of N candidates scientifically passed. It SHALL preserve every shortlist item's original `passed` value and SHALL NOT modify pass fields, threshold values, Prediction records, or shortlist Evidence.
@@ -88,6 +103,12 @@ The system SHALL accept a valid current-round exploration shortlist even when ze
 
 ### Requirement: Formal exploration_decision Evidence
 After a Decision validates, the system SHALL be able to append one `exploration_decision` event through the existing Store-backed Evidence authority. Before append, every `source_event_id` and the `shortlist_event_id` SHALL resolve to matching formal Evidence. The event SHALL carry the complete serialized Decision, including baseline/proposed policy weights, reason, support statistics, policy/threshold/protocol identity, decision status, and provenance, while project/workflow/run/round/targets use the canonical Evidence envelope. Sequential writer retries with the same `decision_id` and identical canonical Decision payload SHALL return/reuse the existing formal event without appending a duplicate. The same `decision_id` with a different canonical payload SHALL fail closed. A failed validation or append SHALL NOT create a completion claim elsewhere.
+
+The generic `EvidenceLogger.log` path SHALL reject `exploration_decision`. Every supported formal append SHALL use the dedicated writer, which additionally resolves and matches the bound `prediction_handoff_ready` event; no supported generic-writer source-validation bypass exists.
+
+#### Scenario: Generic append cannot bypass provenance
+- **WHEN** a structurally valid Decision with nonexistent source identifiers is passed directly to the generic Evidence writer
+- **THEN** the call fails closed and writes no `exploration_decision` event
 
 #### Scenario: Formal Evidence recovers the Decision
 - **WHEN** a valid Decision is appended successfully
