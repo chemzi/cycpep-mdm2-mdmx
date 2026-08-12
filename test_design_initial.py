@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -104,6 +105,58 @@ class InitialDesignContractTests(unittest.TestCase):
             raise AssertionError("Initial Design must provide a CandidateUpdate stage")
         candidate_updates.append(CandidateUpdate(candidate))
         return [candidate]
+
+    def _design_with_target_proposal_count(self, value):
+        project = copy.deepcopy(self.design.project_config)
+        project["targets"][0]["design"]["n"] = value
+        project["review"] = {
+            "status": "approved",
+            "approved_digest": config_digest(project),
+        }
+        return Design(DesignContext(
+            project_config=project,
+            output_dir=self.design.output_dir,
+        ))
+
+    def test_proposal_count_precedence_and_legacy_default(self):
+        self.assertEqual(self.design.merge_config()["n"], 100)
+        approved_budget = self._design_with_target_proposal_count(3)
+        self.assertEqual(approved_budget.merge_config()["n"], 3)
+        self.assertEqual(
+            approved_budget.merge_config(target_spec={"n": 5})["n"], 5
+        )
+        self.assertEqual(
+            approved_budget.merge_config(
+                target_spec={"n": 5}, design_config={"n": 7}
+            )["n"],
+            7,
+        )
+
+    def test_proposal_count_rejects_non_positive_and_non_integer_values(self):
+        invalid_values = (0, -1, True, "3", 3.0, 3.5, None)
+        for value in invalid_values:
+            with self.subTest(value=value):
+                if value is None:
+                    design = self._design_with_target_proposal_count(value)
+                    self.assertEqual(design.merge_config()["n"], 100)
+                    continue
+                design = self._design_with_target_proposal_count(value)
+                with self.assertRaises(InitialDesignContractError) as raised:
+                    design.materialize_initial_jobs()
+                self.assertEqual(raised.exception.code, "initial_design_contract_gap")
+
+    def test_materialized_job_records_approved_target_proposal_count(self):
+        with patch("agents.design.service.os.urandom", return_value=b"\0\0\0\1"):
+            legacy_job = self.design.materialize_initial_jobs()[0]
+            job = self._design_with_target_proposal_count(3).materialize_initial_jobs()[0]
+        self.assertEqual(legacy_job["config"]["n"], 100)
+        self.assertEqual(job["config"]["n"], 3)
+        self.assertEqual(set(job), set(legacy_job))
+        self.assertEqual(set(job["config"]), set(legacy_job["config"]))
+        self.assertEqual(
+            {key: value for key, value in job["config"].items() if key != "n"},
+            {key: value for key, value in legacy_job["config"].items() if key != "n"},
+        )
 
     def test_identity_mapping_is_fixed_reversible_and_rejects_non_uuid_payload(self):
         self.assertEqual(

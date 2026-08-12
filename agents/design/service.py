@@ -321,14 +321,21 @@ def _resolve_design_lengths(target, target_spec, design_config):
         raise ValueError(supported_length_message())
     return lengths
 
-def _resolve_proposal_count(target_spec, design_config):
+def _resolve_proposal_count(target, target_spec, design_config):
     """Resolve and validate the number of proposals requested per run."""
     ts = target_spec or {}
     dc = design_config or {}
-    n = dc.get("n") if dc.get("n") is not None else ts.get("n", 100)
-    n = int(n)
-    if n < 1:
-        raise ValueError("n must be at least 1")
+    approved_design = target.get("design") or {}
+    n = next(
+        (
+            value
+            for value in (dc.get("n"), ts.get("n"), approved_design.get("n"))
+            if value is not None
+        ),
+        100,
+    )
+    if type(n) is not int or n < 1:
+        raise ValueError("n must be a positive integer")
     return n
 
 def _resolve_seed(target_spec, design_config):
@@ -383,7 +390,7 @@ def _merge_config(target_spec, design_config, project_config=None):
     )
     hotspots = _resolve_binding_hotspots(target, target_spec, design_config)
     lengths = _resolve_design_lengths(target, target_spec, design_config)
-    n = _resolve_proposal_count(target_spec, design_config)
+    n = _resolve_proposal_count(target, target_spec, design_config)
     seed = _resolve_seed(target_spec, design_config)
 
     return {
