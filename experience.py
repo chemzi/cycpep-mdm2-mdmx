@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 
 from data_layer import EvidenceLogger
@@ -13,6 +14,43 @@ from peptide_contract import MAX_CYCLIC_PEPTIDE_LENGTH, MIN_CYCLIC_PEPTIDE_LENGT
 
 EVENT_BATTERY = "battery_evaluated"
 EVENT_EXPERIENCE = "experience_applied"
+
+
+@dataclass(frozen=True)
+class LengthPreferencePolicy:
+    """Versioned conservative policy shared by legacy experience and E2."""
+
+    name: str = "conservative_length_failure_preference"
+    version: str = "1"
+    minimum_evaluations_per_length: int = 5
+    worst_failure_rate: float = 0.7
+    better_failure_rate: float = 0.3
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "version": self.version,
+            "parameters": {
+                "minimum_evaluations_per_length": self.minimum_evaluations_per_length,
+                "worst_failure_rate": self.worst_failure_rate,
+                "better_failure_rate": self.better_failure_rate,
+            },
+        }
+
+
+LENGTH_PREFERENCE_POLICY = LengthPreferencePolicy()
+
+
+def no_length_adjustment_reason(
+    policy: LengthPreferencePolicy = LENGTH_PREFERENCE_POLICY,
+) -> str:
+    """Return the deterministic explanation for conservative no-adjustment."""
+    return (
+        "current-round evidence did not satisfy the conservative length policy "
+        f"(at least {policy.minimum_evaluations_per_length} evaluations per "
+        f"compared length, worst failure >={policy.worst_failure_rate:.0%}, "
+        f"better failure <={policy.better_failure_rate:.0%})"
+    )
 
 _LAYER_PREFIX = {
     "L1": "l1_pass",
@@ -189,7 +227,10 @@ def summarize_failures(events=None, targets=None) -> dict:
     }
 
 
-def suggest_length_preference(summary: dict, min_failures: int = 5) -> dict | None:
+def suggest_length_preference(
+    summary: dict,
+    min_failures: int = LENGTH_PREFERENCE_POLICY.minimum_evaluations_per_length,
+) -> dict | None:
     """Emit a conservative length preference from failure statistics.
 
     规则：仅考虑评估数 >= min_failures 的长度；若最差长度失败率 >= 70% 且
@@ -211,7 +252,10 @@ def suggest_length_preference(summary: dict, min_failures: int = 5) -> dict | No
     worst_key, worst_rate = max(rated, key=lambda item: item[1])
     if best_key == worst_key or best_rate == worst_rate:
         return None
-    if worst_rate >= 0.7 and best_rate <= 0.3:
+    if (
+        worst_rate >= LENGTH_PREFERENCE_POLICY.worst_failure_rate
+        and best_rate <= LENGTH_PREFERENCE_POLICY.better_failure_rate
+    ):
         best_length = _length_key(best_key)
         if (
             best_length is None
