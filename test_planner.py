@@ -18,6 +18,7 @@ from agents.planner import (
     run,
 )
 from prediction_pipeline.contracts import object_sha256
+from prediction_pipeline.execution_identity import build_prediction_execution_identity
 from prediction_pipeline.protocol import (
     PREDICTOR_PROTOCOL,
     ProtocolError,
@@ -369,6 +370,7 @@ class PlannerTests(_PlannerFixtures, unittest.TestCase):
             "reuse_complete_evidence": True,
             "evidence_mode": "reuse_or_generate_full",
             "predictor_protocol": dict(PREDICTOR_PROTOCOL),
+            "execution_identity": build_prediction_execution_identity(),
         })
         self.assertEqual(critic["action"], "review_prediction_handoff")
         self.assertEqual(critic["depends_on"], [prediction["task_id"]])

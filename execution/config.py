@@ -27,7 +27,35 @@ def _optional_path(name: str, default: str | Path | None = None) -> Path | None:
     if default is None:
         return None
     path = Path(default).expanduser().resolve()
-    return path if path.exists() else None
+    try:
+        return path if path.exists() else None
+    except OSError:
+        return None
+
+
+def _python_path(name: str, default: str | Path) -> Path:
+    """Keep a virtual-environment entrypoint without dereferencing its symlink."""
+    return Path(os.path.abspath(Path(os.environ.get(name, str(default))).expanduser()))
+
+
+def _optional_python_path(name: str, default: str | Path | None = None) -> Path | None:
+    value = os.environ.get(name)
+    if value:
+        return Path(os.path.abspath(Path(value).expanduser()))
+    if default is None:
+        return None
+    path = Path(os.path.abspath(Path(default).expanduser()))
+    try:
+        return path if path.exists() else None
+    except OSError:
+        return None
+
+
+def _is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -48,6 +76,7 @@ class ExecutionConfig:
     prodigy_executable: Path | None
     pyrosetta_python: Path | None
     control_data_path: Path | None
+    boltz_no_kernels: bool = False
     design_timeout_seconds: int = 7200
     prediction_timeout_seconds: int = 3600
     rosetta_timeout_seconds: int = 1800
@@ -70,11 +99,11 @@ class ExecutionConfig:
             os.environ.get("CYCPEP_DATA_DIR", ROOT / "data"),
         )
         execution_root = cls.resolve_execution_root()
-        core_default = Path(sys.executable).resolve()
+        core_default = Path(os.path.abspath(sys.executable))
         prediction_default = Path(
             "/root/damodel-tmp/envs/cycpep-prediction/bin/python"
         )
-        if not prediction_default.is_file():
+        if not _is_file(prediction_default):
             prediction_default = core_default
         colabdesign_dir = _path(
             "COLABDESIGN_DIR", "/root/workspace/NovaPeptide/tools/ColabDesign"
@@ -82,9 +111,9 @@ class ExecutionConfig:
         return cls(
             repo_root=ROOT,
             execution_root=execution_root,
-            core_python=_path("CYCPEP_EXECUTION_PYTHON", core_default),
-            design_python=_path("CYCPEP_DESIGN_AGENT_PYTHON", core_default),
-            prediction_python=_path("CYCPEP_PREDICTION_PYTHON", prediction_default),
+            core_python=_python_path("CYCPEP_EXECUTION_PYTHON", core_default),
+            design_python=_python_path("CYCPEP_DESIGN_AGENT_PYTHON", core_default),
+            prediction_python=_python_path("CYCPEP_PREDICTION_PYTHON", prediction_default),
             prediction_artifacts_root=_path(
                 "CYCPEP_PREDICTION_ARTIFACTS",
                 data_root / "prediction_artifacts",
@@ -113,11 +142,14 @@ class ExecutionConfig:
                 "CYCPEP_PRODIGY_EXECUTABLE",
                 "/root/damodel-tmp/envs/cycpep-prediction/bin/prodigy",
             ),
-            pyrosetta_python=_optional_path(
+            pyrosetta_python=_optional_python_path(
                 "CYCPEP_PYROSETTA_PYTHON",
                 "/root/damodel-tmp/envs/pyrosetta-2026.29-minsizerel/bin/python",
             ),
             control_data_path=_optional_path("CYCPEP_CONTROL_DATA"),
+            boltz_no_kernels=os.environ.get(
+                "CYCPEP_BOLTZ_NO_KERNELS", ""
+            ).strip().lower() in {"1", "true", "yes", "on"},
             design_timeout_seconds=int(
                 os.environ.get("CYCPEP_EXECUTION_DESIGN_TIMEOUT", "7200")
             ),

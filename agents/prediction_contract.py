@@ -138,6 +138,16 @@ class PredictionInvocationRecovery:
     message: str | None = None
 
 
+@dataclass(frozen=True)
+class PredictionOwnerReadiness:
+    status: str
+    prediction_run_id: str
+    candidate_ids: tuple[str, ...]
+    handoff_path: Path
+    blocker_code: str | None = None
+    message: str | None = None
+
+
 def start_receipt_payload(
     correlation: PredictionCorrelation,
     *,
@@ -266,8 +276,9 @@ def _resolve_record_path(raw: Any, handoff_path: Path) -> Path | None:
 def _owner_readiness(
     handoff: Mapping[str, Any],
     handoff_path: Path,
-    inputs: PredictionInvocationInputs,
-    correlation: PredictionCorrelation,
+    candidate_ids: tuple[str, ...],
+    prediction_run_id: str,
+    expected_execution_identity: Mapping[str, Any] | None = None,
 ) -> bool | None:
     """Return readiness, or None when authoritative evidence is contradictory."""
     downstream = handoff.get("downstream")
@@ -310,9 +321,18 @@ def _owner_readiness(
                 record is None
                 or not isinstance(candidate, Mapping)
                 or candidate.get("candidate_id") != candidate_id
-                or record.get("run_id") != correlation.prediction_run_id
+                or record.get("run_id") != prediction_run_id
                 or record.get("pipeline_version") != handoff.get("pipeline_version")
                 or record.get("status") != status
+                or (
+                    expected_execution_identity is not None
+                    and (
+                        record.get("execution_identity")
+                        != expected_execution_identity
+                        or record.get("protocol_identity")
+                        != expected_execution_identity.get("prediction_protocol")
+                    )
+                )
             ):
                 return None
             if battery is None and status in UNEVALUATED_NON_READY_STATUSES:
@@ -327,9 +347,80 @@ def _owner_readiness(
             seen.add(candidate_id)
             ready = ready and status in CRITIC_READY_STATUSES
 
-    if tuple(sorted(seen)) != inputs.candidate_ids:
+    if tuple(sorted(seen)) != candidate_ids:
         return None
     return ready
+
+
+def validate_prediction_owner_readiness(
+    *,
+    handoff_path: str | Path,
+    project_id: str,
+    prediction_run_id: str,
+    candidate_ids: tuple[str, ...] | list[str],
+    expected_execution_identity: Mapping[str, Any] | None = None,
+) -> PredictionOwnerReadiness:
+    """Validate owner records independently of direct-invocation correlation."""
+    path = Path(handoff_path).expanduser().resolve()
+    candidates = tuple(sorted(candidate_ids))
+    handoff = _load_object(path)
+    if (
+        handoff is None
+        or handoff.get("project_id") != project_id
+        or handoff.get("run_id") != prediction_run_id
+        or tuple(sorted(
+            str(entry.get("candidate_id") or "")
+            for entries in (handoff.get("categories") or {}).values()
+            for entry in (entries if isinstance(entries, list) else [])
+        )) != candidates
+        or (
+            expected_execution_identity is not None
+            and (
+                handoff.get("execution_identity") != expected_execution_identity
+                or handoff.get("protocol_identity")
+                != expected_execution_identity.get("prediction_protocol")
+            )
+        )
+    ):
+        return PredictionOwnerReadiness(
+            status="blocked",
+            prediction_run_id=prediction_run_id,
+            candidate_ids=candidates,
+            handoff_path=path,
+            blocker_code="prediction_execution_correlation_invalid",
+            message="Prediction handoff differs from the approved execution binding",
+        )
+    readiness = _owner_readiness(
+        handoff,
+        path,
+        candidates,
+        prediction_run_id,
+        expected_execution_identity,
+    )
+    if readiness is None:
+        return PredictionOwnerReadiness(
+            status="blocked",
+            prediction_run_id=prediction_run_id,
+            candidate_ids=candidates,
+            handoff_path=path,
+            blocker_code="prediction_recovery_ambiguous",
+            message="Prediction owner records are contradictory or unverifiable",
+        )
+    if not readiness:
+        return PredictionOwnerReadiness(
+            status="blocked",
+            prediction_run_id=prediction_run_id,
+            candidate_ids=candidates,
+            handoff_path=path,
+            blocker_code="prediction_execution_incomplete",
+            message="Prediction evidence is not ready for Critic",
+        )
+    return PredictionOwnerReadiness(
+        status="completed",
+        prediction_run_id=prediction_run_id,
+        candidate_ids=candidates,
+        handoff_path=path,
+    )
 
 
 def _ambiguous(
@@ -455,7 +546,9 @@ def validate_prediction_invocation(
             start_event_id=start.get("event_id"),
             run_root=run_root,
         )
-    readiness = _owner_readiness(handoff, handoff_path, inputs, correlation)
+    readiness = _owner_readiness(
+        handoff, handoff_path, inputs.candidate_ids, correlation.prediction_run_id
+    )
     if readiness is None:
         return _ambiguous(
             correlation,
@@ -489,6 +582,8 @@ __all__ = [
     "PredictionCorrelation",
     "PredictionInvocationInputs",
     "PredictionInvocationRecovery",
+    "PredictionOwnerReadiness",
     "start_receipt_payload",
     "validate_prediction_invocation",
+    "validate_prediction_owner_readiness",
 ]

@@ -785,6 +785,20 @@ def _close_orchestrator(
         "processes": list(outcome.processes),
         "orchestrator_status": result["run"]["status"],
     }
+    if execution.action == "evaluate_new_design_candidates":
+        identity = task["parameters"]["execution_identity"]
+        receipt["expected_execution_identity"] = identity
+        observations = [
+            item.get("observed_execution_identity")
+            for item in outcome.processes
+            if item.get("observed_execution_identity") is not None
+        ]
+        if len(observations) != 1:
+            raise ExecutionContractError(
+                "prediction_execution_identity_missing",
+                "Prediction result lacks one observed runtime identity",
+            )
+        receipt["observed_execution_identity"] = observations[0]
     if completion_warnings:
         receipt["orchestrator_completion_warnings"] = completion_warnings
     return receipt

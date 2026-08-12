@@ -207,7 +207,13 @@ class ContractMigrationTests(unittest.TestCase):
         )
         self.assertEqual(plan_schema["properties"]["schema_version"]["const"], 2)
         self.assertIn("workflow_id", plan_schema["required"])
-        self.assertIn("workflow_id", plan_schema["properties"]["source"]["required"])
+        source_variants = plan_schema["properties"]["source"]["oneOf"]
+        critic_ref = next(
+            item["$ref"] for item in source_variants
+            if item["$ref"].endswith("/critic_source")
+        )
+        critic_source = plan_schema["$defs"][critic_ref.rsplit("/", 1)[-1]]
+        self.assertIn("workflow_id", critic_source["required"])
         self.assertEqual(run_schema["properties"]["schema_version"]["const"], 2)
         self.assertIn("workflow_id", run_schema["required"])
         self.assertIn("workflow_id", run_schema["properties"]["plan"]["required"])

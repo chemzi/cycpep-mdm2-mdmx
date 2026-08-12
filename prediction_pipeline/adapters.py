@@ -736,6 +736,31 @@ def run_prodigy(
     return parse_prodigy_output(result.stdout), result.trace("PRODIGY")
 
 
+def validate_prodigy_runtime(executable: str | Path, expected_version: str) -> str:
+    """Import the installed PRODIGY package and validate its version."""
+    entrypoint = Path(executable).expanduser().absolute()
+    python = entrypoint.parent / "python"
+    if not entrypoint.is_file() or not python.is_file():
+        raise ContractError("tool_unavailable", f"PRODIGY runtime not found: {entrypoint}")
+    result = run_command(
+        [
+            str(python), "-c",
+            "import prodigy, importlib.metadata as m; "
+            "names=('prodigy-prot','prodigy'); "
+            "print(next((d.version for d in m.distributions() "
+            "if (d.metadata.get('Name') or '').lower() in names), ''))",
+        ],
+        timeout=60,
+    )
+    installed = result.stdout.strip()
+    if result.exit_code or installed != expected_version:
+        raise ContractError(
+            "prodigy_version_mismatch",
+            f"PRODIGY {expected_version} is required; found {installed!r}",
+        )
+    return installed
+
+
 def build_colabdesign_command(
     *,
     python: str,

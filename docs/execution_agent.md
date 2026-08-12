@@ -1,5 +1,37 @@
 # Execution Worker v1.0.1
 
+## Prediction execution identity
+
+Every newly generated `evaluate_new_design_candidates` task carries one
+path-independent `execution_identity` composed from the existing Prediction
+protocol and existing ColabDesign, AF2, Boltz checkpoint/model, PyRosetta, and
+PRODIGY contracts. Absolute runtime paths remain internal locators. Existing
+tool adapters remain the version/source/checkpoint validators; no parallel
+probing or second scientific executor is introduced. Successful Worker receipts
+record expected and observed identity. Historical unstarted tasks lacking the
+identity remain readable but cannot start and must be replanned from their
+immutable source.
+
+Observed identity is independently built from the selected runtime before GPU
+work; it is never copied from expected identity or supplied by the transaction
+adapter. Preflight validates the ColabDesign checkout, installed Boltz,
+PyRosetta import/version, installed PRODIGY version, checkpoint binding, and
+canonical `PredictionConfig`. Python virtual-environment entrypoints retain
+their symlink path so invocation preserves the environment. Runtime metadata
+also records the Boltz version, checkpoint binding, and `no_kernels` mode.
+PRODIGY package identity exact-matches installed distribution version `2.4.0`.
+An inaccessible hardcoded Prediction-Python fallback is skipped, while an
+explicit venv entrypoint remains unchanged for the later import preflight.
+
+Deployment must configure the existing Prediction executables, checkpoint,
+cache, and source checkout before approval is exercised. The existing handler
+and tool adapters perform preflight; no bootstrap-specific probe or runner is
+present. Rollout therefore deploys Planner, Launcher, Worker contract, and
+Prediction owner reader together. Rollback is safe only before a bootstrap
+execution starts; already published plans, approvals, runs, transactions, and
+receipts remain immutable and an older reader must fail closed on the new plan
+variant.
+
 Execution 位于 Planner/Orchestrator 与科学 Agent 进程之间。Planner 只产生语义动作，
 Orchestrator 负责依赖、审批、claim token 与单 GPU lease，Execution 使用固定 handler
 构造参数数组并启动进程。任务合同没有 `command`、`shell`、`executable` 或任意环境变量

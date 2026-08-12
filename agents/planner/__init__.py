@@ -21,6 +21,11 @@ from .config import (
     PlannerConfig,
 )
 from .service import adjust, build_plan, plan, run
+from .bootstrap import (
+    build_initial_prediction_bootstrap_plan,
+    retry_initial_prediction_bootstrap,
+    run_initial_prediction_bootstrap,
+)
 from .approval import record_approval
 from contracts.plan import validate_plan_for_approval, validate_sha256
 from .cli import build_parser, main
@@ -40,6 +45,9 @@ __all__ = [
     "RECOMMENDATION_MAPPINGS",
     "DESIGN_ITERATION_ACTIONS",
     "build_plan",
+    "build_initial_prediction_bootstrap_plan",
+    "run_initial_prediction_bootstrap",
+    "retry_initial_prediction_bootstrap",
     "run",
     "plan",
     "adjust",

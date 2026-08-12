@@ -1,5 +1,45 @@
 # Workflow Launcher operator guide
 
+## Approval-gated initial Prediction
+
+For new Launcher runs, committed Initial Design produces an immutable
+`initial_prediction_bootstrap` plan with exactly one registered
+`evaluate_new_design_candidates` task over the complete committed candidate
+set. Launcher returns `awaiting_approval`; only plan-bound explicit approval
+can initialize Orchestrator and ExecutionWorker. Worker transaction output,
+formal Artifact/Evidence, and Prediction-owned readiness must validate before
+Critic is reachable.
+
+Runs with `prediction_invocation_started` stay on direct recovery and are not
+converted. A terminal bootstrap failure is immutable and ordinary commands
+never retry it. After deployment repair, `python -m workflow resume
+--launcher-run <id> --retry-bootstrap-prediction` creates a newly approvable
+plan over the same Design completion, committed transaction, and exact set. It
+does not rerun Research/Design or reuse the old approval. Active, ambiguous, or
+transaction-unresolved executions cannot be retried.
+
+Retry additionally requires the complete prior transaction to exist in an
+explicitly retryable terminal state and to match the failed project, workflow,
+run, task, attempt, action, and formal failure Evidence. Missing, active,
+`COMMITTING`, `COMMITTED`, compensation-conflict, unknown, or mismatched
+transactions remain immutable blockers.
+Retry inspection and retry-plan creation use the same formal proof validator,
+so the two entry points cannot disagree about terminal/retryable eligibility.
+
+Plans and receipts record path-independent protocol/tool/model/checkpoint
+identity. Executable, repository, cache, checkpoint-location, and output paths
+remain internal deployment locators and do not define scientific identity.
+The formal PRODIGY distribution identity is exactly `2.4.0`.
+
+The additive resume option `--retry-bootstrap-prediction` is an operator
+request, not an automatic retry policy. It is accepted only for the latest
+formally terminal failed bootstrap execution with resolved transaction state.
+It creates or idempotently recovers a new immutable plan and pauses for a new
+plan-bound approval. Repeating the request while that retry plan awaits approval
+does not create another plan; supplying the failed plan's approval cannot start
+the retry. Claimed, running, partially staged, unresolved, non-failed, and
+completed executions cannot be converted into retries.
+
 Workflow Launcher is a thin coordination entry point for an approved project. It
 calls the existing Research, initial Design, Prediction, Critic, Planner,
 Orchestrator, and Execution Worker contracts. It does not own scientific,

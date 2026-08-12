@@ -92,6 +92,7 @@ def run(
     effects_output: str | Path | None = None,
     transaction_id: str | None = None,
     correlation: PredictionCorrelation | None = None,
+    execution_identity: dict | None = None,
 ) -> dict:
     """Run Prediction for existing Design candidates.
 
@@ -187,6 +188,7 @@ def run(
         defer_formal_writes=effects_output is not None,
         artifact_id_prefix=transaction_id,
         launcher_correlation=(correlation.receipt_fields() if correlation else None),
+        execution_identity=execution_identity,
     )
     if correlation is not None:
         inputs = PredictionInvocationInputs.from_pipeline(pipeline)
@@ -272,6 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="write staged mutation/evidence proposals instead of formal writes",
     )
     command.add_argument("--transaction-id")
+    command.add_argument("--execution-identity")
     return parser
 
 
@@ -288,6 +291,10 @@ def main() -> int:
                 resume=args.resume,
                 effects_output=args.effects_output,
                 transaction_id=args.transaction_id,
+                execution_identity=(
+                    json.loads(Path(args.execution_identity).read_text(encoding="utf-8"))
+                    if args.execution_identity else None
+                ),
             )
         else:
             raise AssertionError(args.command)

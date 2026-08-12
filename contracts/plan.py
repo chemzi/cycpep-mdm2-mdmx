@@ -108,7 +108,7 @@ def _validate_plan_policy(plan: dict, *, error_cls: type = PlanContractError) ->
 def _validate_plan_source(
     plan: dict, plan_path: Path, *, error_cls: type = PlanContractError
 ) -> None:
-    """The plan must bind to an unchanged Critic report and stable workflow."""
+    """The plan must bind to one explicit immutable source and stable workflow."""
     source = plan.get("source")
     if not isinstance(source, dict):
         raise error_cls("plan_source_invalid", "plan source must be an object")
@@ -130,6 +130,9 @@ def _validate_plan_source(
         )
     except ValueError as exc:
         raise error_cls("plan_workflow_id_invalid", "plan workflow_id is invalid") from exc
+    if source.get("kind") == "initial_prediction_bootstrap":
+        _validate_bootstrap_source(source, error_cls=error_cls)
+        return
     critic_path_value = str(source.get("critic_report") or "").strip()
     if not critic_path_value:
         raise error_cls("plan_source_invalid", "plan has no Critic report path")
@@ -150,6 +153,58 @@ def _validate_plan_source(
         raise error_cls(
             "plan_source_hash_mismatch", "Critic report changed after planning"
         )
+
+
+def _validate_bootstrap_source(source: dict, *, error_cls: type) -> None:
+    allowed = {
+        "kind", "project_id", "approved_content_binding", "launcher_run_id",
+        "research_completion_event_id", "design_invocation_id",
+        "design_completion_event_id", "design_transaction_id", "candidate_ids",
+        "execution_identity", "workflow_id", "retry",
+    }
+    unknown = sorted(set(source) - allowed)
+    if unknown:
+        raise error_cls(
+            "bootstrap_source_invalid", f"bootstrap source has unsupported fields: {unknown}"
+        )
+    for key in (
+        "project_id", "approved_content_binding", "launcher_run_id",
+        "research_completion_event_id", "design_invocation_id",
+        "design_completion_event_id", "design_transaction_id",
+    ):
+        if not isinstance(source.get(key), str) or not source[key]:
+            raise error_cls("bootstrap_source_invalid", f"bootstrap source requires {key}")
+    candidates = source.get("candidate_ids")
+    if (
+        not isinstance(candidates, list) or not candidates
+        or candidates != sorted(set(candidates))
+        or any(not isinstance(value, str) or not value for value in candidates)
+    ):
+        raise error_cls(
+            "bootstrap_candidate_scope_invalid",
+            "bootstrap source candidate_ids must be the sorted exact committed set",
+        )
+    try:
+        from prediction_pipeline.execution_identity import validate_prediction_execution_identity
+        validate_prediction_execution_identity(source.get("execution_identity"))
+    except (TypeError, ValueError) as exc:
+        raise error_cls(getattr(exc, "code", "bootstrap_identity_invalid"), str(exc)) from exc
+    retry = source.get("retry")
+    if retry is not None:
+        required_retry = {
+            "retry_index", "prior_plan_id", "prior_run_id", "prior_task_id",
+            "prior_attempt_id", "prior_transaction_id", "failure_event_id",
+            "failure_status",
+        }
+        if (
+            not isinstance(retry, dict)
+            or set(retry) != required_retry
+            or not isinstance(retry.get("retry_index"), int)
+            or isinstance(retry.get("retry_index"), bool)
+            or retry["retry_index"] < 1
+            or retry.get("failure_status") != "failed"
+        ):
+            raise error_cls("bootstrap_retry_invalid", "bootstrap retry binding is invalid")
 
 
 def _validate_plan_tasks(
@@ -257,5 +312,33 @@ def validate_plan_for_approval(
     _validate_plan_source(plan, plan_path, error_cls=error_cls)
     tasks_by_id = _validate_plan_tasks(plan, error_cls=error_cls)
     _validate_plan_dependencies(tasks_by_id, error_cls=error_cls)
+    if (plan.get("source") or {}).get("kind") == "initial_prediction_bootstrap":
+        _validate_bootstrap_plan_task(plan, tasks_by_id, error_cls=error_cls)
     return plan
+
+
+def _validate_bootstrap_plan_task(
+    plan: dict, tasks_by_id: dict[str, dict], *, error_cls: type
+) -> None:
+    if len(tasks_by_id) != 1:
+        raise error_cls(
+            "bootstrap_tasks_invalid", "bootstrap plan must contain exactly one task"
+        )
+    task = next(iter(tasks_by_id.values()))
+    source = plan["source"]
+    if (
+        task.get("action") != "evaluate_new_design_candidates"
+        or task.get("agent") != "prediction"
+        or task.get("candidate_scope") != {
+            "candidate_ids": source["candidate_ids"], "from_task_id": None
+        }
+        or (task.get("resource_request") or {}).get("candidate_limit")
+        != len(source["candidate_ids"])
+        or (task.get("parameters") or {}).get("execution_identity")
+        != source["execution_identity"]
+    ):
+        raise error_cls(
+            "bootstrap_task_binding_invalid",
+            "bootstrap task differs from its exact Design scope or execution identity",
+        )
 

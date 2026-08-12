@@ -161,7 +161,7 @@ class _Runtime:
             raise RuntimeError("orchestrator failed")
         self.world.statuses["orchestrator"] = "completed"
 
-    def inspect_execution_failure(self, orchestrator):
+    def inspect_execution_failure(self, orchestrator, failed_plan=None):
         if self.world.fail_at != "execution":
             return FormalBoundary.not_started("execution")
         return FormalBoundary.completed(

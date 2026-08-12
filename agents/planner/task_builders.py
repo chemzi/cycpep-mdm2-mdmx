@@ -5,6 +5,7 @@ from __future__ import annotations
 from contracts.action import get_action_spec
 from prediction_pipeline.contracts import object_sha256
 from prediction_pipeline.protocol import PREDICTOR_PROTOCOL
+from prediction_pipeline.execution_identity import build_prediction_execution_identity
 from typing import Any
 from .approval import _approval
 from .config import (
@@ -148,6 +149,7 @@ def _design_iteration_prediction_task(
             "reuse_complete_evidence": True,
             "evidence_mode": "reuse_or_generate_full",
             "predictor_protocol": dict(PREDICTOR_PROTOCOL),
+            "execution_identity": build_prediction_execution_identity(),
         },
         candidate_limit=min(
             proposal_count, config.max_prediction_candidates_per_task
@@ -245,6 +247,7 @@ def _recommendation_action_config(
             "reuse_complete_evidence": True,
             "evidence_mode": "reuse_or_generate_full",
             "predictor_protocol": dict(PREDICTOR_PROTOCOL),
+            "execution_identity": build_prediction_execution_identity(),
         })
         outputs = ["prediction_handoff.json"]
     elif action == "regenerate_invalid_artifact":

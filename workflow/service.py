@@ -11,6 +11,7 @@ from typing import Any, Callable, Iterable, Mapping
 from core.context import ProjectContext
 from target_bootstrap import assert_project_approved
 
+from .bootstrap_prediction import advance_bootstrap_prediction
 from .boundaries import FormalBoundary, FormalBoundaryInspector
 from .diagnostics import DiagnosticStore, resolve_diagnostics_root
 from .errors import DiagnosticContractError, normalize_error
@@ -113,12 +114,14 @@ def resume_launcher_run(
     *,
     launcher_run_id: str,
     approval_paths: Iterable[str | Path] = (),
+    retry_bootstrap_prediction: bool = False,
     dependencies: LauncherServiceDependencies | None = None,
 ) -> LauncherCommandResult:
     deps = dependencies or _default_dependencies()
     try:
         return _coordinate_locked(
-            deps, launcher_run_id, tuple(approval_paths), execute=True
+            deps, launcher_run_id, tuple(approval_paths), execute=True,
+            retry_bootstrap_prediction=retry_bootstrap_prediction,
         )
     except Exception as error:
         return _unbound_failure(error, launcher_run_id=launcher_run_id)
@@ -131,6 +134,7 @@ def _coordinate_locked(
     *,
     execute: bool,
     allow_missing_store: bool = False,
+    retry_bootstrap_prediction: bool = False,
 ) -> LauncherCommandResult:
     with deps.diagnostics.locked(launcher_run_id) as session:
         report = session.read()
@@ -161,6 +165,7 @@ def _coordinate_locked(
                     report,
                     session,
                     approval_paths=approval_paths,
+                    retry_bootstrap_prediction=retry_bootstrap_prediction,
                     execute=execute,
                 )
         except Exception as error:
@@ -185,10 +190,16 @@ def _advance(
     session: Any,
     *,
     approval_paths: tuple[str | Path, ...],
+    retry_bootstrap_prediction: bool = False,
     execute: bool,
 ) -> LauncherCommandResult:
     report, planner, outcome = _advance_to_plan(
-        runtime, report, session, execute=execute
+        runtime,
+        report,
+        session,
+        approval_paths=approval_paths,
+        retry_bootstrap_prediction=retry_bootstrap_prediction,
+        execute=execute,
     )
     if outcome is not None:
         return outcome
@@ -197,7 +208,9 @@ def _advance(
         report,
         session,
         planner,
-        approval_paths=approval_paths,
+        approval_paths=(
+            () if planner.references.get("requires_new_approval") else approval_paths
+        ),
         execute=execute,
     )
 
@@ -207,10 +220,45 @@ def _advance_to_plan(
     report: DiagnosticReport,
     session: Any,
     *,
+    approval_paths: tuple[str | Path, ...],
+    retry_bootstrap_prediction: bool = False,
     execute: bool,
 ) -> tuple[DiagnosticReport, FormalBoundary | None, LauncherCommandResult | None]:
-    prediction = runtime.inspect_prediction()
+    bootstrap_advanced = False
+    direct_prediction = runtime.inspect_prediction()
+    prediction = direct_prediction
     report = _mirror_prediction_identity(report, runtime, prediction)
+    if prediction.status == "blocked":
+        return report, None, _block(session, report, prediction)
+    if prediction.status == "completed" and hasattr(
+        runtime, "inspect_bootstrap_planner"
+    ):
+        design = runtime.inspect_design()
+        if design.status == "completed":
+            bootstrap = runtime.inspect_bootstrap_planner(design)
+            if bootstrap.status != "not_started":
+                conflict = FormalBoundary.blocked(
+                    "prediction",
+                    "prediction_authority_conflict",
+                    "direct Prediction completion and a bootstrap Prediction plan both exist",
+                )
+                return report, None, _block(session, report, conflict)
+    if prediction.status == "not_started" and hasattr(
+        runtime, "inspect_bootstrap_planner"
+    ):
+        report, prediction, outcome = advance_bootstrap_prediction(
+            runtime,
+            report,
+            session,
+            approval_paths=approval_paths,
+            retry_requested=retry_bootstrap_prediction,
+            execute=execute,
+            resolve_boundary=_resolve_boundary,
+            continue_plan=_continue_approved_plan,
+        )
+        if outcome is not None:
+            return report, None, outcome
+        bootstrap_advanced = prediction.status == "completed"
     if prediction.status == "blocked":
         return report, None, _block(session, report, prediction)
     if prediction.status != "completed":
@@ -229,15 +277,42 @@ def _advance_to_plan(
     if critic.status == "completed":
         planner = runtime.inspect_planner(critic)
         if planner.status == "completed":
-            return _accept_existing_plan(report, planner, session, execute)
+            return _accept_existing_plan(
+                report, _mark_new_approval(planner, bootstrap_advanced), session, execute
+            )
         if planner.status == "blocked":
             return report, None, _block(session, report, planner)
-        return _resolve_planner(runtime, report, session, critic, execute)
+        return _mark_resolved_new_approval(
+            _resolve_planner(runtime, report, session, critic, execute),
+            bootstrap_advanced,
+        )
     if critic.status == "blocked":
         return report, None, _block(session, report, critic)
-    return _resolve_critic_and_planner(
-        runtime, report, session, prediction, execute=execute
+    return _mark_resolved_new_approval(
+        _resolve_critic_and_planner(
+            runtime, report, session, prediction, execute=execute
+        ),
+        bootstrap_advanced,
     )
+
+
+def _mark_new_approval(
+    planner: FormalBoundary | None, required: bool
+) -> FormalBoundary | None:
+    if not required or planner is None:
+        return planner
+    return FormalBoundary(
+        status=planner.status,
+        boundary=planner.boundary,
+        blocker_code=planner.blocker_code,
+        message=planner.message,
+        references={**planner.references, "requires_new_approval": True},
+    )
+
+
+def _mark_resolved_new_approval(resolved, required):
+    report, planner, outcome = resolved
+    return report, _mark_new_approval(planner, required), outcome
 
 
 def _advance_to_prediction(
@@ -288,7 +363,7 @@ def _resolve_critic_and_planner(
     report, outcome = _resolve_boundary(
         session,
         report,
-        lambda: runtime.inspect_critic(runtime.inspect_prediction()),
+        lambda: runtime.inspect_critic(prediction),
         "critic",
         critic_call,
         execute,
@@ -310,7 +385,7 @@ def _resolve_planner(
     report, outcome = _resolve_boundary(
         session,
         report,
-        lambda: runtime.inspect_planner(runtime.inspect_critic(runtime.inspect_prediction())),
+        lambda: runtime.inspect_planner(critic),
         "planner",
         planner_call,
         execute,

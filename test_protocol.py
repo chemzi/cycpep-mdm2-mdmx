@@ -13,6 +13,7 @@ from core.protocol import (
 )
 from prediction_pipeline.adapters import load_artifact_bundle
 from prediction_pipeline.contracts import ContractError
+from prediction_pipeline.execution_identity import build_prediction_execution_identity
 from prediction_pipeline.protocol import (
     ACTIVE_PREDICTOR_PROTOCOL,
     PREDICTION_PROTOCOL,
@@ -308,6 +309,7 @@ class TaskProtocolContractTests(unittest.TestCase):
                 "reuse_complete_evidence": True,
                 "evidence_mode": "reuse_or_generate_full",
                 "predictor_protocol": protocol,
+                "execution_identity": build_prediction_execution_identity(),
             },
             "resource_request": {
                 "class": "gpu",
@@ -346,6 +348,13 @@ class TaskProtocolContractTests(unittest.TestCase):
     def test_registered_predictor_protocol_accepted(self):
         normalized = validate_task_parameters(self._task(PREDICTOR_PROTOCOL))
         self.assertEqual(normalized["predictor_protocol"], PREDICTOR_PROTOCOL)
+
+    def test_historical_task_without_execution_identity_fails_before_execution(self):
+        task = self._task(PREDICTOR_PROTOCOL)
+        task["parameters"].pop("execution_identity")
+        with self.assertRaises(ExecutionContractError) as ctx:
+            validate_task_parameters(task)
+        self.assertEqual(ctx.exception.code, "execution_parameters_invalid")
 
     def test_task_identity_must_match_active_protocol(self):
         # A registered-but-older identity must be refused: execution can only

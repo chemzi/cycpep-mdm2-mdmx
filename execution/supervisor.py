@@ -133,7 +133,8 @@ def run_process(
     """
     if not argv:
         raise ExecutionContractError("process_argv_invalid", "empty process argv")
-    executable = Path(argv[0]).expanduser().resolve()
+    # Keep venv/bin/python as the invoked entrypoint even when it is a symlink.
+    executable = Path(os.path.abspath(Path(argv[0]).expanduser()))
     if not executable.is_file():
         raise ExecutionContractError(
             "execution_tool_unavailable", f"{label} executable not found: {executable}"

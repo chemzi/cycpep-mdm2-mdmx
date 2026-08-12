@@ -118,6 +118,7 @@ class InitialDesignValidation:
     design_invocation_id: str
     start_event_id: str | None = None
     completion_event_id: str | None = None
+    transaction_id: str | None = None
     failure_event_id: str | None = None
     jobs: tuple[dict[str, Any], ...] = ()
     candidate_ids: tuple[str, ...] = ()
@@ -135,6 +136,7 @@ class InitialDesignResult:
     design_invocation_id: str
     start_event_id: str
     completion_event_id: str
+    transaction_id: str
     jobs: tuple[dict[str, Any], ...]
     candidate_ids: tuple[str, ...]
     artifact_ids: tuple[str, ...]
@@ -353,6 +355,7 @@ def validate_initial_invocation(
         design_invocation_id=correlation.design_invocation_id,
         start_event_id=start["event_id"],
         completion_event_id=completion["event_id"],
+        transaction_id=transaction_id,
         jobs=tuple(dict(job) for job in completion["jobs"]),
         candidate_ids=candidate_ids,
         artifact_ids=artifact_ids,
@@ -372,6 +375,7 @@ def _result_from_validation(validation: InitialDesignValidation) -> InitialDesig
         design_invocation_id=validation.design_invocation_id,
         start_event_id=validation.start_event_id,
         completion_event_id=validation.completion_event_id,
+        transaction_id=str(validation.transaction_id),
         jobs=validation.jobs,
         candidate_ids=validation.candidate_ids,
         artifact_ids=validation.artifact_ids,

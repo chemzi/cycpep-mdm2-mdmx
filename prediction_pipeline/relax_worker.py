@@ -147,7 +147,7 @@ def _validate_post_relax_inputs(
     repeats: int,
     coordinate_stdev_angstrom: float,
 ) -> tuple[Path, Path, Path, int, int, float]:
-    pyrosetta_python = Path(pyrosetta_python).expanduser().resolve()
+    pyrosetta_python = Path(pyrosetta_python).expanduser().absolute()
     monomer_pdb = Path(monomer_pdb).expanduser().resolve()
     destination = Path(output_dir).expanduser().resolve()
     if not pyrosetta_python.is_file():

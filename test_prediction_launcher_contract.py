@@ -19,6 +19,8 @@ from prediction_pipeline.contracts import (
     prediction_status_from_battery,
 )
 from prediction_pipeline.transaction_effects import PredictionPersistence
+from agents.prediction_contract import validate_prediction_owner_readiness
+from prediction_pipeline.execution_identity import build_prediction_execution_identity
 
 from _prediction_test_utils import project_config
 
@@ -154,6 +156,99 @@ class PredictionLauncherContractTests(unittest.TestCase):
             prediction_status_from_battery(pending_battery), "prediction_pending"
         )
         self.assertNotIn("prediction_pending", CRITIC_READY_STATUSES)
+
+    def test_execution_owner_readiness_reuses_status_contract(self):
+        ready_battery = {
+            "competition_clearance": False,
+            "metric_clearance": False,
+            "triage_status": "valid",
+            "missing_evidence": [],
+            "missing_thresholds": [],
+        }
+        identity = build_prediction_execution_identity()
+        record_paths, handoff_path = self._materialize_owner_status(
+            "needs_optimization", ready_battery
+        )
+        ready_record_path = record_paths["C0001"]
+        ready_record = json.loads(ready_record_path.read_text(encoding="utf-8"))
+        ready_record["execution_identity"] = identity
+        ready_record_path.write_text(
+            json.dumps(ready_record, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+        handoff["execution_identity"] = identity
+        for entries in handoff["categories"].values():
+            for entry in entries:
+                entry["record_sha256"] = file_sha256(ready_record_path)
+        handoff_path.write_text(
+            json.dumps(handoff, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        ready = validate_prediction_owner_readiness(
+            handoff_path=handoff_path,
+            project_id=self.project["project_id"],
+            prediction_run_id=self.correlation.prediction_run_id,
+            candidate_ids=("C0001",),
+            expected_execution_identity=identity,
+        )
+        self.assertEqual(ready.status, "completed")
+
+        record = json.loads(ready_record_path.read_text(encoding="utf-8"))
+        record["execution_identity"] = {"mismatch": True}
+        ready_record_path.write_text(
+            json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        mismatched_handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+        for entries in mismatched_handoff["categories"].values():
+            for entry in entries:
+                entry["record_sha256"] = file_sha256(ready_record_path)
+        handoff_path.write_text(
+            json.dumps(mismatched_handoff, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        mismatched = validate_prediction_owner_readiness(
+            handoff_path=handoff_path,
+            project_id=self.project["project_id"],
+            prediction_run_id=self.correlation.prediction_run_id,
+            candidate_ids=("C0001",),
+            expected_execution_identity=identity,
+        )
+        self.assertEqual(
+            mismatched.blocker_code, "prediction_recovery_ambiguous"
+        )
+
+        pending_battery = {**ready_battery, "missing_evidence": ["L1"]}
+        record_path = record_paths["C0001"]
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["execution_identity"] = identity
+        record["status"] = "prediction_pending"
+        record["battery"] = pending_battery
+        record_path.write_text(
+            json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        pending_path = handoff_path
+        pending_handoff = json.loads(pending_path.read_text(encoding="utf-8"))
+        pending_handoff["categories"] = {"prediction_pending": [{
+            "candidate_id": "C0001", "sequence": record["candidate"]["sequence"],
+            "record_path": str(record_path), "record_sha256": file_sha256(record_path),
+            "issues": record.get("issues", []),
+        }]}
+        pending_handoff["execution_identity"] = identity
+        pending_path.write_text(
+            json.dumps(pending_handoff, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        pending = validate_prediction_owner_readiness(
+            handoff_path=pending_path,
+            project_id=self.project["project_id"],
+            prediction_run_id=self.correlation.prediction_run_id,
+            candidate_ids=("C0001",),
+            expected_execution_identity=identity,
+        )
+        self.assertEqual(pending.blocker_code, "prediction_execution_incomplete")
 
     def test_public_run_root_resolver_preserves_configured_precedence(self):
         explicit_argument = self.root / "argument-runs"

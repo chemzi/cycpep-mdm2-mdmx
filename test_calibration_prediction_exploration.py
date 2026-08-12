@@ -151,6 +151,7 @@ class CalibrationPredictionExplorationTests(unittest.TestCase):
                 run_id=prediction_run_id,
                 defer_formal_writes=True,
                 artifact_id_prefix=context.transaction_id,
+                execution_identity=context.parameters["execution_identity"],
             )
             pipeline.run()
             effects = pipeline.transaction_effects()

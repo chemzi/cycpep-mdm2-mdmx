@@ -104,6 +104,31 @@ def _installed_version(boltz_executable: Path, timeout: int) -> str:
     return result.stdout.strip()
 
 
+def validate_boltz_runtime(
+    boltz_executable: str | Path,
+    checkpoint: str | Path,
+    *,
+    timeout: int = 60,
+) -> dict:
+    """Validate the pinned installed Boltz and checkpoint before GPU work."""
+    executable = Path(boltz_executable).expanduser().resolve()
+    checkpoint_path = Path(checkpoint).expanduser().resolve()
+    if not executable.is_file():
+        raise ContractError("tool_unavailable", f"Boltz executable not found: {executable}")
+    if not checkpoint_path.is_file():
+        raise ContractError("boltz_checkpoint_missing", str(checkpoint_path))
+    checkpoint_sha = file_sha256(checkpoint_path)
+    if checkpoint_sha != BOLTZ2_CHECKPOINT_SHA256:
+        raise ContractError("boltz_checkpoint_hash_mismatch", str(checkpoint_path))
+    version = _installed_version(executable, timeout)
+    if version != BOLTZ_VERSION:
+        raise ContractError(
+            "boltz_version_mismatch",
+            f"Boltz {BOLTZ_VERSION} is required; found {version}",
+        )
+    return {"version": version, "checkpoint_sha256": checkpoint_sha}
+
+
 def run_boltz_prediction(
     *,
     boltz_executable: str | Path,
@@ -207,24 +232,7 @@ def _prepare_boltz_environment(
     cache = Path(cache_dir).expanduser().resolve()
     checkpoint_path = Path(checkpoint).expanduser().resolve()
     destination = Path(output_dir).expanduser().resolve()
-    if not executable.is_file():
-        raise ContractError("tool_unavailable", f"Boltz executable not found: {executable}")
-    if not checkpoint_path.is_file():
-        raise ContractError(
-            "boltz_checkpoint_missing", f"Boltz checkpoint not found: {checkpoint_path}"
-        )
-    checkpoint_sha = file_sha256(checkpoint_path)
-    if checkpoint_sha != BOLTZ2_CHECKPOINT_SHA256:
-        raise ContractError(
-            "boltz_checkpoint_hash_mismatch",
-            f"unexpected Boltz-2 checkpoint SHA-256: {checkpoint_sha}",
-        )
-    version = _installed_version(executable, timeout)
-    if version != BOLTZ_VERSION:
-        raise ContractError(
-            "boltz_version_mismatch",
-            f"Boltz {BOLTZ_VERSION} is required; found {version}",
-        )
+    validate_boltz_runtime(executable, checkpoint_path, timeout=timeout)
     if destination.exists() and any(destination.iterdir()):
         raise ContractError(
             "predictor_output_exists", f"Boltz output directory is not empty: {destination}"

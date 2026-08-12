@@ -39,6 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     resume = commands.add_parser("resume", add_help=True)
     resume.add_argument("--launcher-run", required=True)
     resume.add_argument("--approval", action="append", default=[])
+    resume.add_argument("--retry-bootstrap-prediction", action="store_true")
     return parser
 
 
@@ -76,6 +77,7 @@ def _dispatch(arguments: argparse.Namespace, handlers: CommandHandlers) -> Launc
     return handlers.resume_launcher_run(
         launcher_run_id=arguments.launcher_run,
         approval_paths=tuple(arguments.approval),
+        retry_bootstrap_prediction=arguments.retry_bootstrap_prediction,
     )
 
 

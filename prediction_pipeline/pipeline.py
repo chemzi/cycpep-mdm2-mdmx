@@ -166,8 +166,12 @@ class PredictionPipeline(MetricCollectorsMixin):
         defer_formal_writes: bool = False,
         artifact_id_prefix: str | None = None,
         launcher_correlation: dict[str, str] | None = None,
+        execution_identity: dict | None = None,
     ):
         self.config = config or PredictionConfig()
+        self.execution_identity = (
+            dict(execution_identity) if execution_identity is not None else None
+        )
         self.project = project
         # Preserve the evaluator's established raw-threshold semantics.  The
         # provenance identity is computed separately from this exact snapshot.
@@ -803,6 +807,8 @@ class PredictionPipeline(MetricCollectorsMixin):
             "provenance": provenance,
             "artifact_inventory": _artifact_inventory(bundle),
         }
+        if self.execution_identity is not None:
+            record["execution_identity"] = self.execution_identity
         _atomic_json(record_path, record)
         record["record_sha256"] = file_sha256(record_path)
         self.persistence.remember_record(
@@ -869,6 +875,8 @@ class PredictionPipeline(MetricCollectorsMixin):
             "provenance": [],
             "artifact_inventory": [],
         }
+        if self.execution_identity is not None:
+            record["execution_identity"] = self.execution_identity
         _atomic_json(record_path, record)
         record["record_sha256"] = file_sha256(record_path)
         self.persistence.remember_record(
@@ -952,6 +960,8 @@ class PredictionPipeline(MetricCollectorsMixin):
                 "candidate_index_is_summary": True,
             },
         }
+        if self.execution_identity is not None:
+            handoff["execution_identity"] = self.execution_identity
         if self.launcher_correlation is not None:
             handoff.update(self.launcher_correlation)
         _atomic_json(self.handoff_path, handoff)

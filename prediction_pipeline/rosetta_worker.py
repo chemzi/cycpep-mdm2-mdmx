@@ -14,6 +14,28 @@ from .structures import exact_sequence_chain, parse_pdb, terminal_bond_distance
 PYROSETTA_VERSION = "2026.29+releasequarterly.80a0635615"
 
 
+def validate_pyrosetta_runtime(python: str | Path) -> str:
+    """Import PyRosetta in the selected environment and validate its version."""
+    entrypoint = Path(python).expanduser().absolute()
+    if not entrypoint.is_file():
+        raise ContractError("tool_unavailable", f"PyRosetta Python not found: {entrypoint}")
+    result = run_command(
+        [
+            str(entrypoint), "-c",
+            "import pyrosetta, importlib.metadata; "
+            "print(importlib.metadata.version('pyrosetta'))",
+        ],
+        timeout=60,
+    )
+    installed = result.stdout.strip()
+    if result.exit_code or installed != PYROSETTA_VERSION:
+        raise ContractError(
+            "pyrosetta_version_mismatch",
+            f"PyRosetta {PYROSETTA_VERSION} is required; found {installed!r}",
+        )
+    return installed
+
+
 def interface_xml(
     *,
     target_chain: str,
@@ -128,7 +150,7 @@ def _validate_rosetta_inputs(
         Path(executable).expanduser().resolve() if executable else None
     )
     pyrosetta_path = (
-        Path(pyrosetta_python).expanduser().resolve() if pyrosetta_python else None
+        Path(pyrosetta_python).expanduser().absolute() if pyrosetta_python else None
     )
     complex_pdb = Path(complex_pdb).expanduser().resolve()
     destination = Path(output_dir).expanduser().resolve()
@@ -205,20 +227,7 @@ def _prepare_rosetta_engine(
     score_path = destination / "interface.sc"
     runtime_metadata_path = destination / "pyrosetta_runtime.json"
     if pyrosetta_path:
-        version_result = run_command(
-            [
-                str(pyrosetta_path), "-c",
-                "import importlib.metadata; "
-                "print(importlib.metadata.version('pyrosetta'))",
-            ],
-            timeout=60,
-        )
-        installed_version = version_result.stdout.strip()
-        if version_result.exit_code or installed_version != PYROSETTA_VERSION:
-            raise ContractError(
-                "pyrosetta_version_mismatch",
-                f"PyRosetta {PYROSETTA_VERSION} is required; found {installed_version!r}",
-            )
+        installed_version = validate_pyrosetta_runtime(pyrosetta_path)
         command = [
             str(pyrosetta_path),
             str(Path(__file__).with_name("pyrosetta_cli.py").resolve()),
