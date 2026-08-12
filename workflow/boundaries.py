@@ -127,12 +127,14 @@ class FormalBoundaryInspector:
         if explicit_current:
             return self._critic_events(
                 explicit_current,
+                project_id=project_id,
                 prediction_run_id=prediction_run_id,
             )
 
         legacy = [event for event in events if "prediction_run_id" not in event]
         return self._critic_events(
             legacy,
+            project_id=project_id,
             prediction_run_id=prediction_run_id,
             legacy=True,
             current_start=_unique_prediction_start_time(
@@ -146,6 +148,7 @@ class FormalBoundaryInspector:
         self,
         events: Iterable[Mapping[str, Any]],
         *,
+        project_id: str,
         prediction_run_id: str,
         legacy: bool = False,
         current_start: datetime | None = None,
@@ -161,6 +164,9 @@ class FormalBoundaryInspector:
                 invalid = True
                 continue
             source = document.get("source") or {}
+            if source.get("project_id") != project_id:
+                invalid = True
+                continue
             if source.get("prediction_run_id") != prediction_run_id:
                 invalid = invalid or not legacy
                 continue

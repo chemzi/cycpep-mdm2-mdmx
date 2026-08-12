@@ -117,7 +117,8 @@ eid_c = EvidenceLogger.critic_review(
     passed=False,
     summary="当前 batch MDMX 亲和力不够，建议调整设计策略",
     recommendation="下一轮使用 route_A_mdmx_first，增加 F19 接触残基权重",
-    metrics={"iptm_mdm2_median": 0.81, "iptm_mdmx_median": 0.65}
+    metrics={"iptm_mdm2_median": 0.81, "iptm_mdmx_median": 0.65},
+    project_id=State.load()["project_id"],
 )
 check("critic_review 返回 event_id", len(eid_c) > 0)
 
@@ -406,7 +407,8 @@ cid = EvidenceLogger.critic_review(
     issues=[{"type": "mdmx_bias", "detail": "MDMX 普遍 < 0.65"}],
     passed=False, summary="需要加强 MDMX 亲和力",
     recommendation="下一轮 route_A_mdmx_first, weight=0.7",
-    metrics={"iptm_mdm2_median": 0.82, "iptm_mdmx_median": 0.62}
+    metrics={"iptm_mdm2_median": 0.82, "iptm_mdmx_median": 0.62},
+    project_id=State.load()["project_id"],
 )
 
 # Planner 调整

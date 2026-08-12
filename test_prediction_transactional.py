@@ -508,6 +508,13 @@ class PredictionTransactionalTests(unittest.TestCase):
         self.assertEqual(recorded["protocol_identity"], protocol_binding())
         self.assertEqual(recorded["record_artifact_id"], handoff_item["record_artifact_id"])
         self.assertNotIn("artifact_sha256", recorded)
+        started = next(
+            item for item in events if item["event_type"] == "prediction_run_started"
+        )
+        expected_prediction_run = f"prediction_{context.transaction_id[-12:]}"
+        self.assertEqual(started["run_id"], "run-prediction-typed")
+        self.assertEqual(started["prediction_run_id"], expected_prediction_run)
+        self.assertNotEqual(started["run_id"], started["prediction_run_id"])
 
     def test_validation_failure_leaves_formal_store_unchanged(self):
         root = self.root / "validation-failure"

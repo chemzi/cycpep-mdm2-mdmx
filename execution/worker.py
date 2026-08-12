@@ -37,7 +37,9 @@ from data_layer import (  # noqa: E402
 from prediction_pipeline.contracts import file_sha256  # noqa: E402
 from contracts.errors import ErrorInfo  # noqa: E402
 from contracts.event import (  # noqa: E402
+    ENVELOPE_KEYS,
     EvidenceEvent,
+    TRACE_KEYS,
     VALID_AGENTS,
     VALID_EVENT_TYPES,
     VALID_PHASES,
@@ -274,10 +276,34 @@ def _formalize_evidence_events(
         value.setdefault("event_id", uuid.uuid4().hex[:12])
         if "phase" not in value or value.get("phase") is None:
             value.pop("phase", None)
-        merged = {**value, **trace_context.to_dict()}
-        # Raises ValueError on any contract violation; commit must not proceed.
-        EvidenceEvent.from_dict(merged)
-        formalized.append(merged)
+        payload = {
+            key: item
+            for key, item in value.items()
+            if key not in ENVELOPE_KEYS or key in TRACE_KEYS or key == "payload"
+        }
+        contract = EvidenceEvent(
+            timestamp=value["timestamp"],
+            event_id=value["event_id"],
+            agent=value.get("agent"),
+            event_type=value.get("event_type"),
+            payload=payload,
+            trace_context=trace_context,
+            phase=value.get("phase"),
+            round_num=value.get("round"),
+            targets=(
+                tuple(value["targets"])
+                if value.get("targets") is not None
+                else None
+            ),
+            blocks=(
+                tuple(value["blocks"])
+                if value.get("blocks") is not None
+                else None
+            ),
+        )
+        # ``to_dict`` owns payload-vs-trace conflict semantics and raises
+        # before CommitManager can expose any transaction effects.
+        formalized.append(contract.to_dict())
     return tuple(formalized)
 
 

@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Mapping
 
+from contracts.trace import TRACE_ID_RE
+
 
 def critic_persistence_effects(
     *,
@@ -24,6 +26,10 @@ def critic_persistence_effects(
     """
     if report_artifact_id is None and report_path is None:
         raise ValueError("report_artifact_id or report_path is required")
+    source = report.get("source")
+    project_id = source.get("project_id") if isinstance(source, Mapping) else None
+    if not isinstance(project_id, str) or not TRACE_ID_RE.fullmatch(project_id):
+        raise ValueError("Critic report source.project_id must be a valid trace ID")
     summary = {
         "critic_version": report["critic_version"],
         "report_id": report["report_id"],
@@ -49,6 +55,7 @@ def critic_persistence_effects(
         "metrics": report["metrics_snapshot"],
         "report_id": report["report_id"],
         "report_sha256": report_digest,
+        "project_id": project_id,
         "prediction_run_id": report["source"]["prediction_run_id"],
         "history_entry": history_entry,
     }
@@ -56,6 +63,22 @@ def critic_persistence_effects(
         evidence["report_artifact_id"] = report_artifact_id
     if report_path is not None:
         evidence["report_path"] = summary["report_path"]
+    event_payload = {
+        "issues": evidence["issues"],
+        "pass": evidence["passed"],
+        "summary": evidence["summary"],
+        "recommendation": evidence["recommendation"],
+        "metrics_snapshot": evidence["metrics"],
+        "report_id": evidence["report_id"],
+        "report_sha256": evidence["report_sha256"],
+        "project_id": evidence["project_id"],
+        "prediction_run_id": evidence["prediction_run_id"],
+    }
+    if report_artifact_id is not None:
+        event_payload["report_artifact_id"] = evidence["report_artifact_id"]
+    if report_path is not None:
+        event_payload["report_path"] = evidence["report_path"]
+    evidence["event_payload"] = event_payload
     return {
         "phase": "critic",
         "critic": summary,

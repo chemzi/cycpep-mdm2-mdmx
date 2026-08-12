@@ -98,13 +98,17 @@ class FormalBoundaryInspectorTests(unittest.TestCase):
             path = Path(tmp) / "critic.json"
             report = {
                 "report_id": "critic-1",
-                "source": {"prediction_run_id": "prediction-1"},
+                "source": {
+                    "project_id": "project-1",
+                    "prediction_run_id": "prediction-1",
+                },
             }
             path.write_text(json.dumps(report), encoding="utf-8")
             event = {
                 "event_id": "event-1",
                 "agent": "critic",
                 "event_type": "critic_review",
+                "project_id": "project-1",
                 "report_id": "critic-1",
                 "report_path": str(path),
                 "report_sha256": file_sha256(path),
@@ -126,7 +130,10 @@ class FormalBoundaryInspectorTests(unittest.TestCase):
                 path = Path(tmp) / f"critic-{suffix}.json"
                 report = {
                     "report_id": f"critic-{suffix}",
-                    "source": {"prediction_run_id": "prediction-1"},
+                    "source": {
+                        "project_id": "project-1",
+                        "prediction_run_id": "prediction-1",
+                    },
                 }
                 path.write_text(json.dumps(report), encoding="utf-8")
                 events.append({

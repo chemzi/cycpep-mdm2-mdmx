@@ -7,9 +7,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from contracts.transaction import TransactionContext, TransactionStatus
+from contracts.trace import TraceContext
 from execution.adapters import adapter_for, make_legacy_handler_adapter
 from execution.config import ExecutionConfig
 from execution.contracts import ExecutionContractError, validate_output_inventory
@@ -18,6 +20,7 @@ from execution.results import ExecutionActionResult
 from execution.worker import ExecutionWorker, _validate_action_result
 from prediction_pipeline.contracts import file_sha256
 from storage import SQLiteStore
+from workflow.boundaries import FormalBoundaryInspector
 
 
 class TransactionalHandlerTests(unittest.TestCase):
@@ -66,6 +69,10 @@ class TransactionalHandlerTests(unittest.TestCase):
                 "run_id": "run-typed",
                 "task": task,
                 "dependency_outputs": {"T000": [dependency]},
+                "trace_context": {
+                    "project_id": "typed-test",
+                    "workflow_id": "workflow-typed",
+                },
             }, "critic_report", dependency["sha256"]
         task = {
             "task_id": "T001",
@@ -319,6 +326,7 @@ class TransactionalHandlerTests(unittest.TestCase):
                 context = TransactionContext.create(
                     workflow_id="workflow-typed", run_id="run-typed", task_id="T001",
                     attempt_id="T001-A01", action=action,
+                    metadata={"project_id": "typed-test"},
                 )
                 worker = ExecutionWorker(store, root / "staging", root / "artifacts")
                 adapter = adapter_for(
@@ -327,6 +335,113 @@ class TransactionalHandlerTests(unittest.TestCase):
                 result = worker.run(context, adapter, validator=_validate_action_result)
                 self.assertEqual(context.status, TransactionStatus.COMMITTED)
                 self.assertIsNotNone(store.get_artifact(result.artifacts[0].artifact_id))
+                if action == "review_prediction_handoff":
+                    self.assertEqual(
+                        result.evidence_events[0]["project_id"], "typed-test"
+                    )
+                    self.assertEqual(
+                        result.evidence_events[0]["report_sha256"],
+                        file_sha256(result.outputs[0][1]),
+                    )
+                    self.assertEqual(
+                        result.evidence_events[0]["report_artifact_id"],
+                        result.artifacts[0].artifact_id,
+                    )
+                    events = store.query(event_type="critic_review")
+                    self.assertEqual(len(events), 1)
+                    self.assertEqual(events[0]["project_id"], "typed-test")
+                    not_started = lambda *_args, **_kwargs: SimpleNamespace(
+                        status="not_started"
+                    )
+                    boundary = FormalBoundaryInspector(
+                        store=store,
+                        research_validator=not_started,
+                        design_validator=not_started,
+                        prediction_validator=not_started,
+                        orchestrator_status=lambda **_kwargs: {},
+                    ).critic(
+                        project_id="typed-test",
+                        prediction_run_id="prediction-run",
+                    )
+                    self.assertEqual(boundary.status, "completed")
+
+    def test_transactional_critic_rejects_trace_project_mismatch(self):
+        from execution.handlers import review_prediction_handoff
+
+        packet, _, _ = self._case("review_prediction_handoff", self.root)
+        packet["trace_context"]["project_id"] = "other-project"
+        report = {
+            "critic_version": "test",
+            "report_id": "critic-current",
+            "source": {
+                "project_id": "typed-test",
+                "prediction_run_id": "prediction-run",
+            },
+            "verdict": "clear",
+            "passed": True,
+            "issue_counts": {},
+            "recommendations": [],
+            "issues": {},
+            "summary": "clear",
+            "metrics_snapshot": {},
+        }
+        context = HandlerContext(
+            packet=packet,
+            config=self._config(self.root),
+            task_dir=self.root / "mismatch-task",
+            transaction_managed=True,
+            transaction_id="tx-mismatch",
+        )
+
+        with patch("agents.critic.review", return_value=report), patch(
+            "execution.handlers.State.load", return_value={}
+        ), self.assertRaisesRegex(ExecutionContractError, "project binding"):
+            review_prediction_handoff(context)
+
+    def test_worker_rejects_critic_event_trace_conflict_before_commit(self):
+        root = self.root / "worker-trace-conflict"
+        root.mkdir()
+        store = SQLiteStore(root / "store.db", project_id="project-b")
+        original_state = {"phase": "iterate"}
+        store.replace_state("project-b", original_state)
+        context = TransactionContext.create(
+            workflow_id="workflow-typed",
+            run_id="run-typed",
+            task_id="T001",
+            attempt_id="T001-A01",
+            action="review_prediction_handoff",
+            metadata={"project_id": "project-b"},
+        )
+        worker = ExecutionWorker(store, root / "staging", root / "artifacts")
+
+        def conflicting_handler(_context, _staging):
+            return ExecutionActionResult(
+                state_updates={"phase": "critic"},
+                evidence_events=({
+                    "agent": "critic",
+                    "event_type": "critic_review",
+                    "phase": "critic",
+                    "project_id": "project-a",
+                },),
+            )
+
+        with self.assertRaisesRegex(ValueError, "trace field project_id"):
+            worker.run(
+                context,
+                conflicting_handler,
+                validator=_validate_action_result,
+                trace_context=TraceContext(
+                    project_id="project-b",
+                    workflow_id="workflow-typed",
+                    run_id="run-typed",
+                    task_id="T001",
+                    attempt_id="T001-A01",
+                ),
+            )
+
+        self.assertEqual(context.status, TransactionStatus.FAILED)
+        self.assertEqual(store.get_state("project-b"), original_state)
+        self.assertEqual(store.query(event_type="critic_review"), [])
 
     def test_critic_state_binds_committed_artifact_not_task_path(self):
         """State.critic must reference the committed artifact, never task_dir."""
@@ -392,6 +507,7 @@ class TransactionalHandlerTests(unittest.TestCase):
             context = TransactionContext.create(
                 workflow_id="workflow-typed", run_id="run-typed", task_id="T001",
                 attempt_id="T001-A01", action="review_prediction_handoff",
+                metadata={"project_id": "typed-test"},
             )
             worker = ExecutionWorker(store, root / "staging", root / "artifacts")
             task_dir = root / "task"
