@@ -28,6 +28,7 @@ Synthetic controls are permitted only to prove this engineering lifecycle. The s
 - No real-control research, MDM2/MDMX manifest promotion, project-config migration, scoring-script expansion, or claim of experimentally validated calibration.
 - No UI, Launcher, Planner, Execution, Research workflow, Store schema/redesign, dedicated threshold table, or E2+ work.
 - No relabelling of historical Prediction records and no `state.json` or environment bypass as authority.
+- No reinterpretation of PR71 raw thresholds, trace identity, candidate coverage, cache/resume behavior, or ExplorationDecision policy.
 
 ## Decisions
 
@@ -114,6 +115,20 @@ Focused tests build an explicit `simulation_only` dataset with enough positive/n
 
 Companion regressions cover exact replay idempotency, same-ID different-content rejection, synthetic-to-approved-real rejection, partial Store rollback, projection independence, and dataset/protocol/threshold/artifact tamper. The fixture proves engineering behavior only and is not added to repository scientific control assets.
 
+### 6. Rebase additively onto the PR71 Prediction transaction contracts
+
+Treat `integration/data-integrity-transaction@b910811` as the primary source for `prediction_pipeline/pipeline.py`, `prediction_pipeline/transaction_effects.py`, `contracts/event.py`, and `data_layer.py`. Preserve its raw-threshold representation, payload `prediction_run_id` trace identity, full candidate-effect coverage, and cache/resume regressions. Reapply the E1 validated calibration binding only at the existing Prediction construction, cache identity, record/effect, and formal Evidence seams.
+
+The integration regression constructs the simulation-only calibration through the existing calibrator and Store publication, executes Prediction through its transaction/effect path, and feeds the resulting formally recorded candidate set into the existing ExplorationDecision boundary. It asserts the exact consumed calibration binding and PR71 candidate coverage without changing exploration policy or adding a new authority.
+
+Execution formalization receives the Store-owned calibration binding captured before the Prediction subprocess starts. Its effects loader validates the serialized binding's natural identity, current Prediction protocol/scorer, simulation-only authority, and raw threshold digest, then requires exact equality with that Store-owned expectation across the staged record/cache, candidate metadata, State summary, handoff, and every Prediction Evidence event. Agreement among staged files alone is insufficient authority.
+
+`execution/prediction_effects.py` sits just above the standard's lower file-size review threshold after this additive migration. Keeping calibration validation in that existing loader is intentional: it is the sole boundary that already owns candidate patches, staged record/handoff artifacts, State proposals, and Evidence before the Execution commit. Splitting one authority decision across a sibling module would require exporting its private staged-document model and weaken the all-surfaces invariant. Responsibility-focused helpers keep the coordinator below the function-length threshold; broader Execution decomposition remains out of E1 scope.
+
+Alternative considered: retain the pre-PR71 versions of the conflicted files and port PR71 tests around them. Rejected because that would silently discard the newer transaction semantics and make calibration authority depend on an obsolete Prediction adapter.
+
+Alternative considered: validate only equality among staged Prediction outputs. Rejected because a compromised subprocess could rewrite all staged copies consistently; the Execution boundary must compare them to formal State before commit.
+
 ## Risks / Trade-offs
 
 - [Risk] A statistically calibrated simulation could be mistaken for scientific validation. → Keep authority orthogonal, required, and present in every formal/Prediction surface; reject synthetic provenance under `approved_real`.
@@ -129,6 +144,7 @@ Companion regressions cover exact replay idempotency, same-ID different-content 
 1. Add the baseline contract and deterministic simulation/idempotency tests.
 2. Add the atomic Store publication and rollback/idempotency tests.
 3. Add Prediction validation/propagation and the complete simulation lifecycle test.
-4. Run focused tests, full Python discovery, configured lint/type checks, Architecture Gate, strict OpenSpec validation/verification, `git diff --check`, and fixed-point Spec/Standards/Strict review.
+4. Rebase onto the PR71 integration baseline, manually reconcile its Prediction contracts with the validated calibration binding, and add the ExplorationDecision boundary integration regression.
+5. Run focused tests, full Python discovery, configured lint/type checks, Architecture Gate, strict OpenSpec validation/verification, `git diff --check`, fixed-point Spec/Standards/Strict review, and new-head GitHub CI.
 
 Rollback is a normal branch revert. No live Launcher run, project configuration, real control asset, or runtime directory is migrated or restarted.

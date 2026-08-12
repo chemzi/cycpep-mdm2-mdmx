@@ -116,6 +116,7 @@ def _battery_projection(row: Mapping[str, Any]) -> dict[str, Any]:
         "target_pass": _json_copy(row.get("target_pass") or {}),
         "protocol_identity": _json_copy(row.get("protocol_identity") or {}),
         "thresholds_digest": row.get("thresholds_digest"),
+        "calibration_binding": _json_copy(row.get("calibration_binding")),
     }
 
 
@@ -133,6 +134,7 @@ def _handoff_projection(row: Mapping[str, Any]) -> dict[str, Any]:
         "candidate_ids": sorted(row.get("candidate_ids") or []),
         "protocol_identity": _json_copy(row.get("protocol_identity") or {}),
         "thresholds_digest": row.get("thresholds_digest"),
+        "calibration_binding": _json_copy(row.get("calibration_binding")),
         "handoff_artifact_id": row.get("handoff_artifact_id"),
         "handoff_path": row.get("handoff_path"),
         "handoff_sha256": row.get("handoff_sha256"),

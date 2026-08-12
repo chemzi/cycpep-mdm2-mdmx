@@ -163,3 +163,18 @@ Given the same scored control dataset content, frozen protocol identity, calibra
 #### Scenario: Clean-environment replay
 - **WHEN** the same frozen inputs are calibrated in two clean environments
 - **THEN** both runs produce identical scientific snapshot content and the same threshold snapshot integrity identity
+
+### Requirement: Calibration binding composes with Prediction transaction semantics
+The validated calibration binding SHALL compose additively with the current Prediction transaction contracts. Prediction SHALL preserve the current raw-threshold semantics, payload `prediction_run_id`, candidate effect coverage, and cache/resume behavior while propagating the exact consumed calibration binding through records and formal effects. Before formal commit, Execution SHALL compare the staged binding against the Store-owned binding captured for the Prediction run and require exact equality across the record/cache, candidate metadata, State summary, handoff, and Prediction Evidence. The existing ExplorationDecision boundary SHALL receive the complete formally recorded Prediction candidate set without becoming a calibration authority or changing its policy.
+
+#### Scenario: Simulation calibration reaches exploration decision input
+- **WHEN** simulation controls are calibrated, atomically published, consumed by Prediction, and the resulting formal candidate records are evaluated by ExplorationDecision
+- **THEN** every candidate expected by the current Prediction transaction contract remains covered, its Prediction record retains the exact validated simulation-only binding and Prediction run identity (record `run_id`, formal Evidence `prediction_run_id`), raw thresholds retain their current meaning, and the existing exploration decision executes without inventing or rewriting calibration authority
+
+#### Scenario: Prediction cache resumes under a validated binding
+- **WHEN** a Prediction run with a validated calibration binding is resumed from a compatible cache
+- **THEN** the existing cache/resume acceptance and mismatch behavior remains unchanged except that the exact calibration binding is part of the validated cache identity
+
+#### Scenario: Prediction subprocess rewrites every staged binding
+- **WHEN** staged record, cache, candidate metadata, State summary, handoff, and Evidence consistently carry a different self-valid calibration binding from the current Store-owned binding
+- **THEN** Execution rejects the transaction before commit and the formal Store remains unchanged

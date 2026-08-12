@@ -590,3 +590,34 @@ def unpublished_calibration_binding(thresholds: dict) -> dict:
         "calibration_authority": None,
         "thresholds_sha256": object_sha256(thresholds),
     }
+
+
+def validate_serialized_calibration_binding(
+    value: object, *, thresholds_sha256: str, protocol_identity: dict
+) -> dict:
+    """Validate the JSON binding crossing the Prediction transaction boundary."""
+    if not isinstance(value, dict):
+        raise CalibrationBaselineError("Prediction calibration binding is required")
+    binding = deepcopy(value)
+    if binding.get("status") == "not_published":
+        expected = {
+            "status": "not_published",
+            "calibration_authority": None,
+            "thresholds_sha256": thresholds_sha256,
+        }
+        if binding != expected:
+            raise CalibrationBaselineError("unpublished calibration binding mismatch")
+        return binding
+    validate_publication_identity(binding)
+    _validate_prediction_owner(
+        binding.get("protocol_identity"), binding.get("scoring_implementation")
+    )
+    if (
+        binding.get("calibration_authority") != "simulation_only"
+        or binding.get("protocol_identity") != protocol_identity
+        or binding.get("thresholds_sha256") != thresholds_sha256
+    ):
+        raise CalibrationBaselineError(
+            "formal calibration binding does not match Prediction transaction"
+        )
+    return binding
