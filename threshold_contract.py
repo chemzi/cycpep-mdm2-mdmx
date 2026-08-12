@@ -177,6 +177,13 @@ def normalize_thresholds(thresholds: Any, *, applicable_targets=None) -> tuple[d
     }
 
 
+def canonical_threshold_digest(thresholds: Any) -> str:
+    """Return the identity of the exact snapshot consumed by Prediction."""
+    from prediction_pipeline.contracts import object_sha256
+
+    return object_sha256(thresholds if isinstance(thresholds, dict) else {})
+
+
 def merge_thresholds(existing: Any, incoming: Any) -> tuple[dict, dict]:
     """Evidence-aware merge; lower-grade cache data cannot replace stronger state."""
     current, current_audit = normalize_thresholds(existing)

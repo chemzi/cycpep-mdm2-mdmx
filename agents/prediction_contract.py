@@ -21,6 +21,7 @@ from prediction_pipeline.contracts import (
     object_sha256,
     prediction_status_from_battery,
 )
+from threshold_contract import canonical_threshold_digest
 
 
 _LAUNCHER_ID = re.compile(r"^launcher_([0-9a-f]{32})$")
@@ -162,6 +163,13 @@ def _load_object(path: Path) -> dict[str, Any] | None:
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def _threshold_snapshot_matches_digest(
+    thresholds: Mapping[str, Any], expected_digest: str
+) -> bool:
+    """Match the exact Prediction-owned threshold snapshot identity."""
+    return canonical_threshold_digest(thresholds) == expected_digest
 
 
 def _relevant_start(event: Mapping[str, Any], expected: PredictionCorrelation) -> bool:
@@ -408,7 +416,7 @@ def validate_prediction_invocation(
         or handoff is None
         or manifest != expected_run_manifest
         or object_sha256(project) != inputs.project_digest
-        or object_sha256(thresholds) != inputs.thresholds_digest
+        or not _threshold_snapshot_matches_digest(thresholds, inputs.thresholds_digest)
         or _batch_digest(raw_rows, inputs) != inputs.batch_digest
         or tuple(sorted(str(row.get("candidate_id") or "") for row in raw_rows)) != inputs.candidate_ids
         or handoff.get("run_id") != correlation.prediction_run_id

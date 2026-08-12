@@ -558,6 +558,19 @@ class PredictionLauncherContractTests(unittest.TestCase):
         ).run()
         self.assertEqual(resumed["run_id"], "legacy_prediction")
 
+    def test_raw_threshold_digest_receipt_remains_recoverable(self):
+        raw_thresholds = {
+            "L4_ring_closure": {"value": 3.0, "operator": "<="}
+        }
+        self.state["thresholds"] = raw_thresholds
+        self._run()
+
+        result = prediction.validate_prediction_invocation(
+            self.correlation,
+            store=data_layer.get_storage_backend(),
+        )
+        self.assertNotEqual(result.status, "started_without_completion")
+
 
 if __name__ == "__main__":
     unittest.main()

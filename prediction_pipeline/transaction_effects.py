@@ -29,12 +29,16 @@ class PredictionPersistence:
         *,
         run_id: str,
         required_targets: tuple[str, ...],
+        candidate_ids: tuple[str, ...],
+        thresholds_digest: str,
         defer_formal_writes: bool,
         artifact_id_prefix: str,
         launcher_correlation: dict[str, str] | None = None,
     ) -> None:
         self.run_id = run_id
         self.required_targets = required_targets
+        self.candidate_ids = candidate_ids
+        self.thresholds_digest = thresholds_digest
         self.deferred = defer_formal_writes
         self.artifact_id_prefix = artifact_id_prefix
         self.launcher_correlation = (
@@ -130,6 +134,7 @@ class PredictionPersistence:
         sequence = str(candidate_snapshot.get("sequence") or "")
         payload = {
             "candidate_id": candidate_snapshot.get("candidate_id"),
+            "prediction_run_id": self.run_id,
             "sequence": sequence,
             "length": len(sequence) if sequence else None,
             "route": candidate_snapshot.get("source_route"),
@@ -142,6 +147,7 @@ class PredictionPersistence:
             "layer_values": battery.get("layer_values") or {},
             "target_pass": battery.get("target_pass") or {},
             "protocol_identity": protocol_binding(),
+            "thresholds_digest": self.thresholds_digest,
         }
         self.record_event(
             "battery_evaluated",
@@ -262,6 +268,8 @@ class PredictionPersistence:
                 "run_id": self.run_id,
                 "status_counts": summary["status_counts"],
                 "protocol_identity": protocol_binding(),
+                "candidate_ids": list(self.candidate_ids),
+                "thresholds_digest": self.thresholds_digest,
                 **reference,
                 **correlation,
             },

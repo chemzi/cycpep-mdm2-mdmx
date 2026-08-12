@@ -493,6 +493,10 @@ class EvidenceLogger:
             round_num: int = None, blocks: list = None,
             trace_context: TraceContext | dict | None = None):
         payload = dict(payload or {})
+        if event_type == "exploration_decision":
+            raise ValueError(
+                "exploration_decision requires the dedicated source-validating writer"
+            )
         if event_type == "critic_review":
             project_id = payload.get("project_id")
             if not isinstance(project_id, str) or not TRACE_ID_RE.fullmatch(project_id):

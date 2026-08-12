@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from battery_evaluation import evaluate_battery
 from contracts.trace import TraceContext
+from contracts.event import EvidenceEvent
+from contracts.exploration_decision import ExplorationDecision
 from contracts.transaction import TransactionContext, TransactionStatus
 from execution.adapters import adapter_for
 from execution.config import ExecutionConfig
@@ -22,11 +26,16 @@ from execution.results import (
     StateAppendMutation,
 )
 from execution.worker import ExecutionWorker, _validate_action_result
+from exploration import exploration_shortlist
+from exploration_decision import build_exploration_decision, record_exploration_decision
 from prediction_pipeline.contracts import file_sha256
 from prediction_pipeline.pipeline import PredictionPipeline
 from prediction_pipeline.protocol import protocol_binding
 from storage import SQLiteStore
 from test_prediction_pipeline import SEQUENCE, project_config, write_monomer
+from threshold_contract import canonical_threshold_digest
+from threshold_contract import normalize_thresholds
+from target_bootstrap import config_digest
 
 
 class FailingCommitStore(SQLiteStore):
@@ -125,6 +134,56 @@ class PredictionTransactionalTests(unittest.TestCase):
             },
             "trace_context": {"project_id": "prediction_test"},
         }
+
+    def _e2_from_committed_prediction(self, store: SQLiteStore) -> ExplorationDecision:
+        events = store.query(
+            workflow_id="workflow-prediction", run_id="run-prediction-typed"
+        )
+        batteries = [
+            event for event in events if event["event_type"] == "battery_evaluated"
+        ]
+        handoff = next(
+            event for event in events
+            if event["event_type"] == "prediction_handoff_ready"
+        )
+        shortlist = EvidenceEvent(
+            timestamp="2026-08-12T00:00:00+00:00",
+            event_id="shortlist-real",
+            agent="critic",
+            event_type="exploration_shortlist",
+            payload=exploration_shortlist(
+                batteries, targets=["MDM2"], thresholds={}
+            ),
+            trace_context=TraceContext(
+                "prediction_test", "workflow-prediction", "run-prediction-typed"
+            ),
+            phase="critic",
+            round_num=1,
+            targets=("MDM2",),
+        ).to_dict()
+        store.append(shortlist)
+        project = deepcopy(self.project)
+        project["targets"][0]["design"] = {"lengths": [len(SEQUENCE)]}
+        project["review"] = {
+            "status": "approved",
+            "approved_digest": config_digest(project),
+            "content_digest": config_digest(project),
+        }
+        with patch("data_layer.get_storage_backend", return_value=store):
+            decision = build_exploration_decision(
+                battery_events=batteries,
+                shortlist_event=shortlist,
+                prediction_handoff_event=handoff,
+                project_config=project,
+                thresholds={},
+                project_id="prediction_test",
+                workflow_id="workflow-prediction",
+                run_id="run-prediction-typed",
+                target_ids=("MDM2",),
+                source_round=1,
+            )
+            record_exploration_decision(decision)
+        return decision
 
     @staticmethod
     def _typed_result(effects: dict, handoff: Path) -> ExecutionActionResult:
@@ -354,6 +413,56 @@ class PredictionTransactionalTests(unittest.TestCase):
         self.assertEqual(battery[0]["candidate_id"], self.row["candidate_id"])
         self.assertEqual(battery[0]["targets"], ["MDM2"])
         self.assertIn("failed_layers", battery[0])
+        self.assertEqual(
+            battery[0]["thresholds_digest"], canonical_threshold_digest({})
+        )
+        handoff = next(
+            event for event in events
+            if event.get("event_type") == "prediction_handoff_ready"
+        )
+        self.assertEqual(handoff["candidate_ids"], ["C0001"])
+        self.assertEqual(
+            handoff["thresholds_digest"], battery[0]["thresholds_digest"]
+        )
+        handoff_document = json.loads(
+            pipeline.handoff_path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            handoff_document["thresholds_digest"], battery[0]["thresholds_digest"]
+        )
+
+    def test_threshold_identity_preserves_raw_alias_evaluation_semantics(self):
+        alias = {"L4_ring_closure": {"value": 3.0}}
+        canonical = {"L4_nc_term_dist": {"value": 3.0}}
+        normalized_alias, _ = normalize_thresholds(alias)
+        normalized_canonical, _ = normalize_thresholds(canonical)
+        candidate = {"nc_distance_pre": 2.0, "nc_distance_post": 2.0}
+
+        self.assertEqual(normalized_alias, normalized_canonical)
+        self.assertNotEqual(
+            canonical_threshold_digest(alias), canonical_threshold_digest(canonical)
+        )
+        self.assertFalse(evaluate_battery(candidate, alias, ("MDM2",))["l4_pass"])
+        self.assertTrue(evaluate_battery(candidate, canonical, ("MDM2",))["l4_pass"])
+
+    def test_threshold_identity_preserves_duplicate_key_evaluation_semantics(self):
+        thresholds = {
+            "L4_ring_closure": {"value": 1.0},
+            "L4_nc_term_dist": {"value": 3.0},
+        }
+        pipeline = PredictionPipeline(
+            candidate_rows=[self.row], project=self.project, thresholds=thresholds,
+            artifacts_root=self.root / "threshold-artifacts",
+            run_root=self.root / "threshold-runs", run_id="prediction_threshold_raw",
+            defer_formal_writes=True, artifact_id_prefix="threshold-raw",
+        )
+        candidate = {"nc_distance_pre": 2.0, "nc_distance_post": 2.0}
+        self.assertEqual(pipeline.thresholds, thresholds)
+        self.assertEqual(
+            evaluate_battery(candidate, pipeline.thresholds, ("MDM2",))["l4_pass"],
+            evaluate_battery(candidate, thresholds, ("MDM2",))["l4_pass"],
+        )
+        self.assertTrue(evaluate_battery(candidate, thresholds, ("MDM2",))["l4_pass"])
 
     def test_battery_evaluated_passes_transaction_scope_validation(self):
         # PR44 回归：battery_evaluated 事件必须通过 Execution 边界
@@ -386,6 +495,73 @@ class PredictionTransactionalTests(unittest.TestCase):
             event.get("event_type") == "battery_evaluated"
             for event in effects["evidence_events"]
         ))
+
+    def test_prediction_effects_require_exactly_one_battery_per_candidate(self):
+        root = self.root / "battery-exact-coverage"
+        pipeline = PredictionPipeline(
+            candidate_rows=[self.row], project=self.project, thresholds={},
+            artifacts_root=root / "missing-artifacts", run_root=root / "runs",
+            run_id="prediction_battery_exact", defer_formal_writes=True,
+            artifact_id_prefix="tx-battery-exact",
+        )
+        pipeline.run()
+        original = pipeline.transaction_effects()
+        batteries = [
+            event for event in original["evidence_events"]
+            if event["event_type"] == "battery_evaluated"
+        ]
+        for mutation in ("missing", "duplicate", "extra"):
+            effects = deepcopy(original)
+            if mutation == "missing":
+                effects["evidence_events"] = [
+                    event for event in effects["evidence_events"]
+                    if event["event_type"] != "battery_evaluated"
+                ]
+            elif mutation == "duplicate":
+                effects["evidence_events"].append(deepcopy(batteries[0]))
+            else:
+                extra = deepcopy(batteries[0])
+                extra["candidate_id"] = "C9999"
+                effects["evidence_events"].append(extra)
+            path = root / f"{mutation}.json"
+            path.write_text(json.dumps(effects), encoding="utf-8")
+            with self.subTest(mutation=mutation):
+                with self.assertRaises(ExecutionContractError):
+                    load_prediction_transaction_effects(
+                        path=path, candidate_ids=["C0001"],
+                        run_id="prediction_battery_exact",
+                        transaction_id="tx-battery-exact",
+                        expected_protocol=protocol_binding(),
+                    )
+
+    def test_invalid_prediction_candidate_still_has_one_battery_authority(self):
+        root = self.root / "invalid-battery-authority"
+        invalid_row = deepcopy(self.row)
+        invalid_row["sequence"] = "AAAAAAAA"
+        pipeline = PredictionPipeline(
+            candidate_rows=[invalid_row], project=self.project, thresholds={},
+            artifacts_root=root / "missing-artifacts", run_root=root / "runs",
+            run_id="prediction_invalid_battery", defer_formal_writes=True,
+            artifact_id_prefix="tx-invalid-battery",
+        )
+        pipeline.run()
+        effects_path = root / "effects.json"
+        effects_path.write_text(
+            json.dumps(pipeline.transaction_effects()), encoding="utf-8"
+        )
+        effects = load_prediction_transaction_effects(
+            path=effects_path, candidate_ids=["C0001"],
+            run_id="prediction_invalid_battery",
+            transaction_id="tx-invalid-battery",
+            expected_protocol=protocol_binding(),
+        )
+        batteries = [
+            event for event in effects["evidence_events"]
+            if event["event_type"] == "battery_evaluated"
+        ]
+        self.assertEqual(len(batteries), 1)
+        self.assertFalse(batteries[0]["passed"])
+        self.assertEqual(batteries[0]["triage_status"], "invalid")
 
     def test_real_handler_and_agent_cli_emit_typed_effects(self):
         root = self.root / "real-handler"
@@ -515,6 +691,60 @@ class PredictionTransactionalTests(unittest.TestCase):
         self.assertEqual(started["run_id"], "run-prediction-typed")
         self.assertEqual(started["prediction_run_id"], expected_prediction_run)
         self.assertNotEqual(started["run_id"], started["prediction_run_id"])
+
+    def test_committed_prediction_formal_evidence_builds_e2_decision(self):
+        store, _, context, _ = self._run(self.root / "prediction-to-e2")
+        events = store.query(
+            workflow_id="workflow-prediction", run_id="run-prediction-typed"
+        )
+        batteries = [event for event in events if event["event_type"] == "battery_evaluated"]
+        handoff = next(
+            event for event in events
+            if event["event_type"] == "prediction_handoff_ready"
+        )
+        self.assertEqual(len(batteries), 1)
+        self.assertEqual(
+            batteries[0]["prediction_run_id"], handoff["prediction_run_id"]
+        )
+        decision = self._e2_from_committed_prediction(store)
+        self.assertIsInstance(decision, ExplorationDecision)
+        self.assertEqual(decision.candidate_ids, ("C0001",))
+        self.assertEqual(decision.prediction_run_id, handoff["prediction_run_id"])
+        self.assertEqual(len(store.query(event_type="exploration_decision")), 1)
+
+    def test_cache_retry_reconstructs_battery_and_commits_once(self):
+        root = self.root / "cache-recovery"
+        shared_runs = root / "shared-prediction-runs"
+        first = PredictionPipeline(
+            candidate_rows=[self.row], project=self.project, thresholds={},
+            artifacts_root=root / "missing-artifacts", run_root=shared_runs,
+            run_id="prediction_cache_recovery", defer_formal_writes=True,
+            artifact_id_prefix="uncommitted-first-attempt",
+        )
+        first.run()
+
+        def cached_handler(context):
+            retry = PredictionPipeline(
+                candidate_rows=[self.row], project=self.project, thresholds={},
+                artifacts_root=root / "missing-artifacts", run_root=shared_runs,
+                run_id="prediction_cache_recovery", defer_formal_writes=True,
+                artifact_id_prefix=context.transaction_id, resume=True,
+            )
+            summary = retry.run()
+            self.assertEqual(summary["cache_hits"], 1)
+            effects = retry.transaction_effects()
+            return self._typed_result(effects, retry.handoff_path)
+
+        store, _, context, _ = self._run(root, handler=cached_handler, attempt=2)
+        self.assertEqual(context.status, TransactionStatus.COMMITTED)
+        batteries = store.query(event_type="battery_evaluated")
+        self.assertEqual(len(batteries), 1)
+        self.assertEqual(batteries[0]["candidate_id"], "C0001")
+        self.assertEqual(
+            batteries[0]["prediction_run_id"], "prediction_cache_recovery"
+        )
+        decision = self._e2_from_committed_prediction(store)
+        self.assertEqual(decision.prediction_run_id, "prediction_cache_recovery")
 
     def test_validation_failure_leaves_formal_store_unchanged(self):
         root = self.root / "validation-failure"
