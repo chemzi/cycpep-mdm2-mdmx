@@ -38,7 +38,7 @@ from project_config import (
 )
 from threshold_contract import merge_thresholds, normalize_thresholds
 from contracts.event import EvidenceEvent
-from contracts.trace import TraceContext
+from contracts.trace import TRACE_ID_RE, TraceContext
 from core.context import ProjectPaths  # noqa: E402
 from storage import (  # noqa: E402
     SQLiteStore,
@@ -492,6 +492,11 @@ class EvidenceLogger:
             targets: list = None, phase: str = None,
             round_num: int = None, blocks: list = None,
             trace_context: TraceContext | dict | None = None):
+        payload = dict(payload or {})
+        if event_type == "critic_review":
+            project_id = payload.get("project_id")
+            if not isinstance(project_id, str) or not TRACE_ID_RE.fullmatch(project_id):
+                raise ValueError("critic_review project_id must be a valid trace ID")
         if trace_context is not None and not isinstance(trace_context, TraceContext):
             trace_context = TraceContext.from_dict(trace_context)
         event = EvidenceEvent(
@@ -499,7 +504,7 @@ class EvidenceLogger:
             event_id=str(uuid.uuid4())[:12],
             agent=agent,
             event_type=event_type,
-            payload=dict(payload or {}),
+            payload=payload,
             trace_context=trace_context,
             phase=phase,
             round_num=round_num,
@@ -615,11 +620,12 @@ class EvidenceLogger:
                       recommendation: str, metrics: dict,
                       report_id: str = "", report_path: str = "",
                       report_sha256: str = "",
-                      prediction_run_id: str = ""):
+                      prediction_run_id: str = "", project_id: str = ""):
         payload = {
             "issues": issues, "pass": passed,
             "summary": summary, "recommendation": recommendation,
-            "metrics_snapshot": metrics
+            "metrics_snapshot": metrics,
+            "project_id": project_id,
         }
         if report_id:
             payload["report_id"] = report_id
