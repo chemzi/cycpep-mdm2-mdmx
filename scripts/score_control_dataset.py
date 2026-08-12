@@ -9,11 +9,13 @@ v2 control dataset that ``threshold_calibration.load_control_dataset`` accepts.
 Scores file format (JSON)::
 
     {
-      "keap1-7K2E-positive": {
-        "global": {"plddt": 0.9, "nc_distance_pre": 1.2, "nc_distance_post": 1.3, "scrmsd": 0.8},
-        "targets": {"KEAP1": {"ipsae": 0.8, "hotspot_cov": 0.9, "pose_rmsd": 1.0, ...}}
-      },
-      ...
+      "scoring_implementation": {"name": "prediction_pipeline", "version": "1.5.1"},
+      "scores": {
+        "keap1-7K2E-positive": {
+          "global": {"plddt": 0.9, "nc_distance_pre": 1.2, "nc_distance_post": 1.3, "scrmsd": 0.8},
+          "targets": {"KEAP1": {"ipsae": 0.8, "hotspot_cov": 0.9, "pose_rmsd": 1.0, ...}}
+        }
+      }
     }
 
 The metric names are the same ones ``threshold_calibration._control_value``
@@ -55,6 +57,7 @@ def build_scored_dataset(
     *,
     config: dict,
     target_ids: list[str],
+    scoring_implementation: dict,
 ) -> dict:
     """Assemble a bound v2 control dataset from a manifest and scores."""
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -81,6 +84,7 @@ def build_scored_dataset(
         "approved_digest": (config.get("review") or {}).get("approved_digest"),
         "schema_version": 2,
         "protocol": protocol,
+        "scoring_implementation": dict(scoring_implementation),
         "source_manifest": str(manifest_path),
         "target_ids": target_ids,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -117,12 +121,21 @@ def main() -> int:
         return 2
 
     config = load_project_config()
-    scores = json.loads(scores_path.read_text(encoding="utf-8"))
+    scores_payload = json.loads(scores_path.read_text(encoding="utf-8"))
+    scoring_implementation = scores_payload.get("scoring_implementation")
+    scores = scores_payload.get("scores")
+    if not isinstance(scoring_implementation, dict) or not isinstance(scores, dict):
+        print(
+            "scores file requires scoring_implementation and scores objects",
+            file=sys.stderr,
+        )
+        return 2
     dataset = build_scored_dataset(
         manifest_path,
         scores,
         config=config,
         target_ids=list(required_target_ids(config)),
+        scoring_implementation=scoring_implementation,
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

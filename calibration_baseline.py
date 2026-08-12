@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from collections.abc import Iterator, Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from threshold_calibration import (
     validate_control_metadata,
     validate_control_provenance,
 )
+from project_config import required_target_ids
 
 
 CALIBRATION_BASELINE_SCHEMA_VERSION = 1
@@ -43,6 +45,62 @@ SCIENTIFIC_BINDING_KEYS = (
 
 class CalibrationBaselineError(ValueError):
     """A calibration cannot enter or be consumed from formal authority."""
+
+
+class _ValidatedCalibrationBinding(Mapping[str, Any]):
+    """Internal proof that the formal Store consumption seam validated a binding."""
+
+    def __init__(self, binding: dict):
+        self.__binding = deepcopy(binding)
+
+    def __getitem__(self, key: str) -> Any:
+        return deepcopy(self.__binding[key])
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.__binding)
+
+    def __len__(self) -> int:
+        return len(self.__binding)
+
+
+def is_validated_calibration_binding(value: object) -> bool:
+    return isinstance(value, _ValidatedCalibrationBinding)
+
+
+def validated_calibration_binding_for_runtime(
+    value: object, *, thresholds: dict, project: dict
+) -> dict:
+    if not is_validated_calibration_binding(value):
+        raise CalibrationBaselineError(
+            "formal calibration claims require a Store-validated binding"
+        )
+    binding = dict(value)
+    validate_publication_identity(binding)
+    _validate_prediction_owner(
+        binding.get("protocol_identity"), binding.get("scoring_implementation")
+    )
+    validate_approved_project(project)
+    if (
+        binding.get("calibration_authority") != "simulation_only"
+        or binding.get("project_id") != project.get("project_id")
+        or binding.get("approved_digest")
+        != (project.get("review") or {}).get("approved_digest")
+        or binding.get("thresholds_sha256") != object_sha256(thresholds)
+    ):
+        raise CalibrationBaselineError(
+            "validated calibration binding does not match Pipeline runtime"
+        )
+    return binding
+
+
+def validate_approved_project(project: dict) -> None:
+    """Apply the repository's canonical project-approval semantics."""
+    from target_bootstrap import ReviewRequiredError, assert_project_approved
+
+    try:
+        assert_project_approved(project)
+    except ReviewRequiredError as exc:
+        raise CalibrationBaselineError(str(exc)) from exc
 
 
 def _dataset_metadata(dataset: dict) -> dict:
@@ -72,8 +130,6 @@ def _is_synthetic(control: dict) -> bool:
 def _validate_authority(
     dataset: dict,
     authority: str,
-    *,
-    approved_scored_dataset_sha256: str | None = None,
 ) -> None:
     if authority not in CALIBRATION_AUTHORITIES:
         raise CalibrationBaselineError(
@@ -89,17 +145,7 @@ def _validate_authority(
                 "simulation_only datasets require explicit synthetic provenance"
             )
         return
-    if declared != "approved_real" or any(synthetic):
-        raise CalibrationBaselineError(
-            "synthetic or simulation controls cannot use approved_real authority"
-        )
-    if (
-        not approved_scored_dataset_sha256
-        or approved_scored_dataset_sha256 != object_sha256(dataset)
-    ):
-        raise CalibrationBaselineError(
-            "approved_real requires a matching externally approved scored dataset digest"
-        )
+    raise CalibrationBaselineError("approved_real publication is unavailable in E1")
 
 
 def _prediction_owner_identities() -> tuple[dict, dict]:
@@ -123,13 +169,13 @@ def _validate_prediction_owner(
 
 
 def _validate_dataset_binding(
-    dataset: dict, project: dict, protocol_identity: dict
+    dataset: dict,
+    project: dict,
+    protocol_identity: dict,
+    scoring_implementation: dict,
 ) -> dict:
-    content = deepcopy(project)
-    content.pop("review", None)
+    validate_approved_project(project)
     approved_digest = (project.get("review") or {}).get("approved_digest")
-    if not approved_digest or approved_digest != object_sha256(content):
-        raise CalibrationBaselineError("project approved_digest mismatch")
     metadata = _dataset_metadata(dataset)
     if str(metadata.get("schema_version")) != "2":
         raise CalibrationBaselineError(
@@ -141,6 +187,7 @@ def _validate_dataset_binding(
             project_id=project.get("project_id"),
             approved_digest=approved_digest,
             protocol=protocol_identity,
+            scoring_implementation=scoring_implementation,
         )
         validate_control_provenance(
             _controls(dataset), version=metadata.get("schema_version")
@@ -151,7 +198,12 @@ def _validate_dataset_binding(
 
 
 def _validate_calibrator_lineage(
-    *, dataset: dict, audit: dict, protocol_identity: dict, project: dict | None = None
+    *,
+    dataset: dict,
+    audit: dict,
+    protocol_identity: dict,
+    scoring_implementation: dict,
+    project: dict | None = None,
 ) -> str:
     dataset_sha256 = object_sha256(dataset)
     if audit.get("control_dataset_sha256") != dataset_sha256:
@@ -207,6 +259,12 @@ def _validate_calibrator_lineage(
     if audit.get("protocol_identity") != protocol_identity:
         raise CalibrationBaselineError("calibration audit protocol identity mismatch")
     metadata = _dataset_metadata(dataset)
+    if metadata.get("scoring_implementation") != scoring_implementation:
+        raise CalibrationBaselineError("control dataset scoring implementation mismatch")
+    if audit.get("scoring_implementation") != metadata.get("scoring_implementation"):
+        raise CalibrationBaselineError("calibration audit scoring implementation mismatch")
+    if project is not None and not set(target_ids).issubset(required_target_ids(project)):
+        raise CalibrationBaselineError("calibration target scope is outside approved project")
     try:
         normalized = validate_control_metadata(
             metadata,
@@ -216,6 +274,7 @@ def _validate_calibrator_lineage(
                 or metadata.get("approved_digest")
             ),
             protocol=protocol_identity,
+            scoring_implementation=scoring_implementation,
         )
     except ControlDataError as exc:
         raise CalibrationBaselineError(str(exc)) from exc
@@ -308,24 +367,20 @@ def create_calibration_publication(
 ) -> dict:
     """Create a deterministic artifact and its formal publication binding."""
     _validate_prediction_owner(protocol_identity, scoring_implementation)
-    approved_dataset_sha256 = (
-        (project.get("review") or {}).get("approved_scored_dataset_sha256")
-        if calibration_authority == "approved_real" else None
-    )
-    _validate_authority(
-        dataset,
-        calibration_authority,
-        approved_scored_dataset_sha256=approved_dataset_sha256,
-    )
+    approved_dataset_sha256 = None
+    _validate_authority(dataset, calibration_authority)
     if not isinstance(protocol_identity, dict) or not protocol_identity:
         raise CalibrationBaselineError("protocol_identity is required")
     if not isinstance(scoring_implementation, dict) or not scoring_implementation:
         raise CalibrationBaselineError("scoring_implementation is required")
-    _validate_dataset_binding(dataset, project, protocol_identity)
+    _validate_dataset_binding(
+        dataset, project, protocol_identity, scoring_implementation
+    )
     calibration_parameters_sha256 = _validate_calibrator_lineage(
         dataset=dataset,
         audit=audit,
         protocol_identity=protocol_identity,
+        scoring_implementation=scoring_implementation,
         project=project,
     )
     calibrated_keys = _validate_calibrated_output(thresholds, audit)
@@ -411,11 +466,8 @@ def validate_calibration_consumption(
     )
     if binding.get("calibration_authority") not in CALIBRATION_AUTHORITIES:
         raise CalibrationBaselineError("calibration authority is invalid")
-    content = deepcopy(project)
-    content.pop("review", None)
+    validate_approved_project(project)
     approved_digest = (project.get("review") or {}).get("approved_digest")
-    if not approved_digest or object_sha256(content) != approved_digest:
-        raise CalibrationBaselineError("active project approved_digest mismatch")
     if (
         binding.get("project_id") != project.get("project_id")
         or binding.get("approved_digest") != approved_digest
@@ -425,12 +477,9 @@ def validate_calibration_consumption(
         raise CalibrationBaselineError("calibration binding protocol mismatch")
     if binding.get("scoring_implementation") != scoring_implementation:
         raise CalibrationBaselineError("calibration binding scoring implementation mismatch")
-    approved_dataset_sha256 = None
-    if binding.get("calibration_authority") == "approved_real":
-        approved_dataset_sha256 = (project.get("review") or {}).get(
-            "approved_scored_dataset_sha256"
-        )
-    if binding.get("approved_scored_dataset_sha256") != approved_dataset_sha256:
+    if binding.get("calibration_authority") != "simulation_only":
+        raise CalibrationBaselineError("approved_real consumption is unavailable in E1")
+    if binding.get("approved_scored_dataset_sha256") is not None:
         raise CalibrationBaselineError("approved scored dataset authority mismatch")
     if object_sha256(thresholds) != binding.get("thresholds_sha256"):
         raise CalibrationBaselineError("calibration threshold snapshot mismatch")
@@ -443,8 +492,10 @@ def validate_calibration_consumption(
     path = Path(str(artifact.get("path") or ""))
     if not path.is_file() or file_sha256(path) != binding.get("artifact_sha256"):
         raise CalibrationBaselineError("calibration artifact content mismatch")
-    validate_calibration_artifact(binding, path, thresholds=thresholds)
-    return dict(binding)
+    validate_calibration_artifact(
+        binding, path, thresholds=thresholds, project=project
+    )
+    return _ValidatedCalibrationBinding(binding)
 
 
 def validate_calibration_artifact(
@@ -452,6 +503,7 @@ def validate_calibration_artifact(
     path: str | Path,
     *,
     thresholds: dict | None = None,
+    project: dict | None = None,
 ) -> dict:
     """Validate the scientific binding and provenance embedded in an artifact."""
     try:
@@ -478,19 +530,14 @@ def validate_calibration_artifact(
     _validate_prediction_owner(
         binding.get("protocol_identity"), binding.get("scoring_implementation")
     )
-    _validate_authority(
-        dataset,
-        str(binding.get("calibration_authority") or ""),
-        approved_scored_dataset_sha256=binding.get(
-            "approved_scored_dataset_sha256"
-        ),
-    )
+    _validate_authority(dataset, str(binding.get("calibration_authority") or ""))
     try:
         validate_control_metadata(
             _dataset_metadata(dataset),
             project_id=str(binding.get("project_id") or ""),
             approved_digest=str(binding.get("approved_digest") or ""),
             protocol=binding.get("protocol_identity"),
+            scoring_implementation=binding.get("scoring_implementation"),
         )
         validate_control_provenance(_controls(dataset), version=2)
     except ControlDataError as exc:
@@ -504,6 +551,8 @@ def validate_calibration_artifact(
         dataset=dataset,
         audit=audit,
         protocol_identity=binding.get("protocol_identity"),
+        scoring_implementation=binding.get("scoring_implementation"),
+        project=project,
     )
     if parameters_sha256 != binding.get("calibration_parameters_sha256"):
         raise CalibrationBaselineError(

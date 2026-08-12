@@ -8,6 +8,7 @@ import re
 import uuid
 from collections import Counter
 from copy import deepcopy
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -35,7 +36,13 @@ from .contracts import (
     prediction_status_from_battery,
     validate_project,
 )
-from calibration_baseline import unpublished_calibration_binding
+from calibration_baseline import (
+    CalibrationBaselineError,
+    is_validated_calibration_binding,
+    thresholds_claim_formal_calibration,
+    unpublished_calibration_binding,
+    validated_calibration_binding_for_runtime,
+)
 from core.protocol import ProtocolError
 from .protocol import (
     MIGRATE_LEGACY_HINT,
@@ -112,6 +119,33 @@ def _artifact_inventory(bundle: ArtifactBundle | None) -> list[dict]:
     return inventory
 
 
+def _resolve_calibration_binding(
+    *, thresholds: dict, project: dict, binding: Mapping[str, Any] | None
+) -> dict:
+    validated = is_validated_calibration_binding(binding)
+    if thresholds_claim_formal_calibration(thresholds) and not validated:
+        raise ContractError(
+            "calibration_binding_unvalidated",
+            "calibrated thresholds require a Store-validated calibration binding",
+        )
+    if binding is not None and (
+        binding.get("publication_id")
+        or binding.get("calibration_authority") in {"simulation_only", "approved_real"}
+    ) and not validated:
+        raise ContractError(
+            "calibration_binding_unvalidated",
+            "formal calibration claims require a Store-validated calibration binding",
+        )
+    if not validated:
+        return unpublished_calibration_binding(thresholds)
+    try:
+        return validated_calibration_binding_for_runtime(
+            binding, thresholds=thresholds, project=project
+        )
+    except CalibrationBaselineError as exc:
+        raise ContractError("calibration_binding_invalid", str(exc)) from exc
+
+
 class PredictionPipeline(MetricCollectorsMixin):
     """Orchestrate artifact validation, metrics, battery evaluation, and handoff."""
 
@@ -121,7 +155,7 @@ class PredictionPipeline(MetricCollectorsMixin):
         candidate_rows: list[dict],
         project: dict,
         thresholds: dict,
-        calibration_binding: dict | None = None,
+        calibration_binding: Mapping[str, Any] | None = None,
         artifacts_root: str | Path,
         run_root: str | Path,
         config: PredictionConfig | None = None,
@@ -138,8 +172,10 @@ class PredictionPipeline(MetricCollectorsMixin):
         # Preserve the evaluator's established raw-threshold semantics.  The
         # provenance identity is computed separately from this exact snapshot.
         self.thresholds = deepcopy(thresholds) if isinstance(thresholds, dict) else {}
-        self.calibration_binding = dict(
-            calibration_binding or unpublished_calibration_binding(self.thresholds)
+        self.calibration_binding = _resolve_calibration_binding(
+            thresholds=self.thresholds,
+            project=self.project,
+            binding=calibration_binding,
         )
         self.required_targets = validate_project(project)
         self.artifacts_root = Path(artifacts_root).expanduser().resolve()

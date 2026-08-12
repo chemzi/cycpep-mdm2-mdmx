@@ -275,6 +275,7 @@ def validate_control_metadata(
     approved_digest: str | None = None,
     protocol: Any | None = None,
     protocol_hash: str | None = None,
+    scoring_implementation: dict | None = None,
 ) -> dict:
     """Validate and normalize the binding metadata for a control payload.
 
@@ -290,6 +291,10 @@ def validate_control_metadata(
     ]
     if not metadata.get("protocol") and not metadata.get("protocol_hash"):
         missing.append("protocol/protocol_hash")
+    if str(metadata.get("schema_version")) == "2" and not isinstance(
+        metadata.get("scoring_implementation"), dict
+    ):
+        missing.append("scoring_implementation")
     if missing:
         raise ControlDataError(
             "control dataset metadata is missing required binding fields: "
@@ -314,6 +319,13 @@ def validate_control_metadata(
         raise ControlDataError("current scoring protocol/protocol_hash is required for calibration")
     if observed_hash != expected_hash:
         raise ControlDataError("control dataset protocol does not match current scoring protocol")
+    if (
+        scoring_implementation is not None
+        and metadata.get("scoring_implementation") != scoring_implementation
+    ):
+        raise ControlDataError(
+            "control dataset scoring implementation does not match current scorer"
+        )
     metadata["protocol_hash"] = observed_hash
     return metadata
 
@@ -370,7 +382,10 @@ def load_control_dataset(
         raise ControlDataError(f"cannot read control dataset: {type(exc).__name__}") from exc
     controls, metadata = coerce_dataset(payload)
     payload_meta = payload if isinstance(payload, dict) else {}
-    for key in ("project_id", "approved_digest", "protocol", "protocol_hash", "schema_version"):
+    for key in (
+        "project_id", "approved_digest", "protocol", "protocol_hash",
+        "scoring_implementation", "schema_version",
+    ):
         if key in payload_meta and key not in metadata:
             metadata[key] = payload_meta[key]
     metadata = validate_control_metadata(
@@ -437,6 +452,7 @@ def calibrate_thresholds(
         max_false_positive_rate, min_positive_recall,
         control_dataset_sha256=object_sha256(dataset_identity),
         calibration_parameters=calibration_parameters,
+        scoring_implementation=dataset_meta.get("scoring_implementation"),
     )
     _, invalid, positives, negatives = _label_control_records(records, audit)
     expected_protocol_hash = audit["protocol_hash"]
@@ -499,6 +515,7 @@ def _build_calibration_audit(
     *,
     control_dataset_sha256: str,
     calibration_parameters: dict,
+    scoring_implementation: dict | None,
 ) -> dict[str, Any]:
     protocol_identity = protocol or dataset_meta.get("protocol")
     return {
@@ -513,6 +530,7 @@ def _build_calibration_audit(
         "min_positive_recall": min_positive_recall,
         "control_dataset_sha256": control_dataset_sha256,
         "protocol_identity": deepcopy(protocol_identity),
+        "scoring_implementation": deepcopy(scoring_implementation),
         "calibration_parameters": calibration_parameters,
         "calibration_parameters_sha256": object_sha256(calibration_parameters),
         "protocol_hash": (

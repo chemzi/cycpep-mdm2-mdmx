@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import data_layer
-from data_layer import CandidateIndex, State
+from data_layer import CandidateIndex, EvidenceLogger, State
 from prediction_pipeline.contracts import (
     ContractError,
     PredictionConfig,
@@ -236,6 +236,30 @@ class PredictionPipelineTests(unittest.TestCase):
             resume=resume,
             require_protocol_compatibility=require_protocol_compatibility,
         )
+
+    def test_direct_pipeline_rejects_unvalidated_formal_calibration_before_writes(self):
+        self._register_candidate()
+        thresholds = justified_thresholds()
+        thresholds["L7_scrmsd"]["calibration_status"] = "calibrated"
+        before_candidate = CandidateIndex.find("C0001")
+        before_state = State.load()
+        before_evidence = EvidenceLogger.get_all()
+
+        with self.assertRaisesRegex(ContractError, "validated calibration"):
+            self._pipeline(thresholds=thresholds)
+        with self.assertRaisesRegex(ContractError, "validated calibration"):
+            self._pipeline(
+                thresholds=thresholds,
+                calibration_binding={
+                    "calibration_authority": "approved_real",
+                    "publication_id": "forged",
+                    "artifact_id": "forged-artifact",
+                },
+            )
+
+        self.assertEqual(CandidateIndex.find("C0001"), before_candidate)
+        self.assertEqual(State.load(), before_state)
+        self.assertEqual(EvidenceLogger.get_all(), before_evidence)
 
     def test_missing_artifacts_and_thresholds_are_pending_without_fake_values(self):
         self._register_candidate()

@@ -5,7 +5,7 @@ Defines how a control-derived threshold snapshot becomes a project- and protocol
 ## ADDED Requirements
 
 ### Requirement: Frozen calibration identity
-A formally published calibration snapshot SHALL carry one versioned identity envelope containing `calibration_authority`, project ID and approved project digest, the existing Prediction protocol name/version/integrity identity, scoring implementation name/version, threshold schema version, scored control dataset integrity identity, calibrated threshold snapshot integrity identity, deterministic publication ID, and calibration artifact ID/integrity identity. `calibration_authority` SHALL be exactly `simulation_only` or `approved_real`. Control scoring, threshold calibration, later candidate evaluation, and any demo evaluation claiming that baseline SHALL use the same envelope. The system MUST reuse the existing Prediction protocol integrity contract and MUST NOT introduce a parallel protocol-hash authority.
+A formally published E1 calibration snapshot SHALL carry one versioned identity envelope containing `calibration_authority`, project ID and approved project digest, the existing Prediction protocol name/version/integrity identity, scoring implementation name/version, threshold schema version, scored control dataset integrity identity, calibrated threshold snapshot integrity identity, deterministic publication ID, and calibration artifact ID/integrity identity. The vocabulary remains `simulation_only | approved_real`, but E1 SHALL publish and consume only `simulation_only`; `approved_real` SHALL fail closed at every formal boundary. Control dataset metadata, calibrator audit, publication, and later candidate evaluation SHALL carry the same Prediction-owned scoring implementation identity.
 
 #### Scenario: Control and candidate use the same frozen identity
 - **WHEN** scored controls are calibrated and a candidate is later evaluated against the approved result
@@ -16,7 +16,7 @@ A formally published calibration snapshot SHALL carry one versioned identity env
 - **THEN** calibration publication or Prediction consumption fails closed before the result can be represented as approved calibration
 
 ### Requirement: Provenance-only controls do not imply calibration
-An unscored control manifest SHALL remain an input provenance artifact and MUST NOT be treated as a scored control dataset or formal threshold authority. A scored control dataset SHALL preserve each control's identity, positive or negative label, metric values, source/provenance, available assay or literature linkage, frozen protocol binding, and `calibration_authority`. A metric SHALL be marked `calibrated` only when it satisfies the existing algorithm's sample-size, FPR, recall, separation, and metric-scope contract; otherwise it SHALL retain an existing non-calibrated status. Algorithmic `calibration_status=calibrated` and scientific `calibration_authority=approved_real` SHALL remain independent fields.
+An unscored control manifest SHALL remain an input provenance artifact and MUST NOT be treated as a scored control dataset or formal threshold authority. A schema-version-2 scored control dataset SHALL preserve each control's identity, positive or negative label, metric values, source/provenance, available assay or literature linkage, frozen protocol binding, Prediction scoring implementation identity, and `calibration_authority`. A metric SHALL be marked `calibrated` only when it satisfies the existing algorithm's sample-size, FPR, recall, separation, and metric-scope contract; otherwise it SHALL retain an existing non-calibrated status. Algorithmic `calibration_status=calibrated` and scientific authority remain independent fields.
 
 #### Scenario: Sufficient bound controls calibrate a metric
 - **WHEN** a project- and protocol-bound scored dataset contains sufficient positive and negative values for an eligible metric and satisfies the existing statistical contract
@@ -67,12 +67,27 @@ Calibration artifact creation and formal Store publication SHALL validate protoc
 - **WHEN** publication carries a fake protocol version or scoring implementation
 - **THEN** creation or Store publication fails closed with no artifact authority, threshold mutation, or publication Evidence
 
-### Requirement: Approved-real requires external approved dataset authority
-A self-declared `calibration_authority=approved_real` dataset SHALL NOT be sufficient for approved-real publication. `approved_real` SHALL require an external approved scored-dataset integrity identity frozen in the approved project authority and exactly matching the dataset. In the absence of that authority, approved-real publication MUST fail closed. E1 SHALL NOT create a real-control approval workflow.
+### Requirement: Approved-real is unavailable in E1
+E1 SHALL unconditionally reject `calibration_authority=approved_real` during artifact creation, Store publication, artifact validation, and Prediction consumption. A field injected under `project.review`, including `approved_scored_dataset_sha256`, SHALL NOT unlock real authority. E1 SHALL NOT create a real-control approval workflow.
 
 #### Scenario: Structurally valid real dataset lacks external approval
 - **WHEN** a non-synthetic dataset declares `approved_real` but the approved project authority has no matching approved scored-dataset digest
 - **THEN** publication fails closed without changing formal Store state
+
+#### Scenario: Mutable review data is injected after approval
+- **WHEN** a matching scored-dataset digest is added under `project.review` without changing the approved content digest
+- **THEN** approved-real publication still fails closed
+
+### Requirement: Formal calibration requires canonical project approval and target scope
+Builder, Store publication, and Prediction consumption SHALL require `review.status=approved` and a current matching approved content digest. Calibration parameter target IDs SHALL be a subset of the approved project's target IDs.
+
+#### Scenario: Digest is valid but status is draft
+- **WHEN** project review status is draft while the approved digest remains mathematically correct
+- **THEN** builder, Store publication, and Prediction consumption fail closed
+
+#### Scenario: Calibration target is outside the project
+- **WHEN** calibration parameters name a target absent from the approved project
+- **THEN** formal publication fails closed
 
 ### Requirement: Atomic formal calibration publication
 Publishing a calibration SHALL atomically register the calibration artifact and its integrity identity, update the formal threshold snapshot and its calibration binding, and append formal calibration Evidence in SQLite. If any part fails, none of those formal records SHALL become visible. JSON or CSV files MAY serve as inputs or projections, but `state.json`, a threshold cache, or a calibration JSON file alone MUST NOT constitute formal application or runtime authority.
@@ -108,6 +123,10 @@ The publication ID SHALL be a deterministic natural identity derived only from c
 - **WHEN** active binding and artifact metadata exist but publication Evidence or the registered artifact file/integrity is missing
 - **THEN** replay does not return idempotent success and requires explicit recovery
 
+#### Scenario: Publication Evidence payload is corrupt
+- **WHEN** the expected publication Evidence exists but its calibration binding differs from the requested binding
+- **THEN** replay fails closed without changing active State
+
 ### Requirement: Calibration artifact integrity is verified at consumption
 The formal Store SHALL retain the calibration artifact integrity identity. Before a formally published snapshot is consumed, the system SHALL verify that the referenced artifact content and threshold snapshot still match their stored identities. A modified artifact or threshold snapshot MUST fail closed.
 
@@ -120,11 +139,11 @@ The formal Store SHALL retain the calibration artifact integrity identity. Befor
 - **THEN** Prediction rejects the approved-calibration claim rather than silently evaluating under mixed thresholds
 
 ### Requirement: Prediction proves threshold consumption
-Prediction SHALL read the formal calibration binding with the Store-owned thresholds, validate it against the current approved project and active Prediction protocol, and preserve the consumed identity in its cache identity, run manifest, candidate record, and formal Evidence. The preserved identity SHALL include calibration authority, dataset/protocol/threshold/artifact integrity identities, and publication ID. A provisional, unavailable, pending, insufficient, or not-separated metric MUST NOT be represented as algorithmically calibrated, and a `simulation_only` baseline MUST NOT be represented as `approved_real`.
+Prediction SHALL read the formal calibration binding with the Store-owned thresholds, validate it against the current approved project and active Prediction protocol/scorer, and preserve the consumed identity in its cache identity, run manifest, candidate record, and formal Evidence. `PredictionPipeline` SHALL treat only the result of the formal validation seam as formal authority; a plain caller-provided dict SHALL NOT authorize calibrated thresholds. A provisional, unavailable, pending, insufficient, or not-separated metric MUST NOT be represented as algorithmically calibrated, and a `simulation_only` baseline MUST NOT be represented as `approved_real`.
 
-#### Scenario: Prediction consumes an approved snapshot
-- **WHEN** Prediction evaluates a candidate using thresholds from a valid approved calibration publication
-- **THEN** its cache identity, run manifest, candidate record, and formal Evidence identify `approved_real` plus the consumed dataset, threshold snapshot, calibration artifact, project approval, publication, and Prediction protocol
+#### Scenario: Direct Pipeline receives an unvalidated formal claim
+- **WHEN** direct Pipeline construction receives calibrated thresholds with no validated binding or with a forged formal-looking dict
+- **THEN** construction fails before candidate evaluation, Evidence, Candidate, or State mutation
 
 #### Scenario: Prediction consumes a simulation snapshot
 - **WHEN** Prediction evaluates a candidate using a valid simulation-only publication

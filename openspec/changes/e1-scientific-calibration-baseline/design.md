@@ -16,7 +16,7 @@ Synthetic controls are permitted only to prove this engineering lifecycle. The s
 
 **Goals:**
 
-- Represent `calibration_authority` explicitly as `simulation_only` or `approved_real` and preserve it across dataset, artifact, Store, Evidence, cache, and Prediction records.
+- Represent `calibration_authority` explicitly while allowing only `simulation_only` publication in E1. `approved_real` remains reserved for a future formal approval capability and fails closed at builder, Store, and consumption boundaries.
 - Build a deterministic baseline/artifact/publication identity from canonical scientific and binding content.
 - Atomically publish artifact registration, thresholds/binding, and formal Evidence in SQLite with deterministic idempotency.
 - Make Prediction fail closed on any project/protocol/authority/dataset/threshold/artifact mismatch and copy the exact consumed binding to all required outputs.
@@ -37,7 +37,7 @@ Add one small public baseline contract module beside `threshold_calibration.py`.
 
 - `calibration_status=calibrated` means the unchanged statistical contract passed for that dataset;
 - `calibration_authority=simulation_only` means the dataset is synthetic/scenario data and the result is not approved real scientific calibration;
-- only `calibration_authority=approved_real` may be represented as approved real calibration.
+- `calibration_authority=approved_real` cannot be published or consumed by E1.
 
 The dataset metadata and every synthetic control record carry an explicit synthetic marker. Building or validating an `approved_real` binding rejects any synthetic marker. Every serialized downstream binding includes the authority field; omission is invalid rather than defaulting to real.
 
@@ -70,7 +70,9 @@ Alternative considered: random UUID publication IDs. Rejected because retries wo
 
 The existing calibrator audit records the canonical scored-dataset digest, exact protocol identity/hash, and one canonical calibration-parameters identity containing metric keys, target IDs, FPR, recall, and minimum positive/negative counts. Publication validates those identities without rerunning calibration. The builder and Store both validate protocol/scoring identity against the Prediction-owned `protocol_binding()` and `scoring_implementation_identity()`.
 
-`approved_real` additionally requires an external `approved_scored_dataset_sha256` frozen in the approved project authority and equal to the exact dataset digest. A dataset's self-declaration is never approval. Because no such real approved dataset exists in the current project, E1 continues to support only `simulation_only` publication in practice; it does not add a real-control approval workflow.
+E1 unconditionally rejects `approved_real`; neither dataset self-declaration nor a post-approval field injected under mutable `project.review` is formal authority. A future change must define a genuinely frozen real-control approval capability before enabling it.
+
+Schema-version-2 scored-dataset metadata records `scoring_implementation`; the calibrator copies it into the audit, and publication requires dataset, audit, and the Prediction-owned scorer identity to match. Project validation uses canonical approved-status plus current-content-digest semantics, and calibration parameter target IDs must be a subset of approved project targets.
 
 ### 3. Publish all formal calibration state in one SQLite transaction
 
@@ -87,7 +89,7 @@ Alternative considered: reuse `commit_transaction` with a synthetic task. Reject
 
 ### 4. Validate at the Prediction entry boundary and propagate unchanged
 
-`agents.prediction.run` loads thresholds and `threshold_calibration_binding` from the same SQLite-backed State. Before constructing the pipeline it validates:
+`agents.prediction.run` loads thresholds and `threshold_calibration_binding` from the same SQLite-backed State. `validate_calibration_consumption` returns a validated binding value distinguishable from an ordinary dict. Before constructing the pipeline it validates:
 
 - publication ID matches the canonical binding;
 - project ID/approved digest and active `protocol_binding()` match;
@@ -96,7 +98,7 @@ Alternative considered: reuse `commit_transaction` with a synthetic task. Reject
 - artifact file content matches both Store and binding digests;
 - simulation/real authority is internally consistent with artifact/dataset provenance.
 
-The validated binding is passed explicitly to `PredictionPipeline`, participates in cache identity, and is copied unchanged into run manifest, handoff/summary, candidate record, candidate metadata, and scoring/record Evidence. A missing binding remains compatible only for thresholds that do not claim formal calibration; a stale or partial binding fails closed.
+Only that validated value is accepted by `PredictionPipeline` as formal authority and a plain formal-looking dict is rejected. A missing binding remains compatible only for thresholds that do not claim formal calibration; rejection occurs during construction before candidate evaluation or formal writes.
 
 Alternative considered: validate only `thresholds_digest`. Rejected because equal numeric thresholds do not identify authority, dataset, project, protocol, artifact, or publication.
 

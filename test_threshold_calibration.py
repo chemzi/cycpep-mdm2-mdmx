@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import agents.research as research
 import data_layer
+from prediction_pipeline.contracts import scoring_implementation_identity
 from threshold_calibration import (
     CALIBRATION_SCHEMA_VERSION,
     ControlDataError,
@@ -211,6 +212,7 @@ class ThresholdCalibrationTests(unittest.TestCase):
                     ),
                     "schema_version": CALIBRATION_SCHEMA_VERSION,
                     "protocol": {"tool": "wrong", "version": "test-1"},
+                    "scoring_implementation": scoring_implementation_identity(),
                 },
                 "controls": _control_set(1, 1),
             }), encoding="utf-8")
@@ -269,6 +271,7 @@ class ThresholdCalibrationTests(unittest.TestCase):
                     ),
                     "schema_version": CALIBRATION_SCHEMA_VERSION,
                     "protocol": {"tool": "same-protocol", "version": "test-1"},
+                    "scoring_implementation": scoring_implementation_identity(),
                 },
                 "controls": _control_set(),
             }), encoding="utf-8")
@@ -324,6 +327,7 @@ class ControlProvenanceAndScopeTests(unittest.TestCase):
                     ),
                     "schema_version": 1,
                     "protocol": {"tool": "same-protocol", "version": "test-1"},
+                    "scoring_implementation": scoring_implementation_identity(),
                 },
                 "controls": _control_set(2, 1),
             }), encoding="utf-8")
@@ -352,6 +356,7 @@ class ControlProvenanceAndScopeTests(unittest.TestCase):
                     ),
                     "schema_version": CALIBRATION_SCHEMA_VERSION,
                     "protocol": {"tool": "same-protocol", "version": "test-1"},
+                    "scoring_implementation": scoring_implementation_identity(),
                 },
                 "controls": records,
             }), encoding="utf-8")
@@ -401,6 +406,7 @@ class ControlProvenanceAndScopeTests(unittest.TestCase):
                     ),
                     "schema_version": CALIBRATION_SCHEMA_VERSION,
                     "protocol": {"tool": "same-protocol", "version": "test-1"},
+                    "scoring_implementation": scoring_implementation_identity(),
                 },
                 "controls": _control_set(),
             }), encoding="utf-8")
@@ -466,6 +472,7 @@ class ControlManifestTests(unittest.TestCase):
                     ),
                     "schema_version": CALIBRATION_SCHEMA_VERSION,
                     "protocol": {"tool": "same-protocol", "version": "test-1"},
+                    "scoring_implementation": scoring_implementation_identity(),
                 },
                 "controls": records,
             }), encoding="utf-8")
@@ -493,6 +500,7 @@ class ControlManifestTests(unittest.TestCase):
                     ),
                     "schema_version": CALIBRATION_SCHEMA_VERSION,
                     "protocol": {"tool": "same-protocol", "version": "test-1"},
+                    "scoring_implementation": scoring_implementation_identity(),
                 },
                 "controls": records,
             }), encoding="utf-8")
@@ -544,6 +552,7 @@ class ControlManifestTests(unittest.TestCase):
                     ),
                     "schema_version": CALIBRATION_SCHEMA_VERSION,
                     "protocol": {"tool": "same-protocol", "version": "test-1"},
+                    "scoring_implementation": scoring_implementation_identity(),
                 },
                 "controls": _control_set(),
             }), encoding="utf-8")

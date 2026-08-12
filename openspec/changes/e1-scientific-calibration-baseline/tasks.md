@@ -30,3 +30,11 @@
 - [x] 5.3 Restrict idempotency to complete current-active replay; reject A → B → replay A and incomplete-authority replay without mutation.
 - [x] 5.4 Re-run the simulation-only lifecycle and existing rollback/artifact/threshold tamper regressions.
 - [x] 5.5 Run focused/full tests, Architecture Gate, strict OpenSpec, diff check, and fixed-point review; require P1=0 before merge-ready.
+
+## 6. PR #72 latest authority-seam remediation
+
+- [x] 6.1 Make approved-real unavailable throughout E1 and add post-approval review-injection regressions.
+- [x] 6.2 Bind scored dataset and audit to the Prediction-owned scoring implementation; enforce approved project status and target subset.
+- [x] 6.3 Introduce a validated formal binding value and reject direct Pipeline calibrated claims from missing or plain-dict authority before writes.
+- [x] 6.4 Validate publication Evidence payload equality on idempotent replay and preserve active State on corruption.
+- [x] 6.5 Re-run lifecycle/tamper/rollback regressions, focused/full suites, Architecture Gate, strict OpenSpec, diff check, and fixed-point reviews; require P0=0 and P1=0.
