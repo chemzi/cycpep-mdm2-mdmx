@@ -62,7 +62,15 @@ def flush_candidate_updates(job_id: str) -> None:
     )
 
 
-def _publish_candidate(candidate: dict, target_id: str) -> None:
+def _publish_candidate(
+    candidate: dict,
+    target_id: str,
+    *,
+    candidate_updates: list[CandidateUpdate] | None = None,
+) -> None:
+    if candidate_updates is not None:
+        candidate_updates.append(CandidateUpdate(candidate))
+        return
     if _CANDIDATE_UPDATES_PATH is not None:
         _PENDING_CANDIDATE_UPDATES.append(CandidateUpdate(candidate))
         return
@@ -89,6 +97,8 @@ def _register_refolded_candidate(
     ring_closure=None,
     notes=None,
     bb_alternatives=None,
+    strict_tools=False,
+    candidate_updates: list[CandidateUpdate] | None = None,
 ) -> CandidateRegistration:
     """Refold, validate ring closure, write manifest, and register a candidate.
 
@@ -99,7 +109,11 @@ def _register_refolded_candidate(
     refold_dir = os.path.join(batch_dir, "candidates", candidate_id)
     os.makedirs(refold_dir, exist_ok=True)
     refold_pdb = os.path.join(refold_dir, "refold.pdb")
-    plddt = _run_refold(sequence, refold_pdb)
+    plddt = (
+        _run_refold(sequence, refold_pdb, strict_tools=True)
+        if strict_tools
+        else _run_refold(sequence, refold_pdb)
+    )
     cyclization_type = cyclization or _infer_cyclization_type(sequence)
     try:
         rc = (
@@ -131,7 +145,11 @@ def _register_refolded_candidate(
         )
 
     candidate = _candidate_from_manifest(manifest, plddt, notes=notes or {})
-    _publish_candidate(candidate, config["target_id"])
+    _publish_candidate(
+        candidate,
+        config["target_id"],
+        candidate_updates=candidate_updates,
+    )
     return CandidateRegistration(
         candidate=candidate, refold_pdb=refold_pdb, plddt=plddt,
         ring_closure=rc, cyclization_type=cyclization_type,

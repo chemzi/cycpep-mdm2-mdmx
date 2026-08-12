@@ -1,0 +1,37 @@
+## Why
+
+The first real Launcher lifecycle exposed two owner-boundary false completions: initial Design can turn swallowed scientific-tool failure into a successful zero-candidate completion, and Prediction can appear complete without satisfying its own Critic-readiness/evidence contract. These contradictions let later boundaries run and make `launch`, `status`, and `resume` disagree about the same formal state.
+
+## What Changes
+
+- Require Launcher initial Design to distinguish typed scientific-tool failure from a normal, successfully executed zero-result. Tool failure writes a correlated tool-failure receipt and MUST NOT be reported as `initial_design_no_valid_candidates`; only a normal empty outcome may use that blocker.
+- Require strict Design to prove required output postconditions: RFdiffusion emits the expected parseable backbones, each required backbone exposes a binder chain, the configured LigandMPNN runtime/model is available, LigandMPNN emits parseable generated sequences, and refold runtime preparation plus required output validation succeed. Missing or malformed required output is a scientific-tool/output failure.
+- Stage Launcher Initial Design candidates as existing `CandidateUpdate` effects and atomically publish candidates, authoritative `candidate_registered` Evidence, and completion through the existing Store transaction seam only after the whole invocation succeeds.
+- Require every successful Initial Design completion, including non-empty historical receipts, to prove a non-empty committed transaction binding whose authoritative candidate registrations exactly match the completion candidate set.
+- Clean the strict RFdiffusion output prefix before subprocess launch so stale backbone files cannot satisfy the current invocation's output postconditions.
+- Require initial Design to publish `design_initial_completion` only for a non-empty, formally referenced candidate set. A normal zero-result writes one correlated terminal failure receipt and does not invoke Prediction.
+- Make Launcher-production Prediction reuse the Prediction owner's battery-to-status and Critic-readiness/evidence contract. Missing required evidence, pending work, structurally invalid evidence, or an owner-declared non-ready terminal status blocks before Critic.
+- Make `launch`, read-only `status`, and `resume` project the same structured blocker for the same formal state; a persisted failed boundary must not degrade to generic `pending` while the contradiction remains.
+- Add focused real-contract regression coverage for the exact E2E failures observed on `launcher_9888b3fb181d4ab9b4295a5e14841905` and `launcher_03a8ecab979a43b6bc56055e16fc9723` without depending on those server artifacts.
+- Preserve legacy route call signatures and behavior outside the Launcher initial adapter; no existing formal record is rewritten or backfilled.
+
+## Capabilities
+
+### New Capabilities
+
+- `workflow/launcher-boundary-truth`: Defines the Design and Prediction owner proof required before Launcher may advance and the consistent blocker projection across commands.
+
+### Modified Capabilities
+
+None. The completed Launcher change has not yet been archived into the main spec set, so this change introduces one narrowly scoped capability rather than pretending to modify a nonexistent main capability.
+
+## Impact
+
+- **Behavior:** Scientific-tool/output failure and post-generation scientific elimination are distinguished at Design; Initial Design candidate publication is invocation-atomic; Prediction advances only through its owner-defined Critic-readiness/evidence contract.
+- **Public interfaces:** Existing CLI arguments and legacy Design route signatures remain compatible. Launcher initial Design gains an additive typed-outcome adapter; structured blocker codes are additive.
+- **Data format:** Initial Design adds one correlated `design_initial_failure` receipt for deterministic zero-result or classified scientific-tool failure. Existing completion documents keep their schemas but are emitted or accepted under stricter preconditions.
+- **Migration:** No automatic repair, backfill, or reinterpretation of existing runs. Ambiguous pre-change runs remain blocked and auditable.
+- **Affected code:** Initial Design strict tool postconditions, CandidateUpdate staging/atomic completion publication, Prediction owner readiness and invocation validation, Launcher formal boundary projection, and their focused tests.
+- **Non-goals:** Installing or implementing Boltz, PRODIGY, PyRosetta, or other Prediction executors; registering every Design file as a formal Artifact; purifying CLI progress output; changing scientific thresholds/protocols; or redesigning Store, Planner, Orchestrator, or Worker.
+- **Legacy path retained:** Non-Launcher Design and Prediction callers retain their existing public behavior; the stricter readiness gate applies to Launcher-correlated production invocations.
+- **Explicit handoff:** `critic_review.project_id`, Critic persistence, Critic transaction handling, Critic idempotency, and all Critic project-binding implementation belong exclusively to the separate `critic-project-binding` change and are not modified here.

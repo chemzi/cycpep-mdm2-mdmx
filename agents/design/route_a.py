@@ -12,7 +12,11 @@ from data_layer import CandidateIndex, EvidenceLogger  # noqa: E402
 from . import config  # noqa: E402
 from .candidates import _collect_raw_sequences, _register_refolded_candidate  # noqa: E402
 from .config import DESIGN_PIPELINE_VERSION, DESIGN_PROTOCOL, DesignContext  # noqa: E402
-from .runtime import _run_ligandmpnn, _run_rfdiff  # noqa: E402
+from .runtime import (  # noqa: E402
+    ScientificToolExecutionError,
+    _run_ligandmpnn,
+    _run_rfdiff,
+)
 from .service import (  # noqa: E402
     _load_existing_sequences,
     _merge_config,
@@ -29,7 +33,7 @@ from .validation import (  # noqa: E402
 from project_config import target_slug  # noqa: E402
 
 
-def _route_a_generate_backbones(config, batch_dir):
+def _route_a_generate_backbones(config, batch_dir, *, strict_tools=False):
     """Pass 1: RFdiffusion + LigandMPNN per length; returns (backbone_entries, total_gen).
 
     Collects every raw sequence so the global cheap filter can score them
@@ -45,6 +49,7 @@ def _route_a_generate_backbones(config, batch_dir):
         n_designs = max(1, config["n"] // len(config["lengths"]))
         backbone_dir = os.path.join(batch_dir, f"backbones_len{L}")
         os.makedirs(backbone_dir, exist_ok=True)
+        rfdiff_kwargs = {"strict_tools": True} if strict_tools else {}
         rfdiff_ok = _run_rfdiff(
             target_pdb=config["target_pdb"], binder_len=L,
             n_designs=n_designs, output_prefix=f"{backbone_dir}/bb",
@@ -53,7 +58,7 @@ def _route_a_generate_backbones(config, batch_dir):
             ),
             seed=config["seed"],
             hotspots=config.get("hotspots"),
-            chain=config["chain"])
+            chain=config["chain"], **rfdiff_kwargs)
         if not rfdiff_ok:
             print(f"[Route A] RFdiff \u5931\u8d25 len={L}\uff0c\u8df3\u8fc7")
             continue
@@ -74,14 +79,20 @@ def _route_a_generate_backbones(config, batch_dir):
                     "design", "rfdiff_binder_chain_invalid",
                     f"{bb_path}: {exc}", recovery="skip ambiguous backbone",
                 )
+                if strict_tools:
+                    raise ScientificToolExecutionError(
+                        "rfdiffusion", f"malformed backbone {bb_path}: {exc}"
+                    ) from exc
                 continue
             mpnn_dir = os.path.join(batch_dir, f"mpnn_{bb_path.stem}")
             os.makedirs(mpnn_dir, exist_ok=True)
             mpnn_seed = (config["seed"] + total_gen) % 2**31
+            mpnn_kwargs = {"strict_tools": True} if strict_tools else {}
             seqs = _run_ligandmpnn(
                 str(bb_path), mpnn_dir, n_seq=DESIGN_PROTOCOL["parameters"]["ligandmpnn"]["n_seq_per_backbone"],
                 binder_chain=binder_chain,
                 seed=mpnn_seed,
+                **mpnn_kwargs,
             )
             if not seqs:
                 print(f"[Route A] LigandMPNN \u8fd4\u56de 0 \u6761\u5e8f\u5217 {bb_path.name}")
@@ -89,7 +100,14 @@ def _route_a_generate_backbones(config, batch_dir):
             backbone_entries.append((bb_path, binder_chain, seqs))
     return backbone_entries, total_gen
 
-def design_rfpeptides(target_spec=None, design_config=None, context=None):
+def _design_rfpeptides(
+    target_spec=None,
+    design_config=None,
+    context=None,
+    *,
+    strict_tools=False,
+    candidate_updates=None,
+):
     """RFpeptides \u2192 LigandMPNN \u2192 AfCycDesign refold"""
     ctx = context if context is not None else DesignContext.default()
     # B3: 失败经验库闭环——上一轮淘汰原因驱动本轮长度偏好。显式指定
@@ -122,7 +140,12 @@ def design_rfpeptides(target_spec=None, design_config=None, context=None):
 
     # Pass 1: RFdiffusion + LigandMPNN \u2192 collect all raw sequences across
     # every backbone so global scoring is not biased by backbone order (P1-2).
-    backbone_entries, total_gen = _route_a_generate_backbones(config, batch_dir)
+    generation = (
+        _route_a_generate_backbones(config, batch_dir, strict_tools=True)
+        if strict_tools
+        else _route_a_generate_backbones(config, batch_dir)
+    )
+    backbone_entries, total_gen = generation
 
     # Pass 2: global cheap filter \u2014 score ALL sequences together so early
     # backbones cannot starve later ones (P1-2).
@@ -140,11 +163,15 @@ def design_rfpeptides(target_spec=None, design_config=None, context=None):
         bb_path, binder_chain = bb_list[0]
         bb_alternatives = [str(bp) for bp, _ in bb_list[1:]] if len(bb_list) > 1 else []
         cid = _next_candidate_id()
+        registration_kwargs = {"strict_tools": True} if strict_tools else {}
+        if candidate_updates is not None:
+            registration_kwargs["candidate_updates"] = candidate_updates
         registration = _register_refolded_candidate(
             candidate_id=cid, sequence=seq, config=config,
             batch_dir=batch_dir, route_name=route_name, batch_id=batch_id,
             backbone_pdb=str(bb_path), bb_alternatives=bb_alternatives,
             notes={"quality_score": round(quality_score, 3)},
+            **registration_kwargs,
         )
         if registration.candidate is not None:
             total_valid += 1
@@ -158,3 +185,24 @@ def design_rfpeptides(target_spec=None, design_config=None, context=None):
         tool_version=DESIGN_PIPELINE_VERSION,
         duration_sec=round(time.time()-t_batch, 1))
     return candidates
+
+
+def design_rfpeptides(target_spec=None, design_config=None, context=None):
+    """Legacy Route A list-return contract."""
+    return _design_rfpeptides(
+        target_spec=target_spec, design_config=design_config, context=context
+    )
+
+
+def design_rfpeptides_initial(
+    target_spec=None, design_config=None, context=None, *, candidate_updates=None
+):
+    """Launcher initial Route A with classified tool failures propagated."""
+    staged_updates = candidate_updates if candidate_updates is not None else []
+    return _design_rfpeptides(
+        target_spec=target_spec,
+        design_config=design_config,
+        context=context,
+        strict_tools=True,
+        candidate_updates=staged_updates,
+    )

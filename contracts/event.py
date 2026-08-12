@@ -26,7 +26,7 @@ VALID_EVENT_TYPES = frozenset({
     "research_targets", "research_cache_invalidated", "threshold_calibration",
     "research_invocation_started", "research_completion_receipt",
     "tool_call", "design_batch", "design_initial_invocation_started",
-    "design_initial_completion", "candidate_registered", "candidate_scored",
+    "design_initial_completion", "design_initial_failure", "candidate_registered", "candidate_scored",
     "candidate_eliminated", "evaluate_layer_start", "evaluate_layer_complete",
     "critic_review", "planner_adjust", "planner_plan", "planner_approval_recorded",
     "prediction_run_started", "prediction_invocation_started",
@@ -62,6 +62,7 @@ ENVELOPE_KEYS = {
     "blocks", "payload", *TRACE_KEYS,
 }
 FAILURE_EVENT_TYPES = frozenset({
+    "design_initial_failure",
     "orchestrator_task_failed", "execution_task_failed",
     "execution_transaction_failed",
     "execution_transaction_post_commit_failure",

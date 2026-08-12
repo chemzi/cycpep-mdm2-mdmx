@@ -21,12 +21,15 @@ from .adapters import (
     parse_metadata,
 )
 from .contracts import (
+    CRITIC_READY_STATUSES,
     CandidateInput,
     ContractError,
+    PREDICTION_RECORD_STATUSES,
     PredictionConfig,
     candidate_from_row,
     file_sha256,
     object_sha256,
+    prediction_status_from_battery,
     validate_project,
 )
 from core.protocol import ProtocolError
@@ -412,10 +415,7 @@ class PredictionPipeline(MetricCollectorsMixin):
             or not isinstance(record.get("metrics"), dict)
             or not isinstance(record.get("battery"), dict)
             or not isinstance(record.get("issues"), list)
-            or record.get("status") not in {
-                "finalized", "awaiting_threshold_calibration",
-                "prediction_pending", "needs_optimization", "invalid",
-            }
+            or record.get("status") not in PREDICTION_RECORD_STATUSES
         ):
             return None
         record["record_sha256"] = file_sha256(path)
@@ -715,7 +715,7 @@ class PredictionPipeline(MetricCollectorsMixin):
         # PredictionPersistence 收集为 effects，由 Execution 原子提交（PR41
         # 不变量）；非事务模式直接写证据库。
         self.persistence.record_battery_evaluated(candidate.snapshot(), battery)
-        status = self._status_from_battery(battery)
+        status = prediction_status_from_battery(battery)
         record = {
             "schema_version": RECORD_SCHEMA_VERSION,
             "pipeline_version": PREDICTION_PIPELINE_VERSION,
@@ -857,9 +857,7 @@ class PredictionPipeline(MetricCollectorsMixin):
             },
             "categories": categories,
             "downstream": {
-                "critic_input_statuses": [
-                    "finalized", "awaiting_threshold_calibration", "needs_optimization"
-                ],
+                "critic_input_statuses": list(CRITIC_READY_STATUSES),
                 "planner_feedback_statuses": [
                     "prediction_pending", "needs_optimization", "invalid"
                 ],

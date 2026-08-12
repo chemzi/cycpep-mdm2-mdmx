@@ -27,6 +27,19 @@ SUPPORTED_DESIGN_REFERENCE_ROLES = frozenset({
     "experimental_cyclic_peptide_structure",
     "legacy_backbone_pdb",
 })
+PREDICTION_RECORD_STATUSES = (
+    "finalized",
+    "awaiting_threshold_calibration",
+    "prediction_pending",
+    "needs_optimization",
+    "invalid",
+)
+CRITIC_READY_STATUSES = (
+    "finalized",
+    "awaiting_threshold_calibration",
+    "needs_optimization",
+)
+UNEVALUATED_NON_READY_STATUSES = ("invalid",)
 
 
 class ContractError(ValueError):
@@ -35,6 +48,34 @@ class ContractError(ValueError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+def prediction_status_from_battery(battery: dict) -> str:
+    """Return the Prediction-owned scientific status for one evidence battery."""
+    if not isinstance(battery, dict):
+        raise ContractError("prediction_battery_invalid", "battery must be an object")
+    required = (
+        "competition_clearance",
+        "metric_clearance",
+        "triage_status",
+        "missing_evidence",
+        "missing_thresholds",
+    )
+    missing = [key for key in required if key not in battery]
+    if missing:
+        raise ContractError(
+            "prediction_battery_invalid",
+            f"battery is missing readiness fields: {missing}",
+        )
+    if battery["competition_clearance"]:
+        return "finalized"
+    if battery["metric_clearance"]:
+        return "awaiting_threshold_calibration"
+    if battery["triage_status"] == "invalid":
+        return "invalid"
+    if battery["missing_evidence"] or battery["missing_thresholds"]:
+        return "prediction_pending"
+    return "needs_optimization"
 
 
 def canonical_json(value: Any) -> str:
