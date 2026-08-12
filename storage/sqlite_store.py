@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping
 
 from contracts.event import EvidenceEvent
-
 from .base import Store
+from .calibration_publication import publish_sqlite_calibration
 from .sqlite_ownership import (
     TERMINAL_TRANSACTION_STATUSES,
     SQLiteOwnership,
@@ -541,6 +541,22 @@ class SQLiteStore(Store):
                 ),
             )
         return artifact_id
+
+    def publish_calibration(
+        self,
+        *,
+        binding: Mapping[str, Any],
+        thresholds: Mapping[str, Any],
+        artifact: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically publish artifact, threshold state, and formal Evidence."""
+        return publish_sqlite_calibration(
+            self,
+            binding=binding,
+            thresholds=thresholds,
+            artifact=artifact,
+            now=_now(),
+        )
 
     def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
         with self._read() as connection:

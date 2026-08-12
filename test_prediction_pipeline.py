@@ -222,12 +222,13 @@ class PredictionPipelineTests(unittest.TestCase):
 
     def _pipeline(
         self, *, thresholds, project=None, run_id="test_run", resume=False,
-        require_protocol_compatibility=True,
+        require_protocol_compatibility=True, calibration_binding=None,
     ):
         return PredictionPipeline(
             candidate_rows=CandidateIndex.load(),
             project=project or project_config(),
             thresholds=thresholds,
+            calibration_binding=calibration_binding,
             artifacts_root=self.artifacts_root,
             run_root=self.run_root,
             config=PredictionConfig(),

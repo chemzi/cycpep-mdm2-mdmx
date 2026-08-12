@@ -27,6 +27,7 @@ from .contracts import (
     CandidateInput,
     ContractError,
     PREDICTION_RECORD_STATUSES,
+    PREDICTION_PIPELINE_VERSION,
     PredictionConfig,
     candidate_from_row,
     file_sha256,
@@ -34,6 +35,7 @@ from .contracts import (
     prediction_status_from_battery,
     validate_project,
 )
+from calibration_baseline import unpublished_calibration_binding
 from core.protocol import ProtocolError
 from .protocol import (
     MIGRATE_LEGACY_HINT,
@@ -50,7 +52,6 @@ from .transaction_effects import PredictionPersistence
 
 from .metric_collectors import MetricCollectorsMixin
 
-PREDICTION_PIPELINE_VERSION = "1.5.1"
 RUN_SCHEMA_VERSION = 2
 RECORD_SCHEMA_VERSION = 2
 LAYER_KEYS = tuple(f"l{number}_pass" for number in range(1, 8))
@@ -120,6 +121,7 @@ class PredictionPipeline(MetricCollectorsMixin):
         candidate_rows: list[dict],
         project: dict,
         thresholds: dict,
+        calibration_binding: dict | None = None,
         artifacts_root: str | Path,
         run_root: str | Path,
         config: PredictionConfig | None = None,
@@ -136,6 +138,9 @@ class PredictionPipeline(MetricCollectorsMixin):
         # Preserve the evaluator's established raw-threshold semantics.  The
         # provenance identity is computed separately from this exact snapshot.
         self.thresholds = deepcopy(thresholds) if isinstance(thresholds, dict) else {}
+        self.calibration_binding = dict(
+            calibration_binding or unpublished_calibration_binding(self.thresholds)
+        )
         self.required_targets = validate_project(project)
         self.artifacts_root = Path(artifacts_root).expanduser().resolve()
         self.run_root = Path(run_root).expanduser().resolve()
@@ -167,6 +172,7 @@ class PredictionPipeline(MetricCollectorsMixin):
 
         self.project_digest = object_sha256(project)
         self.thresholds_digest = canonical_threshold_digest(self.thresholds)
+        self.calibration_binding_digest = object_sha256(self.calibration_binding)
         self.config_digest = object_sha256({
             "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "method_config": self.config.to_dict(),
@@ -205,6 +211,7 @@ class PredictionPipeline(MetricCollectorsMixin):
             thresholds_digest=self.thresholds_digest,
             defer_formal_writes=self.defer_formal_writes,
             artifact_id_prefix=self.artifact_id_prefix,
+            calibration_binding=self.calibration_binding,
             launcher_correlation=self.launcher_correlation,
         )
 
@@ -263,6 +270,8 @@ class PredictionPipeline(MetricCollectorsMixin):
             "project_id": self.project.get("project_id"),
             "project_digest": self.project_digest,
             "thresholds_digest": self.thresholds_digest,
+            "calibration_binding": self.calibration_binding,
+            "calibration_binding_digest": self.calibration_binding_digest,
             "config": self.config.to_dict(),
             "config_digest": self.config_digest,
             "required_targets": list(self.required_targets),
@@ -411,6 +420,8 @@ class PredictionPipeline(MetricCollectorsMixin):
             "artifact_digest": artifact_digest,
             "config_digest": self.config_digest,
             "thresholds_digest": self.thresholds_digest,
+            "calibration_binding_digest": self.calibration_binding_digest,
+            "calibration_binding": self.calibration_binding,
         }
         if cache != expected:
             return None
@@ -422,6 +433,7 @@ class PredictionPipeline(MetricCollectorsMixin):
             or not isinstance(record.get("battery"), dict)
             or not isinstance(record.get("issues"), list)
             or record.get("status") not in PREDICTION_RECORD_STATUSES
+            or record.get("calibration_binding") != self.calibration_binding
         ):
             return None
         record["record_sha256"] = file_sha256(path)
@@ -737,6 +749,7 @@ class PredictionPipeline(MetricCollectorsMixin):
             "run_id": self.run_id,
             "protocol_identity": protocol_binding(),
             "thresholds_digest": self.thresholds_digest,
+            "calibration_binding": self.calibration_binding,
             "created_at": _utcnow(),
             "candidate": candidate.snapshot(),
             "cache_key": {
@@ -744,6 +757,8 @@ class PredictionPipeline(MetricCollectorsMixin):
                 "artifact_digest": artifact_digest,
                 "config_digest": self.config_digest,
                 "thresholds_digest": self.thresholds_digest,
+                "calibration_binding_digest": self.calibration_binding_digest,
+                "calibration_binding": self.calibration_binding,
             },
             "status": status,
             "metrics": metrics,
@@ -791,6 +806,7 @@ class PredictionPipeline(MetricCollectorsMixin):
             "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "run_id": self.run_id,
             "protocol_identity": protocol_binding(),
+            "calibration_binding": self.calibration_binding,
             "created_at": _utcnow(),
             "candidate": {
                 "candidate_id": candidate_id,
@@ -803,6 +819,8 @@ class PredictionPipeline(MetricCollectorsMixin):
                 "artifact_digest": "contract_invalid",
                 "config_digest": self.config_digest,
                 "thresholds_digest": self.thresholds_digest,
+                "calibration_binding_digest": self.calibration_binding_digest,
+                "calibration_binding": self.calibration_binding,
             },
             "status": "invalid",
             "metrics": {"global": {}, "targets": {}},
@@ -874,6 +892,7 @@ class PredictionPipeline(MetricCollectorsMixin):
             "run_id": self.run_id,
             "protocol_identity": protocol_binding(),
             "thresholds_digest": self.thresholds_digest,
+            "calibration_binding": self.calibration_binding,
             "created_at": _utcnow(),
             "project_id": self.project.get("project_id"),
             "required_targets": list(self.required_targets),
@@ -904,6 +923,7 @@ class PredictionPipeline(MetricCollectorsMixin):
             "run_id": self.run_id,
             "pipeline_version": PREDICTION_PIPELINE_VERSION,
             "protocol_identity": protocol_binding(),
+            "calibration_binding": self.calibration_binding,
             "run_dir": str(self.run_dir),
             "handoff_path": str(self.handoff_path),
             "evaluated": len(records),

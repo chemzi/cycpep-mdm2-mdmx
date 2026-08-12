@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass
@@ -10,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from project_config import required_target_ids
+from core.integrity import canonical_json, file_sha256, object_sha256
 from peptide_contract import (
     MAX_CYCLIC_PEPTIDE_LENGTH,
     MIN_CYCLIC_PEPTIDE_LENGTH,
@@ -17,6 +17,8 @@ from peptide_contract import (
 
 
 SCHEMA_VERSION = 1
+PREDICTION_PIPELINE_VERSION = "1.5.1"
+PREDICTION_SCORING_IMPLEMENTATION = "prediction_pipeline"
 CANDIDATE_ID_RE = re.compile(r"^C\d{4,}$")
 SEQUENCE_RE = re.compile(r"^[ACDEFGHIKLMNPQRSTVWY]+$")
 SUPPORTED_CYCLIZATION = frozenset(
@@ -50,6 +52,13 @@ class ContractError(ValueError):
         self.code = code
 
 
+def scoring_implementation_identity() -> dict:
+    return {
+        "name": PREDICTION_SCORING_IMPLEMENTATION,
+        "version": PREDICTION_PIPELINE_VERSION,
+    }
+
+
 def prediction_status_from_battery(battery: dict) -> str:
     """Return the Prediction-owned scientific status for one evidence battery."""
     if not isinstance(battery, dict):
@@ -76,24 +85,6 @@ def prediction_status_from_battery(battery: dict) -> str:
     if battery["missing_evidence"] or battery["missing_thresholds"]:
         return "prediction_pending"
     return "needs_optimization"
-
-
-def canonical_json(value: Any) -> str:
-    return json.dumps(
-        value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-    )
-
-
-def object_sha256(value: Any) -> str:
-    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
-
-
-def file_sha256(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _resolve_path(raw: str | Path, base: Path) -> Path:

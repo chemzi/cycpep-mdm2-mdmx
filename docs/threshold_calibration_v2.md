@@ -71,3 +71,30 @@
 - 对照评分依赖 GPU 服务器，本地仅做语法/单元校验。
 - 标定写入与 artifact 注册非单事务（崩溃可能留下「有 JSON 无 artifact 行」，已幂等化
   并记录错误）；如需强原子性，应另开 change 走 store 事务路径。
+
+## E1 CalibrationBaseline publication
+
+E1 增加的是发布与消费 authority，不改变上述 control 规则、标定算法、FPR、recall 或
+样本量要求。阈值条目的算法状态（例如 `calibration_status=calibrated`）和发布 authority
+是两个独立维度：
+
+- `calibration_authority=simulation_only` 只允许显式标记为 synthetic/simulation 的 controls，
+  用于验证完整工程链路；它不表示实验或科学验证，也不能转换或解释成 `approved_real`。
+- `calibration_authority=approved_real` 拒绝 synthetic controls。现有 MDM manifest 继续是
+  provenance-only；其中 presumed negatives 不构成真实 validated controls。
+
+`CalibrationBaseline` v1 把批准项目、Prediction protocol、scoring implementation、control
+dataset、threshold snapshot、calibration audit 与 calibration artifact 绑定。自然发布 ID
+由这些 scientific/binding 内容确定：完全相同的重放返回幂等结果；相同 ID 但阈值、artifact
+或其他绑定内容不同则 fail closed。
+
+正式发布通过 Store 的单个 SQLite 事务完成 artifact 注册、active thresholds + binding 替换
+以及 `threshold_calibration_published` Evidence 追加。`state.json` 仍只是 SQLite 状态投影，
+不是并行 authority。Prediction 在构造 pipeline 前从 Store 读取 artifact 并验证项目批准、
+protocol/scoring identity、threshold snapshot、artifact 行与文件内容；验证后的 exact binding
+进入 cache identity、run manifest/summary/handoff、candidate record/metadata 和正式 Evidence。
+任何 mismatch 或 tamper 都会在评分前拒绝。
+
+E1 的 deterministic simulation fixture 仅标定 `L7_scrmsd`，目的是证明：simulation controls
+→ existing calibrator → simulation-only artifact → atomic Store publication → exact Prediction
+consumption。它没有为 MDM2/MDMX 建立真实 scientific calibration baseline。

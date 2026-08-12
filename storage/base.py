@@ -59,6 +59,16 @@ class TransactionStore(ABC):
     def list_artifacts(self) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    def publish_calibration(
+        self,
+        *,
+        binding: Mapping[str, Any],
+        thresholds: Mapping[str, Any],
+        artifact: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically publish one active threshold-calibration authority."""
+        raise NotImplementedError
+
     def get_transaction(self, transaction_id: str) -> dict[str, Any] | None:
         raise NotImplementedError
 
