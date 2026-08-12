@@ -22,3 +22,11 @@
 - [x] 4.2 Run focused calibration-baseline, Store, Prediction protocol/pipeline/effects, transaction, and projection tests and record exact results.
 - [x] 4.3 Run the full Python suite, configured lint/type checks, Architecture Gate, strict OpenSpec validate/verify, and `git diff --check`; confirm no UI, Launcher, Planner, Execution, Research workflow, Store schema, project config, control asset, E2+, or unrelated changes.
 - [x] 4.4 Run fixed-point Spec, Standards, and Strict code review; resolve in-scope findings and require the repository merge score of at least 85 before reporting merge-ready.
+
+## 5. PR #72 review remediation
+
+- [x] 5.1 Add calibrator audit input identities and regression proving Dataset B cannot publish with Audit/Threshold A.
+- [x] 5.2 Enforce Prediction-owned protocol/scoring identities and reject approved-real publication without an externally approved scored-dataset digest.
+- [x] 5.3 Restrict idempotency to complete current-active replay; reject A → B → replay A and incomplete-authority replay without mutation.
+- [x] 5.4 Re-run the simulation-only lifecycle and existing rollback/artifact/threshold tamper regressions.
+- [x] 5.5 Run focused/full tests, Architecture Gate, strict OpenSpec, diff check, and fixed-point review; require P1=0 before merge-ready.

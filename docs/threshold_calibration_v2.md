@@ -80,13 +80,20 @@ E1 增加的是发布与消费 authority，不改变上述 control 规则、标�
 
 - `calibration_authority=simulation_only` 只允许显式标记为 synthetic/simulation 的 controls，
   用于验证完整工程链路；它不表示实验或科学验证，也不能转换或解释成 `approved_real`。
-- `calibration_authority=approved_real` 拒绝 synthetic controls。现有 MDM manifest 继续是
-  provenance-only；其中 presumed negatives 不构成真实 validated controls。
+- `calibration_authority=approved_real` 拒绝 synthetic controls，并且要求批准的项目
+  authority 外部冻结与完整 dataset 匹配的 `approved_scored_dataset_sha256`。
+  现有项目没有该 authority，因此 E1 中 `approved_real` fail closed；现有 MDM
+  manifest 继续是 provenance-only，其中 presumed negatives 不构成真实
+  validated controls。
 
 `CalibrationBaseline` v1 把批准项目、Prediction protocol、scoring implementation、control
-dataset、threshold snapshot、calibration audit 与 calibration artifact 绑定。自然发布 ID
-由这些 scientific/binding 内容确定：完全相同的重放返回幂等结果；相同 ID 但阈值、artifact
-或其他绑定内容不同则 fail closed。
+dataset、threshold snapshot、calibration audit 与 calibration artifact 绑定。Audit 还记录
+exact control-dataset digest、Prediction protocol identity/hash，以及 metric keys、target IDs、
+FPR、recall 和最小正负 controls 数量的 calibration-parameters identity；发布边界
+校验这些 lineage，但不重跑 calibrator。自然发布 ID 由这些 scientific/binding
+内容确定：只有当请求的 publication 已是当前 active authority，且 Evidence、
+artifact 注册/文件、thresholds 和 binding 都完整一致时，exact replay 才返回
+幂等结果。已被取代的 publication 重放会 fail closed，E1 不提供重激活/回滚动作。
 
 正式发布通过 Store 的单个 SQLite 事务完成 artifact 注册、active thresholds + binding 替换
 以及 `threshold_calibration_published` Evidence 追加。`state.json` 仍只是 SQLite 状态投影，

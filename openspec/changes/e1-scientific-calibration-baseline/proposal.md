@@ -11,6 +11,9 @@ The repository can calculate control-derived thresholds, but it cannot yet prove
 - Add a narrow SQLite Store operation that atomically publishes the calibration artifact registration, formal calibration Evidence, calibrated thresholds, and their authoritative calibration binding. JSON files remain input artifacts or projections, never runtime authority.
 - Require Prediction to validate the Store-owned calibration binding against the active project, protocol, threshold snapshot, and artifact content, then preserve that binding in run manifests, candidate records, and formal Evidence.
 - Define a deterministic publication natural identity: replaying identical scientific/binding content is idempotent, while reusing that identity for different content fails closed.
+- Bind the existing calibrator audit to the exact scored dataset, active Prediction protocol, and resolved calibration parameters so publication cannot combine Dataset B with Audit/Threshold A.
+- Limit idempotency to an exact replay of the currently active and complete formal authority; replay of a superseded publication fails closed and does not reactivate it.
+- Fail closed for `approved_real` until the approved project authority freezes an `approved_scored_dataset_sha256` matching the exact scored dataset.
 - Add one end-to-end deterministic simulation test from controls through the existing calibrator, simulation-only artifact, atomic Store publication, and exact Prediction consumption, including mismatch/tamper regressions.
 - Limit the E1 MVP to the versioned binding contract, atomic SQLite publication, and Prediction validation/recording. Preserve the existing calibration algorithm, real-control research, project configuration, UI, Launcher, Planner, Execution, Store schema, Research stages, Frontend, Exploration, and all E2+ work unchanged.
 

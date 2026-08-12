@@ -61,17 +61,22 @@ Runtime timestamps, paths, generated IDs, and Store metadata are excluded. The s
 
 The Store treats `(publication_id, complete binding, artifact digest, threshold snapshot)` as one natural identity:
 
-- an exact replay is an idempotent success and performs no conflicting second activation;
+- an exact replay is an idempotent success only when that publication is already the current active authority and its Evidence/artifact/file/threshold/binding authority is complete;
+- a previously published but superseded identity is stale and fails closed; E1 has no reactivation or rollback action;
 - the same `publication_id` with any different content raises a domain error before commit;
 - a caller-supplied ID that does not equal the derived ID is invalid.
 
 Alternative considered: random UUID publication IDs. Rejected because retries would create multiple active identities for identical scientific content and collision semantics would be untestable.
 
+The existing calibrator audit records the canonical scored-dataset digest, exact protocol identity/hash, and one canonical calibration-parameters identity containing metric keys, target IDs, FPR, recall, and minimum positive/negative counts. Publication validates those identities without rerunning calibration. The builder and Store both validate protocol/scoring identity against the Prediction-owned `protocol_binding()` and `scoring_implementation_identity()`.
+
+`approved_real` additionally requires an external `approved_scored_dataset_sha256` frozen in the approved project authority and equal to the exact dataset digest. A dataset's self-declaration is never approval. Because no such real approved dataset exists in the current project, E1 continues to support only `simulation_only` publication in practice; it does not add a real-control approval workflow.
+
 ### 3. Publish all formal calibration state in one SQLite transaction
 
 Add one additive Store method and data-layer delegation for calibration publication. Under one existing `BEGIN IMMEDIATE` boundary, SQLite:
 
-1. checks an existing active/same-ID publication for exact idempotency or collision;
+1. checks that only the current active, complete same-ID authority may return idempotent; stale replay or incomplete authority fails closed;
 2. registers the deterministic calibration artifact row and file digest;
 3. replaces formal State `thresholds` and `threshold_calibration_binding` together;
 4. appends a validated `threshold_calibration_published` Evidence event carrying the complete binding.
@@ -115,6 +120,7 @@ Companion regressions cover exact replay idempotency, same-ID different-content 
 - [Risk] Projection refresh can fail after Store commit. → SQLite remains authoritative and the existing projection refresh can repair files without changing the active binding.
 - [Risk] Existing Prediction tests construct pipelines without a formal calibration binding. → Preserve compatibility only when their thresholds do not claim formal calibrated authority; add explicit consumed-binding fixtures for E1 behavior.
 - [Trade-off] `PredictionPipeline` and `SQLiteStore` are existing large modules at the required public seams. → Keep their E1 edits to explicit binding propagation and one narrow delegation; place SQLite publication mechanics in a typed sibling collaborator. Splitting either established module is deferred because it would expand this one-day interface migration beyond the approved MVP.
+- [Trade-off] `calibration_baseline.py` remains the single public domain-contract module at the lower edge of the preferred file-size range. → Publication creation and consumption intentionally share exactly one canonical key/identity/validation implementation; splitting it now would duplicate the contract or add a second public seam. Its artifact I/O is limited to the deterministic artifact owned by this contract, and a future split is deferred until an independent responsibility appears rather than performed mechanically in E1.
 
 ## Migration Plan
 

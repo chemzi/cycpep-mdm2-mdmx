@@ -46,7 +46,7 @@ A synthetic or scenario control dataset MAY exercise the existing calibrator and
 - **THEN** its algorithmic calibration status MAY be `calibrated` while its scientific authority remains `simulation_only`
 
 ### Requirement: Dataset and project binding fail closed
-The system SHALL validate scored control dataset integrity identity, declared calibration authority, project ID, approved project digest, and protocol binding before publication. A mismatch MUST leave the previously authoritative Store state unchanged and MUST NOT be recoverable through an unvalidated-threshold bypass.
+The system SHALL validate scored control dataset integrity identity, declared calibration authority, project ID, approved project digest, and protocol binding before publication. The existing calibrator audit SHALL identify the exact input dataset, Prediction protocol identity/hash, and resolved calibration parameters including metric keys, target IDs, FPR, recall, and minimum positive/negative counts. Publication MUST reject an audit whose dataset, protocol, parameters, or calibrated threshold claims do not match, without rerunning the calibrator. A mismatch MUST leave the previously authoritative Store state unchanged and MUST NOT be recoverable through an unvalidated-threshold bypass.
 
 #### Scenario: Project approval differs
 - **WHEN** the scored control dataset project ID or approved project digest differs from the currently approved project
@@ -55,6 +55,24 @@ The system SHALL validate scored control dataset integrity identity, declared ca
 #### Scenario: Approved dataset content changes
 - **WHEN** scored control dataset content no longer matches its approved integrity identity
 - **THEN** calibration publication fails closed and records no approved calibration snapshot
+
+#### Scenario: Dataset changes after calibration
+- **WHEN** Dataset A produced Audit A and Threshold A but publication is attempted with changed Dataset B
+- **THEN** publication fails closed because Audit A does not identify Dataset B
+
+### Requirement: Prediction owns publication protocol and scoring identity
+Calibration artifact creation and formal Store publication SHALL validate protocol and scoring implementation identity against the current values owned by `prediction_pipeline.protocol.protocol_binding()` and `prediction_pipeline.contracts.scoring_implementation_identity()`. Caller-supplied self-consistent alternate identities MUST fail closed before formal mutation.
+
+#### Scenario: Caller supplies alternate protocol or scorer
+- **WHEN** publication carries a fake protocol version or scoring implementation
+- **THEN** creation or Store publication fails closed with no artifact authority, threshold mutation, or publication Evidence
+
+### Requirement: Approved-real requires external approved dataset authority
+A self-declared `calibration_authority=approved_real` dataset SHALL NOT be sufficient for approved-real publication. `approved_real` SHALL require an external approved scored-dataset integrity identity frozen in the approved project authority and exactly matching the dataset. In the absence of that authority, approved-real publication MUST fail closed. E1 SHALL NOT create a real-control approval workflow.
+
+#### Scenario: Structurally valid real dataset lacks external approval
+- **WHEN** a non-synthetic dataset declares `approved_real` but the approved project authority has no matching approved scored-dataset digest
+- **THEN** publication fails closed without changing formal Store state
 
 ### Requirement: Atomic formal calibration publication
 Publishing a calibration SHALL atomically register the calibration artifact and its integrity identity, update the formal threshold snapshot and its calibration binding, and append formal calibration Evidence in SQLite. If any part fails, none of those formal records SHALL become visible. JSON or CSV files MAY serve as inputs or projections, but `state.json`, a threshold cache, or a calibration JSON file alone MUST NOT constitute formal application or runtime authority.
@@ -72,7 +90,7 @@ Publishing a calibration SHALL atomically register the calibration artifact and 
 - **THEN** calibration consumption derives authority from SQLite and does not accept the projection as an override
 
 ### Requirement: Calibration publication has deterministic idempotency
-The publication ID SHALL be a deterministic natural identity derived only from canonical scientific/binding content, including calibration authority, project approval, protocol/scoring identity, dataset identity, threshold schema, and threshold snapshot identity. Publishing identical content again SHALL be an idempotent success that retains one active authority and does not create conflicting formal state. Reusing the same publication ID for different binding, artifact, or threshold content MUST fail closed and preserve the prior publication.
+The publication ID SHALL be a deterministic natural identity derived only from canonical scientific/binding content, including calibration authority, project approval, protocol/scoring identity, dataset identity, calibration-parameters identity, threshold schema, and threshold snapshot identity. Publishing identical content again SHALL be an idempotent success only when the requested publication is already the current active authority and its publication Evidence, registered artifact, artifact file/integrity, thresholds, and binding are complete and identical. A superseded publication MUST NOT be reactivated by replay. Reusing the same publication ID for different binding, artifact, or threshold content MUST fail closed and preserve the prior publication.
 
 #### Scenario: Identical publication is repeated
 - **WHEN** the same canonical scientific/binding content is published more than once
@@ -81,6 +99,14 @@ The publication ID SHALL be a deterministic natural identity derived only from c
 #### Scenario: Publication identity collides with different content
 - **WHEN** an existing publication ID is supplied with different binding, artifact, or threshold content
 - **THEN** publication fails closed and the existing active calibration remains unchanged
+
+#### Scenario: Superseded publication is replayed
+- **WHEN** A is published, B supersedes A, and A is requested again
+- **THEN** replay fails closed, B remains active, and publication Evidence chronology is unchanged
+
+#### Scenario: Active authority is incomplete
+- **WHEN** active binding and artifact metadata exist but publication Evidence or the registered artifact file/integrity is missing
+- **THEN** replay does not return idempotent success and requires explicit recovery
 
 ### Requirement: Calibration artifact integrity is verified at consumption
 The formal Store SHALL retain the calibration artifact integrity identity. Before a formally published snapshot is consumed, the system SHALL verify that the referenced artifact content and threshold snapshot still match their stored identities. A modified artifact or threshold snapshot MUST fail closed.

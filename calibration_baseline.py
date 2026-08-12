@@ -33,6 +33,8 @@ SCIENTIFIC_BINDING_KEYS = (
     "protocol_identity",
     "scoring_implementation",
     "dataset_sha256",
+    "approved_scored_dataset_sha256",
+    "calibration_parameters_sha256",
     "thresholds_sha256",
     "calibration_audit_sha256",
     "calibrated_keys",
@@ -67,7 +69,12 @@ def _is_synthetic(control: dict) -> bool:
     )
 
 
-def _validate_authority(dataset: dict, authority: str) -> None:
+def _validate_authority(
+    dataset: dict,
+    authority: str,
+    *,
+    approved_scored_dataset_sha256: str | None = None,
+) -> None:
     if authority not in CALIBRATION_AUTHORITIES:
         raise CalibrationBaselineError(
             f"calibration_authority must be one of {sorted(CALIBRATION_AUTHORITIES)}"
@@ -86,11 +93,38 @@ def _validate_authority(dataset: dict, authority: str) -> None:
         raise CalibrationBaselineError(
             "synthetic or simulation controls cannot use approved_real authority"
         )
+    if (
+        not approved_scored_dataset_sha256
+        or approved_scored_dataset_sha256 != object_sha256(dataset)
+    ):
+        raise CalibrationBaselineError(
+            "approved_real requires a matching externally approved scored dataset digest"
+        )
+
+
+def _prediction_owner_identities() -> tuple[dict, dict]:
+    from prediction_pipeline.contracts import scoring_implementation_identity
+    from prediction_pipeline.protocol import protocol_binding
+
+    return protocol_binding(), scoring_implementation_identity()
+
+
+def _validate_prediction_owner(
+    protocol_identity: dict, scoring_implementation: dict
+) -> None:
+    owner_protocol, owner_scoring = _prediction_owner_identities()
+    if (
+        protocol_identity != owner_protocol
+        or scoring_implementation != owner_scoring
+    ):
+        raise CalibrationBaselineError(
+            "calibration publication must use Prediction-owned protocol and scoring identity"
+        )
 
 
 def _validate_dataset_binding(
     dataset: dict, project: dict, protocol_identity: dict
-) -> None:
+) -> dict:
     content = deepcopy(project)
     content.pop("review", None)
     approved_digest = (project.get("review") or {}).get("approved_digest")
@@ -102,7 +136,7 @@ def _validate_dataset_binding(
             "formal calibration publication requires control dataset schema_version 2"
         )
     try:
-        validate_control_metadata(
+        normalized = validate_control_metadata(
             metadata,
             project_id=project.get("project_id"),
             approved_digest=approved_digest,
@@ -113,6 +147,81 @@ def _validate_dataset_binding(
         )
     except ControlDataError as exc:
         raise CalibrationBaselineError(str(exc)) from exc
+    return normalized
+
+
+def _validate_calibrator_lineage(
+    *, dataset: dict, audit: dict, protocol_identity: dict, project: dict | None = None
+) -> str:
+    dataset_sha256 = object_sha256(dataset)
+    if audit.get("control_dataset_sha256") != dataset_sha256:
+        raise CalibrationBaselineError(
+            "control dataset does not match calibration audit input identity"
+        )
+    parameters = audit.get("calibration_parameters")
+    if (
+        not isinstance(parameters, dict)
+        or audit.get("calibration_parameters_sha256") != object_sha256(parameters)
+    ):
+        raise CalibrationBaselineError("calibration parameters identity mismatch")
+    required_parameter_keys = {
+        "metric_keys",
+        "target_ids",
+        "max_false_positive_rate",
+        "min_positive_recall",
+        "min_negative_controls",
+        "min_positive_controls",
+    }
+    if set(parameters) != required_parameter_keys:
+        raise CalibrationBaselineError("calibration parameters are incomplete")
+    metric_keys = parameters.get("metric_keys")
+    target_ids = parameters.get("target_ids")
+    if (
+        not isinstance(metric_keys, list)
+        or not metric_keys
+        or metric_keys != sorted(set(metric_keys))
+        or not isinstance(target_ids, list)
+        or target_ids != sorted(set(target_ids))
+    ):
+        raise CalibrationBaselineError("calibration metric or target identity is invalid")
+    expected_fields = {
+        "max_false_positive_rate": audit.get("max_false_positive_rate"),
+        "min_positive_recall": audit.get("min_positive_recall"),
+        "min_negative_controls": audit.get("min_negative_controls"),
+        "min_positive_controls": audit.get("min_positive_controls"),
+    }
+    if any(parameters.get(key) != value for key, value in expected_fields.items()):
+        raise CalibrationBaselineError("calibration parameters do not match audit")
+    calibrated_keys = audit.get("calibrated_keys") or []
+    if any(
+        str(scope_key).partition(":")[0] not in metric_keys
+        or (
+            str(scope_key).partition(":")[2]
+            and str(scope_key).partition(":")[2] not in target_ids
+        )
+        for scope_key in calibrated_keys
+    ):
+        raise CalibrationBaselineError(
+            "calibrated output does not match calibration parameters"
+        )
+    if audit.get("protocol_identity") != protocol_identity:
+        raise CalibrationBaselineError("calibration audit protocol identity mismatch")
+    metadata = _dataset_metadata(dataset)
+    try:
+        normalized = validate_control_metadata(
+            metadata,
+            project_id=(project or {}).get("project_id") or metadata.get("project_id"),
+            approved_digest=(
+                ((project or {}).get("review") or {}).get("approved_digest")
+                or metadata.get("approved_digest")
+            ),
+            protocol=protocol_identity,
+        )
+    except ControlDataError as exc:
+        raise CalibrationBaselineError(str(exc)) from exc
+    if audit.get("protocol_hash") != normalized.get("protocol_hash"):
+        raise CalibrationBaselineError("calibration audit protocol hash mismatch")
+    return str(audit["calibration_parameters_sha256"])
 
 
 def _validate_calibrated_output(thresholds: dict, audit: dict) -> list[str]:
@@ -144,12 +253,27 @@ def _validate_calibrated_output(thresholds: dict, audit: dict) -> list[str]:
         if target_id and isinstance(entry, dict):
             entry = (entry.get("targets") or {}).get(target_id)
         metric_audit = (audit.get("metrics") or {}).get(scope_key)
+        shared_scientific_fields = (
+            "value",
+            "operator",
+            "direction",
+            "n_positive",
+            "n_negative",
+            "protocol_hash",
+            "observed_false_positive_rate",
+            "positive_recall",
+            "false_positive_rate_ci95",
+            "positive_recall_ci95",
+        )
         if (
             not isinstance(entry, dict)
             or entry.get("calibration_status") != "calibrated"
             or not isinstance(metric_audit, dict)
             or metric_audit.get("status") != "calibrated"
-            or entry.get("value") != metric_audit.get("value")
+            or any(
+                entry.get(field) != metric_audit.get(field)
+                for field in shared_scientific_fields
+            )
         ):
             raise CalibrationBaselineError(
                 f"calibrated output mismatch for {scope_key}"
@@ -183,12 +307,27 @@ def create_calibration_publication(
     artifact_path: str | Path,
 ) -> dict:
     """Create a deterministic artifact and its formal publication binding."""
-    _validate_authority(dataset, calibration_authority)
+    _validate_prediction_owner(protocol_identity, scoring_implementation)
+    approved_dataset_sha256 = (
+        (project.get("review") or {}).get("approved_scored_dataset_sha256")
+        if calibration_authority == "approved_real" else None
+    )
+    _validate_authority(
+        dataset,
+        calibration_authority,
+        approved_scored_dataset_sha256=approved_dataset_sha256,
+    )
     if not isinstance(protocol_identity, dict) or not protocol_identity:
         raise CalibrationBaselineError("protocol_identity is required")
     if not isinstance(scoring_implementation, dict) or not scoring_implementation:
         raise CalibrationBaselineError("scoring_implementation is required")
     _validate_dataset_binding(dataset, project, protocol_identity)
+    calibration_parameters_sha256 = _validate_calibrator_lineage(
+        dataset=dataset,
+        audit=audit,
+        protocol_identity=protocol_identity,
+        project=project,
+    )
     calibrated_keys = _validate_calibrated_output(thresholds, audit)
 
     scientific_binding = {
@@ -200,6 +339,8 @@ def create_calibration_publication(
         "protocol_identity": dict(protocol_identity),
         "scoring_implementation": dict(scoring_implementation),
         "dataset_sha256": object_sha256(dataset),
+        "approved_scored_dataset_sha256": approved_dataset_sha256,
+        "calibration_parameters_sha256": calibration_parameters_sha256,
         "thresholds_sha256": object_sha256(thresholds),
         "calibration_audit_sha256": object_sha256(audit),
         "calibrated_keys": calibrated_keys,
@@ -265,6 +406,9 @@ def validate_calibration_consumption(
     if not isinstance(binding, dict):
         raise CalibrationBaselineError("formal calibration binding is required")
     validate_publication_identity(binding)
+    _validate_prediction_owner(
+        binding.get("protocol_identity"), binding.get("scoring_implementation")
+    )
     if binding.get("calibration_authority") not in CALIBRATION_AUTHORITIES:
         raise CalibrationBaselineError("calibration authority is invalid")
     content = deepcopy(project)
@@ -281,6 +425,13 @@ def validate_calibration_consumption(
         raise CalibrationBaselineError("calibration binding protocol mismatch")
     if binding.get("scoring_implementation") != scoring_implementation:
         raise CalibrationBaselineError("calibration binding scoring implementation mismatch")
+    approved_dataset_sha256 = None
+    if binding.get("calibration_authority") == "approved_real":
+        approved_dataset_sha256 = (project.get("review") or {}).get(
+            "approved_scored_dataset_sha256"
+        )
+    if binding.get("approved_scored_dataset_sha256") != approved_dataset_sha256:
+        raise CalibrationBaselineError("approved scored dataset authority mismatch")
     if object_sha256(thresholds) != binding.get("thresholds_sha256"):
         raise CalibrationBaselineError("calibration threshold snapshot mismatch")
     if not isinstance(artifact, dict) or artifact.get("artifact_id") != binding.get(
@@ -307,6 +458,11 @@ def validate_calibration_artifact(
         artifact_content = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise CalibrationBaselineError("calibration artifact content is invalid") from exc
+    if (
+        artifact_content.get("schema_version") != CALIBRATION_BASELINE_SCHEMA_VERSION
+        or artifact_content.get("artifact_type") != "calibration_baseline"
+    ):
+        raise CalibrationBaselineError("calibration artifact envelope is invalid")
     expected_scientific = {key: binding.get(key) for key in SCIENTIFIC_BINDING_KEYS}
     if artifact_content.get("scientific_binding") != expected_scientific:
         raise CalibrationBaselineError("calibration artifact scientific binding mismatch")
@@ -319,7 +475,16 @@ def validate_calibration_artifact(
         raise CalibrationBaselineError(
             "formal calibration publication requires control dataset schema_version 2"
         )
-    _validate_authority(dataset, str(binding.get("calibration_authority") or ""))
+    _validate_prediction_owner(
+        binding.get("protocol_identity"), binding.get("scoring_implementation")
+    )
+    _validate_authority(
+        dataset,
+        str(binding.get("calibration_authority") or ""),
+        approved_scored_dataset_sha256=binding.get(
+            "approved_scored_dataset_sha256"
+        ),
+    )
     try:
         validate_control_metadata(
             _dataset_metadata(dataset),
@@ -335,6 +500,15 @@ def validate_calibration_artifact(
         "calibration_audit_sha256"
     ):
         raise CalibrationBaselineError("calibration artifact audit mismatch")
+    parameters_sha256 = _validate_calibrator_lineage(
+        dataset=dataset,
+        audit=audit,
+        protocol_identity=binding.get("protocol_identity"),
+    )
+    if parameters_sha256 != binding.get("calibration_parameters_sha256"):
+        raise CalibrationBaselineError(
+            "calibration binding parameters identity mismatch"
+        )
     if thresholds is not None:
         calibrated_keys = _validate_calibrated_output(thresholds, audit)
         if calibrated_keys != binding.get("calibrated_keys"):

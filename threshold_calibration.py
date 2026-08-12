@@ -20,6 +20,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable
 
+from core.integrity import object_sha256
 from project_config import global_value, target_value
 
 
@@ -413,24 +414,32 @@ def calibrate_thresholds(
         controls, target_ids, min_negative_controls, min_positive_controls,
         min_positive_recall,
     )
-    output = deepcopy(thresholds or {})
-    audit = _build_calibration_audit(
-        records, dataset_meta, protocol, protocol_hash,
-        min_positive_controls, min_negative_controls,
-        max_false_positive_rate, min_positive_recall,
-    )
-    _, invalid, positives, negatives = _label_control_records(records, audit)
-    expected_protocol_hash = audit["protocol_hash"]
     if isinstance(metric_keys, str):
-        # A bare string iterates character-by-character and would silently
-        # disable every metric; treat it as a single metric key instead.
         metric_keys = (metric_keys,)
     eligible_keys = frozenset(
         str(key).strip()
         for key in (metric_keys if metric_keys is not None else CALIBRATION_METRIC_KEYS)
         if str(key).strip()
     )
-
+    calibration_parameters = {
+        "metric_keys": sorted(eligible_keys),
+        "target_ids": sorted(target_ids),
+        "max_false_positive_rate": max_false_positive_rate,
+        "min_positive_recall": min_positive_recall,
+        "min_negative_controls": min_negative_controls,
+        "min_positive_controls": min_positive_controls,
+    }
+    dataset_identity = controls if isinstance(controls, dict) else records
+    output = deepcopy(thresholds or {})
+    audit = _build_calibration_audit(
+        records, dataset_meta, protocol, protocol_hash,
+        min_positive_controls, min_negative_controls,
+        max_false_positive_rate, min_positive_recall,
+        control_dataset_sha256=object_sha256(dataset_identity),
+        calibration_parameters=calibration_parameters,
+    )
+    _, invalid, positives, negatives = _label_control_records(records, audit)
+    expected_protocol_hash = audit["protocol_hash"]
     for key, spec in METRIC_SPECS.items():
         if key not in eligible_keys:
             audit["metrics"][key] = {
@@ -487,7 +496,11 @@ def _build_calibration_audit(
     min_negative_controls: int,
     max_false_positive_rate: float,
     min_positive_recall: float,
+    *,
+    control_dataset_sha256: str,
+    calibration_parameters: dict,
 ) -> dict[str, Any]:
+    protocol_identity = protocol or dataset_meta.get("protocol")
     return {
         "schema_version": CALIBRATION_SCHEMA_VERSION,
         "status": "not_configured" if not records else "pending_controls",
@@ -498,9 +511,13 @@ def _build_calibration_audit(
         "min_negative_controls": min_negative_controls,
         "max_false_positive_rate": max_false_positive_rate,
         "min_positive_recall": min_positive_recall,
+        "control_dataset_sha256": control_dataset_sha256,
+        "protocol_identity": deepcopy(protocol_identity),
+        "calibration_parameters": calibration_parameters,
+        "calibration_parameters_sha256": object_sha256(calibration_parameters),
         "protocol_hash": (
             protocol_hash
-            or _protocol_hash(protocol or dataset_meta.get("protocol"))
+            or _protocol_hash(protocol_identity)
             or dataset_meta.get("protocol_hash")
         ),
         "metrics": {},

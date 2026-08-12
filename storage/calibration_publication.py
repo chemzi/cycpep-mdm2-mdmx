@@ -38,6 +38,11 @@ def _validated_values(
         "artifact_sha256"
     ):
         raise CalibrationBaselineError("calibration artifact content mismatch")
+    if (
+        artifact_value.get("artifact_type") != "calibration_baseline"
+        or artifact_value.get("size_bytes") != artifact_path.stat().st_size
+    ):
+        raise CalibrationBaselineError("calibration artifact metadata mismatch")
     validate_calibration_artifact(
         binding_value, artifact_path, thresholds=threshold_value
     )
@@ -65,6 +70,102 @@ def _insert_artifact(connection: Any, artifact: Mapping[str, Any], now: str) -> 
     )
 
 
+def _registered_artifact_is_complete(row: Any, binding: Mapping[str, Any]) -> bool:
+    if (
+        row is None
+        or row["artifact_type"] != "calibration_baseline"
+        or row["sha256"] != binding.get("artifact_sha256")
+    ):
+        return False
+    path = Path(str(row["path"] or ""))
+    return (
+        path.is_file()
+        and row["size_bytes"] == path.stat().st_size
+        and file_sha256(path) == binding.get("artifact_sha256")
+    )
+
+
+def _validate_store_authority(
+    state: Mapping[str, Any], binding: Mapping[str, Any], project_id: str
+) -> None:
+    project_config = state.get("project_config") or {}
+    review = project_config.get("review") or {}
+    approved_digest = state.get("approved_digest") or review.get("approved_digest")
+    if binding.get("project_id") != project_id:
+        raise CalibrationBaselineError("calibration publication project mismatch")
+    if binding.get("approved_digest") != approved_digest:
+        raise CalibrationBaselineError("calibration publication approved project mismatch")
+    approved_dataset_sha256 = None
+    if binding.get("calibration_authority") == "approved_real":
+        approved_dataset_sha256 = review.get("approved_scored_dataset_sha256")
+    if binding.get("approved_scored_dataset_sha256") != approved_dataset_sha256:
+        raise CalibrationBaselineError(
+            "calibration publication approved scored dataset mismatch"
+        )
+
+
+def _classify_publication_replay(
+    connection: Any,
+    state: Mapping[str, Any],
+    binding: Mapping[str, Any],
+    thresholds: Mapping[str, Any],
+    artifact: Mapping[str, Any],
+) -> bool:
+    publication_id = str(binding["publication_id"])
+    event_exists = connection.execute(
+        "SELECT 1 FROM evidence_events WHERE event_id = ? AND event_type = ?",
+        (f"{publication_id}-published", "threshold_calibration_published"),
+    ).fetchone() is not None
+    row = connection.execute(
+        "SELECT * FROM artifacts WHERE artifact_id = ?", (binding["artifact_id"],)
+    ).fetchone()
+    active_matches = (
+        state.get("threshold_calibration_binding") == binding
+        and state.get("thresholds") == thresholds
+    )
+    if active_matches:
+        artifact_matches = row is not None and {
+            key: row[key] for key in _artifact_identity(artifact)
+        } == _artifact_identity(artifact)
+        if event_exists and artifact_matches and _registered_artifact_is_complete(
+            row, binding
+        ):
+            return True
+        raise CalibrationBaselineError(
+            "active calibration has incomplete authority; recovery required"
+        )
+    if row is not None or event_exists:
+        raise CalibrationBaselineError(
+            "stale publication replay cannot reactivate a superseded baseline"
+        )
+    return False
+
+
+def _write_publication(
+    store: "SQLiteStore",
+    connection: Any,
+    state: dict[str, Any],
+    binding: Mapping[str, Any],
+    thresholds: Mapping[str, Any],
+    artifact: Mapping[str, Any],
+    now: str,
+) -> None:
+    _insert_artifact(connection, artifact, now)
+    state["thresholds"] = dict(thresholds)
+    state["threshold_calibration_binding"] = dict(binding)
+    store._write_state(connection, store.project_id, state)
+    ownership = SQLiteOwnership(connection, store.project_id)
+    ownership.advance_state("thresholds", None)
+    ownership.advance_state("threshold_calibration_binding", None)
+    store._append_formal_event(connection, {
+        "event_id": f"{binding['publication_id']}-published",
+        "agent": "research",
+        "event_type": "threshold_calibration_published",
+        "project_id": store.project_id,
+        "calibration_binding": dict(binding),
+    })
+
+
 def publish_sqlite_calibration(
     store: "SQLiteStore",
     *,
@@ -78,69 +179,16 @@ def publish_sqlite_calibration(
         binding, thresholds, artifact
     )
     publication_id = str(binding_value["publication_id"])
-    artifact_id = str(binding_value["artifact_id"])
 
     with store._write() as connection:
         state = store._state_in(connection, store.project_id)
-        approved_digest = state.get("approved_digest") or (
-            ((state.get("project_config") or {}).get("review") or {}).get(
-                "approved_digest"
-            )
+        _validate_store_authority(state, binding_value, store.project_id)
+        if _classify_publication_replay(
+            connection, state, binding_value, threshold_value, artifact_value
+        ):
+            return {"status": "idempotent", "publication_id": publication_id}
+        _write_publication(
+            store, connection, state, binding_value, threshold_value,
+            artifact_value, now,
         )
-        if binding_value.get("project_id") != store.project_id:
-            raise CalibrationBaselineError("calibration publication project mismatch")
-        if binding_value.get("approved_digest") != approved_digest:
-            raise CalibrationBaselineError("calibration publication approved project mismatch")
-
-        active = state.get("threshold_calibration_binding")
-        publication_event_id = f"{publication_id}-published"
-        was_published = connection.execute(
-            "SELECT 1 FROM evidence_events WHERE event_id = ? AND event_type = ?",
-            (publication_event_id, "threshold_calibration_published"),
-        ).fetchone() is not None
-        existing_row = connection.execute(
-            "SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,)
-        ).fetchone()
-        expected_artifact = _artifact_identity(artifact_value)
-        if isinstance(active, dict) and active.get("publication_id") == publication_id:
-            observed_artifact = (
-                {key: existing_row[key] for key in expected_artifact}
-                if existing_row is not None
-                else None
-            )
-            if (
-                active == binding_value
-                and state.get("thresholds") == threshold_value
-                and observed_artifact == expected_artifact
-            ):
-                return {"status": "idempotent", "publication_id": publication_id}
-            raise CalibrationBaselineError(
-                "publication identity conflicts with different content"
-            )
-        if existing_row is not None:
-            observed_artifact = {key: existing_row[key] for key in expected_artifact}
-            if observed_artifact != expected_artifact:
-                raise CalibrationBaselineError(
-                    "artifact identity conflicts with different content"
-                )
-        else:
-            _insert_artifact(connection, artifact_value, now)
-
-        state["thresholds"] = threshold_value
-        state["threshold_calibration_binding"] = binding_value
-        store._write_state(connection, store.project_id, state)
-        ownership = SQLiteOwnership(connection, store.project_id)
-        ownership.advance_state("thresholds", None)
-        ownership.advance_state("threshold_calibration_binding", None)
-        if not was_published:
-            store._append_formal_event(connection, {
-                "event_id": publication_event_id,
-                "agent": "research",
-                "event_type": "threshold_calibration_published",
-                "project_id": store.project_id,
-                "calibration_binding": binding_value,
-            })
-    return {
-        "status": "idempotent" if was_published else "published",
-        "publication_id": publication_id,
-    }
+    return {"status": "published", "publication_id": publication_id}

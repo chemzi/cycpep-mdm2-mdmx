@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from copy import deepcopy
@@ -103,6 +104,19 @@ class CalibrationBaselineContractTests(unittest.TestCase):
         )
 
         self.assertEqual(audit["metrics"]["L7_scrmsd"]["status"], "calibrated")
+        self.assertEqual(audit["control_dataset_sha256"], object_sha256(dataset))
+        self.assertEqual(audit["protocol_identity"], protocol_binding())
+        self.assertEqual(
+            audit["calibration_parameters"],
+            {
+                "metric_keys": ["L7_scrmsd"],
+                "target_ids": ["MDM2", "MDMX"],
+                "max_false_positive_rate": 0.05,
+                "min_positive_recall": 0.5,
+                "min_negative_controls": 10,
+                "min_positive_controls": 3,
+            },
+        )
         self.assertEqual(first["binding"]["calibration_authority"], "simulation_only")
         self.assertEqual(first["binding"]["publication_id"], second["binding"]["publication_id"])
         self.assertEqual(first["binding"]["artifact_sha256"], second["binding"]["artifact_sha256"])
@@ -124,13 +138,13 @@ class CalibrationBaselineContractTests(unittest.TestCase):
                 artifact_path=self.root / "invalid.json",
             )
 
-    def test_approved_real_rejects_missing_real_control_provenance(self):
+    def test_approved_real_without_external_authority_fails_before_provenance(self):
         dataset, thresholds, audit = calibrated_simulation(self.project)
         dataset["metadata"]["calibration_authority"] = "approved_real"
         for control in dataset["controls"]:
             control["role"] = "experimental_control"
             control["source"] = {}
-        with self.assertRaisesRegex(CalibrationBaselineError, "provenance"):
+        with self.assertRaisesRegex(CalibrationBaselineError, "approved scored dataset"):
             create_calibration_publication(
                 dataset=dataset,
                 thresholds=thresholds,
@@ -162,6 +176,69 @@ class CalibrationBaselineContractTests(unittest.TestCase):
                 protocol_identity=protocol_binding(),
                 scoring_implementation=scoring_implementation_identity(),
                 artifact_path=self.root / "extra-calibrated.json",
+            )
+
+    def test_dataset_content_changed_without_recalibration_cannot_publish(self):
+        dataset, thresholds, audit = calibrated_simulation(self.project)
+        dataset["controls"][0]["metrics"]["global"]["scrmsd"] = 1.75
+        with self.assertRaisesRegex(CalibrationBaselineError, "dataset.*audit"):
+            create_calibration_publication(
+                dataset=dataset, thresholds=thresholds, audit=audit,
+                project=self.project, calibration_authority="simulation_only",
+                protocol_identity=protocol_binding(),
+                scoring_implementation=scoring_implementation_identity(),
+                artifact_path=self.root / "stale-audit.json",
+            )
+
+    def test_threshold_operator_changed_without_recalibration_cannot_publish(self):
+        dataset, thresholds, audit = calibrated_simulation(self.project)
+        thresholds["L7_scrmsd"]["operator"] = ">="
+        with self.assertRaisesRegex(CalibrationBaselineError, "calibrated output"):
+            create_calibration_publication(
+                dataset=dataset, thresholds=thresholds, audit=audit,
+                project=self.project, calibration_authority="simulation_only",
+                protocol_identity=protocol_binding(),
+                scoring_implementation=scoring_implementation_identity(),
+                artifact_path=self.root / "reversed-operator.json",
+            )
+
+    def test_fake_prediction_protocol_or_scorer_cannot_create_publication(self):
+        dataset, thresholds, audit = calibrated_simulation(self.project)
+        for protocol, scorer in (
+            ({"name": "fake", "version": "v99"}, scoring_implementation_identity()),
+            (protocol_binding(), {"name": "fake-scorer", "version": "v99"}),
+        ):
+            destination = self.root / f"fake-{scorer['name']}.json"
+            with self.assertRaisesRegex(CalibrationBaselineError, "Prediction-owned"):
+                create_calibration_publication(
+                    dataset=dataset, thresholds=thresholds, audit=audit,
+                    project=self.project, calibration_authority="simulation_only",
+                    protocol_identity=protocol,
+                    scoring_implementation=scorer,
+                    artifact_path=destination,
+                )
+            self.assertFalse(destination.exists())
+
+    def test_self_declared_approved_real_without_external_authority_is_rejected(self):
+        dataset = simulation_dataset(self.project)
+        dataset["metadata"]["calibration_authority"] = "approved_real"
+        for control in dataset["controls"]:
+            control["role"] = f"experimental_{control['label']}_control"
+            control["source"].pop("synthetic")
+        thresholds, audit = calibrate_thresholds(
+            controls=dataset,
+            thresholds=justified_thresholds(),
+            target_ids=("MDM2", "MDMX"),
+            protocol=protocol_binding(),
+            metric_keys=("L7_scrmsd",),
+        )
+        with self.assertRaisesRegex(CalibrationBaselineError, "approved scored dataset"):
+            create_calibration_publication(
+                dataset=dataset, thresholds=thresholds, audit=audit,
+                project=self.project, calibration_authority="approved_real",
+                protocol_identity=protocol_binding(),
+                scoring_implementation=scoring_implementation_identity(),
+                artifact_path=self.root / "unapproved-real.json",
             )
 
 
@@ -232,7 +309,7 @@ class CalibrationPublicationStoreTests(unittest.TestCase):
             self.publication["thresholds"],
         )
 
-    def test_identical_publication_is_idempotent_after_another_active_baseline(self):
+    def test_superseded_publication_replay_fails_and_preserves_active_baseline(self):
         self.store.publish_calibration(**self.publication)
         dataset = simulation_dataset(self.project)
         dataset["controls"][0]["metrics"]["global"]["scrmsd"] = 0.2
@@ -255,16 +332,47 @@ class CalibrationPublicationStoreTests(unittest.TestCase):
         )
         self.store.publish_calibration(**other)
 
-        replay = self.store.publish_calibration(**self.publication)
-
-        self.assertEqual(replay["status"], "idempotent")
+        before_events = self.store.query(event_type="threshold_calibration_published")
+        with self.assertRaisesRegex(CalibrationBaselineError, "stale publication"):
+            self.store.publish_calibration(**self.publication)
         state = self.store.get_state(self.project["project_id"])
-        self.assertEqual(state["threshold_calibration_binding"], self.publication["binding"])
-        events = self.store.query(
-            project_id=self.project["project_id"],
-            event_type="threshold_calibration_published",
+        self.assertEqual(state["threshold_calibration_binding"], other["binding"])
+        self.assertEqual(state["thresholds"], other["thresholds"])
+        self.assertEqual(
+            self.store.query(event_type="threshold_calibration_published"),
+            before_events,
         )
-        self.assertEqual(len(events), 2)
+
+    def test_active_authority_without_publication_evidence_is_not_idempotent(self):
+        self.store.publish_calibration(**self.publication)
+        with sqlite3.connect(self.store.path) as connection:
+            connection.execute(
+                "DELETE FROM evidence_events WHERE event_id = ?",
+                (f"{self.publication['binding']['publication_id']}-published",),
+            )
+        before = self.store.get_state(self.project["project_id"])
+        with self.assertRaisesRegex(CalibrationBaselineError, "incomplete authority"):
+            self.store.publish_calibration(**self.publication)
+        self.assertEqual(self.store.get_state(self.project["project_id"]), before)
+
+    def test_incomplete_artifact_metadata_cannot_publish_or_replay(self):
+        invalid = deepcopy(self.publication)
+        invalid["artifact"]["artifact_type"] = "other"
+        invalid["artifact"]["size_bytes"] = 1
+        with self.assertRaisesRegex(CalibrationBaselineError, "artifact metadata"):
+            self.store.publish_calibration(**invalid)
+        self.assertIsNone(
+            self.store.get_artifact(self.publication["binding"]["artifact_id"])
+        )
+
+        self.store.publish_calibration(**self.publication)
+        with sqlite3.connect(self.store.path) as connection:
+            connection.execute(
+                "UPDATE artifacts SET size_bytes = 1 WHERE artifact_id = ?",
+                (self.publication["binding"]["artifact_id"],),
+            )
+        with self.assertRaisesRegex(CalibrationBaselineError, "incomplete authority"):
+            self.store.publish_calibration(**self.publication)
 
     def test_evidence_collision_rolls_back_artifact_and_state(self):
         publication_id = self.publication["binding"]["publication_id"]
@@ -347,6 +455,26 @@ class CalibrationPublicationStoreTests(unittest.TestCase):
         })
         with self.assertRaisesRegex(CalibrationBaselineError, "schema_version 2"):
             self.store.publish_calibration(**forged)
+
+    def test_store_rejects_invalid_artifact_file_envelope(self):
+        artifact_path = Path(self.publication["artifact"]["path"])
+        content = json.loads(artifact_path.read_text())
+        content["schema_version"] = 999
+        content["artifact_type"] = "not_a_calibration"
+        artifact_path.write_text(
+            json.dumps(content, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        )
+        forged = deepcopy(self.publication)
+        forged["binding"]["artifact_sha256"] = file_sha256(artifact_path)
+        forged["artifact"].update({
+            "sha256": forged["binding"]["artifact_sha256"],
+            "size_bytes": artifact_path.stat().st_size,
+        })
+        with self.assertRaisesRegex(CalibrationBaselineError, "artifact envelope"):
+            self.store.publish_calibration(**forged)
+        self.assertIsNone(
+            self.store.get_artifact(self.publication["binding"]["artifact_id"])
+        )
 
     def test_prediction_agent_validates_and_passes_exact_store_binding(self):
         self.store.publish_calibration(**self.publication)
@@ -433,6 +561,33 @@ class CalibrationPublicationStoreTests(unittest.TestCase):
             )
         self.assertEqual(
             pipeline_type.call_args.kwargs["calibration_binding"], replacement["binding"]
+        )
+
+    def test_state_json_projection_cannot_override_sqlite_calibration(self):
+        self.store.publish_calibration(**self.publication)
+        (self.root / "state.json").write_text(
+            json.dumps({
+                "thresholds": justified_thresholds(),
+                "threshold_calibration_binding": {"calibration_authority": "approved_real"},
+            }),
+            encoding="utf-8",
+        )
+        from agents import prediction
+        with (
+            patch.object(prediction, "get_storage_backend", return_value=self.store),
+            patch.object(prediction.CandidateIndex, "load", return_value=[{"candidate_id": "C1"}]),
+            patch.object(prediction, "PredictionPipeline") as pipeline_type,
+        ):
+            pipeline_type.return_value.run.return_value = {"run_id": "sqlite-authority"}
+            prediction.run(
+                state=json.loads((self.root / "state.json").read_text()),
+                project_config=self.project,
+                artifacts_root=self.root / "artifacts",
+                run_root=self.root / "runs",
+            )
+        self.assertEqual(
+            pipeline_type.call_args.kwargs["calibration_binding"],
+            self.publication["binding"],
         )
 
     def test_insufficient_simulation_controls_do_not_become_a_baseline(self):
