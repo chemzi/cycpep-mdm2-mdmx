@@ -232,7 +232,7 @@ def _prepare_boltz_environment(
     cache = Path(cache_dir).expanduser().resolve()
     checkpoint_path = Path(checkpoint).expanduser().resolve()
     destination = Path(output_dir).expanduser().resolve()
-    validate_boltz_runtime(executable, checkpoint_path, timeout=timeout)
+    runtime = validate_boltz_runtime(executable, checkpoint_path, timeout=timeout)
     if destination.exists() and any(destination.iterdir()):
         raise ContractError(
             "predictor_output_exists", f"Boltz output directory is not empty: {destination}"
@@ -255,8 +255,8 @@ def _prepare_boltz_environment(
         "cache": cache,
         "checkpoint_path": checkpoint_path,
         "destination": destination,
-        "checkpoint_sha": checkpoint_sha,
-        "version": version,
+        "checkpoint_sha": runtime["checkpoint_sha256"],
+        "version": runtime["version"],
         "input_path": input_path,
         "raw_dir": raw_dir,
     }
