@@ -203,6 +203,156 @@ def _dependencies(root, world, *, writer=None, context_loader=None):
 
 
 class WorkflowServiceAcceptanceTests(unittest.TestCase):
+    def test_valid_caller_launcher_id_is_used_without_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            world = _World()
+            deps = _dependencies(tmp, world)
+            deps = LauncherServiceDependencies(
+                **{
+                    **deps.__dict__,
+                    "launcher_id": lambda: self.fail(
+                        "caller-supplied launcher ID must not be replaced"
+                    ),
+                }
+            )
+
+            result = launch_project(
+                project_path="approved.json",
+                launcher_run_id=LAUNCHER_ID,
+                dependencies=deps,
+            )
+
+            self.assertEqual(result.payload.launcher_run_id, LAUNCHER_ID)
+            self.assertEqual(result.payload.status, "awaiting_approval")
+            self.assertEqual(deps.diagnostics.read(LAUNCHER_ID).project_id, "project-1")
+
+    def test_invalid_caller_launcher_id_has_no_side_effects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            world = _World()
+            calls = []
+            deps = _dependencies(
+                tmp,
+                world,
+                context_loader=lambda _path: calls.append("load_context"),
+            )
+            deps = LauncherServiceDependencies(
+                **{
+                    **deps.__dict__,
+                    "launcher_id": lambda: calls.append("launcher_id"),
+                    "runtime_factory": lambda *_args: calls.append("runtime"),
+                }
+            )
+
+            result = launch_project(
+                project_path="approved.json",
+                launcher_run_id="launcher_invalid",
+                dependencies=deps,
+            )
+
+            self.assertEqual(result.exit_code, 2)
+            self.assertEqual(result.payload.error.code, "launcher_run_id_invalid")
+            self.assertEqual(calls, [])
+            self.assertEqual(world.calls, [])
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_repeated_caller_launch_recovers_same_run_without_replaying_science(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            world = _World()
+            loaded_paths = []
+
+            def load_same_context(path):
+                loaded_paths.append(Path(path).name)
+                return _context()
+
+            deps = _dependencies(tmp, world, context_loader=load_same_context)
+
+            first = launch_project(
+                project_path="approved.json",
+                launcher_run_id=LAUNCHER_ID,
+                dependencies=deps,
+            )
+            calls_after_first = list(world.calls)
+            diagnostic_after_first = deps.diagnostics.read(LAUNCHER_ID)
+            repeated = launch_project(
+                project_path="retry-copy.json",
+                launcher_run_id=LAUNCHER_ID,
+                dependencies=deps,
+            )
+
+            self.assertEqual(first.payload.status, "awaiting_approval")
+            self.assertEqual(repeated.payload.status, "awaiting_approval")
+            self.assertEqual(repeated.payload.launcher_run_id, LAUNCHER_ID)
+            self.assertEqual(world.calls, calls_after_first)
+            self.assertEqual(
+                deps.diagnostics.read(LAUNCHER_ID).created_at,
+                diagnostic_after_first.created_at,
+            )
+            self.assertEqual(len(list(Path(tmp).glob("launcher_*.json"))), 2)
+            self.assertEqual(loaded_paths[-2:], ["retry-copy.json", "approved.json"])
+
+    def test_repeated_caller_launch_binding_conflict_mutates_neither_run(self):
+        for conflicting_context in (
+            _context(project_id="project-2"),
+            _context(binding="different-approved-content"),
+        ):
+            with self.subTest(
+                project_id=conflicting_context.project_id,
+                binding=conflicting_context.config["review"]["approved_digest"],
+            ), tempfile.TemporaryDirectory() as tmp:
+                world = _World()
+                contexts = {
+                    "approved.json": _context(),
+                    "conflict.json": conflicting_context,
+                }
+                deps = _dependencies(
+                    tmp,
+                    world,
+                    context_loader=lambda path: contexts[Path(path).name],
+                )
+                launch_project(
+                    project_path="approved.json",
+                    launcher_run_id=LAUNCHER_ID,
+                    dependencies=deps,
+                )
+                calls_before_conflict = list(world.calls)
+                diagnostic_before_conflict = deps.diagnostics.read(
+                    LAUNCHER_ID
+                ).to_dict()
+
+                conflict = launch_project(
+                    project_path="conflict.json",
+                    launcher_run_id=LAUNCHER_ID,
+                    dependencies=deps,
+                )
+
+                self.assertEqual(conflict.exit_code, 2)
+                self.assertEqual(
+                    conflict.payload.error.code, "launcher_launch_binding_conflict"
+                )
+                self.assertEqual(world.calls, calls_before_conflict)
+                self.assertEqual(
+                    deps.diagnostics.read(LAUNCHER_ID).to_dict(),
+                    diagnostic_before_conflict,
+                )
+
+    def test_omitted_launcher_id_keeps_generator_compatibility(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            world = _World()
+            generated = []
+            deps = _dependencies(tmp, world)
+            deps = LauncherServiceDependencies(
+                **{
+                    **deps.__dict__,
+                    "launcher_id": lambda: generated.append(LAUNCHER_ID) or LAUNCHER_ID,
+                }
+            )
+
+            result = launch_project(project_path="approved.json", dependencies=deps)
+
+            self.assertEqual(generated, [LAUNCHER_ID])
+            self.assertEqual(result.payload.launcher_run_id, LAUNCHER_ID)
+            self.assertEqual(result.payload.status, "awaiting_approval")
+
     def test_initial_diagnostic_failure_constructs_no_runtime_or_science(self):
         with tempfile.TemporaryDirectory() as tmp:
             world = _World()

@@ -6,6 +6,7 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agents.planner import (
     PlannerConfig,
@@ -33,6 +34,48 @@ def _source(candidate_ids=("C0001", "C0002")):
 
 
 class PlannerBootstrapPredictionTests(unittest.TestCase):
+    def test_finite_task_estimate_is_consistent_with_provisional_budget(self):
+        plan = build_initial_prediction_bootstrap_plan(source=_source())
+
+        resource = plan["tasks"][0]["resource_request"]
+        metadata = plan["decision_metadata"]
+        budget = plan["budget_request"]
+        self.assertEqual(resource["estimated_gpu_minutes"], 2.5)
+        self.assertEqual(resource["estimate_status"], "estimated")
+        self.assertEqual(metadata["total_estimated_gpu_minutes"], 2.5)
+        self.assertEqual(metadata["estimator_version"], "simple-v1")
+        self.assertEqual(metadata["estimate_calibration_status"], "provisional")
+        self.assertEqual(budget["gpu_minutes"], 2.5)
+        self.assertEqual(budget["gpu_minutes_status"], "estimated")
+        self.assertEqual(budget["gpu_minutes_estimator_version"], "simple-v1")
+        self.assertEqual(budget["gpu_minutes_calibration_status"], "provisional")
+
+    def test_missing_task_estimate_keeps_budget_unavailable(self):
+        def unavailable_metadata(tasks, _budgets, _config, _state):
+            tasks[0]["resource_request"].update({
+                "estimated_gpu_minutes": None,
+                "estimate_status": "benchmark_required",
+            })
+            return {
+                "total_estimated_gpu_minutes": 0.0,
+                "estimator_version": "simple-v1",
+            }
+
+        with patch(
+            "agents.planner.bootstrap._compute_plan_metadata",
+            side_effect=unavailable_metadata,
+        ):
+            plan = build_initial_prediction_bootstrap_plan(source=_source())
+
+        metadata = plan["decision_metadata"]
+        budget = plan["budget_request"]
+        self.assertIsNone(metadata["total_estimated_gpu_minutes"])
+        self.assertEqual(metadata["estimate_calibration_status"], "unavailable")
+        self.assertIsNone(budget["gpu_minutes"])
+        self.assertEqual(budget["gpu_minutes_status"], "benchmark_required")
+        self.assertEqual(budget["gpu_minutes_estimator_version"], "simple-v1")
+        self.assertEqual(budget["gpu_minutes_calibration_status"], "unavailable")
+
     def test_builds_one_exact_scoped_registered_prediction_task(self):
         plan = build_initial_prediction_bootstrap_plan(source=_source())
 

@@ -1,13 +1,13 @@
 ## 1. Baseline and Control Contract
 
-- [ ] 1.1 Characterize target draft approval, caller/default Launcher identity, the post-Initial-Design/pre-Prediction pause, exact approval/resume, project switching, and the current bootstrap estimate/budget conflict.
-- [ ] 1.2 Define additive safe types for launch, pre-Orchestrator inspection, exact approval, auto ceilings, scoped reads, and structured binding/stale/estimate/ceiling failures without changing Store schemas.
+- [x] 1.1 Characterize target draft approval, caller/default Launcher identity, the post-Initial-Design/pre-Prediction pause, exact approval/resume, project switching, and the current bootstrap estimate/budget conflict.
+- [x] 1.2 Define additive safe types for launch, pre-Orchestrator inspection, exact approval, auto ceilings, scoped reads, and structured binding/stale/estimate/ceiling failures without changing Store schemas.
 
 ## 2. Minimal Launcher and Control Implementation
 
-- [ ] 2.1 Add optional validated caller `launcher_run_id`; same-ID/same-project launch recovers status, conflicting binding fails, and legacy callers remain server-generated.
+- [x] 2.1 Add optional validated caller `launcher_run_id`; same-ID/same-project launch recovers status, conflicting binding fails, and legacy callers remain server-generated.
 - [ ] 2.2 Add the narrow operator facade that restores exact ProjectContext, validates formal Planner authority, returns a path-free approval view, records explicit approval, and resumes under the existing lock.
-- [ ] 2.3 Normalize bootstrap task estimates and `budget_request` into one provisional `simple-v1` interpretation with consistent totals/status/calibration metadata; do not add an estimator.
+- [x] 2.3 Normalize bootstrap task estimates and `budget_request` into one provisional `simple-v1` interpretation with consistent totals/status/calibration metadata; do not add an estimator.
 - [ ] 2.4 Implement the small web service that applies maximum-slot plus summed proposal/candidate/GPU-minute ceilings only to the first `initial_prediction_bootstrap` gate, consumes the policy, and leaves every later/retry plan for human approval without retrying science.
 - [ ] 2.5 Add `/api/v2/control/...` routes and cover errors, repeat submission, response-loss recovery, sanitization, and preservation of old routes.
 

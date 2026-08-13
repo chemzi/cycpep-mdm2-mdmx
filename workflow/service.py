@@ -13,7 +13,11 @@ from target_bootstrap import assert_project_approved
 
 from .bootstrap_prediction import advance_bootstrap_prediction
 from .boundaries import FormalBoundary, FormalBoundaryInspector
-from .diagnostics import DiagnosticStore, resolve_diagnostics_root
+from .diagnostics import (
+    DiagnosticStore,
+    resolve_diagnostics_root,
+    validate_launcher_run_id,
+)
 from .errors import DiagnosticContractError, normalize_error
 from .models import (
     DiagnosticReport,
@@ -65,15 +69,30 @@ class LauncherServiceDependencies:
 
 
 def launch_project(
-    *, project_path: str | Path, dependencies: LauncherServiceDependencies | None = None
+    *,
+    project_path: str | Path,
+    launcher_run_id: str | None = None,
+    dependencies: LauncherServiceDependencies | None = None,
 ) -> LauncherCommandResult:
     deps = dependencies or _default_dependencies()
-    launcher_run_id = None
+    resolved_launcher_run_id = None
     try:
+        if launcher_run_id is not None:
+            resolved_launcher_run_id = validate_launcher_run_id(launcher_run_id)
         context = deps.load_context(project_path)
         deps.validate_project(dict(context.config))
         binding = _approved_binding(context)
-        launcher_run_id = deps.launcher_id()
+        if resolved_launcher_run_id is None:
+            resolved_launcher_run_id = deps.launcher_id()
+        else:
+            recovered = _recover_existing_launch(
+                deps,
+                resolved_launcher_run_id,
+                project_id=context.project_id,
+                approved_content_binding=binding,
+            )
+            if recovered is not None:
+                return recovered
         project_locator = str(Path(project_path).expanduser().resolve())
         execution_root = (
             deps.execution_root_resolver()
@@ -84,7 +103,7 @@ def launch_project(
             context, project_locator, execution_root=execution_root
         )
         report = DiagnosticReport.initial(
-            launcher_run_id=launcher_run_id,
+            launcher_run_id=resolved_launcher_run_id,
             project_id=context.project_id,
             approved_content_binding=binding,
             project_locator=project_locator,
@@ -92,12 +111,56 @@ def launch_project(
         )
         # This durable create is deliberately before Data Layer binding and
         # before constructing an Agent runtime that could perform side effects.
-        deps.diagnostics.create(report)
+        try:
+            deps.diagnostics.create(report)
+        except DiagnosticContractError as error:
+            if (
+                launcher_run_id is None
+                or error.code != "launcher_diagnostic_already_exists"
+            ):
+                raise
+            return _coordinate_locked(
+                deps,
+                resolved_launcher_run_id,
+                (),
+                execute=True,
+                expected_project_id=context.project_id,
+                expected_approved_content_binding=binding,
+            )
         return _coordinate_locked(
-            deps, launcher_run_id, (), execute=True, allow_missing_store=True
+            deps,
+            resolved_launcher_run_id,
+            (),
+            execute=True,
+            allow_missing_store=True,
         )
     except Exception as error:
-        return _unbound_failure(error, launcher_run_id=launcher_run_id)
+        return _unbound_failure(error, launcher_run_id=resolved_launcher_run_id)
+
+
+def _recover_existing_launch(
+    deps: LauncherServiceDependencies,
+    launcher_run_id: str,
+    *,
+    project_id: str,
+    approved_content_binding: str,
+) -> LauncherCommandResult | None:
+    with deps.diagnostics.locked(launcher_run_id) as session:
+        try:
+            report = session.read()
+        except DiagnosticContractError as error:
+            if error.code == "launcher_diagnostic_not_found":
+                return None
+            raise
+        return _coordinate_session(
+            deps,
+            session,
+            report,
+            (),
+            execute=True,
+            expected_project_id=project_id,
+            expected_approved_content_binding=approved_content_binding,
+        )
 
 
 def status_launcher_run(
@@ -135,53 +198,88 @@ def _coordinate_locked(
     execute: bool,
     allow_missing_store: bool = False,
     retry_bootstrap_prediction: bool = False,
+    expected_project_id: str | None = None,
+    expected_approved_content_binding: str | None = None,
 ) -> LauncherCommandResult:
     with deps.diagnostics.locked(launcher_run_id) as session:
         report = session.read()
-        try:
-            binding = require_runtime_locator(report)
-            context = _restore_bound_context(deps, binding)
-            deps.validate_project(dict(context.config))
-            _validate_resume_binding(report, context)
-            if not allow_missing_store and deps.validate_formal_store is not None:
-                deps.validate_formal_store(binding, context)
-            with deps.bind_context(context):
-                if deps.runtime_factory_with_locator is not None:
-                    runtime = deps.runtime_factory_with_locator(
-                        context,
-                        report.launcher_run_id,
-                        binding,
-                        not execute,
-                    )
-                else:
-                    runtime_factory = (
-                        deps.read_only_runtime_factory
-                        if not execute and deps.read_only_runtime_factory is not None
-                        else deps.runtime_factory
-                    )
-                    runtime = runtime_factory(context, report.launcher_run_id)
-                return _advance(
-                    runtime,
-                    report,
-                    session,
-                    approval_paths=approval_paths,
-                    retry_bootstrap_prediction=retry_bootstrap_prediction,
-                    execute=execute,
+        return _coordinate_session(
+            deps,
+            session,
+            report,
+            approval_paths,
+            execute=execute,
+            allow_missing_store=allow_missing_store,
+            retry_bootstrap_prediction=retry_bootstrap_prediction,
+            expected_project_id=expected_project_id,
+            expected_approved_content_binding=expected_approved_content_binding,
+        )
+
+
+def _coordinate_session(
+    deps: LauncherServiceDependencies,
+    session: Any,
+    report: DiagnosticReport,
+    approval_paths: tuple[str | Path, ...],
+    *,
+    execute: bool,
+    allow_missing_store: bool = False,
+    retry_bootstrap_prediction: bool = False,
+    expected_project_id: str | None = None,
+    expected_approved_content_binding: str | None = None,
+) -> LauncherCommandResult:
+    try:
+        _validate_launch_binding(
+            report,
+            expected_project_id=expected_project_id,
+            expected_approved_content_binding=expected_approved_content_binding,
+        )
+    except DiagnosticContractError as error:
+        # Conflicting retry input must not be recorded on the existing run.
+        return _unbound_failure(error, launcher_run_id=report.launcher_run_id)
+    try:
+        binding = require_runtime_locator(report)
+        context = _restore_bound_context(deps, binding)
+        deps.validate_project(dict(context.config))
+        _validate_resume_binding(report, context)
+        if not allow_missing_store and deps.validate_formal_store is not None:
+            deps.validate_formal_store(binding, context)
+        with deps.bind_context(context):
+            if deps.runtime_factory_with_locator is not None:
+                runtime = deps.runtime_factory_with_locator(
+                    context,
+                    report.launcher_run_id,
+                    binding,
+                    not execute,
                 )
-        except Exception as error:
-            exit_code = (
-                3
-                if getattr(error, "code", None)
-                == "launcher_runtime_locator_unavailable"
-                else 2
-            )
-            return _record_failure(
-                session,
+            else:
+                runtime_factory = (
+                    deps.read_only_runtime_factory
+                    if not execute and deps.read_only_runtime_factory is not None
+                    else deps.runtime_factory
+                )
+                runtime = runtime_factory(context, report.launcher_run_id)
+            return _advance(
+                runtime,
                 report,
-                error,
-                report.current_boundary or "launcher",
-                exit_code=exit_code,
+                session,
+                approval_paths=approval_paths,
+                retry_bootstrap_prediction=retry_bootstrap_prediction,
+                execute=execute,
             )
+    except Exception as error:
+        exit_code = (
+            3
+            if getattr(error, "code", None) == "launcher_runtime_locator_unavailable"
+            else 2
+        )
+        return _record_failure(
+            session,
+            report,
+            error,
+            report.current_boundary or "launcher",
+            exit_code=exit_code,
+        )
 
 
 def _advance(
@@ -695,6 +793,24 @@ def _validate_resume_binding(report: DiagnosticReport, context: ProjectContext) 
         raise DiagnosticContractError(
             "launcher_approved_content_changed",
             "The approved project content no longer matches this launcher run.",
+        )
+
+
+def _validate_launch_binding(
+    report: DiagnosticReport,
+    *,
+    expected_project_id: str | None,
+    expected_approved_content_binding: str | None,
+) -> None:
+    if expected_project_id is None and expected_approved_content_binding is None:
+        return
+    if (
+        report.project_id != expected_project_id
+        or report.approved_content_binding != expected_approved_content_binding
+    ):
+        raise DiagnosticContractError(
+            "launcher_launch_binding_conflict",
+            "The supplied launcher run identifier is bound to another approved project.",
         )
 
 
