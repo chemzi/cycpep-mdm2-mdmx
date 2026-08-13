@@ -283,6 +283,8 @@ class PlannerTests(_PlannerFixtures, unittest.TestCase):
         design_default = next(task for task in result_default["tasks"] if task["action"] == "iterate_design")
         design_small = next(task for task in result_small["tasks"] if task["action"] == "iterate_design")
         self.assertEqual(design_small["resource_request"]["estimate_status"], "estimated")
+        self.assertEqual(design_default["resource_request"]["estimated_gpu_minutes"], 75.0)
+        self.assertEqual(design_small["resource_request"]["estimated_gpu_minutes"], 13.2)
         # estimate with smaller tunables must be less than the default estimate
         self.assertLess(design_small["resource_request"]["estimated_gpu_minutes"], design_default["resource_request"]["estimated_gpu_minutes"])
 
@@ -489,6 +491,9 @@ class PlannerTests(_PlannerFixtures, unittest.TestCase):
             if task["resource_request"]["class"] == "gpu"
         ]
         task_ids = [task["task_id"] for task in gpu_tasks]
+        covering_gpu_minutes = sum(
+            task["resource_request"]["estimated_gpu_minutes"] for task in gpu_tasks
+        )
         with self.assertRaisesRegex(PlannerContractError, "max_gpu_job_slots"):
             record_approval(
                 plan_path=plan_path,
@@ -496,7 +501,7 @@ class PlannerTests(_PlannerFixtures, unittest.TestCase):
                 approver="PI",
                 justification="approved test iteration",
                 max_gpu_job_slots=0,
-                max_gpu_minutes=120,
+                max_gpu_minutes=covering_gpu_minutes,
                 max_design_proposals=12,
                 max_prediction_candidates=12,
             )
@@ -516,7 +521,7 @@ class PlannerTests(_PlannerFixtures, unittest.TestCase):
             approver="PI",
             justification="approved test iteration",
             max_gpu_job_slots=1,
-            max_gpu_minutes=120,
+            max_gpu_minutes=covering_gpu_minutes,
             max_design_proposals=12,
             max_prediction_candidates=12,
         )
@@ -526,7 +531,7 @@ class PlannerTests(_PlannerFixtures, unittest.TestCase):
             approver="PI",
             justification="approved test iteration",
             max_gpu_job_slots=1,
-            max_gpu_minutes=120,
+            max_gpu_minutes=covering_gpu_minutes,
             max_design_proposals=12,
             max_prediction_candidates=12,
         )

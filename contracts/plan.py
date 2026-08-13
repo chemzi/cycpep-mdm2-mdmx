@@ -9,6 +9,7 @@ its own domain error type.
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,60 @@ class PlanContractError(ValueError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+def validate_approval_gpu_minutes(
+    plan: dict,
+    selected_task_ids: list[str],
+    max_gpu_minutes: float | None,
+    *,
+    error_cls: type = PlanContractError,
+) -> float:
+    """Return selected GPU-task estimates after enforcing approval admission."""
+    tasks_by_id = {task["task_id"]: task for task in plan.get("tasks", [])}
+    gpu_tasks = [
+        tasks_by_id[task_id]
+        for task_id in selected_task_ids
+        if tasks_by_id[task_id]["resource_request"]["class"] == "gpu"
+    ]
+    if not gpu_tasks:
+        return 0.0
+
+    estimates = []
+    for task in gpu_tasks:
+        resource = task["resource_request"]
+        estimate = resource.get("estimated_gpu_minutes")
+        if (
+            resource.get("estimate_status") != "estimated"
+            or not isinstance(estimate, (int, float))
+            or isinstance(estimate, bool)
+            or not math.isfinite(float(estimate))
+            or estimate <= 0
+        ):
+            raise error_cls(
+                "approval_gpu_estimate_invalid",
+                f"selected GPU task {task['task_id']} lacks a usable estimated_gpu_minutes",
+            )
+        estimates.append(float(estimate))
+
+    if (
+        not isinstance(max_gpu_minutes, (int, float))
+        or isinstance(max_gpu_minutes, bool)
+        or not math.isfinite(float(max_gpu_minutes))
+        or max_gpu_minutes <= 0
+    ):
+        raise error_cls(
+            "approval_gpu_minutes_invalid",
+            "max_gpu_minutes must be a positive finite number for selected GPU tasks",
+        )
+    required_minutes = math.fsum(estimates)
+    if float(max_gpu_minutes) < required_minutes:
+        raise error_cls(
+            "approval_gpu_minutes_insufficient",
+            "max_gpu_minutes is lower than the selected GPU-task estimates "
+            f"({float(max_gpu_minutes):g} < {required_minutes:g})",
+        )
+    return required_minutes
 
 
 def validate_sha256(

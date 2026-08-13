@@ -10,7 +10,11 @@ from pathlib import Path
 from prediction_pipeline.contracts import file_sha256, object_sha256
 from .errors import PlannerContractError
 from .io import _atomic_json, _read_json
-from contracts.plan import validate_plan_for_approval, validate_sha256
+from contracts.plan import (
+    validate_approval_gpu_minutes,
+    validate_plan_for_approval,
+    validate_sha256,
+)
 
 from .config import APPROVAL_SCHEMA_VERSION, PLAN_ID_RE
 
@@ -90,11 +94,12 @@ def _validate_approval_budget(
                 "approval_gpu_limit_insufficient",
                 "max_gpu_job_slots must cover the maximum concurrent task request",
             )
-        if max_gpu_minutes is None or max_gpu_minutes <= 0:
-            raise PlannerContractError(
-                "approval_gpu_minutes_required",
-                "max_gpu_minutes must be positive for selected GPU tasks",
-            )
+        validate_approval_gpu_minutes(
+            plan,
+            selected,
+            max_gpu_minutes,
+            error_cls=PlannerContractError,
+        )
     requested_proposals = sum(
         task["resource_request"]["proposal_count"] for task in gpu_tasks
     )
