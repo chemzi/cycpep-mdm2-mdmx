@@ -23,5 +23,5 @@
 - [x] 4.1 Run focused Python Workbench/API and TypeScript parser/component/browser tests.
 - [x] 4.2 Run the full Python suite, frontend test/type/lint/build gates, Architecture Gate, strict OpenSpec validation, and `git diff --check`.
 - [x] 4.3 Obtain high-reasoning implementation Spec and Standards reviews; resolve every P0/P1 while preserving the approved scope.
-- [ ] 4.4 Deploy the reviewed feature commit to isolated server ports against a copied or read-only-bound successful Store and use the browser skill on the direct server port to verify the corrected fields without affecting the scientific runtime; repair and repeat gates if browser QA finds a defect.
+- [x] 4.4 Deploy the reviewed feature commit to isolated server ports against a copied or read-only-bound successful Store and use the browser skill on the direct server port to verify the corrected fields without affecting the scientific runtime; repair and repeat gates if browser QA finds a defect.
 - [ ] 4.5 After direct-port QA, obtain final high-reasoning P0/P1=0 confirmation, complete all tasks, strict validate and locally archive the OpenSpec change, then use `gh` to create/check/review/merge the PR to `integration` and report the merged commit and browser evidence.
