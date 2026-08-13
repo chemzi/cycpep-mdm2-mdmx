@@ -16,4 +16,4 @@
 - [x] 3.2 Run Architecture Gate, strict OpenSpec validation, Python compile checks, and `git diff --check`.
 - [x] 3.3 Obtain independent high-reasoning Spec and Standards reviews; fix all P0/P1 findings and stop expanding scope when P0/P1=0.
 - [x] 3.4 Archive the verified change locally, commit/push the feature branch, and use `gh` to create a ready PR without merging it during full-auto mode.
-- [ ] 3.5 Deploy the verified feature commit to an isolated remote checkout and start a fresh minimal `design.n=2` Launcher; keep all prior failed invocations immutable.
+- [x] 3.5 Deploy the verified feature commit to an isolated remote checkout and start a fresh minimal `design.n=2` Launcher; keep all prior failed invocations immutable.
