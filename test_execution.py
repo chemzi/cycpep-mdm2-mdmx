@@ -395,7 +395,7 @@ class ExecutionTests(unittest.TestCase):
             approver="PI-test",
             justification="bounded failure regression",
             max_gpu_job_slots=1,
-            max_gpu_minutes=1,
+            max_gpu_minutes=207,
             max_design_proposals=12,
             max_prediction_candidates=12,
         )

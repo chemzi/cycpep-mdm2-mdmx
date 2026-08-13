@@ -257,6 +257,9 @@ def _compute_plan_metadata(tasks: list[dict], budgets: dict[str, int], config: P
     # priors and should be replaced by benchmark-driven values when available.
     per_proposal = float(config.gpu_minutes_per_proposal)
     candidate_factor = float(config.gpu_minutes_per_candidate_factor)
+    prediction_minutes_per_candidate = int(
+        config.prediction_gpu_slot_minutes_per_candidate
+    )
     per_minute_cost = float(config.gpu_cost_per_minute_usd)
 
     for task in tasks:
@@ -265,7 +268,12 @@ def _compute_plan_metadata(tasks: list[dict], budgets: dict[str, int], config: P
         if resource_class == "gpu":
             proposals = int(resource.get("proposal_count") or 0)
             candidates = int(resource.get("candidate_limit") or 0)
-            estimated_minutes = proposals * per_proposal + candidates * (per_proposal * candidate_factor)
+            if task.get("action") == "evaluate_new_design_candidates":
+                estimated_minutes = candidates * prediction_minutes_per_candidate
+            else:
+                estimated_minutes = proposals * per_proposal + candidates * (
+                    per_proposal * candidate_factor
+                )
             estimated_cost = round(estimated_minutes * per_minute_cost, 4)
             resource["estimated_gpu_minutes"] = float(estimated_minutes)
             resource["estimated_cost_usd"] = float(estimated_cost)

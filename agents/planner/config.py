@@ -85,6 +85,7 @@ class PlannerConfig:
     gpu_minutes_per_proposal: float = 5.0
     gpu_minutes_per_candidate_factor: float = 0.25
     gpu_cost_per_minute_usd: float = 0.02
+    prediction_gpu_slot_minutes_per_candidate: int = 11
 
     def __post_init__(self) -> None:
         for name in (
@@ -121,6 +122,14 @@ class PlannerConfig:
                 raise PlannerContractError(
                     "planner_config_invalid", "global_budget_minutes must be non-negative and finite"
                 )
+        if (
+            type(self.prediction_gpu_slot_minutes_per_candidate) is not int
+            or self.prediction_gpu_slot_minutes_per_candidate < 1
+        ):
+            raise PlannerContractError(
+                "planner_config_invalid",
+                "prediction_gpu_slot_minutes_per_candidate must be a positive integer",
+            )
         # Validate estimator tunables: must be finite and non-negative
         for name in ("gpu_minutes_per_proposal", "gpu_minutes_per_candidate_factor", "gpu_cost_per_minute_usd"):
             try:

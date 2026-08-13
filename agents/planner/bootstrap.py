@@ -144,6 +144,9 @@ def build_initial_prediction_bootstrap_plan(
         "source": normalized,
         "planner_version": PLANNER_VERSION,
         "max_prediction_candidates_per_task": config.max_prediction_candidates_per_task,
+        "prediction_gpu_slot_minutes_per_candidate": (
+            config.prediction_gpu_slot_minutes_per_candidate
+        ),
     })
     plan_id = f"planner_{input_digest[:12]}"
     plan_source = {

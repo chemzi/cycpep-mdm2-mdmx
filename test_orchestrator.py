@@ -169,7 +169,7 @@ class OrchestratorTests(unittest.TestCase):
         ], marker=marker)
         return planner_run(critic_report_path=report)
 
-    def _approval(self, plan_result, *, max_minutes=30.0):
+    def _approval(self, plan_result, *, max_minutes=207.0):
         task_ids = plan_result["plan"]["approval_request"]["required_task_ids"]
         return record_approval(
             plan_path=plan_result["plan_path"],
@@ -306,7 +306,7 @@ class OrchestratorTests(unittest.TestCase):
 
     def test_full_dag_completion_advances_round_after_required_tasks(self):
         plan_result = self._required_plan()
-        approval = self._approval(plan_result, max_minutes=30)
+        approval = self._approval(plan_result)
         initialized = initialize(
             plan_path=plan_result["plan_path"],
             approval_paths=[approval["approval_path"]],
@@ -457,7 +457,16 @@ class OrchestratorTests(unittest.TestCase):
 
     def test_gpu_minutes_ceiling_is_enforced_and_recovery_releases_lease(self):
         plan_result = self._required_plan()
-        approval = self._approval(plan_result, max_minutes=5)
+        approval = record_approval(
+            plan_path=plan_result["plan_path"],
+            task_ids=["T001"],
+            approver="PI-test",
+            justification="approved isolated completion ceiling test",
+            max_gpu_job_slots=1,
+            max_gpu_minutes=75,
+            max_design_proposals=12,
+            max_prediction_candidates=0,
+        )
         initialized = initialize(
             plan_path=plan_result["plan_path"],
             approval_paths=[approval["approval_path"]],
@@ -471,7 +480,7 @@ class OrchestratorTests(unittest.TestCase):
                 task_id="T001",
                 claim_token=claimed["claim_token"],
                 output_paths=["design_result=" + str(self._design_output("too_expensive.json"))],
-                gpu_minutes=6,
+                gpu_minutes=76,
             )
         with self.assertRaisesRegex(OrchestratorContractError, "confirmation"):
             recover(

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import math
 from agents.planner import APPROVAL_SCHEMA_VERSION
+from contracts.plan import validate_approval_gpu_minutes
 from pathlib import Path
 from prediction_pipeline.contracts import file_sha256, object_sha256
 from .errors import OrchestratorContractError
@@ -105,10 +105,14 @@ def _validate_approval_scope(task_ids: list[str], tasks: dict[str, dict]) -> Non
             "approval_task_not_required", f"tasks did not request approval: {nonrequested}"
         )
 
-def _validate_gpu_limits(gpu_tasks: list[dict], limits: dict) -> None:
+def _validate_gpu_limits(
+    plan: dict,
+    task_ids: list[str],
+    gpu_tasks: list[dict],
+    limits: dict,
+) -> None:
     """Approval budget limits must cover the GPU tasks' resource requests."""
     slots = limits["max_gpu_job_slots"]
-    minutes = limits["max_gpu_minutes"]
     required_concurrent_slots = max(
         task["resource_request"]["gpu_job_slots"] for task in gpu_tasks
     )
@@ -120,16 +124,12 @@ def _validate_gpu_limits(gpu_tasks: list[dict], limits: dict) -> None:
         raise OrchestratorContractError(
             "approval_gpu_slots_insufficient", "approval GPU slots are insufficient"
         )
-    try:
-        minute_limit = float(minutes)
-    except (TypeError, ValueError) as exc:
-        raise OrchestratorContractError(
-            "approval_gpu_minutes_invalid", "approval lacks GPU minute ceiling"
-        ) from exc
-    if not math.isfinite(minute_limit) or minute_limit <= 0:
-        raise OrchestratorContractError(
-            "approval_gpu_minutes_invalid", "approval GPU minute ceiling must be positive"
-        )
+    validate_approval_gpu_minutes(
+        plan,
+        task_ids,
+        limits["max_gpu_minutes"],
+        error_cls=OrchestratorContractError,
+    )
     proposals = sum(task["resource_request"]["proposal_count"] for task in gpu_tasks)
     proposal_limit = limits["max_design_proposals"]
     if proposals and (
@@ -179,7 +179,7 @@ def _validate_approval(
     ]
     limits = semantic["budget_limits"]
     if gpu_tasks:
-        _validate_gpu_limits(gpu_tasks, limits)
+        _validate_gpu_limits(plan, task_ids, gpu_tasks, limits)
     return {
         "approval_id": approval["approval_id"],
         "approval_path": str(path),
