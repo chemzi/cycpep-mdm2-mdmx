@@ -13,7 +13,7 @@
 
 ## 3. Scoped Workbench Projection
 
-- [ ] 3.1 Add safe immutable `resource_request` and `launcher_run_id`-scoped reads from the bound ProjectContext/SQLite Store while keeping unscoped reads compatible.
+- [x] 3.1 Add safe immutable `resource_request` and `launcher_run_id`-scoped reads from the bound ProjectContext/SQLite Store while keeping unscoped reads compatible.
 - [ ] 3.2 Update Python and frontend validators/fixtures for pre-Orchestrator approval, provisional/unavailable estimates, project switching, no-current-run, invalid binding, and stale controls.
 
 ## 4. Frontend Launch Ledger
