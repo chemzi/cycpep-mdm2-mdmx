@@ -146,6 +146,8 @@ def iterate_design(context: HandlerContext) -> ExecutionActionResult:
         raise ExecutionContractError(
             "project_config_drift", "approved project config changed after planning"
         )
+    project_snapshot = context.task_dir / "inputs" / "approved_project_config.json"
+    atomic_json(project_snapshot, project)
     before_rows = CandidateIndex.load()
     before_by_id = {str(row.get("candidate_id")): row for row in before_rows}
     before_digest = object_sha256(before_rows)
@@ -169,12 +171,14 @@ def iterate_design(context: HandlerContext) -> ExecutionActionResult:
             "--seed", str(job["seed"]),
             "--candidate-updates-path", str(updates_path),
             "--candidate-update-job-id", f"{context.task['task_id']}-job-{index:02d}",
+            "--project-config", str(project_snapshot),
         ]
         processes.append(run_process(
             argv,
             cwd=context.config.repo_root,
             logs_dir=context.task_dir / "processes" / f"design_job_{index:02d}",
             timeout_seconds=context.config.design_timeout_seconds,
+            environment={"CYCPEP_PROJECT_CONFIG": str(project_snapshot)},
             label=f"iterate_design[{index}]",
         ))
         if not updates_path.is_file():

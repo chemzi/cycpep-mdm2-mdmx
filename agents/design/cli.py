@@ -7,6 +7,8 @@ import sys
 import uuid
 
 from data_layer import CandidateIndex  # noqa: E402
+from core.context import ProjectContext  # noqa: E402
+from project_config import ProjectConfigError  # noqa: E402
 
 from .agent import Design  # noqa: E402
 from .config import DESIGN_PIPELINE_VERSION  # noqa: E402
@@ -35,8 +37,11 @@ def main(argv=None) -> int:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--candidate-updates-path", default=None)
     parser.add_argument("--candidate-update-job-id", default=None)
+    parser.add_argument("--project-config", default=None)
     args = parser.parse_args(argv)
     configure_candidate_updates(args.candidate_updates_path)
+    if args.project_config is not None and not args.project_config.strip():
+        raise ProjectConfigError("project config path must be non-empty")
 
     lengths = [int(value) for value in args.lengths.split(",")] if args.lengths else None
     target_spec = {}
@@ -52,7 +57,11 @@ def main(argv=None) -> int:
 
     # Context-aware entry point (Engineering Standard P1-1).  The default
     # context derives from the approved project config at call time.
-    design = Design()
+    design = (
+        Design(ProjectContext.load(path=args.project_config))
+        if args.project_config is not None
+        else Design()
+    )
 
     all_candidates = []
     if args.route in ("A", "all"):
