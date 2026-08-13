@@ -152,7 +152,7 @@ class PredictionGpuBudgetAdmissionTests(unittest.TestCase):
         )
 
     def _manual_low_budget_approval(self) -> Path:
-        covering = self._record_approval(22)
+        covering = self._record_approval(30)
         approval = copy.deepcopy(covering["approval"])
         approval["budget_limits"]["max_gpu_minutes"] = 2.5
         semantic_keys = (
@@ -172,13 +172,13 @@ class PredictionGpuBudgetAdmissionTests(unittest.TestCase):
         path.write_text(json.dumps(approval), encoding="utf-8")
         return path
 
-    def test_planner_rejects_2_5_minutes_and_accepts_22(self):
+    def test_planner_rejects_below_estimate_and_accepts_30(self):
         with self.assertRaises(PlannerContractError) as insufficient:
-            self._record_approval(2.5)
+            self._record_approval(22)
         self.assertEqual(insufficient.exception.code, "approval_gpu_minutes_insufficient")
 
-        covering = self._record_approval(22)
-        self.assertEqual(covering["approval"]["budget_limits"]["max_gpu_minutes"], 22)
+        covering = self._record_approval(30)
+        self.assertEqual(covering["approval"]["budget_limits"]["max_gpu_minutes"], 30)
 
     def test_initialize_rejects_low_budget_without_creating_run(self):
         approval_path = self._manual_low_budget_approval()
@@ -208,7 +208,7 @@ class PredictionGpuBudgetAdmissionTests(unittest.TestCase):
             )
 
     def test_initialize_accepts_covering_budget_and_makes_task_ready(self):
-        covering = self._record_approval(22)
+        covering = self._record_approval(30)
 
         initialized = initialize(
             plan_path=self.plan_path,

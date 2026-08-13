@@ -38,26 +38,26 @@ class PlannerBootstrapPredictionTests(unittest.TestCase):
                                "graceful_stop_return_current_best", 5.0, 0.25, 0.02)
 
         self.assertEqual(config.gpu_cost_per_minute_usd, 0.02)
-        self.assertEqual(config.prediction_gpu_slot_minutes_per_candidate, 11)
+        self.assertEqual(config.prediction_gpu_slot_minutes_per_candidate, 15)
 
     def test_n2_prediction_uses_benchmark_backed_gpu_slot_minutes(self):
         plan = build_initial_prediction_bootstrap_plan(source=_source())
 
         resource_request = plan["tasks"][0]["resource_request"]
-        self.assertEqual(resource_request["estimated_gpu_minutes"], 22)
+        self.assertEqual(resource_request["estimated_gpu_minutes"], 30)
         self.assertEqual(resource_request["estimate_status"], "estimated")
-        self.assertEqual(plan["decision_metadata"]["total_estimated_gpu_minutes"], 22)
+        self.assertEqual(plan["decision_metadata"]["total_estimated_gpu_minutes"], 30)
 
     def test_prediction_estimator_configuration_is_bound_to_plan_identity(self):
         default = build_initial_prediction_bootstrap_plan(source=_source())
         calibrated = build_initial_prediction_bootstrap_plan(
             source=_source(),
-            config=PlannerConfig(prediction_gpu_slot_minutes_per_candidate=12),
+            config=PlannerConfig(prediction_gpu_slot_minutes_per_candidate=14),
         )
 
         self.assertEqual(
             calibrated["tasks"][0]["resource_request"]["estimated_gpu_minutes"],
-            24,
+            28,
         )
         self.assertNotEqual(calibrated["input_digest"], default["input_digest"])
         self.assertNotEqual(calibrated["plan_id"], default["plan_id"])
