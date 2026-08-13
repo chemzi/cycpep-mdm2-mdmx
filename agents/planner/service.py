@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from pathlib import Path
+
 from contracts.critic import resolve_critic_report_path
 from contracts.trace import TraceContext
 from data_layer import (
@@ -10,7 +13,6 @@ from data_layer import (
     State,
     get_storage_backend,
 )
-from pathlib import Path
 from prediction_pipeline.contracts import file_sha256
 from .config import PLANNER_VERSION, PlannerConfig
 from .errors import PlannerContractError
@@ -24,14 +26,27 @@ def run(
     state: dict | None = None,
     config: PlannerConfig | None = None,
     project_config: dict | None = None,
+    exploration_decision: Mapping | None = None,
+    exploration_decision_required: bool = False,
 ) -> dict:
-    """Build, persist, and idempotently register a Planner execution plan."""
+    """Build, persist, and idempotently register a Planner execution plan.
+
+    Direct callers may omit the additive Decision inputs for legacy behavior.
+    Required-presence is enforced here; Decision validation and application stay
+    at the existing ``build_plan`` boundary.
+    """
+    if exploration_decision_required and exploration_decision is None:
+        raise PlannerContractError(
+            "exploration_decision_required",
+            "closed-loop Planner invocation requires an ExplorationDecision",
+        )
     state = dict(state if state is not None else State.load())
     plan = build_plan(
         critic_report_path=critic_report_path,
         state=state,
         config=config,
         project_config=project_config,
+        exploration_decision=exploration_decision,
     )
     report_path = Path(critic_report_path).expanduser().resolve()
     if output_path is None:
