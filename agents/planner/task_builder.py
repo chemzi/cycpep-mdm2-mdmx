@@ -6,6 +6,7 @@ from contracts.action import get_action_spec
 from prediction_pipeline.contracts import object_sha256
 from project_config import target_slug
 from .approval import _approval
+from .decision_materialization import resolve_design_lengths
 from .errors import PlannerContractError
 
 def _reason_disposition(reason_codes: list[str], issues_by_code: dict[str, dict]) -> str:
@@ -100,52 +101,36 @@ def _materialize_design_jobs(
         "round": int(state.get("round") or 1),
     })[:8], 16) % (2**31)
 
+    approved_lengths_by_target = {}
+    for target_id in required_targets:
+        design = (target_values.get(target_id) or {}).get("design") or {}
+        lengths = design.get("lengths")
+        if not lengths:
+            lengths = [8, 10, 12]
+        normalized_lengths = sorted({int(value) for value in lengths})
+        if not normalized_lengths or any(value < 5 or value > 30 for value in normalized_lengths):
+            raise PlannerContractError(
+                "design_lengths_invalid", f"target {target_id} has invalid design lengths"
+            )
+        approved_lengths_by_target[target_id] = normalized_lengths
+    effective_lengths = resolve_design_lengths(
+        approved_lengths_by_target=approved_lengths_by_target,
+        required_targets=required_targets,
+        frozen_decision=state.get("_frozen_exploration_decision"),
+    )
     allocations, route = _allocate_design_capacity(requested, required_targets, budgets)
     jobs = []
     for index, target_id in enumerate(required_targets):
         count = allocations[target_id]
         if count < 1:
             continue
-        design = (target_values.get(target_id) or {}).get("design") or {}
-        lengths = design.get("lengths")
-        experience_hint = None
-        if not lengths:
-            # B3: 失败经验库闭环——无显式长度配置时消费上一轮淘汰原因的经验
-            # 偏好；证据不足或后端不可读时保持默认长度。显式配置永远优先。
-            try:
-                from experience import consume_experience_preference
-                lengths, experience_hint = consume_experience_preference(
-                    targets=[target_id]
-                )
-            except Exception as exc:
-                # 经验模块对“证据后端不可读”已内部降级；此处兜底并把异常
-                # 打印出来，避免静默吞掉真实 bug（P2-3）。
-                print(
-                    f"[planner] experience preference unavailable, fall back to "
-                    f"default lengths: {exc}"
-                )
-                lengths, experience_hint = None, None
-            if not lengths:
-                lengths = [8, 10, 12]
-        normalized_lengths = sorted({int(value) for value in lengths})
-        if not normalized_lengths or any(value < 5 or value > 30 for value in normalized_lengths):
-            raise PlannerContractError(
-                "design_lengths_invalid", f"target {target_id} has invalid design lengths"
-            )
         jobs.append({
             "route": route,
             "target_id": target_id,
-            "lengths": normalized_lengths,
+            "lengths": effective_lengths[target_id],
             "proposal_count": count,
             "seed": (seed_base + index) % (2**31),
         })
-        if experience_hint is not None:
-            # 任务构造成功后才记账（P2-5）：偏好已进入本轮 design job
-            try:
-                from experience import record_applied_preference
-                record_applied_preference(None, experience_hint, targets=[target_id])
-            except Exception:
-                pass
     return jobs
 
 def _require_executable_handler(action_spec) -> str:

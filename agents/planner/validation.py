@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
+from contracts.exploration_decision import ExplorationDecision
 from contracts.plan import validate_sha256
+from prediction_pipeline.contracts import object_sha256
 from .config import (
     MANDATORY_POLICY_CONSTRAINTS,
     PRIORITY_RANK,
@@ -11,6 +15,55 @@ from .config import (
     SEVERITY_RANK,
 )
 from .errors import PlannerContractError
+
+
+def _bind_exploration_decision(
+    decision: ExplorationDecision,
+    canonical: dict,
+    *,
+    report: dict,
+    state: dict,
+    project_id: str,
+    workflow_id: str,
+    source_round: int,
+) -> dict[str, str]:
+    """Validate and locally bind one already-valid E2 Decision."""
+    source = report["source"]
+    required_targets = source.get("required_targets")
+    if (
+        not isinstance(required_targets, Sequence)
+        or isinstance(required_targets, (str, bytes))
+        or not required_targets
+        or any(
+            not isinstance(target, str) or not target.strip()
+            for target in required_targets
+        )
+        or len(set(required_targets)) != len(required_targets)
+    ):
+        raise PlannerContractError(
+            "critic_required_targets_invalid",
+            "Critic required_targets must be non-empty unique non-blank strings",
+        )
+    bindings = (
+        (decision.project_id, project_id, "project"),
+        (decision.workflow_id, workflow_id, "workflow"),
+        (decision.source_round, source_round, "source round"),
+        (decision.applies_to_round, source_round + 1, "applicable round"),
+        (decision.prediction_run_id, source.get("prediction_run_id"), "Prediction run"),
+        (sorted(decision.target_ids), sorted(required_targets), "target scope"),
+    )
+    for actual, expected, label in bindings:
+        if actual != expected:
+            raise PlannerContractError(
+                "exploration_decision_binding_mismatch",
+                f"ExplorationDecision {label} does not match Planner inputs",
+            )
+    state["_frozen_exploration_decision"] = canonical
+    return {
+        "decision_id": decision.decision_id,
+        "decision_sha256": object_sha256(canonical),
+        "decision_input_digest": decision.decision_input_digest,
+    }
 
 
 def _validate_critic_identity(report: dict) -> str:

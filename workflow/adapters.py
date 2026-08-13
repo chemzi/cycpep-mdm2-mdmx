@@ -188,8 +188,27 @@ class DefaultWorkflowRuntime:
 
     def run_planner(self, report_path):
         from agents.planner import run
+        from data_layer import State
 
-        return run(critic_report_path=report_path, project_config=dict(self.context.config))
+        from .exploration_decision_handoff import (
+            resolve_exploration_decision_handoff,
+        )
+
+        state = dict(State.load())
+        handoff = resolve_exploration_decision_handoff(
+            store=self.store,
+            critic_report_path=report_path,
+            project_id=self.context.project_id,
+            state=state,
+        )
+        state["workflow_id"] = handoff.workflow_id
+        return run(
+            critic_report_path=report_path,
+            state=state,
+            project_config=dict(self.context.config),
+            exploration_decision=handoff.exploration_decision,
+            exploration_decision_required=handoff.required,
+        )
 
     def inspect_approvals(self, planner):
         return self.inspector.approvals(
