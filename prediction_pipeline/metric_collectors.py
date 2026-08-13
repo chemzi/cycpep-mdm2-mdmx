@@ -13,7 +13,8 @@ from typing import Any
 
 import numpy as np
 
-from .adapters import ArtifactBundle, parse_metadata, parse_target_physics
+from .adapters import ArtifactBundle, parse_metadata
+from .target_physics import parse_target_physics
 from .contracts import CandidateInput, ContractError
 from .metrics import calculate_ipsae, load_pae, pose_convergence
 from .relax_worker import POST_RELAX_PROTOCOL, POST_RELAX_TOOL
@@ -685,7 +686,9 @@ class MetricCollectorsMixin:
         missing_physics = [
             key for key in ("dg", "sc", "dsasa") if key not in target_metrics
         ]
-        if missing_physics:
+        if missing_physics and not target_metrics.get(
+            "rosetta_scientific_rejections"
+        ):
             self._issue(
                 issues,
                 "l3_physics_missing",

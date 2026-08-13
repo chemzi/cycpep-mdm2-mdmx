@@ -6,12 +6,19 @@ import json
 from pathlib import Path
 
 from .adapters import run_command
-from .contracts import ContractError, file_sha256
+from .contracts import (
+    ContractError,
+    ROSETTA_MAXIMUM_TERMINAL_DISTANCE_ANGSTROM,
+    file_sha256,
+)
 from .metrics import parse_rosetta_interface_output
 from .structures import exact_sequence_chain, parse_pdb, terminal_bond_distance
 
 
 PYROSETTA_VERSION = "2026.29+releasequarterly.80a0635615"
+MAXIMUM_TERMINAL_C_TO_N_DISTANCE_ANGSTROM = (
+    ROSETTA_MAXIMUM_TERMINAL_DISTANCE_ANGSTROM
+)
 
 
 def validate_pyrosetta_runtime(python: str | Path) -> str:
@@ -185,7 +192,7 @@ def _validate_rosetta_structure(
             "target_chain_mismatch", f"invalid Rosetta target chain {target_chain}"
         )
     closure_distance = terminal_bond_distance(structure, binder_chain)
-    if closure_distance > 2.0:
+    if closure_distance > MAXIMUM_TERMINAL_C_TO_N_DISTANCE_ANGSTROM:
         raise ContractError(
             "rosetta_cyclic_bond_open",
             f"input terminal C--N distance is {closure_distance:.3f} A",

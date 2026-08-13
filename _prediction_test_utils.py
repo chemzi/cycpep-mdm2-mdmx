@@ -68,6 +68,69 @@ def write_complex(path: Path, sequence=SEQUENCE, binder_shift=(0, 1.5, 0)):
     path.write_text(target + binder + "END\n", encoding="utf-8")
 
 
+def write_rosetta_outputs(
+    candidate_dir: Path, target_id: str, predictions: list[dict]
+) -> list[dict]:
+    outputs = []
+    for index, prediction in enumerate(predictions):
+        prediction_metadata = json.loads(
+            (candidate_dir / prediction["metadata"]).read_text(encoding="utf-8")
+        )
+        prediction_pdb = candidate_dir / prediction["pdb"]
+        score = candidate_dir / f"{target_id}_{index}_rosetta.sc"
+        metadata = candidate_dir / f"{target_id}_{index}_rosetta.json"
+        score.write_text(
+            "SCORE: dSASA_int sc_value dG_separated description\n"
+            "SCORE: 550.0 0.75 -12.0 model\n", encoding="utf-8",
+        )
+        identity = {
+            "predictor": prediction["predictor"],
+            "model_id": prediction_metadata["model_id"],
+            "seed": prediction["seed"],
+            "prediction_pdb_sha256": hashlib.sha256(
+                prediction_pdb.read_bytes()
+            ).hexdigest(),
+        }
+        metadata.write_text(json.dumps({
+            "tool": "PyRosetta InterfaceAnalyzerMover",
+            "tool_version_output": "test",
+            "protocol": "declare_head_to_tail_then_interface_analyzer_ref2015",
+            **identity,
+            "target_chain": "A", "binder_chain": "B",
+            "binder_sequence": SEQUENCE,
+            "terminal_c_to_n_distance_angstrom": 1.3,
+            "declared_bond": {"res1": 10, "atom1": "C", "res2": 3, "atom2": "N"},
+            "scorefunction": "ref2015",
+            "metrics": {"dsasa": 550.0, "sc": 0.75, "rosetta_dg_separated": -12.0},
+            "xml_sha256": "a" * 64,
+        }), encoding="utf-8")
+        outputs.append({**identity, "output": score.name, "metadata": metadata.name})
+    return outputs
+
+
+def refresh_rosetta_bindings(candidate_dir: Path, bundle: dict) -> None:
+    for target in bundle["targets"].values():
+        for prediction, output in zip(
+            target["complex_predictions"], target["rosetta_outputs"]
+        ):
+            metadata = json.loads(
+                (candidate_dir / prediction["metadata"]).read_text(encoding="utf-8")
+            )
+            identity = {
+                "predictor": prediction["predictor"],
+                "model_id": metadata["model_id"],
+                "seed": prediction["seed"],
+                "prediction_pdb_sha256": hashlib.sha256(
+                    (candidate_dir / prediction["pdb"]).read_bytes()
+                ).hexdigest(),
+            }
+            output.update(identity)
+            score_path = candidate_dir / output["metadata"]
+            score_metadata = json.loads(score_path.read_text(encoding="utf-8"))
+            score_metadata.update(identity)
+            score_path.write_text(json.dumps(score_metadata), encoding="utf-8")
+
+
 def project_config(targets=("MDM2", "MDMX")):
     residues = {"MDM2": [1, 2, 3], "MDMX": [1, 2, 3]}
     project = {

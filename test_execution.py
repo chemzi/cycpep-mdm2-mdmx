@@ -750,13 +750,16 @@ class ArtifactBundleCompletenessTests(unittest.TestCase):
         # Protocol ensemble grows 3 -> 4: a bundle produced under the old
         # 3-member protocol must be judged incomplete (not silently reused).
         from unittest.mock import patch
-        from execution import handlers as handlers_module
+        from execution import prediction_artifact_gate as gate_module
         expanded = {
             "seeds": [0, 1, 2, 3],
             "model_numbers": [0, 1, 2, 3],
             "num_recycles": 3,
         }
-        with patch.object(handlers_module, "_AF2_PRODIGY_PROTOCOL", expanded):
+        with patch.dict(
+            gate_module.PREDICTION_PROTOCOL["parameters"],
+            {"af2_prodigy": expanded},
+        ):
             self.assertFalse(
                 _artifact_bundle_complete(self._bundle_path(), ["MDM2"])
             )

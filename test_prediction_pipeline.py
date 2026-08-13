@@ -15,6 +15,8 @@ from data_layer import CandidateIndex, EvidenceLogger, State
 from prediction_pipeline.contracts import (
     ContractError,
     PredictionConfig,
+    PREDICTION_PIPELINE_VERSION,
+    SCHEMA_VERSION,
 )
 from prediction_pipeline.pipeline import PredictionPipeline
 from prediction_pipeline.relax_worker import (
@@ -32,8 +34,10 @@ from _prediction_test_utils import (
     chain_pdb,
     justified_thresholds,
     project_config,
+    refresh_rosetta_bindings,
     write_complex,
     write_monomer,
+    write_rosetta_outputs,
 )
 
 class PredictionPipelineTests(unittest.TestCase):
@@ -184,22 +188,19 @@ class PredictionPipelineTests(unittest.TestCase):
                     "binder_chain": "B",
                 })
             prodigy = candidate_dir / f"{target_id}_prodigy.txt"
-            rosetta = candidate_dir / f"{target_id}_rosetta.sc"
             prodigy.write_text("-10.5\n", encoding="utf-8")
-            rosetta.write_text(
-                "SCORE: dSASA_int sc_value dG_separated description\n"
-                "SCORE: 550.0 0.75 -12.0 model\n",
-                encoding="utf-8",
+            rosetta_outputs = write_rosetta_outputs(
+                candidate_dir, target_id, predictions
             )
             targets[target_id] = {
                 "target_chain": "A",
                 "complex_predictions": predictions,
                 "prodigy_output": prodigy.name,
-                "rosetta_output": rosetta.name,
+                "rosetta_outputs": rosetta_outputs,
             }
         from prediction_pipeline.protocol import protocol_binding
         bundle = {
-            "schema_version": 1,
+            "schema_version": SCHEMA_VERSION,
             "candidate_id": "C0001",
             "sequence": SEQUENCE,
             "protocol": protocol_binding(),
@@ -405,6 +406,10 @@ class PredictionPipelineTests(unittest.TestCase):
                 self.artifacts_root / "C0001" / f"{target_id}_0.pdb",
                 binder_shift=(100.0, 100.0, 100.0),
             )
+        bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
+        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+        refresh_rosetta_bindings(bundle_path.parent, bundle)
+        bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
 
         self._pipeline(thresholds=justified_thresholds()).run()
         record = json.loads(
@@ -506,7 +511,7 @@ class PredictionPipelineTests(unittest.TestCase):
         bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
         bundle = json.loads(bundle_path.read_text())
         for target_id, target in bundle["targets"].items():
-            target.pop("rosetta_output")
+            target.pop("rosetta_outputs")
             outputs = []
             values = ((200.0, 0.2, -2.0), (600.0, 0.8, -12.0), (400.0, 0.6, -8.0))
             for index, (dsasa, sc, dg) in enumerate(values):
@@ -586,7 +591,7 @@ class PredictionPipelineTests(unittest.TestCase):
         bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
         bundle = json.loads(bundle_path.read_text())
         target = bundle["targets"]["MDM2"]
-        target.pop("rosetta_output")
+        target.pop("rosetta_outputs")
         prediction = target["complex_predictions"][0]
         metadata = json.loads(
             (self.artifacts_root / "C0001" / prediction["metadata"]).read_text()
@@ -642,7 +647,7 @@ class PredictionPipelineTests(unittest.TestCase):
         bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
         bundle = json.loads(bundle_path.read_text())
         target = bundle["targets"]["MDM2"]
-        target.pop("rosetta_output")
+        target.pop("rosetta_outputs")
         prediction = target["complex_predictions"][0]
         prediction_metadata = json.loads(
             (self.artifacts_root / "C0001" / prediction["metadata"]).read_text()
@@ -754,7 +759,7 @@ class PredictionPipelineTests(unittest.TestCase):
         bundle["global"].pop("post_relax_pdb")
         bundle["global"].pop("post_relax_metadata")
         for target in bundle["targets"].values():
-            target.pop("rosetta_output")
+            target.pop("rosetta_outputs")
             for prediction in target["complex_predictions"]:
                 prediction["predictor"] = "ColabDesign"
                 metadata_path = bundle_path.parent / prediction["metadata"]
@@ -837,6 +842,7 @@ class PredictionPipelineTests(unittest.TestCase):
         bundle = json.loads(bundle_path.read_text())
         for target in bundle["targets"].values():
             target["complex_predictions"][2]["predictor"] = "IndependentModel"
+        refresh_rosetta_bindings(bundle_path.parent, bundle)
         bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
 
         summary = self._pipeline(thresholds=justified_thresholds()).run()
@@ -861,6 +867,7 @@ class PredictionPipelineTests(unittest.TestCase):
             metadata["seed"] = 0
             metadata["model_id"] = "alphafold2_model_0"
             metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        refresh_rosetta_bindings(bundle_path.parent, bundle)
         bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
 
         summary = self._pipeline(thresholds=justified_thresholds()).run()
@@ -890,6 +897,7 @@ class PredictionPipelineTests(unittest.TestCase):
             })
             metadata.pop("tool_commit", None)
             metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        refresh_rosetta_bindings(bundle_path.parent, bundle)
         bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
 
         summary = self._pipeline(thresholds=justified_thresholds()).run()
@@ -906,18 +914,27 @@ class PredictionPipelineTests(unittest.TestCase):
         bundle_path = self.artifacts_root / "C0001" / "artifacts.json"
         bundle = json.loads(bundle_path.read_text())
         for target in bundle["targets"].values():
-            target["complex_predictions"][2]["pdb"] = (
-                target["complex_predictions"][0]["pdb"]
-            )
+            source = target["complex_predictions"][0]["pdb"]
+            duplicate_path = bundle_path.parent / target["complex_predictions"][2]["pdb"]
+            duplicate_path.write_bytes((bundle_path.parent / source).read_bytes())
+            third_output = target["rosetta_outputs"][2]
+            duplicate_hash = hashlib.sha256(duplicate_path.read_bytes()).hexdigest()
+            third_output["prediction_pdb_sha256"] = duplicate_hash
+            score_metadata_path = bundle_path.parent / third_output["metadata"]
+            score_metadata = json.loads(score_metadata_path.read_text())
+            score_metadata["prediction_pdb_sha256"] = duplicate_hash
+            score_metadata_path.write_text(json.dumps(score_metadata))
         bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
 
         summary = self._pipeline(thresholds=justified_thresholds()).run()
-        self.assertEqual(summary["status_counts"], {"prediction_pending": 1})
+        self.assertEqual(summary["status_counts"], {"invalid": 1})
         record = json.loads(
             (self.run_root / "test_run" / "records" / "C0001.json").read_text()
         )
-        codes = {issue["code"] for issue in record["issues"]}
-        self.assertIn("l6_prediction_duplicate", codes)
+        self.assertIn(
+            record["issues"][0]["code"],
+            {"scored_output_prediction_mismatch", "rosetta_coverage_mismatch"},
+        )
 
     def test_prediction_preserves_design_candidate_counter(self):
         self._register_candidate()
@@ -930,8 +947,11 @@ class PredictionPipelineTests(unittest.TestCase):
         ).run()
 
         self.assertEqual(State.load()["candidate_count"], 1270)
-        self.assertEqual(summary["pipeline_version"], "1.5.1")
-        self.assertEqual(State.load()["prediction"]["pipeline_version"], "1.5.1")
+        self.assertEqual(summary["pipeline_version"], PREDICTION_PIPELINE_VERSION)
+        self.assertEqual(
+            State.load()["prediction"]["pipeline_version"],
+            PREDICTION_PIPELINE_VERSION,
+        )
 
     def test_declared_artifact_hash_mismatch_is_invalid(self):
         reference = self._register_candidate()

@@ -10,17 +10,16 @@ from typing import Callable
 
 from data_layer import CandidateIndex, State
 from calibration_baseline import unpublished_calibration_binding
-from prediction_pipeline.contracts import ContractError, PredictionConfig, file_sha256, object_sha256
+from prediction_pipeline.contracts import PredictionConfig, file_sha256, object_sha256
 from prediction_pipeline.execution_identity import (
     PRODIGY_VERSION,
     build_prediction_execution_identity,
     validate_prediction_execution_identity,
 )
-from core.protocol import ProtocolError
 from prediction_pipeline.protocol import (
     PREDICTION_PROTOCOL,
-    validate_execution_compatibility,
 )
+from .prediction_artifact_gate import artifact_bundle_complete as _artifact_bundle_complete
 
 from .config import ExecutionConfig
 from .contracts import (
@@ -295,57 +294,6 @@ def _prediction_candidate_ids(context: HandlerContext) -> list[str]:
             f"Prediction received {len(explicit)} candidates; task limit is {limit}",
         )
     return explicit
-
-
-def _artifact_bundle_complete(
-    path: Path,
-    required_targets: list[str],
-    expected_execution_identity: dict | None = None,
-) -> bool:
-    if not path.is_file():
-        return False
-    try:
-        raw = _json_object(path, "artifact_bundle")
-        # Execution gate: a bundle bound to an older protocol is readable but
-        # not reusable by a run executing under the active protocol.
-        validate_execution_compatibility(raw)
-        if expected_execution_identity is not None:
-            identity_path = path.with_name("execution_identity.json")
-            if (
-                not identity_path.is_file()
-                or _json_object(identity_path, "prediction execution identity")
-                != expected_execution_identity
-            ):
-                return False
-        global_values = raw.get("global") or {}
-        if not global_values.get("monomer_predictions"):
-            return False
-        if not global_values.get("post_relax_pdb") or not global_values.get("post_relax_metadata"):
-            return False
-        expected_af2_seeds = set(_AF2_PRODIGY_PROTOCOL["seeds"])
-        targets = raw.get("targets") or {}
-        for target_id in required_targets:
-            values = targets.get(target_id) or {}
-            predictions = values.get("complex_predictions") or []
-            af2_seeds = {
-                prediction.get("seed")
-                for prediction in predictions
-                if prediction.get("predictor") == "ColabDesign"
-                and isinstance(prediction.get("seed"), int)
-            }
-            if not expected_af2_seeds.issubset(af2_seeds):
-                return False
-            if not any(
-                prediction.get("predictor") == "Boltz" for prediction in predictions
-            ):
-                return False
-            if len(values.get("prodigy_outputs") or []) != len(predictions):
-                return False
-            if len(values.get("rosetta_outputs") or []) != len(predictions):
-                return False
-    except (ExecutionContractError, ProtocolError):
-        return False
-    return True
 
 
 def _link_candidate_artifacts(source_dir: Path, staging_root: Path, candidate_id: str) -> None:
