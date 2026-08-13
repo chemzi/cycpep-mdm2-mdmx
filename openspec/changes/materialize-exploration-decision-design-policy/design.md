@@ -10,7 +10,7 @@ The active Launcher is isolated from this worktree, and the change cannot touch 
 
 - Introduce a small pure Planner-local module that resolves effective lengths from approved per-target configuration plus the optional frozen decision.
 - Keep `_materialize_design_jobs` as the compatible call seam and make only its length selection delegate to the pure module.
-- Make target-scope and approved-envelope rejection explicit and testable before any job list is returned.
+- Preserve the legacy no-job early return before Decision/length validation, while keeping target-scope and approved-envelope rejection explicit for requests that can materialize jobs.
 - Remove all Planner job-materialization imports and calls to ambient experience/Evidence APIs.
 
 **Non-Goals:**
@@ -30,7 +30,7 @@ Alternative considered: embed decision branching directly in `_materialize_desig
 
 ### Trust E3-A validation but fail closed at the E3-B seam
 
-The module will not call `ExplorationDecision.from_dict()` again. It trusts canonical status, weight, and preferred-length equivalence from E3-A, and enforces only materialization invariants that depend on current Planner inputs: exact required-target scope and containment within every target's approved envelope. This avoids importing the upstream scientific evaluator or accessing ambient Evidence while still rejecting unsafe materialization.
+For materializable requests, the module will not call `ExplorationDecision.from_dict()` again. It trusts canonical status, weight, and preferred-length equivalence from E3-A, and enforces only materialization invariants that depend on current Planner inputs: exact required-target scope and containment within every target's approved envelope. This avoids importing the upstream scientific evaluator or accessing ambient Evidence while still rejecting unsafe materialization.
 
 Alternative considered: reconstruct the full contract in Planner. Rejected because E3-A explicitly supplies an already-validated canonical dict and duplicate validation would couple Planner to upstream Evidence/scientific policy internals.
 
@@ -40,9 +40,11 @@ Each target's explicit `design.lengths`, or `[8, 10, 12]` when absent, remains i
 
 Alternative considered: apply the decision's intersection baseline even for `no_adjustment`. Rejected because `no_adjustment` explicitly preserves approved lengths and should not narrow target-specific configuration.
 
-### Validate all scoped targets before emitting jobs
+### Preserve the legacy no-job early-return boundary
 
-Length policy is resolved for the complete required-target scope before the allocation loop appends any job. This makes target/envelope failures atomic at the pure construction boundary: the call raises and returns no partial job list.
+`_materialize_design_jobs` returns `[]` immediately when `requested < 1` or `required_targets` is empty, before reading project target lengths or interpreting the frozen Decision. There is no job policy to materialize in those cases, and E3-A already owns formal Decision binding. For all other requests, length policy is resolved for the complete required-target scope before the allocation loop appends any job, so target/envelope failures remain atomic without creating a new exception on the legacy no-op path.
+
+Alternative considered: validate the frozen Decision even when no jobs can be allocated. Rejected because it changes the established `_materialize_design_jobs` no-op contract and duplicates E3-A binding responsibility without protecting a materialized job.
 
 ## Risks / Trade-offs
 
@@ -52,4 +54,4 @@ Length policy is resolved for the complete required-target scope before the allo
 
 ## Migration Plan
 
-Land as a Draft PR targeting the shared `e3/closed-loop-runtime` branch only. Do not follow later `integration/data-integrity-transaction` updates. If E3-A lands on the shared branch first, rebase E3-B onto the latest shared branch and rerun affected gates before merge readiness. Rollback is a commit revert: the existing `_materialize_design_jobs` signature and output shape remain unchanged, and there is no data migration or runtime deployment. Do not deploy or pull into the production checkout until the active Launcher reaches a terminal boundary or the user explicitly authorizes deployment.
+Target the shared `e3/closed-loop-runtime` branch only and do not follow later `integration/data-integrity-transaction` updates. Rebase E3-B onto the latest shared branch, rerun all gates and high-reasoning reviews, then merge PR #78 into that shared branch as explicitly authorized. Rollback is a commit revert: the existing `_materialize_design_jobs` signature and output shape remain unchanged, and there is no data migration or runtime deployment. Do not deploy or pull into the production checkout until the active Launcher reaches a terminal boundary or the user explicitly authorizes deployment.

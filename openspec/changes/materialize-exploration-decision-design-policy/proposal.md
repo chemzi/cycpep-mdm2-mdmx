@@ -6,7 +6,7 @@ Planner currently chooses peptide lengths from target configuration or an ambien
 
 - Add a pure Planner-local materialization boundary that derives each design job's lengths from approved target configuration and `state["_frozen_exploration_decision"]`.
 - Preserve explicit configured lengths, the `[8, 10, 12]` fallback, proposal counts, routes, target allocation, seeds, protocol, thresholds, and project configuration unless a canonical `adjustment` narrows the approved length envelope.
-- Fail closed when a frozen decision targets a different target or proposes lengths outside the approved envelope.
+- Preserve the legacy no-op return `[]` when `requested < 1` or no targets are required; only materializable requests fail closed when a frozen decision targets a different target or proposes lengths outside the approved envelope.
 - Remove Planner job construction's implicit calls to `consume_experience_preference()` and `record_applied_preference()` and any ambient Evidence fallback.
 - Keep the existing `iterate_design` action and `design_jobs` data shape; do not change E3-A's frozen-State interface or any execution/runtime ownership.
 

@@ -27,12 +27,23 @@ Planner SHALL consume the already-validated canonical dict at `state["_frozen_ex
 - **THEN** the materialized job uses `[12]`
 
 #### Scenario: Proposed length is outside the approved envelope
-- **WHEN** an adjustment proposes any length not approved for a materialized target
+- **WHEN** a request can materialize at least one job and an adjustment proposes any length not approved for a materialized target
 - **THEN** Planner fails closed with a Planner contract error and emits no jobs
 
 #### Scenario: Decision target scope differs from materialized targets
-- **WHEN** the frozen decision's canonical target set differs from the required target set
+- **WHEN** a request can materialize at least one job and the frozen decision's canonical target set differs from the required target set
 - **THEN** Planner fails closed with a Planner contract error and emits no jobs
+
+### Requirement: No-job requests preserve the legacy no-op boundary
+Planner SHALL return `[]` before Decision or target-length materialization when `requested < 1` or `required_targets` is empty. E3-A remains responsible for formal Decision binding, so E3-B MUST NOT add a Decision- or length-validation exception when no design job can be created.
+
+#### Scenario: Zero requested proposals
+- **WHEN** `requested < 1`, regardless of the frozen Decision or target configuration carried in State
+- **THEN** Planner returns `[]` without validating Decision scope or target lengths
+
+#### Scenario: No required targets
+- **WHEN** `required_targets` is empty, regardless of the frozen Decision carried in State
+- **THEN** Planner returns `[]` without validating Decision scope or target lengths
 
 ### Requirement: Decision materialization does not alter job policy
 Applying a frozen decision SHALL change only job peptide lengths. Planner SHALL preserve target allocation, per-target proposal counts, route selection, deterministic seed derivation, protocol and threshold inputs, and the approved project configuration.

@@ -18,3 +18,11 @@
 - [x] 3.4 Confirm the changed-file set excludes every forbidden production/runtime path and that no Launcher, Worker, iteration, or scientific subprocess command was run. If implementation requires `workflow/service.py`, the Prediction executor, transaction ownership, or active runtime data, stop and report instead of expanding scope.
 - [x] 3.5 Confirm `e3/closed-loop-runtime` exists at or after the frozen base; if E3-A landed first, rebase only onto that shared branch and rerun affected gates.
 - [x] 3.6 Commit and push the isolated branch, create a Draft PR targeting `e3/closed-loop-runtime` with base/head/test evidence, and do not merge, deploy, or modify the production checkout.
+
+## 4. Restore Legacy No-Job Semantics and Merge to Shared E3
+
+- [x] 4.1 Restore `_materialize_design_jobs` early return before Decision/length validation and replace the zero-request/empty-target fail-closed regressions with legacy `[]` regressions.
+- [ ] 4.2 Run focused tests, full unittest, Architecture Gate, strict OpenSpec, compile, and `git diff --check` using isolated fixtures only.
+- [ ] 4.3 Rebase the feature branch onto the latest `e3/closed-loop-runtime` without following `integration/data-integrity-transaction`, then rerun affected gates.
+- [ ] 4.4 Run high-reasoning Spec and Standards reviews and OpenSpec implementation verification; resolve all P0/P1 findings.
+- [ ] 4.5 Push the rebased branch, update PR #78 to Ready, merge it into `e3/closed-loop-runtime`, and confirm the shared-branch head without deploying or modifying the production checkout.

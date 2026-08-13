@@ -111,31 +111,33 @@ class PlannerDecisionMaterializationTests(unittest.TestCase):
         with self.assertRaisesRegex(PlannerContractError, "target scope"):
             _jobs(state)
 
-    def test_decision_target_mismatch_fails_before_zero_request_early_return(self):
+    def test_zero_request_returns_empty_before_decision_scope_validation(self):
         state = _state(lengths_by_target={"MDM2": [8, 10, 12]})
         state["_frozen_exploration_decision"] = _decision(target_ids=["MDMX"])
 
-        with self.assertRaisesRegex(PlannerContractError, "target scope"):
-            _materialize_design_jobs(
-                state=state,
-                required_targets=["MDM2"],
-                budgets={"route_A_mdm2": 2},
-                requested=0,
-                seed_material="stable-seed-material",
-            )
+        jobs = _materialize_design_jobs(
+            state=state,
+            required_targets=["MDM2"],
+            budgets={"route_A_mdm2": 2},
+            requested=0,
+            seed_material="stable-seed-material",
+        )
 
-    def test_decision_target_mismatch_fails_before_empty_targets_early_return(self):
+        self.assertEqual(jobs, [])
+
+    def test_empty_targets_returns_empty_before_decision_scope_validation(self):
         state = _state(lengths_by_target={})
         state["_frozen_exploration_decision"] = _decision(target_ids=["MDM2"])
 
-        with self.assertRaisesRegex(PlannerContractError, "target scope"):
-            _materialize_design_jobs(
-                state=state,
-                required_targets=[],
-                budgets={},
-                requested=3,
-                seed_material="stable-seed-material",
-            )
+        jobs = _materialize_design_jobs(
+            state=state,
+            required_targets=[],
+            budgets={},
+            requested=3,
+            seed_material="stable-seed-material",
+        )
+
+        self.assertEqual(jobs, [])
 
     def test_no_adjustment_preserves_each_targets_approved_lengths(self):
         state = _state(
