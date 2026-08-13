@@ -87,8 +87,6 @@ def _materialize_design_jobs(
     used only when no Route A capacity exists, because their motif provenance
     is less generally transferable across targets.
     """
-    if requested < 1 or not required_targets:
-        return []
     project = state.get("project_config") or {}
     target_values = {
         str(item.get("id")): item
@@ -118,6 +116,8 @@ def _materialize_design_jobs(
         required_targets=required_targets,
         frozen_decision=state.get("_frozen_exploration_decision"),
     )
+    if requested < 1 or not required_targets:
+        return []
 
     allocations, route = _allocate_design_capacity(requested, required_targets, budgets)
     jobs = []

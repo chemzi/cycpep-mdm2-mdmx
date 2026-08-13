@@ -111,6 +111,32 @@ class PlannerDecisionMaterializationTests(unittest.TestCase):
         with self.assertRaisesRegex(PlannerContractError, "target scope"):
             _jobs(state)
 
+    def test_decision_target_mismatch_fails_before_zero_request_early_return(self):
+        state = _state(lengths_by_target={"MDM2": [8, 10, 12]})
+        state["_frozen_exploration_decision"] = _decision(target_ids=["MDMX"])
+
+        with self.assertRaisesRegex(PlannerContractError, "target scope"):
+            _materialize_design_jobs(
+                state=state,
+                required_targets=["MDM2"],
+                budgets={"route_A_mdm2": 2},
+                requested=0,
+                seed_material="stable-seed-material",
+            )
+
+    def test_decision_target_mismatch_fails_before_empty_targets_early_return(self):
+        state = _state(lengths_by_target={})
+        state["_frozen_exploration_decision"] = _decision(target_ids=["MDM2"])
+
+        with self.assertRaisesRegex(PlannerContractError, "target scope"):
+            _materialize_design_jobs(
+                state=state,
+                required_targets=[],
+                budgets={},
+                requested=3,
+                seed_material="stable-seed-material",
+            )
+
     def test_no_adjustment_preserves_each_targets_approved_lengths(self):
         state = _state(
             lengths_by_target={"MDM2": [8, 10, 12], "MDMX": [10, 12]}
@@ -146,34 +172,6 @@ class PlannerDecisionMaterializationTests(unittest.TestCase):
         consume.assert_not_called()
         record.assert_not_called()
         evidence.assert_not_called()
-
-    def test_adjustment_preferred_lengths_must_match_canonical_weights(self):
-        state = _state(lengths_by_target={"MDM2": [8, 10, 12], "MDMX": [8, 10, 12]})
-        decision = _decision(target_ids=["MDM2", "MDMX"])
-        decision["adjustment"]["preferred_lengths"] = [10]
-        state["_frozen_exploration_decision"] = decision
-
-        with self.assertRaisesRegex(PlannerContractError, "preferred lengths"):
-            _jobs(state)
-
-    def test_adjustment_rejects_noncanonical_weight(self):
-        state = _state(lengths_by_target={"MDM2": [8, 10, 12], "MDMX": [8, 10, 12]})
-        decision = _decision(target_ids=["MDM2", "MDMX"])
-        decision["adjustment"]["proposed_policy_weights"][0]["weight"] = 9
-        state["_frozen_exploration_decision"] = decision
-
-        with self.assertRaisesRegex(PlannerContractError, "canonical weight"):
-            _jobs(state)
-
-    def test_decision_status_must_be_canonical(self):
-        state = _state(lengths_by_target={"MDM2": [8, 10, 12], "MDMX": [8, 10, 12]})
-        decision = _decision(target_ids=["MDM2", "MDMX"])
-        decision["decision_status"] = "unknown"
-        state["_frozen_exploration_decision"] = decision
-
-        with self.assertRaisesRegex(PlannerContractError, "decision status"):
-            _jobs(state)
-
 
 if __name__ == "__main__":
     unittest.main()

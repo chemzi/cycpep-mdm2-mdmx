@@ -58,4 +58,3 @@ Planner SHALL continue to emit the current `iterate_design` action and current `
 #### Scenario: Existing job shape is retained
 - **WHEN** Planner materializes any valid design job
 - **THEN** each job contains the existing route, target_id, lengths, proposal_count, and seed fields
-

@@ -30,7 +30,7 @@ Alternative considered: embed decision branching directly in `_materialize_desig
 
 ### Trust E3-A validation but fail closed at the E3-B seam
 
-The module will not call `ExplorationDecision.from_dict()` again. It will enforce only materialization invariants observable at this seam: canonical status, exact required-target scope, canonical weight-1 proposed keys, equivalence with preferred lengths for adjustments, and containment within every target's approved envelope. This avoids importing the upstream scientific evaluator or accessing ambient Evidence while still rejecting unsafe materialization.
+The module will not call `ExplorationDecision.from_dict()` again. It trusts canonical status, weight, and preferred-length equivalence from E3-A, and enforces only materialization invariants that depend on current Planner inputs: exact required-target scope and containment within every target's approved envelope. This avoids importing the upstream scientific evaluator or accessing ambient Evidence while still rejecting unsafe materialization.
 
 Alternative considered: reconstruct the full contract in Planner. Rejected because E3-A explicitly supplies an already-validated canonical dict and duplicate validation would couple Planner to upstream Evidence/scientific policy internals.
 
