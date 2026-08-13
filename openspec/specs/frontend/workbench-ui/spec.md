@@ -1,11 +1,8 @@
 # Frontend Workbench UI Specification
-
 ## Purpose
 
 Provide a truthful, read-only scientific workbench that presents the versioned browser observability model without reconstructing workflow state or scientific conclusions in the frontend.
-
 ## Requirements
-
 ### Requirement: The workbench consumes only the formal V2 read contract
 The Frontend V2 workbench SHALL obtain workflow-facing data from `GET /api/v2/workbench`, SHALL recognize `frontend.workbench.v2`, and SHALL NOT use `/api/v1/snapshot`, `State.phase`, files, SQLite, projections, evidence counts, or log text as fallback workflow authority.
 
@@ -56,19 +53,27 @@ The workbench SHALL render the returned task collection as a dependency graph or
 - **THEN** the task area presents an explicit empty or unavailable state rather than a placeholder pipeline
 
 ### Requirement: Candidate workspace preserves formal provenance
-The candidate workspace SHALL present candidate identity, sequence when returned, metrics, status fields, and `current_run`, `historical_run`, or `unlinked` provenance, and SHALL associate evidence and artifacts only through returned trace identifiers.
+The candidate workspace SHALL present Candidate identity, sequence when returned, normalized metrics, status fields, and `current_run`, `historical_run`, or `unlinked` provenance. It SHALL associate Evidence and Artifacts only through returned formal trace identifiers, SHALL label association counts as returned or complete, and SHALL distinguish “not returned because the collection is truncated” from “no formal association exists.”
 
 #### Scenario: A candidate is selected
-- **WHEN** a user selects a returned candidate
-- **THEN** the workspace shows its returned metrics and only evidence and artifacts whose formal trace linkage identifies that candidate
+- **WHEN** a user selects a returned Candidate with committed metrics and final scientific status
+- **THEN** the workspace shows its normalized metrics and status and only Evidence and Artifacts whose formal trace linkage identifies that Candidate
+
+#### Scenario: Candidate has a status-owning formal Prediction event
+- **WHEN** the displayed final status was committed with a Candidate-bound Prediction event from a formal run
+- **THEN** the Candidate run relationship reflects that status-owning run without using sequence, time, filename, or message inference
 
 #### Scenario: Historical and unlinked candidates are present
-- **WHEN** project-scoped candidates span current, historical, and unlinked records
-- **THEN** the workspace labels their returned run relationship and does not merge historical or unlinked data into current-run status
+- **WHEN** project-scoped Candidates span current, historical, and records with no formally established status-owning run
+- **THEN** the workspace labels their returned run relationship and does not merge historical or genuinely unlinked data into current-run status
+
+#### Scenario: Candidate associations are truncated
+- **WHEN** project Evidence or Artifact totals exceed the returned collection window and the selected Candidate has no matching returned item
+- **THEN** the workspace reports that additional associations may be omitted and does not display an unqualified `0 artifacts`, `No returned shortlist`, or `No trace-linked structure` conclusion
 
 #### Scenario: No candidates are returned
-- **WHEN** the candidate collection is empty
-- **THEN** the workspace presents an honest empty state without fabricated candidates, metrics, progress, or molecular structures
+- **WHEN** the Candidate collection is empty
+- **THEN** the workspace presents an honest empty state without fabricated Candidates, metrics, progress, or molecular structures
 
 ### Requirement: Exploration shortlist remains distinct from scientific passing
 The workbench SHALL render `exploration_shortlist` evidence using its `n_passed`, `n_evaluated`, `shortlist`, `calibration`, `source_event_ids`, and `unmapped_metrics` fields. Shortlist membership SHALL NOT imply scientific passing; each shortlist item's returned `passed` value remains authoritative.
@@ -116,22 +121,26 @@ The workbench SHALL correlate execution and transaction records by their returne
 - **THEN** the UI keeps the current execution correlated only to its exact attempt and separately presents every returned transaction for that task as history
 
 ### Requirement: Artifact, protocol, and trace views preserve safe identity
-The workbench SHALL present artifact opaque identity, type, role, producer and input provenance, integrity metadata, protocol name/version/integrity identity, and available trace linkage without exposing or reconstructing a server filesystem path.
+The workbench SHALL present Artifact opaque identity, type, role, producer and input provenance, integrity metadata, protocol name/version/integrity identity, and available trace linkage without exposing or reconstructing a server filesystem path. The Candidate workspace SHALL recognize returned structure-bearing Artifact types from the formal Artifact contract and SHALL distinguish “structure Artifact recorded” from “browser-safe structure content available.”
 
 #### Scenario: An artifact is inspected
-- **WHEN** an artifact is associated with a candidate, task, or execution through formal trace fields
-- **THEN** the inspector presents the returned opaque artifact and provenance data and never displays a server path
+- **WHEN** an Artifact is associated with a Candidate, task, or execution through formal trace fields
+- **THEN** the inspector presents the returned opaque Artifact and provenance data and never displays a server path
+
+#### Scenario: Structure artifact exists without browser content
+- **WHEN** a formally Candidate-associated `design_pdb`, post-relax PDB, or prediction PDB Artifact is returned without a supported `content_link`
+- **THEN** the Candidate workspace reports the recorded structure Artifact and separately reports browser content as unavailable instead of claiming that no structure Artifact exists
 
 #### Scenario: Artifact content is not explicitly linked
-- **WHEN** an artifact has no supported `content_link`
-- **THEN** the UI presents metadata and an unavailable structure/content state rather than constructing a URL from an artifact identifier or internal path
+- **WHEN** an Artifact has no supported `content_link`
+- **THEN** the UI presents metadata and an unavailable content state rather than constructing a URL from an Artifact identifier or internal path
 
 #### Scenario: A supported artifact content link exists
-- **WHEN** an artifact includes an explicit browser-safe `content_link`
-- **THEN** the structure or content viewer may use that returned link while continuing to identify the artifact by its opaque identity
+- **WHEN** an Artifact includes an explicit browser-safe `content_link`
+- **THEN** the structure or content viewer may use that returned link while continuing to identify the Artifact by its opaque identity
 
 #### Scenario: The selected artifact identity changes
-- **WHEN** the user switches from one linked artifact to another
+- **WHEN** the user switches from one linked Artifact to another
 - **THEN** the viewer clears the prior structure before showing the new identity as loading and resets the representation control to the default applied to the new model
 
 ### Requirement: Read-only UI states remain honest and accessible
