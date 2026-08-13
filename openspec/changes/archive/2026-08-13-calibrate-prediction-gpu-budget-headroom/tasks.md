@@ -8,4 +8,4 @@
 
 - [x] 2.1 Run focused Planner and approval-admission regressions, the full unittest suite, Architecture Gate, strict OpenSpec validation, and `git diff --check`.
 - [x] 2.2 Complete independent high-reasoning Spec and Standards reviews, resolve every P0/P1, and archive/sync the verified change.
-- [ ] 2.3 Commit, push, create and merge the PR with `gh`; deploy the merged integration commit and start a fresh fully automatic n=2 Launcher smoke without modifying the failed 22-minute invocation.
+- [x] 2.3 Commit, push, create and merge the PR with `gh`; deploy the merged integration commit and start a fresh fully automatic n=2 Launcher smoke without modifying the failed 22-minute invocation.
