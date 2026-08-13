@@ -21,6 +21,16 @@ export function candidateArtifacts(
   return artifacts.filter((item) => item.trace.candidate_id === candidateId);
 }
 
+export function isStructureBearingArtifact(artifact: ArtifactView): boolean {
+  if (artifact.artifact_type === "structure" || artifact.artifact_type === "design_pdb") {
+    return true;
+  }
+  if (!artifact.artifact_type?.startsWith("prediction_input:")) return false;
+  return artifact.role?.endsWith(".pdb") === true
+    || artifact.artifact_type === "prediction_input:global.post_relax_pdb"
+    || artifact.artifact_type === "prediction_input:global.design_reference_pdb";
+}
+
 export function candidateById(
   candidates: CandidateView[],
   candidateId: string | null,

@@ -102,8 +102,8 @@ test("renders an honest empty Candidate workspace", async () => {
   const html = renderToStaticMarkup(
     components.CandidateWorkspace({
       candidates: { total: 0, returned: 0, truncated: false, items: [] },
-      evidence: model.evidence.items,
-      artifacts: model.artifacts.items,
+      evidence: model.evidence,
+      artifacts: model.artifacts,
       selectedCandidateId: null,
       onSelectCandidate() {},
     }),
@@ -117,8 +117,8 @@ test("renders only trace-linked candidate Evidence and artifacts", async () => {
   const html = renderToStaticMarkup(
     components.CandidateWorkspace({
       candidates: model.candidates,
-      evidence: model.evidence.items,
-      artifacts: model.artifacts.items,
+      evidence: model.evidence,
+      artifacts: model.artifacts,
       selectedCandidateId: "C0001",
       onSelectCandidate() {},
     }),

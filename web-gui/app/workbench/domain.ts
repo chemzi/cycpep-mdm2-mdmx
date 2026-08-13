@@ -119,6 +119,44 @@ export type MetricValue =
   | MetricValue[]
   | { [key: string]: MetricValue };
 
+export interface CandidateAssociationLimitation {
+  code: string;
+  summary: string;
+}
+
+export interface CandidateStatusOwner {
+  run_id: string;
+  run_relation: RunRelation;
+}
+
+export interface CandidateStructureAssociation {
+  artifact_id: string;
+  artifact_type: string;
+  role?: string;
+  content_link?: string;
+}
+
+export interface CandidateShortlistAssociation {
+  event_id?: string;
+  candidate_id?: string;
+  passed: boolean;
+  reason: string;
+  desirability?: number | null;
+  pareto_front?: boolean;
+  top_margin_metric?: string | null;
+}
+
+export interface CandidateAssociations {
+  evidence_total: number;
+  artifact_total: number;
+  artifact_ids: string[];
+  complete: boolean;
+  limitations: CandidateAssociationLimitation[];
+  status_owner?: CandidateStatusOwner;
+  structures: CandidateStructureAssociation[];
+  shortlist: CandidateShortlistAssociation[];
+}
+
 export interface CandidateView {
   candidate_id?: string;
   sequence?: string;
@@ -131,6 +169,7 @@ export interface CandidateView {
   trace: TraceLink;
   run_relation: RunRelation;
   protocol?: ProtocolView;
+  associations?: CandidateAssociations;
 }
 
 export interface ShortlistItem {

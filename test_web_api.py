@@ -61,6 +61,38 @@ class WebApiTrustBoundaryTests(unittest.TestCase):
         self.assertEqual(payload["data"]["schema_version"], "frontend.workbench.v2")
         self.assertEqual(payload["data"]["project"]["project_id"], "project-1")
 
+    def test_v2_workbench_returns_normalized_candidate_scientific_fields(self):
+        status, payload = self._request(
+            "GET",
+            "/api/v2/workbench",
+            store=FakeStore(
+                state={"project_id": "project-1", "project": "Demo"},
+                candidates=[{
+                    "candidate_id": "C0006",
+                    "sequence": "GSLALESLAG",
+                    "final_status": "needs_optimization",
+                    "metrics_json": json.dumps({
+                        "global": {"plddt": 81.5},
+                        "targets": {"MDM2": {"iptm": 0.67}},
+                    }),
+                }],
+            ),
+        )
+
+        self.assertEqual(status, 200)
+        candidate = payload["data"]["candidates"]["items"][0]
+        self.assertEqual(candidate["status"], "needs_optimization")
+        self.assertEqual(candidate["metrics"]["targets"]["MDM2"]["iptm"], 0.67)
+        self.assertEqual(candidate["associations"], {
+            "evidence_total": 0,
+            "artifact_total": 0,
+            "artifact_ids": [],
+            "complete": True,
+            "limitations": [],
+            "structures": [],
+            "shortlist": [],
+        })
+
     def test_v2_exposes_only_the_exploration_shortlist_payload_contract(self):
         shortlist_payload = {
             "k": 2,

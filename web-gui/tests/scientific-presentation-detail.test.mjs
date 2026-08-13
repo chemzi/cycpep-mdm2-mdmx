@@ -66,8 +66,8 @@ test("candidate structure stage uses only a formally trace-linked artifact", asy
   const model = await workbench();
   const html = renderToStaticMarkup(components.CandidateWorkspace({
     candidates: model.candidates,
-    evidence: model.evidence.items,
-    artifacts: model.artifacts.items,
+    evidence: model.evidence,
+    artifacts: model.artifacts,
     selectedCandidateId: "C0001",
     onSelectCandidate() {},
   }));
