@@ -25,4 +25,4 @@
 - [x] 4.2 Run focused tests, full unittest, Architecture Gate, strict OpenSpec, compile, and `git diff --check` using isolated fixtures only.
 - [x] 4.3 Rebase the feature branch onto the latest `e3/closed-loop-runtime` without following `integration/data-integrity-transaction`, then rerun affected gates.
 - [x] 4.4 Run high-reasoning Spec and Standards reviews and OpenSpec implementation verification; resolve all P0/P1 findings.
-- [ ] 4.5 Push the rebased branch, update PR #78 to Ready, merge it into `e3/closed-loop-runtime`, and confirm the shared-branch head without deploying or modifying the production checkout.
+- [x] 4.5 Push the rebased branch, update PR #78 to Ready, merge it into `e3/closed-loop-runtime`, and confirm the shared-branch head without deploying or modifying the production checkout.
