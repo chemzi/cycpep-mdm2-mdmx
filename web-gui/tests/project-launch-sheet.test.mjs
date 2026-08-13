@@ -12,6 +12,7 @@ let vite;
 let ProjectLaunchSheet;
 let isLaunchRequestReady;
 let WorkbenchWorkspace;
+let createEmptyMonitoringModel;
 let fixture;
 
 before(async () => {
@@ -29,6 +30,9 @@ before(async () => {
   ({ WorkbenchWorkspace } = await vite.ssrLoadModule(
     "/app/workbench/components/workbench-workspace.tsx",
   ));
+  ({ createEmptyMonitoringModel } = await vite.ssrLoadModule(
+    "/app/workbench/demo-monitoring-model.ts",
+  ));
   fixture = JSON.parse(await readFile(
     new URL("fixtures/workbench-v2.json", import.meta.url),
     "utf8",
@@ -38,7 +42,7 @@ before(async () => {
 after(() => vite?.close());
 
 test("the launch sheet is an honest target-first full-screen control surface", () => {
-  const html = renderToStaticMarkup(createElement(ProjectLaunchSheet, { onClose() {} }));
+  const html = renderToStaticMarkup(createElement(ProjectLaunchSheet, { onClose() {}, onLaunch() {} }));
 
   assert.match(html, /role="dialog"/);
   assert.match(html, /aria-modal="true"/);
@@ -53,6 +57,25 @@ test("the launch sheet is an honest target-first full-screen control surface", (
   assert.match(html, /Entering a target creates a review draft\. It does not start scientific or GPU work/);
   assert.doesNotMatch(html, /preview|not connected|not implemented/i);
   assert.doesNotMatch(html, /target resolved|project approved|GPU approved/i);
+});
+
+test("a launched target enters the normal workbench with an empty monitoring model", () => {
+  const model = createEmptyMonitoringModel("MDM2");
+  const html = renderToStaticMarkup(WorkbenchWorkspace({
+    data: model,
+    requestStatus: "ready",
+    refreshError: null,
+    autoRefreshEnabled: true,
+    onNewProject() {},
+    onRefresh() {},
+    onAutoRefreshChange() {},
+  }));
+
+  assert.match(html, /MDM2 cyclic peptide campaign/);
+  assert.match(html, /No active run/);
+  assert.match(html, /Candidates returned<\/dt><dd>0/);
+  assert.match(html, /Evidence returned<\/dt><dd>0/);
+  assert.doesNotMatch(html, /C0001|T001|run-1/);
 });
 
 test("the compact New project entry is immediately before Refresh", () => {
@@ -99,7 +122,7 @@ test("launch styles are scoped and preserve the existing frame contract", async 
   assert.match(css, /\.workbench-frame\s*\{[^}]*grid-template-areas:[^}]*navigator primary inspector[^}]*history history history/s);
   assert.match(page, /sessionStorage\.getItem\(LAUNCH_SHEET_DISMISSED_KEY\)/);
   assert.match(page, /<ProjectLaunchSheet/);
-  assert.match(page, /const content = !model/);
+  assert.match(page, /const content = !displayedModel/);
   assert.ok(page.indexOf("{content}") < page.indexOf("{launchSheetOpen ? <ProjectLaunchSheet"));
   assert.doesNotMatch(css, /\.launch-(?:overlay|sheet|ledger)[^{]*\{[^}]*(?:--canvas|--surface|--raised|--selection)\s*:/s);
 });

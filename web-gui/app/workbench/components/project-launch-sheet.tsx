@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-export interface ProjectLaunchSheetProps { onClose: () => void; }
+export interface ProjectLaunchSheetProps { onClose: () => void; onLaunch: (target: string) => void; }
 type ApprovalMode = "manual" | "automatic";
 type Ceilings = { minutes: string; slots: string; designs: string; candidates: string };
 
@@ -81,21 +81,20 @@ function ComputeStage({ mode, ceilings, onModeChange, onCeilingChange }: {
   </section>;
 }
 
-export function ProjectLaunchSheet({ onClose }: ProjectLaunchSheetProps) {
+export function ProjectLaunchSheet({ onClose, onLaunch }: ProjectLaunchSheetProps) {
   const targetInput = useDialogFocus(onClose);
   const [target, setTarget] = useState("");
   const [mode, setMode] = useState<ApprovalMode>("manual");
   const [ceilings, setCeilings] = useState<Ceilings>({ minutes: "", slots: "", designs: "", candidates: "" });
-  const [notice, setNotice] = useState<string | null>(null);
   const ready = isLaunchRequestReady(target, mode, ceilings);
-  function updateCeiling(key: keyof Ceilings, value: string) { setCeilings((current) => ({ ...current, [key]: value })); setNotice(null); }
+  function updateCeiling(key: keyof Ceilings, value: string) { setCeilings((current) => ({ ...current, [key]: value })); }
 
   return <section className="launch-overlay" role="dialog" aria-modal="true" aria-labelledby="launch-title"><div className="launch-sheet">
     <header className="launch-sheet-header"><div className="launch-sheet-kicker" aria-label="Project ignition"><span aria-hidden="true" />CycPep / project ignition</div><div className="launch-sheet-dismiss"><button type="button" className="launch-text-button" onClick={onClose}>View existing tasks</button><button type="button" className="launch-close-button" onClick={onClose} aria-label="Close new project"><span aria-hidden="true">×</span></button></div></header>
-    <form className="launch-sheet-body" onSubmit={(event) => { event.preventDefault(); setNotice("Project request prepared. Ready for workflow handoff."); }}>
+    <form className="launch-sheet-body" onSubmit={(event) => { event.preventDefault(); if (ready) onLaunch(target.trim()); }}>
       <div className="launch-introduction"><p className="launch-eyebrow">New cyclic-peptide campaign</p><h1 id="launch-title">Start with a target.</h1><p>Resolve one biological identity, review the project it creates, then hand the approved campaign to the formal workflow.</p></div>
-      <div className="launch-ledger" aria-label="Target to compute launch ledger"><TargetStage target={target} inputRef={targetInput} onTargetChange={(value) => { setTarget(value); setNotice(null); }} /><ReviewStage target={target} /><ComputeStage mode={mode} ceilings={ceilings} onModeChange={(value) => { setMode(value); setNotice(null); }} onCeilingChange={updateCeiling} /></div>
-      <footer className="launch-sheet-footer"><div className="launch-interface-status" role="status"><span data-ready={ready || undefined} aria-hidden="true" />{notice ?? (ready ? "Target request ready for project resolution." : "Enter a target and valid approval ceilings to prepare the request.")}</div><button className="launch-primary-action" type="submit" disabled={!ready}>Create and launch<span aria-hidden="true">→</span></button></footer>
+      <div className="launch-ledger" aria-label="Target to compute launch ledger"><TargetStage target={target} inputRef={targetInput} onTargetChange={setTarget} /><ReviewStage target={target} /><ComputeStage mode={mode} ceilings={ceilings} onModeChange={setMode} onCeilingChange={updateCeiling} /></div>
+      <footer className="launch-sheet-footer"><div className="launch-interface-status" role="status"><span data-ready={ready || undefined} aria-hidden="true" />{ready ? "Target request ready for project resolution." : "Enter a target and valid approval ceilings to prepare the request."}</div><button className="launch-primary-action" type="submit" disabled={!ready}>Create and launch<span aria-hidden="true">→</span></button></footer>
     </form>
   </div></section>;
 }

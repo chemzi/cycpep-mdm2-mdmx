@@ -3,6 +3,7 @@
 import { useCallback, useState, useSyncExternalStore } from "react";
 
 import type { WorkbenchReadModel } from "./domain";
+import { createEmptyMonitoringModel } from "./demo-monitoring-model";
 import { FailureState, LoadingState } from "./components/shared-states";
 import { ProjectLaunchSheet } from "./components/project-launch-sheet";
 import { WorkbenchWorkspace } from "./components/workbench-workspace";
@@ -76,6 +77,7 @@ function LoadedWorkbench({
 }
 
 export function WorkbenchPage() {
+  const [demoTarget, setDemoTarget] = useState<string | null>(null);
   const launchSheetOpen = useSyncExternalStore(subscribeLaunchSheet, launchSheetSnapshot, () => false);
   const [initialAutoRefresh] = useState(() => {
     if (typeof window === "undefined") return true;
@@ -101,14 +103,15 @@ export function WorkbenchPage() {
     workbench.setAutoRefreshEnabled(enabled);
   }
 
-  const content = !model
+  const displayedModel = demoTarget ? createEmptyMonitoringModel(demoTarget) : model;
+  const content = !displayedModel
     ? <main className="initial-state">
         {workbench.status === "failed-before-data"
           ? <FailureState message={workbench.error ?? "Workbench request failed"} />
           : <LoadingState label="Loading Frontend V2 workbench" />}
       </main>
     : <LoadedWorkbench
-        data={model}
+        data={displayedModel}
         requestStatus={workbench.status}
         refreshError={workbench.error}
         autoRefreshEnabled={workbench.autoRefreshEnabled}
@@ -119,6 +122,9 @@ export function WorkbenchPage() {
 
   return <>
     {content}
-    {launchSheetOpen ? <ProjectLaunchSheet onClose={closeLaunchSheet} /> : null}
+    {launchSheetOpen ? <ProjectLaunchSheet
+      onClose={closeLaunchSheet}
+      onLaunch={(target) => { setDemoTarget(target); closeLaunchSheet(); }}
+    /> : null}
   </>;
 }
