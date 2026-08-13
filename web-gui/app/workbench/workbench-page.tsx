@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState, useSyncExternalStore } from "react";
 
 import type { WorkbenchReadModel } from "./domain";
 import { FailureState, LoadingState } from "./components/shared-states";
+import { ProjectLaunchSheet } from "./components/project-launch-sheet";
 import { WorkbenchWorkspace } from "./components/workbench-workspace";
 import type { WorkbenchAuxiliaryPanel } from "./components/workbench-workspace";
 import { useWorkbenchSelection } from "./selection";
@@ -11,6 +12,17 @@ import type { WorkbenchSelection } from "./selection";
 import { useWorkbench } from "./use-workbench";
 
 const AUTO_REFRESH_KEY = "cycpep-workbench-v2-auto-refresh";
+const LAUNCH_SHEET_DISMISSED_KEY = "cycpep-launch-sheet-dismissed";
+const LAUNCH_SHEET_CHANGE_EVENT = "cycpep-launch-sheet-change";
+
+function subscribeLaunchSheet(callback: () => void) {
+  window.addEventListener(LAUNCH_SHEET_CHANGE_EVENT, callback);
+  return () => window.removeEventListener(LAUNCH_SHEET_CHANGE_EVENT, callback);
+}
+
+function launchSheetSnapshot() {
+  return window.sessionStorage.getItem(LAUNCH_SHEET_DISMISSED_KEY) !== "true";
+}
 
 function initialSelection(data: WorkbenchReadModel): WorkbenchSelection {
   const task = data.tasks.items.find((item) => item.task_id)?.task_id;
@@ -29,6 +41,7 @@ function LoadedWorkbench({
   autoRefreshEnabled,
   onRefresh,
   onAutoRefreshChange,
+  onNewProject,
 }: {
   data: WorkbenchReadModel;
   requestStatus: ReturnType<typeof useWorkbench>["status"];
@@ -36,6 +49,7 @@ function LoadedWorkbench({
   autoRefreshEnabled: boolean;
   onRefresh: () => void;
   onAutoRefreshChange: (enabled: boolean) => void;
+  onNewProject: () => void;
 }) {
   const [selection, setSelection] = useWorkbenchSelection(data, initialSelection(data));
   const [collapsedPanels, setCollapsedPanels] = useState<WorkbenchAuxiliaryPanel[]>([]);
@@ -47,20 +61,22 @@ function LoadedWorkbench({
   }
 
   return <WorkbenchWorkspace
-    data={data}
-    requestStatus={requestStatus}
-    refreshError={refreshError}
-    autoRefreshEnabled={autoRefreshEnabled}
-    onRefresh={onRefresh}
-    onAutoRefreshChange={onAutoRefreshChange}
-    selection={selection}
-    collapsedPanels={collapsedPanels}
-    onSelectionChange={setSelection}
-    onPanelCollapsedChange={setPanelCollapsed}
-  />;
+      data={data}
+      requestStatus={requestStatus}
+      refreshError={refreshError}
+      autoRefreshEnabled={autoRefreshEnabled}
+      onNewProject={onNewProject}
+      onRefresh={onRefresh}
+      onAutoRefreshChange={onAutoRefreshChange}
+      selection={selection}
+      collapsedPanels={collapsedPanels}
+      onSelectionChange={setSelection}
+      onPanelCollapsedChange={setPanelCollapsed}
+    />;
 }
 
 export function WorkbenchPage() {
+  const launchSheetOpen = useSyncExternalStore(subscribeLaunchSheet, launchSheetSnapshot, () => false);
   const [initialAutoRefresh] = useState(() => {
     if (typeof window === "undefined") return true;
     const stored = window.localStorage.getItem(AUTO_REFRESH_KEY);
@@ -72,24 +88,37 @@ export function WorkbenchPage() {
   });
   const model = workbench.data?.data ?? null;
 
+  const setLaunchSheet = useCallback((open: boolean) => {
+    if (open) window.sessionStorage.removeItem(LAUNCH_SHEET_DISMISSED_KEY);
+    else window.sessionStorage.setItem(LAUNCH_SHEET_DISMISSED_KEY, "true");
+    window.dispatchEvent(new Event(LAUNCH_SHEET_CHANGE_EVENT));
+  }, []);
+  const openLaunchSheet = useCallback(() => setLaunchSheet(true), [setLaunchSheet]);
+  const closeLaunchSheet = useCallback(() => setLaunchSheet(false), [setLaunchSheet]);
+
   function setAutoRefresh(enabled: boolean) {
     window.localStorage.setItem(AUTO_REFRESH_KEY, String(enabled));
     workbench.setAutoRefreshEnabled(enabled);
   }
 
-  if (!model && workbench.status === "failed-before-data") {
-    return <main className="initial-state"><FailureState message={workbench.error ?? "Workbench request failed"} /></main>;
-  }
-  if (!model) {
-    return <main className="initial-state"><LoadingState label="Loading Frontend V2 workbench" /></main>;
-  }
+  const content = !model
+    ? <main className="initial-state">
+        {workbench.status === "failed-before-data"
+          ? <FailureState message={workbench.error ?? "Workbench request failed"} />
+          : <LoadingState label="Loading Frontend V2 workbench" />}
+      </main>
+    : <LoadedWorkbench
+        data={model}
+        requestStatus={workbench.status}
+        refreshError={workbench.error}
+        autoRefreshEnabled={workbench.autoRefreshEnabled}
+        onNewProject={openLaunchSheet}
+        onRefresh={() => void workbench.refresh()}
+        onAutoRefreshChange={setAutoRefresh}
+      />;
 
-  return <LoadedWorkbench
-    data={model}
-    requestStatus={workbench.status}
-    refreshError={workbench.error}
-    autoRefreshEnabled={workbench.autoRefreshEnabled}
-    onRefresh={() => void workbench.refresh()}
-    onAutoRefreshChange={setAutoRefresh}
-  />;
+  return <>
+    {content}
+    {launchSheetOpen ? <ProjectLaunchSheet onClose={closeLaunchSheet} /> : null}
+  </>;
 }

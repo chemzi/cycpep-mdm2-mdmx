@@ -7,6 +7,7 @@ export interface WorkbenchTopBarProps {
   requestStatus: WorkbenchRequestStatus;
   refreshError: string | null;
   autoRefreshEnabled: boolean;
+  onNewProject?: () => void;
   onRefresh: () => void;
   onAutoRefreshChange: (enabled: boolean) => void;
 }
@@ -24,6 +25,7 @@ export function WorkbenchTopBar({
   requestStatus,
   refreshError,
   autoRefreshEnabled,
+  onNewProject,
   onRefresh,
   onAutoRefreshChange,
 }: WorkbenchTopBarProps) {
@@ -58,6 +60,9 @@ export function WorkbenchTopBar({
           />
           Auto refresh
         </label>
+        {onNewProject ? <button className="launch-open-button" type="button" onClick={onNewProject}>
+          New project
+        </button> : null}
         <button type="button" onClick={onRefresh} disabled={refreshing}>
           {refreshing ? "Refreshing…" : "Refresh"}
         </button>
