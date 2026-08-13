@@ -13,8 +13,8 @@
 ## 3. Verification and Review
 
 - [x] 3.1 Run full unittest, Architecture Gate, strict OpenSpec validation, compile checks, and `git diff --check` in the isolated worktree; run no `workflow launch/resume`, ExecutionWorker drain, `evaluate_new_design_candidates`, `iterate_design`, or real scientific subprocess.
-- [ ] 3.2 Run `$openspec-verify-change` for implementation completeness, correctness, and design coherence; resolve all critical issues.
-- [ ] 3.3 Run independent high-reasoning Spec and Standards reviews against frozen base `02c54edeb3580d58877e7c7bf18b79a7f75df162`; resolve all P0/P1 findings and rerun affected gates.
-- [ ] 3.4 Confirm the changed-file set excludes every forbidden production/runtime path and that no Launcher, Worker, iteration, or scientific subprocess command was run. If implementation requires `workflow/service.py`, the Prediction executor, transaction ownership, or active runtime data, stop and report instead of expanding scope.
-- [ ] 3.5 Confirm `e3/closed-loop-runtime` exists at or after the frozen base; if E3-A landed first, rebase only onto that shared branch and rerun affected gates.
+- [x] 3.2 Run `$openspec-verify-change` for implementation completeness, correctness, and design coherence; resolve all critical issues.
+- [x] 3.3 Run independent high-reasoning Spec and Standards reviews against frozen base `02c54edeb3580d58877e7c7bf18b79a7f75df162`; resolve all P0/P1 findings and rerun affected gates.
+- [x] 3.4 Confirm the changed-file set excludes every forbidden production/runtime path and that no Launcher, Worker, iteration, or scientific subprocess command was run. If implementation requires `workflow/service.py`, the Prediction executor, transaction ownership, or active runtime data, stop and report instead of expanding scope.
+- [x] 3.5 Confirm `e3/closed-loop-runtime` exists at or after the frozen base; if E3-A landed first, rebase only onto that shared branch and rerun affected gates.
 - [ ] 3.6 Commit and push the isolated branch, create a Draft PR targeting `e3/closed-loop-runtime` with base/head/test evidence, and do not merge, deploy, or modify the production checkout.
