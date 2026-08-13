@@ -82,7 +82,9 @@ export function ApprovalControlCard({
         <p className="approval-control-kicker">Exact plan approval</p>
         <h1 id="approval-control-title">Release the current compute plan</h1>
       </div>
-      <span className="approval-control-state">Awaiting approval</span>
+      <span className="approval-control-state" role="status" aria-live="assertive">
+        Awaiting approval · action required
+      </span>
     </header>
 
     <div className="approval-control-binding" aria-label="Immutable plan binding">

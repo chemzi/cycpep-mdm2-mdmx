@@ -219,7 +219,8 @@ export class ProjectControlClient {
 
   constructor(options: ProjectControlClientOptions = {}) {
     this.apiOrigin = options.apiOrigin;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    const selectedFetch = options.fetchImpl ?? fetch;
+    this.fetchImpl = (input, init) => selectedFetch(input, init);
   }
 
   createDraft(request: ProjectLaunchRequest, signal?: AbortSignal) {

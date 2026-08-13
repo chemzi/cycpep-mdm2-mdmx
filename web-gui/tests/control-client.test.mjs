@@ -138,6 +138,23 @@ test("calls all six frozen routes with exact methods and bodies", async () => {
   assert.equal(calls[3][2].options.launcher_run_id, launcherRunId);
 });
 
+test("invokes fetch without rebinding the browser function to the client", async () => {
+  const client = new ProjectControlClient({
+    fetchImpl: function () {
+      assert.equal(this, undefined);
+      return Promise.resolve(response(draft, 201));
+    },
+  });
+
+  await client.createDraft({
+    target_identifier: "MDM2",
+    options: {
+      identifier_type: "gene", organism_id: 9606, epitope: null,
+      objective: "binder", launcher_run_id: null, first_gate_auto_policy: null,
+    },
+  });
+});
+
 test("keeps the safe control view attached to structured HTTP failures", async () => {
   const failure = {
     code: "approval_ceiling_exceeded", category: "ceiling", component: "planner",
@@ -187,4 +204,20 @@ test("state transitions preserve form, review, and last control on failures", ()
   assert.equal(state.review, draft);
   assert.equal(state.lastControl, control);
   assert.equal(state.status, "failed");
+});
+
+test("a polled later approval replaces the first gate instead of going silent", () => {
+  const form = { target_identifier: "MDM2", options: {
+    identifier_type: "gene", organism_id: 9606, epitope: null, objective: "binder",
+    launcher_run_id: null, first_gate_auto_policy: null,
+  } };
+  const first = { ...control, approval_control: { plan_id: "planner_first" } };
+  const later = { ...control, approval_control: { plan_id: "planner_later" } };
+  let state = initialProjectLaunchState(form);
+  state = projectLaunchReducer(state, { type: "control-succeeded", control: first });
+  state = projectLaunchReducer(state, { type: "mutation-started", status: "checking" });
+  state = projectLaunchReducer(state, { type: "control-succeeded", control: later });
+
+  assert.equal(state.lastControl.approval_control.plan_id, "planner_later");
+  assert.equal(state.status, "launched");
 });

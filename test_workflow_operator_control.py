@@ -16,6 +16,7 @@ from workflow.errors import DiagnosticContractError
 from workflow.models import (
     BrowserResult,
     DiagnosticReport,
+    FormalTrace,
     LauncherCommandResult,
     RuntimeLocatorBinding,
 )
@@ -127,15 +128,38 @@ class _Runtime:
         return FormalBoundary.not_started("approval")
 
 
+class _DownstreamRuntime(_Runtime):
+    def __init__(self, bootstrap_plan: dict, downstream_plan: dict):
+        super().__init__(bootstrap_plan)
+        self.downstream_plan = downstream_plan
+
+    def inspect_prediction(self):
+        return FormalBoundary.completed("prediction", handoff_path="opaque")
+
+    def inspect_critic(self, _prediction):
+        return FormalBoundary.completed("critic", report_id="critic_current")
+
+    def inspect_planner(self, _critic):
+        return FormalBoundary.completed(
+            "planner",
+            plan_id=self.downstream_plan["plan_id"],
+            plan_sha256="c" * 64,
+            plan_path="C:/formal/downstream-plan.json",
+            plan_document=self.downstream_plan,
+        )
+
+
 def _dependencies(
     root: Path,
     *,
     context: ProjectContext | None = None,
     plan: dict | None = None,
     with_locator: bool = True,
+    runtime=None,
+    current_plan_id: str | None = None,
 ):
     context = context or _context(root / "project")
-    runtime = _Runtime(plan or _plan())
+    runtime = runtime or _Runtime(plan or _plan())
     diagnostics = DiagnosticStore(root / "diagnostics")
     project_path = root / "approved-project.json"
     locator = (
@@ -145,13 +169,21 @@ def _dependencies(
         if with_locator
         else None
     )
-    diagnostics.create(DiagnosticReport.initial(
+    report = DiagnosticReport.initial(
         launcher_run_id=LAUNCHER_ID,
         project_id=PROJECT_ID,
         approved_content_binding=APPROVED_BINDING,
         project_locator=str(project_path.resolve()),
         runtime_locator_binding=locator,
-    ))
+    )
+    if current_plan_id is not None:
+        report = report.with_observation(
+            current_boundary="approval",
+            last_completed_boundary="planner",
+            last_known_formal_status="awaiting_approval",
+            formal_trace=FormalTrace(plan_id=current_plan_id),
+        )
+    diagnostics.create(report)
     observations = {"formal_store": 0, "read_only": []}
 
     def validate_store(_binding, _context):
@@ -195,6 +227,22 @@ def _request(*, digest: str = PLAN_SHA, max_minutes: float | None = 10.0):
 
 
 class WorkflowOperatorControlTests(unittest.TestCase):
+    def test_later_critic_plan_is_selected_from_current_launcher_trace(self):
+        downstream = _plan()
+        downstream["plan_id"] = "planner_fedcba987654"
+        downstream["source"]["kind"] = "critic_iteration"
+        runtime = _DownstreamRuntime(_plan(), downstream)
+        with tempfile.TemporaryDirectory() as tmp:
+            deps, _ = _dependencies(
+                Path(tmp), runtime=runtime, current_plan_id=downstream["plan_id"]
+            )
+
+            projection = inspect_pre_orchestrator_approval(
+                launcher_run_id=LAUNCHER_ID, dependencies=deps
+            )
+
+        self.assertEqual(projection.plan_id, downstream["plan_id"])
+        self.assertEqual(projection.source_kind, "critic_iteration")
     def test_awaiting_projection_is_formal_path_free_and_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             deps, observations = _dependencies(Path(tmp))

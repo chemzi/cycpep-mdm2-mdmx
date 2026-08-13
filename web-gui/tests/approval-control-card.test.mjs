@@ -94,6 +94,8 @@ test("exact approval card renders plan binding, resources, budget, and manual ce
   const html = renderCard();
 
   assert.match(html, /Exact plan approval/);
+  assert.match(html, /Awaiting approval · action required/);
+  assert.match(html, /aria-live="assertive"/);
   assert.match(html, /planner_0123456789ab/);
   assert.match(html, new RegExp("b{64}"));
   assert.match(html, /T001/);

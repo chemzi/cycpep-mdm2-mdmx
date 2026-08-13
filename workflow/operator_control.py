@@ -88,7 +88,7 @@ def inspect_pre_orchestrator_approval(
     with deps.diagnostics.locked(launcher_run_id) as session:
         report = session.read()
         with _bound_read_only_runtime(deps, report) as runtime:
-            planner = _inspect_awaiting_plan(runtime)
+            planner = _inspect_awaiting_plan(runtime, report)
             return _project_plan(report, planner)
 
 
@@ -103,7 +103,7 @@ def inspect_first_gate_auto_approval(
     with deps.diagnostics.locked(launcher_run_id) as session:
         report = session.read()
         with _bound_read_only_runtime(deps, report) as runtime:
-            planner = _inspect_awaiting_plan(runtime)
+            planner = _inspect_awaiting_plan(runtime, report)
             source = planner.references["plan_document"].get("source") or {}
             if (
                 source.get("kind") != "initial_prediction_bootstrap"
@@ -133,7 +133,7 @@ def approve_and_resume(
     with deps.diagnostics.locked(request.launcher_run_id) as session:
         report = session.read()
         with _bound_read_only_runtime(deps, report) as runtime:
-            planner = _inspect_awaiting_plan(runtime)
+            planner = _inspect_awaiting_plan(runtime, report)
             projection = _project_plan(report, planner)
             _validate_exact_request(request, projection)
             _validate_gpu_minute_ceiling(request, projection)
@@ -219,19 +219,22 @@ def _validate_report_binding(
         )
 
 
-def _inspect_awaiting_plan(runtime: Any) -> Any:
-    design = runtime.inspect_design()
-    if design.status != "completed":
+def _inspect_awaiting_plan(runtime: Any, report: DiagnosticReport) -> Any:
+    candidates = _completed_planner_candidates(runtime)
+    current_plan_id = report.formal_trace.plan_id
+    if current_plan_id is not None:
+        matches = [
+            candidate for candidate in candidates
+            if candidate.references.get("plan_id") == current_plan_id
+        ]
+    else:
+        matches = candidates
+    if len(matches) != 1:
         raise DiagnosticContractError(
-            "control_binding_invalid",
-            "Initial Design completion cannot be validated for this Launcher run.",
+            "approval_plan_stale",
+            "The exact formal plan awaiting approval cannot be identified.",
         )
-    planner = runtime.inspect_bootstrap_planner(design)
-    if planner.status != "completed":
-        raise DiagnosticContractError(
-            planner.blocker_code or "control_binding_invalid",
-            "The formal pre-Orchestrator plan cannot be validated.",
-        )
+    planner = matches[0]
     plan = planner.references.get("plan_document")
     if not isinstance(plan, Mapping):
         raise DiagnosticContractError(
@@ -245,6 +248,27 @@ def _inspect_awaiting_plan(runtime: Any) -> Any:
             "The plan is no longer awaiting pre-Orchestrator approval.",
         )
     return planner
+
+
+def _completed_planner_candidates(runtime: Any) -> list[Any]:
+    candidates: dict[str, Any] = {}
+    design = runtime.inspect_design()
+    if design.status == "completed" and hasattr(runtime, "inspect_bootstrap_planner"):
+        bootstrap = runtime.inspect_bootstrap_planner(design)
+        if bootstrap.status == "completed":
+            candidates[str(bootstrap.references.get("plan_id"))] = bootstrap
+
+    if all(hasattr(runtime, name) for name in (
+        "inspect_prediction", "inspect_critic", "inspect_planner"
+    )):
+        prediction = runtime.inspect_prediction()
+        if prediction.status == "completed":
+            critic = runtime.inspect_critic(prediction)
+            if critic.status == "completed":
+                planner = runtime.inspect_planner(critic)
+                if planner.status == "completed":
+                    candidates[str(planner.references.get("plan_id"))] = planner
+    return list(candidates.values())
 
 
 def _project_plan(
