@@ -114,6 +114,59 @@ stale, or mismatched approval stops execution. Launcher never auto-approves,
 widens approval scope, mutates thresholds, or retries until approval appears. A
 later plan may legitimately return `awaiting_approval` again.
 
+## Browser launch and approval controls
+
+The local HTTP adapter exposes a narrow browser control surface under
+`/api/v2/control`. It composes the same Target Bootstrap, project review,
+Launcher, and Planner approval contracts described above; it is not a second
+workflow engine or state store.
+
+| Method and route | Purpose |
+|---|---|
+| `POST /api/v2/control/project-drafts` | Resolve a target into a reviewable draft. It starts no workflow. |
+| `GET /api/v2/control/project-drafts/{draft_id}` | Refresh the browser-safe project review. |
+| `POST /api/v2/control/project-drafts/{draft_id}/approve` | Pass the project-content review gate only. It grants no GPU execution. |
+| `POST /api/v2/control/project-drafts/{draft_id}/launch` | Submit that exact approved draft to Launcher with a caller-generated `launcher_run_id`. |
+| `GET /api/v2/control/launcher-runs/{launcher_run_id}` | Inspect the Launcher outcome and, when applicable, the exact pre-Orchestrator approval request. |
+| `POST /api/v2/control/launcher-runs/{launcher_run_id}/approval` | Record one exact plan-bound approval and continue the same Launcher run. |
+| `GET /api/v2/workbench?launcher_run_id=...` | Read the formal Store bound to that Launcher run. It never falls back to the adapter startup project. |
+
+There are two distinct approval gates. Project approval binds the reviewed
+target/config content. Execution approval later binds one immutable Planner
+plan, its required task IDs, and operator ceilings. Project approval must not be
+presented as GPU authorization.
+
+The optional `first_gate_auto_policy` is a one-request convenience limited to
+the first non-retry `initial_prediction_bootstrap` plan after Initial Design and
+before heavy Prediction. The adapter compares the maximum requested concurrent
+GPU slots and the summed proposal, Prediction-candidate, and GPU-minute requests
+with the submitted ceilings. If they fit, it records an ordinary plan-bound
+approval and resumes. The policy is not persisted, reused for retry plans, or
+applied to later Critic-driven plans.
+
+Bootstrap estimates use Planner's existing `simple-v1` estimator. A finite
+estimate is returned consistently at task and budget level with
+`gpu_minutes_status=estimated` and calibration status `provisional`; it is not a
+measured or calibrated runtime. Missing estimates remain null with
+`benchmark_required`/`unavailable` and cannot be automatically approved.
+
+Browser launch is synchronous until Launcher reaches a formal pause or outcome.
+Before submitting, the browser creates and tab-persists one valid
+`launcher_<32 lowercase hex>` identity. Repeating the launch with the same ID
+validates its project/content binding and recovers the existing run rather than
+creating a duplicate. A lost response therefore does not authorize science
+replay. Formal completion and approval records remain authoritative; bounded
+control errors never expose plan paths, runtime locators, tracebacks, or process
+output.
+
+Compatibility is additive: existing `/api/v1` draft/SSH routes, CLI commands,
+and unscoped `GET /api/v2/workbench` retain their previous behavior. To roll
+back the browser controls, remove the `/api/v2/control/...` route wiring, the
+`launcher_run_id` scoped workbench query, and the launch-ledger client calls.
+Do not delete project drafts, Launcher diagnostics, Planner plans/approvals,
+formal Store data, or Evidence; those artifacts remain valid history and are
+still operable through the existing CLI and Python seams.
+
 ## Diagnostics: location and retention
 
 The internal diagnostic root is selected in this order:

@@ -26,7 +26,7 @@
 
 ## 5. Documentation and Demo Readiness
 
-- [ ] 5.1 Document the two approval gates, control/scoped routes, estimate status, synchronous recovery, compatibility, and rollback.
+- [x] 5.1 Document the two approval gates, control/scoped routes, estimate status, synchronous recovery, compatibility, and rollback.
 - [ ] 5.2 Align the 5-minute script with exact E3 timing; prepare one formal awaiting-approval run and one identified formal downstream Prediction/Critic/Planner run.
 
 ## 6. Verification and Review
