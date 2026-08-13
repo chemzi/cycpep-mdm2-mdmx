@@ -116,6 +116,8 @@ class PredictionPersistence:
         if "run_id" in payload:
             payload.pop("run_id")
             payload["prediction_run_id"] = self.run_id
+        elif event_type == "prediction_recorded":
+            payload["prediction_run_id"] = self.run_id
         event = {
             "agent": "prediction",
             "event_type": event_type,

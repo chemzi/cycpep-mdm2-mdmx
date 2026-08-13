@@ -186,6 +186,22 @@ def _assert_prediction_proof_tampering_blocks(
         project_id="project-1", plan=plan, orchestrator=orchestrator
     ).status, "blocked")
     battery_event["execution_identity"] = original_identity
+    record_event = prediction_events[0]
+    original_prediction_run_id = record_event.pop("prediction_run_id")
+    missing_run = inspector.prediction_execution(
+        project_id="project-1", plan=plan, orchestrator=orchestrator
+    )
+    case.assertEqual(
+        missing_run.blocker_code, "prediction_execution_correlation_invalid"
+    )
+    record_event["prediction_run_id"] = "prediction-wrong"
+    mismatched_run = inspector.prediction_execution(
+        project_id="project-1", plan=plan, orchestrator=orchestrator
+    )
+    case.assertEqual(
+        mismatched_run.blocker_code, "prediction_execution_correlation_invalid"
+    )
+    record_event["prediction_run_id"] = original_prediction_run_id
     original_record = record_path.read_text(encoding="utf-8")
     record_path.write_text("{}", encoding="utf-8")
     case.assertEqual(inspector.prediction_execution(
