@@ -109,7 +109,7 @@ def _materialize_design_jobs(
         design = (target_values.get(target_id) or {}).get("design") or {}
         lengths = design.get("lengths")
         experience_hint = None
-        if not lengths:
+        if not lengths and "_frozen_exploration_decision" not in state:
             # B3: 失败经验库闭环——无显式长度配置时消费上一轮淘汰原因的经验
             # 偏好；证据不足或后端不可读时保持默认长度。显式配置永远优先。
             try:
@@ -125,8 +125,8 @@ def _materialize_design_jobs(
                     f"default lengths: {exc}"
                 )
                 lengths, experience_hint = None, None
-            if not lengths:
-                lengths = [8, 10, 12]
+        if not lengths:
+            lengths = [8, 10, 12]
         normalized_lengths = sorted({int(value) for value in lengths})
         if not normalized_lengths or any(value < 5 or value > 30 for value in normalized_lengths):
             raise PlannerContractError(

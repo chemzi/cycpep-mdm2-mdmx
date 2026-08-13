@@ -117,6 +117,11 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["critic_report", "critic_report_sha256", "critic_report_id", "critic_verdict", "prediction_run_id", "project_id", "workflow_id"],
+      "dependentRequired": {
+        "exploration_decision_id": ["exploration_decision_sha256", "exploration_decision_input_digest"],
+        "exploration_decision_sha256": ["exploration_decision_id", "exploration_decision_input_digest"],
+        "exploration_decision_input_digest": ["exploration_decision_id", "exploration_decision_sha256"]
+      },
       "properties": {
         "critic_report": {"type": "string", "minLength": 1},
         "critic_report_sha256": {"$ref": "#/$defs/sha256"},
@@ -124,7 +129,10 @@
         "critic_verdict": {"enum": ["blocked", "iterate", "review", "clear"]},
         "prediction_run_id": {"type": ["string", "null"]},
         "project_id": {"type": ["string", "null"]},
-        "workflow_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"}
+        "workflow_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"},
+        "exploration_decision_id": {"type": "string", "pattern": "^exploration_decision_[0-9a-f]{64}$"},
+        "exploration_decision_sha256": {"$ref": "#/$defs/sha256"},
+        "exploration_decision_input_digest": {"$ref": "#/$defs/sha256"}
       }
     },
     "bootstrap_source": {
