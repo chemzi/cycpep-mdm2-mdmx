@@ -41,6 +41,7 @@ from test_prediction_pipeline import SEQUENCE, project_config, write_monomer
 from threshold_contract import canonical_threshold_digest
 from threshold_contract import normalize_thresholds
 from target_bootstrap import config_digest
+from workflow.prediction_publication import validate_prediction_publication
 
 
 class FailingCommitStore(SQLiteStore):
@@ -315,7 +316,10 @@ class PredictionTransactionalTests(unittest.TestCase):
             task_id="T001",
             attempt_id=f"T001-A{attempt:02d}",
             action="evaluate_new_design_candidates",
-            metadata={"project_id": "prediction_test"},
+            metadata={
+                "project_id": "prediction_test",
+                "plan_id": "planner-prediction",
+            },
         )
         packet = self._packet()
         packet["task_attempt"] = attempt
@@ -337,6 +341,7 @@ class PredictionTransactionalTests(unittest.TestCase):
             project_id="prediction_test",
             workflow_id="workflow-prediction",
             run_id="run-prediction-typed",
+            plan_id="planner-prediction",
             task_id="T001",
             attempt_id=f"T001-A{attempt:02d}",
         )
@@ -347,6 +352,22 @@ class PredictionTransactionalTests(unittest.TestCase):
             trace_context=trace,
         )
         return store, worker, context, result
+
+    def _publication_proof(self, store, context):
+        prediction = store.get_state("prediction_test")["prediction"]
+        handoff = json.loads(Path(
+            store.get_artifact(prediction["handoff_artifact_id"])["path"]
+        ).read_text(encoding="utf-8"))
+        proof = validate_prediction_publication(
+            store, project_id="prediction_test",
+            plan={"plan_id": "planner-prediction",
+                  "workflow_id": "workflow-prediction",
+                  "source": {"candidate_ids": ["C0001"]}},
+            orchestrator_run_id="run-prediction-typed", task=self._packet()["task"],
+            attempt_id="T001-A01", transaction_id=context.transaction_id,
+            handoff_artifact_id=prediction["handoff_artifact_id"], handoff=handoff,
+        )
+        return proof, prediction, handoff
 
     def test_candidate_patch_contract_has_only_candidate_id_and_patch(self):
         mutation = CandidatePatchMutation("C0001", {"final_status": "invalid"})
@@ -560,33 +581,20 @@ class PredictionTransactionalTests(unittest.TestCase):
 
     def test_invalid_prediction_candidate_still_has_one_battery_authority(self):
         root = self.root / "invalid-battery-authority"
-        invalid_row = deepcopy(self.row)
-        invalid_row["sequence"] = "AAAAAAAA"
-        pipeline = PredictionPipeline(
-            candidate_rows=[invalid_row], project=self.project, thresholds={},
-            artifacts_root=root / "missing-artifacts", run_root=root / "runs",
-            run_id="prediction_invalid_battery", defer_formal_writes=True,
-            artifact_id_prefix="tx-invalid-battery",
-        )
-        pipeline.run()
-        effects_path = root / "effects.json"
-        effects_path.write_text(
-            json.dumps(pipeline.transaction_effects()), encoding="utf-8"
-        )
-        effects = load_prediction_transaction_effects(
-            path=effects_path, candidate_ids=["C0001"],
-            run_id="prediction_invalid_battery",
-            transaction_id="tx-invalid-battery",
-            expected_protocol=protocol_binding(),
-            expected_calibration_binding=unpublished_calibration_binding({}),
-        )
-        batteries = [
-            event for event in effects["evidence_events"]
-            if event["event_type"] == "battery_evaluated"
-        ]
+        self.row["sequence"] = "AAAAAAAA"
+        store, _, context, _ = self._run(root)
+        events = store.query(transaction_id=context.transaction_id)
+        batteries = [event for event in events if event["event_type"] == "battery_evaluated"]
         self.assertEqual(len(batteries), 1)
         self.assertFalse(batteries[0]["passed"])
         self.assertEqual(batteries[0]["triage_status"], "invalid")
+        recorded = next(
+            event for event in events
+            if event["event_type"] == "prediction_recorded"
+        )
+        proof, _, handoff = self._publication_proof(store, context)
+        self.assertEqual(recorded["prediction_run_id"], handoff["run_id"])
+        self.assertEqual(len(proof.artifact_ids), 1)
 
     def test_real_handler_and_agent_cli_emit_typed_effects(self):
         root = self.root / "real-handler"
@@ -745,9 +753,17 @@ class PredictionTransactionalTests(unittest.TestCase):
             item for item in events if item["event_type"] == "prediction_run_started"
         )
         expected_prediction_run = f"prediction_{context.transaction_id[-12:]}"
+        self.assertEqual(recorded["prediction_run_id"], expected_prediction_run)
+        self.assertEqual(recorded["run_id"], "run-prediction-typed")
+        self.assertNotEqual(recorded["run_id"], recorded["prediction_run_id"])
         self.assertEqual(started["run_id"], "run-prediction-typed")
         self.assertEqual(started["prediction_run_id"], expected_prediction_run)
         self.assertNotEqual(started["run_id"], started["prediction_run_id"])
+        publication, _, _ = self._publication_proof(store, context)
+        self.assertEqual(
+            publication.artifact_ids,
+            (handoff_item["record_artifact_id"],),
+        )
 
     def test_committed_prediction_formal_evidence_builds_e2_decision(self):
         store, _, context, _ = self._run(self.root / "prediction-to-e2")
