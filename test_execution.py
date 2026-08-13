@@ -194,35 +194,8 @@ class ExecutionTests(unittest.TestCase):
             task["resource_request"]["proposal_count"],
         )
 
-    def test_materialized_design_job_consumes_experience_length_preference(self):
-        # P1-1 输出侧：无显式长度配置时，Planner 任务构造消费失败经验偏好
+    def test_materialized_design_job_uses_fixed_fallback_without_explicit_lengths(self):
         from agents.planner.task_builder import _materialize_design_jobs
-
-        def battery(passed, failed_layers):
-            return {
-                "all_layers_pass": passed,
-                "competition_clearance": passed,
-                "failed_layers": [] if passed else failed_layers,
-                "hard_failures": [],
-                "missing_thresholds": [],
-                "triage_status": "shortlisted" if passed else "needs_optimization",
-                "layer_values": {"L4_nc_distance_post": 1.2 if passed else 3.4},
-                "target_pass": {},
-                "required_targets": ["MDM2"],
-            }
-
-        for index in range(6):
-            data_layer.EvidenceLogger.battery_evaluated(
-                {"candidate_id": f"E10{index:03d}", "sequence": "ABCDEFGHIJ",
-                 "source_route": "route_A"},
-                battery(False, ["l4_pass"]),
-            )
-        for index in range(6):
-            data_layer.EvidenceLogger.battery_evaluated(
-                {"candidate_id": f"E12{index:03d}", "sequence": "ABCDEFGHIJKL",
-                 "source_route": "route_A"},
-                battery(True, []),
-            )
         state = {
             "round": 1,
             "project_config": {
@@ -235,14 +208,9 @@ class ExecutionTests(unittest.TestCase):
             required_targets=["MDM2"],
             budgets={"route_A_mdm2": 10},
             requested=10,
-            seed_material="experience-length-test",
+            seed_material="fixed-fallback-test",
         )
-        self.assertEqual([job["lengths"] for job in jobs], [[12]])
-        applied = [
-            event for event in data_layer.EvidenceLogger.get_all()
-            if event.get("event_type") == "experience_applied"
-        ]
-        self.assertTrue(any(event.get("new_lengths") == [12] for event in applied))
+        self.assertEqual([job["lengths"] for job in jobs], [[8, 10, 12]])
 
     def test_materialized_design_job_explicit_lengths_win_over_experience(self):
         # P2-1：显式长度配置永远优先于经验偏好

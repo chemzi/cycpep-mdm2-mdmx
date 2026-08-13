@@ -132,8 +132,11 @@ class _Runtime:
             plan_document=plan,
         )
 
-    def run_planner(self, report_path):
+    def run_planner(self, report_path, *, state=None):
         self._run("planner")
+
+    def publish_exploration_decision(self, prediction, report_path):
+        return None
 
     def inspect_approvals(self, planner):
         return self.world.approvals
@@ -203,6 +206,84 @@ def _dependencies(root, world, *, writer=None, context_loader=None):
 
 
 class WorkflowServiceAcceptanceTests(unittest.TestCase):
+    def test_completed_prediction_is_published_before_planner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            world = _World()
+            state_snapshot = {"round": 1, "marker": "publication-snapshot"}
+            observed_planner_states = []
+
+            class PublicationRuntime(_Runtime):
+                def publish_exploration_decision(self, prediction, report_path):
+                    self.world.calls.append(
+                        ("exploration_decision", prediction.references["handoff_path"])
+                    )
+                    return state_snapshot
+
+                def run_planner(self, report_path, *, state=None):
+                    observed_planner_states.append(state)
+                    return super().run_planner(report_path, state=state)
+
+            deps = _dependencies(tmp, world)
+            deps = LauncherServiceDependencies(
+                **{
+                    **deps.__dict__,
+                    "runtime_factory": lambda *_args: PublicationRuntime(world),
+                }
+            )
+
+            launch_project(project_path="approved.json", dependencies=deps)
+
+        publication = next(
+            index
+            for index, call in enumerate(world.calls)
+            if isinstance(call, tuple) and call[0] == "exploration_decision"
+        )
+        self.assertLess(publication, world.calls.index("planner"))
+        self.assertEqual(observed_planner_states, [state_snapshot])
+        self.assertIs(observed_planner_states[0], state_snapshot)
+
+    def test_completed_critic_resume_republishes_before_planner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            world = _World()
+            world.statuses.update(
+                {
+                    "prediction": "completed",
+                    "critic": "completed",
+                    "planner": "not_started",
+                }
+            )
+
+            class PublicationRuntime(_Runtime):
+                def publish_exploration_decision(self, prediction, report_path):
+                    self.world.calls.append(
+                        ("exploration_decision", prediction.references["handoff_path"])
+                    )
+
+            deps = _dependencies(tmp, world)
+            deps = LauncherServiceDependencies(
+                **{
+                    **deps.__dict__,
+                    "runtime_factory": lambda *_args: PublicationRuntime(world),
+                }
+            )
+            world.fail_at = "planner"
+            failed = launch_project(project_path="approved.json", dependencies=deps)
+            world.fail_at = None
+            resumed = resume_launcher_run(
+                launcher_run_id=LAUNCHER_ID, dependencies=deps
+            )
+
+        self.assertEqual(failed.exit_code, 2)
+        self.assertEqual(resumed.payload.status, "awaiting_approval")
+        publication_calls = [
+            call
+            for call in world.calls
+            if isinstance(call, tuple) and call[0] == "exploration_decision"
+        ]
+        self.assertEqual(len(publication_calls), 2)
+        self.assertEqual(world.calls[-2], publication_calls[-1])
+        self.assertEqual(world.calls[-1], "planner")
+
     def test_initial_diagnostic_failure_constructs_no_runtime_or_science(self):
         with tempfile.TemporaryDirectory() as tmp:
             world = _World()

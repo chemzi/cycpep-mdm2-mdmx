@@ -141,11 +141,11 @@ def _handoff_projection(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _require_formal_handoff(row: Mapping[str, Any]) -> dict[str, Any]:
+def _require_formal_handoff(row: Mapping[str, Any], *, store=None) -> dict[str, Any]:
     """Resolve one supplied handoff projection against formal Evidence."""
     expected = _handoff_projection(row)
     matches = [
-        item for item in EvidenceLogger.get_all()
+        item for item in EvidenceLogger.get_all(store=store)
         if item.get("event_id") == expected["event_id"]
         and item.get("event_type") == EVENT_HANDOFF
     ]
@@ -466,6 +466,7 @@ def build_exploration_decision(
     run_id: str,
     target_ids: Iterable[str],
     source_round: int,
+    store=None,
 ) -> ExplorationDecision:
     """Return one deterministic Decision from explicit current-run inputs."""
     for label, value in {
@@ -480,7 +481,7 @@ def build_exploration_decision(
     envelope = _policy_envelope(project_config, targets)
     rows = list(battery_events)
     trace = (project_id, workflow_id, run_id)
-    formal_handoff = _require_formal_handoff(prediction_handoff_event)
+    formal_handoff = _require_formal_handoff(prediction_handoff_event, store=store)
     handoff_projection, candidates, prediction_run_id, protocol, authoritative_threshold = (
         _validate_handoff_scope(
             formal_handoff, trace=trace, target_ids=targets
@@ -562,12 +563,14 @@ def _existing_decision_event(
     return None
 
 
-def record_exploration_decision(decision: ExplorationDecision | Mapping[str, Any]) -> str:
+def record_exploration_decision(
+    decision: ExplorationDecision | Mapping[str, Any], *, store=None
+) -> str:
     """Append or sequentially reuse one formal exploration_decision event."""
     value = decision.to_dict() if isinstance(decision, ExplorationDecision) else decision
     contract = ExplorationDecision.from_dict(value)
     payload = contract.to_dict()
-    rows = EvidenceLogger.get_all()
+    rows = EvidenceLogger.get_all(store=store)
     _formal_sources_match(contract, rows)
     existing_id = _existing_decision_event(rows, contract, payload)
     if existing_id is not None:
@@ -591,5 +594,5 @@ def record_exploration_decision(decision: ExplorationDecision | Mapping[str, Any
     entry = event.to_dict()
     # Generic EvidenceLogger.log rejects this domain event. Reaching the Store
     # through the internal append primitive is reserved for this verified path.
-    EvidenceLogger._write(entry)
+    EvidenceLogger._write(entry, store=store)
     return entry["event_id"]

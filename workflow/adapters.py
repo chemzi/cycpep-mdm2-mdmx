@@ -186,10 +186,45 @@ class DefaultWorkflowRuntime:
             critic_report_id=critic.references["report_id"],
         )
 
-    def run_planner(self, report_path):
+    def run_planner(self, report_path, *, state=None):
         from agents.planner import run
 
-        return run(critic_report_path=report_path, project_config=dict(self.context.config))
+        from .exploration_decision_handoff import (
+            resolve_exploration_decision_handoff,
+        )
+
+        state = dict(
+            state
+            if state is not None
+            else self.store.get_state(self.context.project_id)
+        )
+        handoff = resolve_exploration_decision_handoff(
+            store=self.store,
+            critic_report_path=report_path,
+            project_id=self.context.project_id,
+            state=state,
+        )
+        state["workflow_id"] = handoff.workflow_id
+        return run(
+            critic_report_path=report_path,
+            state=state,
+            project_config=dict(self.context.config),
+            exploration_decision=handoff.exploration_decision,
+            exploration_decision_required=handoff.required,
+        )
+
+    def publish_exploration_decision(self, prediction, report_path):
+        from .exploration_decision_publication import publish_exploration_decision
+
+        state = dict(self.store.get_state(self.context.project_id))
+        publish_exploration_decision(
+            store=self.store,
+            project_config=dict(self.context.config),
+            critic_report_path=report_path,
+            prediction=prediction,
+            source_round=int(state.get("round") or 1),
+        )
+        return state
 
     def inspect_approvals(self, planner):
         return self.inspector.approvals(

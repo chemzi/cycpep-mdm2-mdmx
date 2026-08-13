@@ -11,8 +11,12 @@
 from __future__ import annotations
 
 import math
+import uuid
+from datetime import datetime, timezone
 
+from contracts.event import EvidenceEvent
 from data_layer import EvidenceLogger, State, compute_pareto_front
+from contracts.trace import TraceContext
 from project_config import target_slug, threshold_for_target
 from threshold_calibration import METRIC_SPECS
 from threshold_contract import normalize_thresholds
@@ -297,17 +301,40 @@ def exploration_shortlist(events=None, targets=None, k: int = 5, thresholds=None
     }
 
 
+def build_exploration_shortlist_event(
+    result: dict,
+    targets=None,
+    round_num=None,
+    trace_context=None,
+) -> dict:
+    """Materialize one validated shortlist event without publishing it."""
+    if trace_context is not None and not isinstance(trace_context, TraceContext):
+        trace_context = TraceContext.from_dict(trace_context)
+    return EvidenceEvent(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        event_id=str(uuid.uuid4())[:12],
+        agent="critic",
+        event_type=EVENT_SHORTLIST,
+        payload=dict(result or {}),
+        trace_context=trace_context,
+        phase="critic",
+        round_num=round_num,
+        targets=tuple(targets) if targets else None,
+    ).to_dict()
+
+
 def record_exploration_shortlist(result: dict, targets=None, round_num=None,
-                                 trace_context=None):
+                                 trace_context=None, store=None):
     """Append one ``exploration_shortlist`` evidence event; return event_id.
 
     targets/round/trace 只走正式 envelope（design D1）：payload 不含 targets；
     属于正式 run 的生成方必须传 trace_context。
     """
-    return EvidenceLogger.log(
-        "critic", EVENT_SHORTLIST, result,
-        targets=list(targets) if targets else None,
-        phase="critic",
+    entry = build_exploration_shortlist_event(
+        result,
+        targets=targets,
         round_num=round_num,
         trace_context=trace_context,
     )
+    EvidenceLogger._write(entry, store=store)
+    return entry["event_id"]

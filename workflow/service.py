@@ -283,7 +283,7 @@ def _advance_to_plan(
         if planner.status == "blocked":
             return report, None, _block(session, report, planner)
         return _mark_resolved_new_approval(
-            _resolve_planner(runtime, report, session, critic, execute),
+            _resolve_planner(runtime, report, session, prediction, critic, execute),
             bootstrap_advanced,
         )
     if critic.status == "blocked":
@@ -371,17 +371,21 @@ def _resolve_critic_and_planner(
     if outcome is not None:
         return report, None, outcome
     critic = runtime.inspect_critic(prediction)
-    return _resolve_planner(runtime, report, session, critic, execute)
+    return _resolve_planner(runtime, report, session, prediction, critic, execute)
 
 
 def _resolve_planner(
     runtime: Any,
     report: DiagnosticReport,
     session: Any,
+    prediction: FormalBoundary,
     critic: FormalBoundary,
     execute: bool,
 ) -> tuple[DiagnosticReport, FormalBoundary | None, LauncherCommandResult | None]:
-    planner_call = lambda: runtime.run_planner(critic.references["report_path"])
+    def planner_call():
+        report_path = critic.references["report_path"]
+        state = runtime.publish_exploration_decision(prediction, report_path)
+        return runtime.run_planner(report_path, state=state)
     report, outcome = _resolve_boundary(
         session,
         report,
