@@ -28,6 +28,7 @@ export const CONTROL_ENDPOINTS = {
     return `/api/v2/control/launcher-runs/${launcherRunId}`;
   },
   approval: (launcherRunId: string) => `${CONTROL_ENDPOINTS.run(launcherRunId)}/approval`,
+  continuation: (launcherRunId: string) => `${CONTROL_ENDPOINTS.run(launcherRunId)}/continue`,
 } as const;
 
 export class ControlClientContractError extends Error {
@@ -259,6 +260,13 @@ export class ProjectControlClient {
     return this.request(
       CONTROL_ENDPOINTS.run(launcherRunId), "GET", undefined,
       parseControlViewEnvelope, signal,
+    );
+  }
+
+  continueRun(launcherRunId: string, signal?: AbortSignal) {
+    return this.request(
+      CONTROL_ENDPOINTS.continuation(launcherRunId), "POST",
+      { launcher_run_id: launcherRunId }, parseControlViewEnvelope, signal,
     );
   }
 

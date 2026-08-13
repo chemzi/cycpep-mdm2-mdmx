@@ -66,6 +66,8 @@ Operator-control status returns a safe `approval_control` view before Orchestrat
 
 Extend `_task_view` with the same browser-safe `resource_request` after Orchestrator initialization. Unscoped `GET /api/v2/workbench` preserves current behavior. With `?launcher_run_id=...`, the server restores the bound ProjectContext, obtains that context's SQLite backend inside `bind_project_context`, constructs WorkbenchReader, and releases the binding after the read. The UI never totals resources or infers readiness from labels.
 
+An externally owned Orchestrator may return `running` before its formal Prediction completion is visible. Status GET remains read-only. When a later poll returns `pending` at Critic or Planner, the browser calls the narrow `POST .../continue` seam; that seam delegates only to ordinary Launcher resume with no approval paths. Launcher then stops at the next gate, terminal outcome, or blocker. This avoids both mutation-on-GET and a silent second-round stall.
+
 ### 7. Use synchronous calls with honest indeterminate state
 
 The threaded local adapter can keep serving reads while launch advances to a formal pause or outcome. The submitting button is disabled and the UI shows indeterminate activity, never fake progress. The tab-persisted Launcher ID supports status/recovery if the HTTP response is lost. No background-command state machine is introduced.

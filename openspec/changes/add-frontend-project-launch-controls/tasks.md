@@ -22,7 +22,7 @@
 - [x] 4.2 Add the exact-plan approval card with task resources, provisional/unavailable GPU minutes, totals, calibration, manual ceilings, and an `Auto-approve first GPU gate` option shown only for the bootstrap plan.
 - [x] 4.3 Add one compact `New project` button immediately before Refresh; preserve the mounted frame, selection, navigator, inspector, history, and existing content.
 - [x] 4.4 Wire draft/approval, tab-persisted Launcher ID, launch/status, manual resume, auto policy, errors, and scoped refresh without synthetic state.
-- [ ] 4.5 Test first-load/dismiss/reopen, repeat recovery, failure preservation, estimates, stale plan, accessibility/focus, and unchanged existing component/layout behavior.
+- [x] 4.5 Test first-load/dismiss/reopen, repeat recovery, failure preservation, estimates, stale plan, accessibility/focus, and unchanged existing component/layout behavior.
 
 ## 5. Documentation and Demo Readiness
 
@@ -31,7 +31,7 @@
 
 ## 6. Verification and Review
 
-- [ ] 6.1 Run focused Python control/read-model/Launcher/Planner tests and frontend tests.
-- [ ] 6.2 Run full Python, frontend lint/typecheck/build, Architecture Gate, strict OpenSpec, and diff check; record exact results.
-- [ ] 6.3 Browser-test 1440×900 placement, close/reopen, unchanged underlying computed styles/geometry/content, approval modes, estimates, failure, scoped refresh, and keyboard focus.
-- [ ] 6.4 Run fixed-baseline high-reasoning Standards and Spec reviews, resolve all P0/P1, then OpenSpec verification; do not merge or archive.
+- [x] 6.1 Run focused Python control/read-model/Launcher/Planner tests and frontend tests.
+- [x] 6.2 Run full Python, frontend lint/typecheck/build, Architecture Gate, strict OpenSpec, and diff check; record exact results.
+- [x] 6.3 Browser-test 1440×900 placement, close/reopen, unchanged underlying computed styles/geometry/content, approval modes, estimates, failure, scoped refresh, and keyboard focus.
+- [x] 6.4 Run fixed-baseline high-reasoning Standards and Spec reviews, resolve all P0/P1, then OpenSpec verification; do not merge or archive.

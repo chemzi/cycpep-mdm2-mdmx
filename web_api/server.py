@@ -539,6 +539,15 @@ class Handler(BaseHTTPRequestHandler):
                 if request.launcher_run_id != approval.group(1):
                     raise ValueError("URL and body launcher_run_id differ")
                 return self._control_json(service.approve_and_continue(request))
+            continuation = re.fullmatch(
+                r"/api/v2/control/launcher-runs/([^/]+)/continue", path
+            )
+            if continuation:
+                identity = ScopedReadIdentity.from_dict({
+                    "launcher_run_id": continuation.group(1)
+                })
+                _require_matching_id(body, "launcher_run_id", identity.launcher_run_id)
+                return self._control_json(service.continue_run(identity.launcher_run_id))
             return self._json(
                 404, error={"code": "not_found", "message": "Route not found"}
             )

@@ -128,6 +128,7 @@ workflow engine or state store.
 | `POST /api/v2/control/project-drafts/{draft_id}/approve` | Pass the project-content review gate only. It grants no GPU execution. |
 | `POST /api/v2/control/project-drafts/{draft_id}/launch` | Submit that exact approved draft to Launcher with a caller-generated `launcher_run_id`. |
 | `GET /api/v2/control/launcher-runs/{launcher_run_id}` | Inspect the Launcher outcome and, when applicable, the exact pre-Orchestrator approval request. |
+| `POST /api/v2/control/launcher-runs/{launcher_run_id}/continue` | Continue an externally owned run through Launcher after formal Prediction completion; stop at the next gate, outcome, or blocker. |
 | `POST /api/v2/control/launcher-runs/{launcher_run_id}/approval` | Record one exact plan-bound approval and continue the same Launcher run. |
 | `GET /api/v2/workbench?launcher_run_id=...` | Read the formal Store bound to that Launcher run. It never falls back to the adapter startup project. |
 

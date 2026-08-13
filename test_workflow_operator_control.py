@@ -133,8 +133,21 @@ class _DownstreamRuntime(_Runtime):
         super().__init__(bootstrap_plan)
         self.downstream_plan = downstream_plan
 
+    def inspect_orchestrator(self, plan):
+        if plan["plan_id"] == self.plan["plan_id"]:
+            return FormalBoundary.completed(
+                "orchestrator", formal_status="completed", run_path="opaque"
+            )
+        return FormalBoundary.not_started("orchestrator")
+
+    def inspect_bootstrap_prediction(self, plan, orchestrator):
+        self.bootstrap_prediction_args = (plan, orchestrator)
+        return FormalBoundary.completed(
+            "prediction", prediction_run_id="prediction_bootstrap", handoff_path="opaque"
+        )
+
     def inspect_prediction(self):
-        return FormalBoundary.completed("prediction", handoff_path="opaque")
+        raise AssertionError("real E3 downstream inspection must use bootstrap Prediction")
 
     def inspect_critic(self, _prediction):
         return FormalBoundary.completed("critic", report_id="critic_current")
@@ -147,6 +160,19 @@ class _DownstreamRuntime(_Runtime):
             plan_path="C:/formal/downstream-plan.json",
             plan_document=self.downstream_plan,
         )
+
+
+class _DirectDownstreamRuntime(_DownstreamRuntime):
+    def inspect_bootstrap_planner(self, _design):
+        return FormalBoundary.not_started("planner")
+
+    def inspect_prediction(self):
+        return FormalBoundary.completed(
+            "prediction", prediction_run_id="prediction_direct", handoff_path="opaque"
+        )
+
+    def inspect_orchestrator(self, _plan):
+        return FormalBoundary.not_started("orchestrator")
 
 
 def _dependencies(
@@ -243,6 +269,23 @@ class WorkflowOperatorControlTests(unittest.TestCase):
 
         self.assertEqual(projection.plan_id, downstream["plan_id"])
         self.assertEqual(projection.source_kind, "critic_iteration")
+        self.assertEqual(runtime.bootstrap_prediction_args[0]["plan_id"], PLAN_ID)
+
+    def test_legacy_direct_prediction_can_project_its_current_critic_plan(self):
+        downstream = _plan()
+        downstream["plan_id"] = "planner_deadbeef1234"
+        downstream["source"]["kind"] = "critic_iteration"
+        runtime = _DirectDownstreamRuntime(_plan(), downstream)
+        with tempfile.TemporaryDirectory() as tmp:
+            deps, _ = _dependencies(
+                Path(tmp), runtime=runtime, current_plan_id=downstream["plan_id"]
+            )
+
+            projection = inspect_pre_orchestrator_approval(
+                launcher_run_id=LAUNCHER_ID, dependencies=deps
+            )
+
+        self.assertEqual(projection.plan_id, downstream["plan_id"])
     def test_awaiting_projection_is_formal_path_free_and_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             deps, observations = _dependencies(Path(tmp))

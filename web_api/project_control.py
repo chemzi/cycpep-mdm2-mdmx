@@ -34,7 +34,7 @@ from workflow.operator_control import (
     inspect_first_gate_auto_approval,
     inspect_pre_orchestrator_approval,
 )
-from workflow.service import launch_project, status_launcher_run
+from workflow.service import launch_project, resume_launcher_run, status_launcher_run
 
 
 _DRAFT_ID_RE = re.compile(r"^drf_[A-Za-z0-9]+$")
@@ -63,6 +63,7 @@ class ProjectControlService:
         project_validator: Callable[[dict], None] = assert_project_approved,
         launcher: Callable[..., LauncherCommandResult] = launch_project,
         launcher_status: Callable[..., LauncherCommandResult] = status_launcher_run,
+        launcher_resume: Callable[..., LauncherCommandResult] = resume_launcher_run,
         approval_inspector: Callable[..., PreOrchestratorApprovalProjection] = (
             inspect_pre_orchestrator_approval
         ),
@@ -78,6 +79,7 @@ class ProjectControlService:
         self._project_validator = project_validator
         self._launcher = launcher
         self._launcher_status = launcher_status
+        self._launcher_resume = launcher_resume
         self._approval_inspector = approval_inspector
         self._auto_approval_inspector = auto_approval_inspector
         self._approval_resumer = approval_resumer
@@ -169,9 +171,16 @@ class ProjectControlService:
             return self._control_view(result, failure=_diagnostic_failure(error))
 
     def status(self, launcher_run_id: str) -> dict[str, Any]:
-        return self._control_view(
-            self._launcher_status(launcher_run_id=launcher_run_id)
-        )
+        result = self._launcher_status(launcher_run_id=launcher_run_id)
+        error = result.payload.error
+        if error is not None and error.code == "launcher_diagnostic_not_found":
+            return self._control_view(
+                result,
+                failure=_diagnostic_failure(DiagnosticContractError(
+                    error.code, "Launcher run not found."
+                )),
+            )
+        return self._control_view(result)
 
     def approve_and_continue(
         self, request: ManualApprovalRequest
@@ -183,6 +192,13 @@ class ProjectControlService:
         except (DiagnosticContractError, PlannerContractError) as error:
             return _empty_control_view(_diagnostic_failure(error))
         return self._control_view(result)
+
+    def continue_run(self, launcher_run_id: str) -> dict[str, Any]:
+        """Resume only through Launcher after externally owned work completes."""
+
+        return self._control_view(
+            self._launcher_resume(launcher_run_id=launcher_run_id)
+        )
 
     def _control_view(
         self,

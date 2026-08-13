@@ -23,7 +23,7 @@ from workflow.control_models import (
     TaskResourceProjection,
 )
 from workflow.errors import DiagnosticContractError
-from workflow.models import BrowserResult, LauncherCommandResult
+from workflow.models import BrowserResult, LauncherCommandResult, StructuredError
 
 
 LAUNCHER_ID = "launcher_0123456789abcdef0123456789abcdef"
@@ -168,6 +168,41 @@ class WebProjectControlTests(unittest.TestCase):
         self.assertNotIn("coordinate_path", repr(created))
         self.assertNotIn("llm_error", repr(created))
         bootstrapper.create_draft.assert_called_once()
+
+    def test_missing_launcher_status_is_a_retryable_not_found_failure(self):
+        missing = LauncherCommandResult(
+            BrowserResult(
+                status="failed",
+                launcher_run_id=LAUNCHER_ID,
+                error=StructuredError(
+                    code="launcher_diagnostic_not_found",
+                    component="launcher",
+                    message="Launcher diagnostic does not exist.",
+                ),
+            ),
+            2,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            service, _, _ = self._service(
+                tmp, draft=_draft(), launcher_status=Mock(return_value=missing)
+            )
+
+            view = service.status(LAUNCHER_ID)
+
+        self.assertEqual(view["control_failure"]["code"], "launcher_run_not_found")
+        self.assertEqual(view["launcher"]["status"], "failed")
+
+    def test_continue_run_delegates_to_launcher_without_inventing_approval(self):
+        continuation = Mock(return_value=_result("awaiting_approval"))
+        with tempfile.TemporaryDirectory() as tmp:
+            service, _, _ = self._service(
+                tmp, draft=_draft(), launcher_resume=continuation
+            )
+
+            view = service.continue_run(LAUNCHER_ID)
+
+        self.assertEqual(view["launcher"]["status"], "awaiting_approval")
+        continuation.assert_called_once_with(launcher_run_id=LAUNCHER_ID)
 
     def test_project_must_be_approved_before_launcher_is_called(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -30,6 +30,10 @@ The browser control path SHALL call the public Launcher launch, operator-control
 - **WHEN** Launcher returns a scientific, integrity, transaction, recovery, or execution blocker
 - **THEN** the control API returns that structured outcome and does not fabricate progress, retry work, or skip to a later boundary
 
+#### Scenario: Externally owned execution completes after approval response
+- **WHEN** an approved Orchestrator run first reports a live owner and later proves its Prediction completion
+- **THEN** the browser requests ordinary Launcher continuation, which advances only through the next formal boundaries and returns the next approval gate, terminal outcome, or blocker
+
 #### Scenario: Initial Design reaches the first GPU approval pause
 - **WHEN** Research and Initial Design have formally completed and the E3 bootstrap Planner produces the heavy Prediction task
 - **THEN** Launcher stops before heavy Prediction execution and the control view describes that exact timing without claiming the approval prevented Initial Design compute

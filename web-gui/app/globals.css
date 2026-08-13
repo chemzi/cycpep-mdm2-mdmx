@@ -204,6 +204,9 @@ h1, h2, h3, h4, p { text-wrap: pretty; }
   background: var(--raised);
   box-shadow: var(--shadow);
 }
+.launcher-control-notice { max-width: 1040px; display: flex; align-items: center; gap: 12px; margin: 0 0 14px; border: 1px solid var(--divider-strong); border-left: 3px solid var(--selection); border-radius: 4px; background: var(--raised); padding: 9px 12px; color: var(--ink-soft); font-size: 10px; }
+.launcher-control-notice strong { color: var(--ink); font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
+.launcher-control-notice.is-error { border-left-color: var(--failure); background: var(--failure-soft); color: var(--failure); }
 .approval-control-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 20px 22px 17px; border-bottom: 1px solid var(--divider); }
 .approval-control-header p, .approval-control-resources header p, .approval-control-form header p { margin: 0; color: var(--ink-faint); font-family: var(--font-data); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
 .approval-control-header h1 { margin: 3px 0 0; font-size: 25px; font-weight: 500; }

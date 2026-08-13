@@ -166,6 +166,33 @@ test("workspace inserts the optional card first without changing legacy callers"
     assert.match(withoutCard, new RegExp(region));
 });
 
+test("workspace keeps launcher status and polling failures visible without an approval card", () => {
+  const status = renderToStaticMarkup(createElement(WorkbenchWorkspace, {
+    data: fixture,
+    requestStatus: "ready",
+    refreshError: null,
+    autoRefreshEnabled: true,
+    onRefresh() {},
+    onAutoRefreshChange() {},
+    launcherStatus: "running · execution",
+  }));
+  const failure = renderToStaticMarkup(createElement(WorkbenchWorkspace, {
+    data: fixture,
+    requestStatus: "ready",
+    refreshError: null,
+    autoRefreshEnabled: true,
+    onRefresh() {},
+    onAutoRefreshChange() {},
+    approvalError: "Formal control refresh failed",
+  }));
+
+  assert.match(status, /role="status"[^>]*aria-live="polite"/);
+  assert.match(status, /running · execution/);
+  assert.match(failure, /role="alert"[^>]*aria-live="assertive"/);
+  assert.match(failure, /Launcher needs attention/);
+  assert.match(failure, /Formal control refresh failed/);
+});
+
 test("approval styles remain scoped and preserve the WorkbenchFrame grid", async () => {
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 

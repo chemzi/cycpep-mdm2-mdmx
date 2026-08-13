@@ -252,6 +252,7 @@ def _inspect_awaiting_plan(runtime: Any, report: DiagnosticReport) -> Any:
 
 def _completed_planner_candidates(runtime: Any) -> list[Any]:
     candidates: dict[str, Any] = {}
+    bootstrap = None
     design = runtime.inspect_design()
     if design.status == "completed" and hasattr(runtime, "inspect_bootstrap_planner"):
         bootstrap = runtime.inspect_bootstrap_planner(design)
@@ -259,9 +260,9 @@ def _completed_planner_candidates(runtime: Any) -> list[Any]:
             candidates[str(bootstrap.references.get("plan_id"))] = bootstrap
 
     if all(hasattr(runtime, name) for name in (
-        "inspect_prediction", "inspect_critic", "inspect_planner"
+        "inspect_critic", "inspect_planner"
     )):
-        prediction = runtime.inspect_prediction()
+        prediction = _completed_prediction_candidate(runtime, bootstrap)
         if prediction.status == "completed":
             critic = runtime.inspect_critic(prediction)
             if critic.status == "completed":
@@ -269,6 +270,29 @@ def _completed_planner_candidates(runtime: Any) -> list[Any]:
                 if planner.status == "completed":
                     candidates[str(planner.references.get("plan_id"))] = planner
     return list(candidates.values())
+
+
+def _completed_prediction_candidate(runtime: Any, bootstrap: Any) -> Any:
+    """Follow the same bootstrap Prediction authority used by Launcher."""
+
+    if bootstrap is not None and bootstrap.status == "blocked":
+        return FormalBoundary.not_started("prediction")
+    if (
+        bootstrap is not None
+        and bootstrap.status == "completed"
+        and hasattr(runtime, "inspect_bootstrap_prediction")
+    ):
+        plan = bootstrap.references.get("plan_document")
+        if isinstance(plan, Mapping):
+            orchestrator = runtime.inspect_orchestrator(plan)
+            if orchestrator.status == "completed":
+                prediction = runtime.inspect_bootstrap_prediction(plan, orchestrator)
+                if prediction.status == "completed":
+                    return prediction
+        return FormalBoundary.not_started("prediction")
+    if hasattr(runtime, "inspect_prediction"):
+        return runtime.inspect_prediction()
+    return FormalBoundary.not_started("prediction")
 
 
 def _project_plan(

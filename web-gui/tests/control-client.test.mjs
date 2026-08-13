@@ -12,6 +12,9 @@ let parseControlViewEnvelope;
 let parseDraftEnvelope;
 let initialProjectLaunchState;
 let prepareLaunchAttempt;
+let getPersistedLaunchAttempt;
+let recoverPersistedLaunch;
+let refreshLauncherControl;
 let projectLaunchReducer;
 
 before(async () => {
@@ -28,7 +31,8 @@ before(async () => {
     parseControlViewEnvelope, parseDraftEnvelope,
   } = await vite.ssrLoadModule("/app/workbench/control-client.ts"));
   ({
-    initialProjectLaunchState, prepareLaunchAttempt, projectLaunchReducer,
+    getPersistedLaunchAttempt, initialProjectLaunchState, prepareLaunchAttempt,
+    projectLaunchReducer, recoverPersistedLaunch, refreshLauncherControl,
   } = await vite.ssrLoadModule("/app/workbench/use-project-launch-control.ts"));
 });
 
@@ -92,7 +96,7 @@ test("strictly parses draft and control success envelopes", () => {
   );
 });
 
-test("calls all six frozen routes with exact methods and bodies", async () => {
+test("calls the frozen control routes with exact methods and bodies", async () => {
   const calls = [];
   const client = new ProjectControlClient({ fetchImpl: async (url, init = {}) => {
     calls.push([url, init.method ?? "GET", init.body ? JSON.parse(init.body) : null]);
@@ -124,6 +128,7 @@ test("calls all six frozen routes with exact methods and bodies", async () => {
   await client.approveDraft("drf_demo", "Reviewed project.");
   await client.launchDraft("drf_demo", { ...request.options, launcher_run_id: launcherRunId });
   await client.status(launcherRunId);
+  await client.continueRun(launcherRunId);
   await client.approveAndContinue(manual);
 
   assert.deepEqual(calls.map(([url, method]) => [url, method]), [
@@ -132,6 +137,7 @@ test("calls all six frozen routes with exact methods and bodies", async () => {
     ["/api/v2/control/project-drafts/drf_demo/approve", "POST"],
     ["/api/v2/control/project-drafts/drf_demo/launch", "POST"],
     [`/api/v2/control/launcher-runs/${launcherRunId}`, "GET"],
+    [`/api/v2/control/launcher-runs/${launcherRunId}/continue`, "POST"],
     [`/api/v2/control/launcher-runs/${launcherRunId}/approval`, "POST"],
   ]);
   assert.equal(calls[3][2].draft_id, "drf_demo");
@@ -178,7 +184,13 @@ test("launch attempt persists identity before request and reuses it after respon
     getItem: (key) => values.get(key) ?? null,
     setItem: (key, value) => values.set(key, value),
   };
-  const first = prepareLaunchAttempt(storage, draft, () => launcherRunId);
+  const form = { target_identifier: "MDM2", options: {
+    identifier_type: "gene", organism_id: 9606, epitope: null, objective: "binder",
+    launcher_run_id: null, first_gate_auto_policy: null,
+  } };
+  const first = prepareLaunchAttempt(
+    storage, draft, () => launcherRunId, form, form.options,
+  );
   const second = prepareLaunchAttempt(
     storage,
     draft,
@@ -188,6 +200,8 @@ test("launch attempt persists identity before request and reuses it after respon
   assert.equal(first.launcher_run_id, launcherRunId);
   assert.deepEqual(second, first);
   assert.equal(JSON.parse([...values.values()][0]).draft_id, "drf_demo");
+  assert.equal(getPersistedLaunchAttempt(storage).request.target_identifier, "MDM2");
+  assert.equal(getPersistedLaunchAttempt(storage).options.launcher_run_id, launcherRunId);
 });
 
 test("state transitions preserve form, review, and last control on failures", () => {
@@ -206,6 +220,46 @@ test("state transitions preserve form, review, and last control on failures", ()
   assert.equal(state.status, "failed");
 });
 
+test("reload recovery checks status first and retries the exact launch only when missing", async () => {
+  const form = { target_identifier: "MDM2", options: {
+    identifier_type: "gene", organism_id: 9606, epitope: null, objective: "binder",
+    launcher_run_id: null, first_gate_auto_policy: null,
+  } };
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  const attempt = prepareLaunchAttempt(
+    storage, draft, () => launcherRunId, form, form.options,
+  );
+  const calls = [];
+  const client = {
+    async retrieveDraft(id) { calls.push(["draft", id]); return { data: draft }; },
+    async status(id) {
+      calls.push(["status", id]);
+      throw new ControlRequestError(404, {
+        code: "launcher_run_not_found", category: "launcher", component: "launcher",
+        message: "Launcher run not found", ceiling: null,
+      }, null);
+    },
+    async launchDraft(id, options) {
+      calls.push(["launch", id, options.launcher_run_id]);
+      return { data: control };
+    },
+  };
+
+  const recovered = await recoverPersistedLaunch(client, attempt);
+
+  assert.equal(recovered.review.draft_id, draft.draft_id);
+  assert.equal(recovered.control.launcher.launcher_run_id, launcherRunId);
+  assert.deepEqual(calls, [
+    ["draft", draft.draft_id],
+    ["status", launcherRunId],
+    ["launch", draft.draft_id, launcherRunId],
+  ]);
+});
+
 test("a polled later approval replaces the first gate instead of going silent", () => {
   const form = { target_identifier: "MDM2", options: {
     identifier_type: "gene", organism_id: 9606, epitope: null, objective: "binder",
@@ -220,4 +274,27 @@ test("a polled later approval replaces the first gate instead of going silent", 
 
   assert.equal(state.lastControl.approval_control.plan_id, "planner_later");
   assert.equal(state.status, "launched");
+});
+
+test("a pending Critic poll asks Launcher to continue and returns the second gate", async () => {
+  const pending = {
+    ...control,
+    launcher: { ...control.launcher, status: "pending", boundary: "critic" },
+    approval_control: null,
+  };
+  const later = {
+    ...control,
+    launcher: { ...control.launcher, status: "awaiting_approval", boundary: "approval" },
+    approval_control: { plan_id: "planner_later" },
+  };
+  const calls = [];
+  const client = {
+    async status(id) { calls.push(["status", id]); return { data: pending }; },
+    async continueRun(id) { calls.push(["continue", id]); return { data: later }; },
+  };
+
+  const refreshed = await refreshLauncherControl(client, launcherRunId);
+
+  assert.equal(refreshed.approval_control.plan_id, "planner_later");
+  assert.deepEqual(calls, [["status", launcherRunId], ["continue", launcherRunId]]);
 });

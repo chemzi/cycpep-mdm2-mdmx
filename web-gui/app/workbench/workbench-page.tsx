@@ -11,7 +11,7 @@ import type { WorkbenchAuxiliaryPanel } from "./components/workbench-workspace";
 import { useWorkbenchSelection } from "./selection";
 import type { WorkbenchSelection } from "./selection";
 import { useWorkbench } from "./use-workbench";
-import { useProjectLaunchControl } from "./use-project-launch-control";
+import { getPersistedLaunchAttempt, useProjectLaunchControl } from "./use-project-launch-control";
 
 const AUTO_REFRESH_KEY = "cycpep-workbench-v2-auto-refresh";
 const LAUNCH_SHEET_DISMISSED_KEY = "cycpep-launch-sheet-dismissed";
@@ -120,6 +120,7 @@ function LoadedWorkbench({
   manualApprovalRequest,
   approvalPending,
   approvalError,
+  launcherStatus,
   onManualApprovalRequestChange,
   onApproveAndContinue,
 }: {
@@ -134,6 +135,7 @@ function LoadedWorkbench({
   manualApprovalRequest: ManualApprovalRequest | null;
   approvalPending: boolean;
   approvalError: string | null;
+  launcherStatus: string | null;
   onManualApprovalRequestChange: (request: ManualApprovalRequest) => void;
   onApproveAndContinue: (request: ManualApprovalRequest) => void;
 }) {
@@ -162,6 +164,7 @@ function LoadedWorkbench({
       manualApprovalRequest={manualApprovalRequest}
       approvalPending={approvalPending}
       approvalError={approvalError}
+      launcherStatus={launcherStatus}
       onManualApprovalRequestChange={onManualApprovalRequestChange}
       onApproveAndContinue={onApproveAndContinue}
     />;
@@ -170,7 +173,9 @@ function LoadedWorkbench({
 export function WorkbenchPage() {
   const [activeLauncherRunId, setActiveLauncherRunId] = useState<string | undefined>(() => {
     if (typeof window === "undefined") return undefined;
-    return window.sessionStorage.getItem(ACTIVE_LAUNCHER_KEY) ?? undefined;
+    return getPersistedLaunchAttempt(window.sessionStorage)?.launcher_run_id
+      ?? window.sessionStorage.getItem(ACTIVE_LAUNCHER_KEY)
+      ?? undefined;
   });
   const launchSheetOpen = useSyncExternalStore(subscribeLaunchSheet, launchSheetSnapshot, () => false);
   const [initialAutoRefresh] = useState(() => {
@@ -223,7 +228,7 @@ export function WorkbenchPage() {
 
   async function launchProject(submission: ProjectLaunchSubmission) {
     control.setForm(submission.request);
-    const result = await control.launch(submission.request.options);
+    const result = await control.launch(submission.request.options, submission.request);
     const launcherRunId = result?.launcher?.launcher_run_id;
     if (!launcherRunId) return;
     window.sessionStorage.setItem(ACTIVE_LAUNCHER_KEY, launcherRunId);
@@ -256,6 +261,9 @@ export function WorkbenchPage() {
         manualApprovalRequest={manualRequest}
         approvalPending={control.mutationInFlight}
         approvalError={control.error}
+        launcherStatus={control.lastControl?.launcher
+          ? `${control.lastControl.launcher.status} · ${control.lastControl.launcher.boundary ?? "launcher"}`
+          : activeLauncherRunId ? "Checking formal run status" : null}
         onManualApprovalRequestChange={(request) => setManualDraft({ planId: request.plan_id, request })}
         onApproveAndContinue={(request) => void control.approveAndContinue(request).then(() => refreshAll())}
       />;

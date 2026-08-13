@@ -33,6 +33,7 @@ export interface WorkbenchWorkspaceProps {
   autoApprovalSelected?: boolean;
   approvalPending?: boolean;
   approvalError?: string | null;
+  launcherStatus?: string | null;
   onManualApprovalRequestChange?: (request: ManualApprovalRequest) => void;
   onAutoApprovalChange?: (enabled: boolean) => void;
   onApproveAndContinue?: (request: ManualApprovalRequest) => void;
@@ -64,6 +65,7 @@ export function WorkbenchWorkspace({
   autoApprovalSelected = false,
   approvalPending = false,
   approvalError = null,
+  launcherStatus = null,
   onManualApprovalRequestChange = () => undefined,
   onAutoApprovalChange = () => undefined,
   onApproveAndContinue = () => undefined,
@@ -91,6 +93,14 @@ export function WorkbenchWorkspace({
       onSelectionChange={onSelectionChange}
     />}
     primary={<section id="workbench-primary" className="primary-workspace" aria-label="Selected workspace">
+      {launcherStatus || approvalError ? <div
+        className={`launcher-control-notice${approvalError ? " is-error" : ""}`}
+        role={approvalError ? "alert" : "status"}
+        aria-live={approvalError ? "assertive" : "polite"}
+      >
+        <strong>{approvalError ? "Launcher needs attention" : "Launcher status"}</strong>
+        <span>{approvalError ?? launcherStatus}</span>
+      </div> : null}
       {approvalControl && manualApprovalRequest ? <ApprovalControlCard
         approval={approvalControl}
         request={manualApprovalRequest}

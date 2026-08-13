@@ -87,6 +87,7 @@ class WebApiControlRouteTests(unittest.TestCase):
         service.launch_project.return_value = _control_view()
         service.status.return_value = _control_view()
         service.approve_and_continue.return_value = _control_view("running")
+        service.continue_run.return_value = _control_view("awaiting_approval")
         approval_body = {
             "launcher_run_id": LAUNCHER_ID,
             "project_id": "project-1",
@@ -110,6 +111,10 @@ class WebApiControlRouteTests(unittest.TestCase):
             (
                 "POST", f"/api/v2/control/launcher-runs/{LAUNCHER_ID}/approval",
                 approval_body, 200,
+            ),
+            (
+                "POST", f"/api/v2/control/launcher-runs/{LAUNCHER_ID}/continue",
+                {"launcher_run_id": LAUNCHER_ID}, 200,
             ),
         )
         for method, path, body, expected in requests:

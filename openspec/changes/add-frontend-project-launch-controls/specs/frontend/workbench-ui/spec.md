@@ -57,6 +57,10 @@ When the current run awaits approval, the workbench SHALL show required tasks, p
 - **WHEN** a Critic-driven or retry plan awaits approval after the bootstrap policy was consumed
 - **THEN** the card offers only explicit manual approval and does not show or reuse the first-gate automatic policy
 
+#### Scenario: An externally owned run finishes between polls
+- **WHEN** polling observes that the approved Prediction completed and Critic or Planner is pending
+- **THEN** the frontend asks Launcher to continue, refreshes the exact run, and visibly presents the resulting later approval gate instead of remaining silently pending
+
 ## MODIFIED Requirements
 
 ### Requirement: Read-only UI states remain honest and accessible

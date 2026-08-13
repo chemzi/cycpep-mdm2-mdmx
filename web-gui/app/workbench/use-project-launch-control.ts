@@ -7,7 +7,7 @@ import {
   ProjectControlClient,
   type ProjectControlClientOptions,
 } from "./control-client";
-import { assertLauncherRunId } from "./control-contract";
+import { assertLauncherRunId, parseProjectLaunchRequest } from "./control-contract";
 import type {
   ManualApprovalRequest,
   ProjectControlView,
@@ -47,6 +47,8 @@ export interface PersistedLaunchAttempt {
   project_id: string;
   draft_content_digest: string;
   launcher_run_id: string;
+  request: ProjectLaunchRequest | null;
+  options: ProjectLaunchOptions | null;
 }
 
 export function initialProjectLaunchState(form: ProjectLaunchRequest): ProjectLaunchState {
@@ -84,7 +86,9 @@ function reviewDigest(review: ProjectDraftProjection): string {
   return digest;
 }
 
-function readAttempt(storage: LaunchAttemptStorage): PersistedLaunchAttempt | null {
+export function getPersistedLaunchAttempt(
+  storage: LaunchAttemptStorage,
+): PersistedLaunchAttempt | null {
   try {
     const raw = storage.getItem(LAUNCH_ATTEMPT_STORAGE_KEY);
     if (!raw) return null;
@@ -95,7 +99,15 @@ function readAttempt(storage: LaunchAttemptStorage): PersistedLaunchAttempt | nu
       typeof value.launcher_run_id !== "string"
     ) return null;
     assertLauncherRunId(value.launcher_run_id);
-    return value as PersistedLaunchAttempt;
+    const request = value.request ?? null;
+    const launchOptions = value.options ?? null;
+    if ((request === null) !== (launchOptions === null)) return null;
+    if (request !== null && launchOptions !== null) {
+      parseProjectLaunchRequest(request);
+      parseProjectLaunchRequest({ target_identifier: request.target_identifier, options: launchOptions });
+      if (launchOptions.launcher_run_id !== value.launcher_run_id) return null;
+    }
+    return { ...(value as PersistedLaunchAttempt), request, options: launchOptions };
   } catch {
     return null;
   }
@@ -105,13 +117,15 @@ export function prepareLaunchAttempt(
   storage: LaunchAttemptStorage,
   review: ProjectDraftProjection,
   launcherIdFactory: () => string = generateLauncherRunId,
+  request: ProjectLaunchRequest | null = null,
+  launchOptions: ProjectLaunchOptions | null = null,
 ): PersistedLaunchAttempt {
   const identity = {
     draft_id: review.draft_id,
     project_id: review.project_id,
     draft_content_digest: reviewDigest(review),
   };
-  const existing = readAttempt(storage);
+  const existing = getPersistedLaunchAttempt(storage);
   if (
     existing && existing.draft_id === identity.draft_id &&
     existing.project_id === identity.project_id &&
@@ -119,13 +133,58 @@ export function prepareLaunchAttempt(
   ) return existing;
   const launcherRunId = launcherIdFactory();
   assertLauncherRunId(launcherRunId);
-  const attempt = { ...identity, launcher_run_id: launcherRunId };
+  const boundOptions = launchOptions === null
+    ? null
+    : { ...launchOptions, launcher_run_id: launcherRunId };
+  const attempt = {
+    ...identity,
+    launcher_run_id: launcherRunId,
+    request: request === null ? null : { ...request, options: boundOptions ?? request.options },
+    options: boundOptions,
+  };
   storage.setItem(LAUNCH_ATTEMPT_STORAGE_KEY, JSON.stringify(attempt));
   return attempt;
 }
 
 export function generateLauncherRunId(): string {
   return `launcher_${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+export async function recoverPersistedLaunch(
+  client: Pick<ProjectControlClient, "retrieveDraft" | "status" | "launchDraft">,
+  attempt: PersistedLaunchAttempt,
+  signal?: AbortSignal,
+): Promise<{ review: ProjectDraftProjection; control: ProjectControlView }> {
+  if (!attempt.request || !attempt.options) {
+    throw new Error("Persisted launch request is incomplete");
+  }
+  const review = (await client.retrieveDraft(attempt.draft_id, signal)).data;
+  try {
+    const control = (await client.status(attempt.launcher_run_id, signal)).data;
+    return { review, control };
+  } catch (cause) {
+    if (!(cause instanceof ControlRequestError) || cause.status !== 404) throw cause;
+    const control = (await client.launchDraft(
+      attempt.draft_id, attempt.options, signal,
+    )).data;
+    return { review, control };
+  }
+}
+
+export async function refreshLauncherControl(
+  client: Pick<ProjectControlClient, "status" | "continueRun">,
+  launcherRunId: string,
+  signal?: AbortSignal,
+): Promise<ProjectControlView> {
+  const current = (await client.status(launcherRunId, signal)).data;
+  const launcher = current.launcher;
+  if (
+    launcher?.status === "pending"
+    && (launcher.boundary === "critic" || launcher.boundary === "planner")
+  ) {
+    return (await client.continueRun(launcherRunId, signal)).data;
+  }
+  return current;
 }
 
 export interface UseProjectLaunchControlOptions extends ProjectControlClientOptions {
@@ -140,7 +199,10 @@ export interface UseProjectLaunchControlResult extends ProjectLaunchState {
   createDraft(form?: ProjectLaunchRequest): Promise<ProjectDraftProjection | null>;
   retrieveDraft(draftId: string): Promise<ProjectDraftProjection | null>;
   approveDraft(justification?: string): Promise<ProjectDraftProjection | null>;
-  launch(options: ProjectLaunchOptions): Promise<ProjectControlView | null>;
+  launch(
+    options: ProjectLaunchOptions,
+    form?: ProjectLaunchRequest,
+  ): Promise<ProjectControlView | null>;
   refreshStatus(launcherRunId: string): Promise<ProjectControlView | null>;
   approveAndContinue(request: ManualApprovalRequest): Promise<ProjectControlView | null>;
 }
@@ -163,6 +225,36 @@ export function useProjectLaunchControl(
   const activeMutation = useRef<AbortController | null>(null);
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
+
+  useEffect(() => {
+    const session = storage ?? window.sessionStorage;
+    const attempt = getPersistedLaunchAttempt(session);
+    if (!attempt?.request || !attempt.options || activeMutation.current) return;
+    const controller = new AbortController();
+    activeMutation.current = controller;
+    dispatch({ type: "form-changed", form: attempt.request });
+    dispatch({ type: "mutation-started", status: "checking" });
+    void recoverPersistedLaunch(client, attempt, controller.signal)
+      .then(({ review, control }) => {
+        dispatch({ type: "draft-succeeded", review });
+        dispatch({ type: "control-succeeded", control });
+      })
+      .catch((cause: unknown) => {
+        if (cause instanceof DOMException && cause.name === "AbortError") return;
+        dispatch({
+          type: "mutation-failed",
+          error: cause instanceof Error ? cause.message : "Launch recovery failed",
+          control: cause instanceof ControlRequestError ? cause.control : undefined,
+        });
+      })
+      .finally(() => {
+        if (activeMutation.current === controller) activeMutation.current = null;
+      });
+    return () => {
+      if (activeMutation.current === controller) activeMutation.current = null;
+      controller.abort();
+    };
+  }, [client, storage]);
 
   const run = useCallback(async <T,>(
     status: Exclude<ProjectLaunchStatus, "editing" | "failed">,
@@ -218,11 +310,17 @@ export function useProjectLaunchControl(
     );
   }, [client, run]);
 
-  const launch = useCallback((launchOptions: ProjectLaunchOptions) => {
+  const launch = useCallback((
+    launchOptions: ProjectLaunchOptions,
+    launchForm?: ProjectLaunchRequest,
+  ) => {
     const review = stateRef.current.review;
     const session = storage ?? window.sessionStorage;
     if (!review) return Promise.resolve(null);
-    const attempt = prepareLaunchAttempt(session, review, launcherIdFactory);
+    const exactForm = launchForm ?? stateRef.current.form;
+    const attempt = prepareLaunchAttempt(
+      session, review, launcherIdFactory, exactForm, launchOptions,
+    );
     const boundOptions = { ...launchOptions, launcher_run_id: attempt.launcher_run_id };
     return run(
       "launching",
@@ -235,7 +333,7 @@ export function useProjectLaunchControl(
 
   const refreshStatus = useCallback((launcherRunId: string) => run(
     "checking",
-    (signal) => client.status(launcherRunId, signal).then((value) => value.data),
+    (signal) => refreshLauncherControl(client, launcherRunId, signal),
     (control) => dispatch({ type: "control-succeeded", control }),
     (error) => error.control,
   ), [client, run]);

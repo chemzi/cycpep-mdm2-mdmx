@@ -68,6 +68,7 @@ class _World:
         self.inspected_prediction_run_ids = []
         self.fail_prediction = False
         self.retry_index = 0
+        self.live_owner = False
 
 
 class _Runtime:
@@ -110,7 +111,8 @@ class _Runtime:
     def initialize_orchestrator(self, plan_path, approvals):
         self.world.calls.append(("initialize_bootstrap", tuple(approvals)))
         self.world.bootstrap_run = "completed"
-    def inspect_transaction_recovery(self, _orchestrator): return FormalBoundary.completed("transaction")
+    def inspect_transaction_recovery(self, _orchestrator):
+        return FormalBoundary.completed("transaction", live_owner=self.world.live_owner)
     def recover_transactions(self): return None
     def drain(self, _run_path):
         self.world.calls.append("worker_prediction")
@@ -275,6 +277,34 @@ class WorkflowBootstrapPredictionTests(unittest.TestCase):
             self.assertEqual(
                 set(world.inspected_prediction_run_ids), {"prediction-domain"}
             )
+
+    def test_external_owner_completion_can_be_explicitly_continued_to_second_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            world = _World(); world.live_owner = True; deps = _deps(tmp, world)
+            launch_project(project_path="project.json", dependencies=deps)
+            running = resume_launcher_run(
+                launcher_run_id=LAUNCHER_ID,
+                approval_paths=("approval.json",),
+                dependencies=deps,
+            )
+            self.assertEqual(running.payload.status, "running")
+
+            world.live_owner = False
+            world.bootstrap_run_status = "completed"
+            world.prediction = "completed"
+            observed = status_launcher_run(
+                launcher_run_id=LAUNCHER_ID, dependencies=deps
+            )
+            self.assertEqual(observed.payload.status, "pending")
+            self.assertEqual(observed.payload.boundary, "critic")
+
+            continued = resume_launcher_run(
+                launcher_run_id=LAUNCHER_ID, dependencies=deps
+            )
+
+            self.assertEqual(continued.payload.status, "awaiting_approval")
+            self.assertEqual(continued.payload.required_task_ids, ("T002",))
+            self.assertEqual(world.calls[-2:], ["critic", "regular_plan"])
 
     def test_direct_and_bootstrap_authorities_conflict_before_critic(self):
         with tempfile.TemporaryDirectory() as tmp:
