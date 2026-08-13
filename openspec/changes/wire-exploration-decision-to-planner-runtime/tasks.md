@@ -20,5 +20,5 @@
 
 - [x] 4.1 Run the new E3-C focused tests plus `test_planner_exploration_decision.py` and `test_planner_decision_materialization.py`.
 - [x] 4.2 Run the full unittest suite, repository Architecture Gate, strict OpenSpec validation, compileall, and `git diff --check` using the repository's actual commands.
-- [ ] 4.3 Complete independent high-reasoning Spec and Standards reviews, resolve all P0/P1 findings, rerun affected gates, and record final changed files and residual risks.
+- [x] 4.3 Complete independent high-reasoning Spec and Standards reviews, resolve all P0/P1 findings, rerun affected gates, and record final changed files and residual risks.
 - [x] 4.4 Update only documentation required by the public Planner service/runtime handoff and mark OpenSpec tasks complete from verified evidence.
