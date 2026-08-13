@@ -355,13 +355,26 @@ class PlannerExplorationDecisionTests(unittest.TestCase):
         for mocked in (load, update, history, get_all, log, consume, record):
             mocked.assert_not_called()
 
-    def test_decision_changes_no_task_budget_approval_or_execution_surface(self):
+    def test_decision_materializes_only_length_policy_on_task_surface(self):
         report = self._report()
         first = self._build(report, self.decision)
         changed = self._build(report, self.other_decision)
-        self.assertEqual(self._task_surface(first), self._task_surface(changed))
+        first_surface = self._task_surface(first)
+        changed_surface = self._task_surface(changed)
+        self.assertEqual(first_surface["budget_request"], changed_surface["budget_request"])
+        self.assertEqual(first_surface["approval_request"], changed_surface["approval_request"])
+        self.assertEqual(first_surface["execution"], changed_surface["execution"])
+        self.assertEqual(first_surface["proposal_counts"], changed_surface["proposal_counts"])
+        self.assertEqual(
+            [job["lengths"] for job in first_surface["design_jobs"][0]],
+            [[12], [12]],
+        )
+        self.assertEqual(
+            [job["lengths"] for job in changed_surface["design_jobs"][0]],
+            [[8, 10, 12], [8, 10, 12]],
+        )
 
-    def test_explicit_decision_missing_lengths_uses_static_nonambient_default(self):
+    def test_explicit_adjustment_missing_lengths_uses_decision_nonambient_policy(self):
         state = deepcopy(self.state)
         for target in state["project_config"]["targets"]:
             target["design"].pop("lengths")
@@ -385,11 +398,11 @@ class PlannerExplorationDecisionTests(unittest.TestCase):
         design = next(task for task in plan["tasks"] if task["action"] == "iterate_design")
         self.assertTrue(design["parameters"]["design_jobs"])
         for job in design["parameters"]["design_jobs"]:
-            self.assertEqual(job["lengths"], [8, 10, 12])
+            self.assertEqual(job["lengths"], [12])
         consume.assert_not_called()
         record.assert_not_called()
 
-    def test_absent_decision_missing_lengths_preserves_ambient_experience(self):
+    def test_absent_decision_missing_lengths_uses_static_nonambient_default(self):
         state = deepcopy(self.state)
         for target in state["project_config"]["targets"]:
             target["design"].pop("lengths")
@@ -406,18 +419,12 @@ class PlannerExplorationDecisionTests(unittest.TestCase):
         design = next(task for task in plan["tasks"] if task["action"] == "iterate_design")
         self.assertEqual(
             [job["lengths"] for job in design["parameters"]["design_jobs"]],
-            [[10], [10]],
+            [[8, 10, 12], [8, 10, 12]],
         )
-        self.assertEqual(
-            [call.kwargs["targets"] for call in consume.call_args_list],
-            [["MDM2"], ["MDMX"]],
-        )
-        self.assertEqual(
-            [call.kwargs["targets"] for call in record.call_args_list],
-            [["MDM2"], ["MDMX"]],
-        )
+        consume.assert_not_called()
+        record.assert_not_called()
 
-    def test_caller_state_marker_cannot_disable_legacy_ambient_experience(self):
+    def test_caller_state_marker_is_removed_before_static_nonambient_default(self):
         state = deepcopy(self.state)
         state["_frozen_exploration_decision"] = deepcopy(self.decision)
         for target in state["project_config"]["targets"]:
@@ -435,16 +442,10 @@ class PlannerExplorationDecisionTests(unittest.TestCase):
         design = next(task for task in plan["tasks"] if task["action"] == "iterate_design")
         self.assertEqual(
             [job["lengths"] for job in design["parameters"]["design_jobs"]],
-            [[12], [12]],
+            [[8, 10, 12], [8, 10, 12]],
         )
-        self.assertEqual(
-            [call.kwargs["targets"] for call in consume.call_args_list],
-            [["MDM2"], ["MDMX"]],
-        )
-        self.assertEqual(
-            [call.kwargs["targets"] for call in record.call_args_list],
-            [["MDM2"], ["MDMX"]],
-        )
+        consume.assert_not_called()
+        record.assert_not_called()
 
 
 if __name__ == "__main__":
