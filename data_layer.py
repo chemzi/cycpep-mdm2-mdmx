@@ -493,13 +493,14 @@ class EvidenceLogger:
     """Append-only evidence backed by SQLite; JSONL is a projection."""
     
     @classmethod
-    def _write(cls, entry: dict):
+    def _write(cls, entry: dict, *, store=None):
         # Every new write passes through the same event contract.  Existing
         # JSONL rows remain untouched and are still readable by get_all().
         EvidenceEvent.from_dict(entry)
-        backend = get_storage_backend()
+        backend = store or get_storage_backend()
         backend.append(entry)
-        _project_evidence(backend)
+        if store is None:
+            _project_evidence(backend)
     
     @classmethod
     def log(cls, agent: str, event_type: str, payload: dict,
@@ -728,8 +729,8 @@ class EvidenceLogger:
         State.save(s)
 
     @classmethod
-    def get_all(cls) -> list:
-        return get_storage_backend().query()
+    def get_all(cls, *, store=None) -> list:
+        return (store or get_storage_backend()).query()
 
     @classmethod
     def filter(cls, agent: str = None, event_type: str = None, candidate_id: str = None) -> list:

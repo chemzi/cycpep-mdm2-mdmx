@@ -135,10 +135,14 @@ class _Runtime:
         if self.world.critic == "not_started": return FormalBoundary.not_started("critic")
         return FormalBoundary.completed("critic", report_id="critic-1", report_path="critic.json")
     def run_critic(self, _handoff): self.world.calls.append("critic"); self.world.critic = "completed"
+    def publish_exploration_decision(self, prediction, _report):
+        self.world.calls.append(
+            ("exploration_decision", prediction.references["prediction_run_id"])
+        )
     def inspect_planner(self, _critic):
         if self.world.regular_plan == "not_started": return FormalBoundary.not_started("planner")
         return FormalBoundary.completed("planner", plan_id="planner_regular1", plan_path="regular.json", plan_sha256="digest", plan_document=_regular_plan())
-    def run_planner(self, _report): self.world.calls.append("regular_plan"); self.world.regular_plan = "completed"
+    def run_planner(self, _report, *, state=None): self.world.calls.append("regular_plan"); self.world.regular_plan = "completed"
     def inspect_execution_failure(self, _orchestrator, _plan=None):
         if self.world.bootstrap_run_status != "failed": return FormalBoundary.not_started("execution")
         suffix = self.world.retry_index
@@ -268,7 +272,7 @@ class WorkflowBootstrapPredictionTests(unittest.TestCase):
             self.assertEqual(world.calls, [
                 "research", "design", "bootstrap_plan",
                 ("initialize_bootstrap", ("approval.json",)), "worker_prediction",
-                "critic", "regular_plan",
+                "critic", ("exploration_decision", "prediction-domain"), "regular_plan",
             ])
             self.assertLess(world.calls.index("worker_prediction"), world.calls.index("critic"))
             self.assertNotIn("direct_prediction", world.calls)

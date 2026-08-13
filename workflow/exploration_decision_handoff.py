@@ -63,7 +63,7 @@ def resolve_exploration_decision_handoff(
             "selected Critic artifact has no Prediction run identity",
         )
 
-    required = _requires_exploration_decision(report)
+    required = requires_exploration_decision(report)
     workflow_id = _resolve_prediction_workflow_id(
         store, project_id=project_id, prediction_run_id=prediction_run_id
     )
@@ -96,7 +96,7 @@ def _read_critic_report(path: str | Path) -> dict[str, Any]:
     return value
 
 
-def _requires_exploration_decision(report: Mapping[str, Any]) -> bool:
+def requires_exploration_decision(report: Mapping[str, Any]) -> bool:
     recommendations = report.get("recommendations")
     if not isinstance(recommendations, list):
         raise ExplorationDecisionHandoffError(
@@ -203,5 +203,6 @@ def _resolve_decision(
 __all__ = [
     "ExplorationDecisionHandoff",
     "ExplorationDecisionHandoffError",
+    "requires_exploration_decision",
     "resolve_exploration_decision_handoff",
 ]
