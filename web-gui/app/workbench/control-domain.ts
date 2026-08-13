@@ -115,3 +115,42 @@ export interface ControlFailure {
   message: string;
   ceiling: string | null;
 }
+
+export type JsonValue =
+  | string | number | boolean | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+export interface ProjectDraftProjection {
+  draft_id: string;
+  project_id: string;
+  name: string;
+  objective: string;
+  targets: Array<Record<string, JsonValue>>;
+  review: Record<string, JsonValue>;
+  bootstrap: Record<string, JsonValue>;
+}
+
+export interface LauncherControlStatus {
+  schema_version: number;
+  status: string;
+  launcher_run_id: string | null;
+  project_id: string | null;
+  approved_content_binding: string | null;
+  boundary: string | null;
+  prediction_invocation_id: string | null;
+  prediction_run_id: string | null;
+  formal_trace: Record<string, string | null>;
+  evidence_ids: string[];
+  artifact_ids: string[];
+  required_task_ids: string[];
+  task_status_counts: Record<string, number>;
+  last_known_formal_status: string | null;
+  error: { code: string; component: string; message: string } | null;
+}
+
+export interface ProjectControlView {
+  launcher: LauncherControlStatus | null;
+  approval_control: ApprovalControlProjection | null;
+  control_failure: ControlFailure | null;
+}
