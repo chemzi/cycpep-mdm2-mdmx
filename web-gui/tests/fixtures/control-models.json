@@ -1,0 +1,103 @@
+{
+  "launch_request": {
+    "target_identifier": "MDM2",
+    "options": {
+      "identifier_type": "gene",
+      "organism_id": 9606,
+      "epitope": null,
+      "objective": "binder",
+      "launcher_run_id": "launcher_0123456789abcdef0123456789abcdef",
+      "first_gate_auto_policy": {
+        "approver": "demo-operator",
+        "justification": "Approved for the first bootstrap gate.",
+        "ceilings": {
+          "max_gpu_job_slots": 1,
+          "max_gpu_minutes": 60.0,
+          "max_design_proposals": 3,
+          "max_prediction_candidates": 8
+        }
+      }
+    }
+  },
+  "approval_projection_provisional": {
+    "launcher_run_id": "launcher_0123456789abcdef0123456789abcdef",
+    "project_id": "project-1",
+    "approved_content_binding": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "plan_id": "planner_0123456789ab",
+    "plan_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source_kind": "initial_prediction_bootstrap",
+    "required_task_ids": ["T001"],
+    "tasks": [
+      {
+        "task_id": "T001",
+        "action": "evaluate_new_design_candidates",
+        "resource_class": "gpu",
+        "gpu_job_slots": 1,
+        "proposal_count": 0,
+        "candidate_limit": 8,
+        "estimated_gpu_minutes": 2.5,
+        "estimate_status": "estimated",
+        "estimator_version": "simple-v1",
+        "calibration_status": "provisional"
+      }
+    ],
+    "budget": {
+      "gpu_minutes": 2.5,
+      "gpu_minutes_status": "estimated",
+      "estimator_version": "simple-v1",
+      "calibration_status": "provisional"
+    }
+  },
+  "approval_projection_unavailable": {
+    "launcher_run_id": "launcher_0123456789abcdef0123456789abcdef",
+    "project_id": "project-1",
+    "approved_content_binding": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "plan_id": "planner_0123456789ab",
+    "plan_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source_kind": "initial_prediction_bootstrap",
+    "required_task_ids": ["T001"],
+    "tasks": [
+      {
+        "task_id": "T001",
+        "action": "evaluate_new_design_candidates",
+        "resource_class": "gpu",
+        "gpu_job_slots": 1,
+        "proposal_count": 0,
+        "candidate_limit": 8,
+        "estimated_gpu_minutes": null,
+        "estimate_status": "benchmark_required",
+        "estimator_version": null,
+        "calibration_status": "unavailable"
+      }
+    ],
+    "budget": {
+      "gpu_minutes": null,
+      "gpu_minutes_status": "benchmark_required",
+      "estimator_version": null,
+      "calibration_status": "unavailable"
+    }
+  },
+  "manual_approval_request": {
+    "launcher_run_id": "launcher_0123456789abcdef0123456789abcdef",
+    "project_id": "project-1",
+    "approved_content_binding": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "plan_id": "planner_0123456789ab",
+    "plan_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "required_task_ids": ["T001"],
+    "approver": "demo-operator",
+    "justification": "Reviewed the exact displayed plan.",
+    "ceilings": {
+      "max_gpu_job_slots": 1,
+      "max_gpu_minutes": 60.0,
+      "max_design_proposals": 0,
+      "max_prediction_candidates": 8
+    }
+  },
+  "control_failure": {
+    "code": "approval_estimate_unavailable",
+    "category": "estimate",
+    "component": "planner",
+    "message": "A finite Planner GPU-minute estimate is required for approval.",
+    "ceiling": null
+  }
+}

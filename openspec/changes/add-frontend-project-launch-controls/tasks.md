@@ -14,12 +14,12 @@
 ## 3. Scoped Workbench Projection
 
 - [x] 3.1 Add safe immutable `resource_request` and `launcher_run_id`-scoped reads from the bound ProjectContext/SQLite Store while keeping unscoped reads compatible.
-- [ ] 3.2 Update Python and frontend validators/fixtures for pre-Orchestrator approval, provisional/unavailable estimates, project switching, no-current-run, invalid binding, and stale controls.
+- [x] 3.2 Update Python and frontend validators/fixtures for pre-Orchestrator approval, provisional/unavailable estimates, project switching, no-current-run, invalid binding, and stale controls.
 
 ## 4. Frontend Launch Ledger
 
 - [x] 4.1 Add the first-tab-load dismissible full-viewport ledger using only existing tokens and scoped selectors; place close/View existing tasks top-right, target first, and Create and launch in the footer.
-- [ ] 4.2 Add the exact-plan approval card with task resources, provisional/unavailable GPU minutes, totals, calibration, manual ceilings, and an `Auto-approve first GPU gate` option shown only for the bootstrap plan.
+- [x] 4.2 Add the exact-plan approval card with task resources, provisional/unavailable GPU minutes, totals, calibration, manual ceilings, and an `Auto-approve first GPU gate` option shown only for the bootstrap plan.
 - [x] 4.3 Add one compact `New project` button immediately before Refresh; preserve the mounted frame, selection, navigator, inspector, history, and existing content.
 - [ ] 4.4 Wire draft/approval, tab-persisted Launcher ID, launch/status, manual resume, auto policy, errors, and scoped refresh without synthetic state.
 - [ ] 4.5 Test first-load/dismiss/reopen, repeat recovery, failure preservation, estimates, stale plan, accessibility/focus, and unchanged existing component/layout behavior.

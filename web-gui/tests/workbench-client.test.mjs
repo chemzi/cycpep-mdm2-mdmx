@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   WORKBENCH_ENDPOINT,
   WorkbenchContractError,
+  buildWorkbenchUrl,
   fetchWorkbench,
   parseWorkbenchEnvelope,
 } from "../app/workbench/client.ts";
@@ -111,4 +112,35 @@ test("fetches only the exact V2 workbench route and rejects HTTP failures", asyn
     fetchWorkbench({ fetchImpl: async () => new Response("unavailable", { status: 503 }) }),
     /503/,
   );
+});
+
+test("builds exact scoped and backward-compatible unscoped workbench URLs", () => {
+  const launcherRunId = "launcher_0123456789abcdef0123456789abcdef";
+
+  assert.equal(buildWorkbenchUrl(undefined), WORKBENCH_ENDPOINT);
+  assert.equal(
+    buildWorkbenchUrl("https://example.test/", launcherRunId),
+    `https://example.test${WORKBENCH_ENDPOINT}?launcher_run_id=${launcherRunId}`,
+  );
+  assert.throws(
+    () => buildWorkbenchUrl(undefined, "../launcher_bad"),
+    /launcherRunId/,
+  );
+});
+
+test("fetches the launcher-scoped workbench without changing request semantics", async () => {
+  const source = await fixture();
+  const calls = [];
+  const launcherRunId = "launcher_0123456789abcdef0123456789abcdef";
+  const fetchImpl = async (url, init) => {
+    calls.push([url, init]);
+    return new Response(JSON.stringify(source), { status: 200 });
+  };
+
+  await fetchWorkbench({ launcherRunId, fetchImpl });
+
+  assert.deepEqual(calls, [[
+    `${WORKBENCH_ENDPOINT}?launcher_run_id=${launcherRunId}`,
+    { signal: undefined },
+  ]]);
 });
