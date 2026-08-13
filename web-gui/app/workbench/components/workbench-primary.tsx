@@ -68,8 +68,8 @@ export function WorkbenchPrimary({ data, selection, onSelectionChange }: Workben
   if (selection.kind === "candidate") {
     return <CandidateWorkspace
       candidates={data.candidates}
-      evidence={data.evidence.items}
-      artifacts={data.artifacts.items}
+      evidence={data.evidence}
+      artifacts={data.artifacts}
       selectedCandidateId={selection.identity}
       onSelectCandidate={(identity) => onSelectionChange({ kind: "candidate", identity })}
     />;

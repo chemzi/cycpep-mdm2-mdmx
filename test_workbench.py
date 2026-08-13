@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from agents.orchestrator import OrchestratorContractError
+from prediction_pipeline.contracts import file_sha256
+from storage import SQLiteStore
 from web_api.workbench import WorkbenchReader
 
 
@@ -61,7 +66,463 @@ def _task(task_id, action, depends_on=(), *, gate="proposed", approval=False):
     }
 
 
+def _commit_production_shaped_candidate(store: SQLiteStore, root: Path) -> None:
+    candidates = [{
+        "candidate_id": f"C{index:04d}",
+        "sequence": "GSLALESLAG",
+        "source_route": "route_A_mdm2",
+    } for index in range(1, 15)]
+    store.commit_transaction(
+        context={
+            "transaction_id": "tx-design", "workflow_id": "workflow-design",
+            "run_id": "run-design", "task_id": "T001",
+            "attempt_id": "T001-A01", "action": "iterate_design",
+            "status": "COMMITTING", "metadata": {"project_id": "project-1"},
+        },
+        candidate_updates=candidates, state_updates={}, state_appends=(), artifacts=(),
+    )
+    inventory, artifacts = [], []
+    for index in range(1, 102):
+        artifact_id = f"prediction-input-{index:04d}"
+        path = root / f"input-{index:04d}.dat"
+        path.write_text(f"scientific artifact {index}", encoding="utf-8")
+        role = "global.post_relax_pdb" if index == 1 else f"global.metric[{index}]"
+        artifact_type = (
+            "prediction_input:global.post_relax_pdb"
+            if index == 1 else f"prediction_input:{role}"
+        )
+        inventory.append({
+            "artifact_id": artifact_id, "path": str(path), "role": role,
+            "sha256": file_sha256(path),
+        })
+        artifacts.append({
+            "artifact_id": artifact_id, "artifact_type": artifact_type,
+            "path": str(path), "size_bytes": path.stat().st_size,
+            "sha256": file_sha256(path),
+        })
+    record_path = root / "C0006.prediction.json"
+    record_path.write_text(json.dumps({
+        "candidate": {"candidate_id": "C0006", "sequence": "GSLALESLAG"},
+        "status": "needs_optimization", "artifact_inventory": inventory,
+    }), encoding="utf-8")
+    record_id = "prediction-record-C0006"
+    artifacts.append({
+        "artifact_id": record_id, "artifact_type": "prediction_record",
+        "path": str(record_path), "size_bytes": record_path.stat().st_size,
+        "sha256": file_sha256(record_path),
+    })
+    evidence_events = [{
+        "event_id": "prediction-recorded-C0006", "agent": "prediction",
+        "event_type": "prediction_recorded", "phase": "evaluate",
+        "candidate_id": "C0006", "prediction_status": "needs_optimization",
+        "prediction_run_id": "prediction-run-2", "record_artifact_id": record_id,
+    }]
+    evidence_events.extend({
+        "event_id": f"candidate-scored-C0006-{index:04d}",
+        "agent": "prediction", "event_type": "candidate_scored",
+        "phase": "evaluate", "candidate_id": "C0006", "layer": (index % 7) + 1,
+    } for index in range(101))
+    store.commit_transaction(
+        context={
+            "transaction_id": "tx-prediction", "workflow_id": "workflow-prediction",
+            "run_id": "run-prediction", "task_id": "T002",
+            "attempt_id": "T002-A01", "action": "evaluate_new_design_candidates",
+            "status": "COMMITTING", "metadata": {"project_id": "project-1"},
+        },
+        candidate_updates=(),
+        candidate_patches=[{
+            "candidate_id": "C0006",
+            "patch": {
+                "final_status": "needs_optimization",
+                "metrics_json": json.dumps({
+                    "global": {"plddt": 81.5},
+                    "targets": {"MDM2": {"iptm": 0.67}},
+                }),
+            },
+        }],
+        state_updates={}, state_appends=(), artifacts=artifacts,
+        evidence_events=evidence_events,
+    )
+    store.append({
+        "event_id": "shortlist-C0006", "timestamp": "2026-08-13T18:00:00+00:00",
+        "project_id": "project-1", "agent": "critic",
+        "event_type": "exploration_shortlist", "phase": "critic",
+        "shortlist": [{
+            "candidate_id": "C0006", "passed": False,
+            "reason": "optimization candidate",
+        }],
+    })
+
+
 class WorkbenchReaderTests(unittest.TestCase):
+    def test_candidate_normalizes_final_status_and_object_valued_metrics_json(self):
+        store = FakeStore(
+            state={"project_id": "project-1"},
+            candidates=[{
+                "candidate_id": "C0006",
+                "sequence": "GSLALESLAG",
+                "project_id": "project-1",
+                "final_status": "needs_optimization",
+                "metrics_json": json.dumps({
+                    "global": {"plddt": 81.5},
+                    "targets": {"MDM2": {"iptm": 0.67}},
+                }),
+            }],
+        )
+
+        candidate = WorkbenchReader(store).read()["candidates"]["items"][0]
+
+        self.assertEqual(candidate["status"], "needs_optimization")
+        self.assertEqual(candidate["metrics"]["global"]["plddt"], 81.5)
+        self.assertEqual(candidate["associations"]["limitations"], [])
+
+    def test_candidate_projection_survives_bounded_global_collections(self):
+        root = Path(tempfile.mkdtemp(prefix="workbench-science-"))
+        store = SQLiteStore(root / "store.db", project_id="project-1")
+        _commit_production_shaped_candidate(store, root)
+
+        byte_reads = []
+        result = WorkbenchReader(
+            store,
+            artifact_bytes_reader=lambda path: (
+                byte_reads.append(str(path)) or Path(path).read_bytes()
+            ),
+        ).read(limit=10)
+        candidate = next(
+            item for item in result["candidates"]["items"]
+            if item["candidate_id"] == "C0006"
+        )
+
+        self.assertTrue(result["artifacts"]["truncated"])
+        self.assertTrue(result["evidence"]["truncated"])
+        self.assertEqual(candidate["status"], "needs_optimization")
+        self.assertEqual(candidate["run_relation"], "historical_run")
+        self.assertEqual(candidate["associations"]["status_owner"], {
+            "run_id": "run-prediction",
+            "run_relation": "historical_run",
+        })
+        self.assertEqual(candidate["associations"]["artifact_total"], 102)
+        self.assertEqual(len(candidate["associations"]["artifact_ids"]), 102)
+        self.assertIn("prediction-input-0101", candidate["associations"]["artifact_ids"])
+        self.assertGreater(candidate["associations"]["evidence_total"], 100)
+        self.assertTrue(candidate["associations"]["complete"])
+        self.assertEqual(candidate["associations"]["limitations"], [])
+        self.assertEqual(candidate["associations"]["structures"], [{
+            "artifact_id": "prediction-input-0001",
+            "artifact_type": "prediction_input:global.post_relax_pdb",
+            "role": "global.post_relax_pdb",
+        }])
+        self.assertEqual(candidate["associations"]["shortlist"][0]["event_id"], "shortlist-C0006")
+        self.assertEqual(len(byte_reads), 1, "only Prediction record bytes are re-hashed")
+        self.assertNotIn(str(root), str(result))
+        linked = [
+            item for item in store.list_artifacts()
+            if item["artifact_id"] == "prediction-input-0001"
+        ][0]
+        self.assertNotIn("candidate_id", linked)
+        projected = next(
+            item for item in result["artifacts"]["items"]
+            if item["artifact_id"] == "prediction-input-0001"
+        )
+        self.assertEqual(projected["trace"]["candidate_id"], "C0006")
+
+    def test_malformed_metrics_are_isolated_as_a_candidate_limitation(self):
+        result = WorkbenchReader(FakeStore(
+            state={"project_id": "project-1"},
+            candidates=[{
+                "candidate_id": "C0006",
+                "sequence": "GSLALESLAG",
+                "final_status": "needs_optimization",
+                "metrics_json": "{malformed",
+            }],
+        )).read()
+
+        candidate = result["candidates"]["items"][0]
+        self.assertNotIn("metrics", candidate)
+        self.assertEqual(candidate["associations"]["limitations"], [{
+            "code": "candidate_metrics_malformed",
+            "summary": "Candidate metrics are present but could not be read.",
+        }])
+        self.assertFalse(candidate["associations"]["complete"])
+
+    def test_candidate_metrics_omit_internal_locator_keys_without_losing_science(self):
+        result = WorkbenchReader(FakeStore(
+            state={"project_id": "project-1"},
+            candidates=[{
+                "candidate_id": "C0006",
+                "sequence": "GSLALESLAG",
+                "metrics_json": json.dumps({
+                    "prediction": {
+                        "record_path": "C:/internal/prediction/C0006.json",
+                        "record_artifact_id": "record-C0006",
+                    },
+                    "global": {"plddt": 81.5},
+                }),
+            }],
+        )).read()
+
+        metrics = result["candidates"]["items"][0]["metrics"]
+        self.assertNotIn("record_path", metrics["prediction"])
+        self.assertEqual(metrics["prediction"]["record_artifact_id"], "record-C0006")
+        self.assertEqual(metrics["global"]["plddt"], 81.5)
+        self.assertNotIn("C:/internal", str(result))
+
+        direct = WorkbenchReader(FakeStore(
+            state={"project_id": "project-1"},
+            candidates=[{
+                "candidate_id": "C0007",
+                "sequence": "AAAAAAAA",
+                "metrics": {
+                    "prediction": {
+                        "record_path": "/internal/C0007.json",
+                        "record_artifact_id": "record-C0007",
+                    },
+                    "global": {"plddt": 79.0},
+                },
+            }],
+        )).read()["candidates"]["items"][0]["metrics"]
+        self.assertNotIn("record_path", direct["prediction"])
+        self.assertEqual(direct["prediction"]["record_artifact_id"], "record-C0007")
+        self.assertEqual(direct["global"]["plddt"], 79.0)
+
+    def test_unverified_prediction_record_fails_closed_without_id_or_path_inference(self):
+        root = Path(tempfile.mkdtemp(prefix="workbench-science-tamper-"))
+        record_path = root / "C0006-prediction-record.json"
+        record_path.write_text(json.dumps({
+            "candidate": {"candidate_id": "C0006"},
+            "artifact_inventory": [],
+        }), encoding="utf-8")
+        digest = file_sha256(record_path)
+        common = {
+            "state": {"project_id": "project-1"},
+            "candidates": [{
+                "candidate_id": "C0006",
+                "sequence": "GSLALESLAG",
+                "final_status": "needs_optimization",
+            }],
+            "evidence": [{
+                "event_id": "prediction-recorded-C0006",
+                "timestamp": "2026-08-13T18:00:00+00:00",
+                "project_id": "project-1",
+                "agent": "prediction",
+                "event_type": "prediction_recorded",
+                "candidate_id": "C0006",
+                "transaction_id": "tx-prediction",
+                "run_id": "run-prediction",
+                "record_artifact_id": "prediction-record-C0006",
+            }],
+            "artifacts": [{
+                "artifact_id": "prediction-record-C0006",
+                "artifact_type": "prediction_record",
+                "path": str(record_path),
+                "sha256": digest,
+                "transaction_id": "tx-other",
+                "project_id": "project-1",
+            }],
+            "transactions": [{
+                "transaction_id": "tx-prediction",
+                "project_id": "project-1",
+                "workflow_id": "workflow-prediction",
+                "run_id": "run-prediction",
+                "task_id": "T002",
+                "attempt_id": "T002-A01",
+                "status": "COMMITTED",
+                "artifact_ids": ["prediction-record-C0006"],
+            }],
+        }
+
+        candidate = WorkbenchReader(FakeStore(**common)).read()["candidates"]["items"][0]
+
+        self.assertEqual(candidate["associations"]["artifact_total"], 0)
+        self.assertEqual(candidate["associations"]["artifact_ids"], [])
+        self.assertEqual(candidate["associations"]["structures"], [])
+        self.assertEqual(candidate["associations"]["limitations"][0]["code"], "prediction_record_unverified")
+        self.assertFalse(candidate["associations"]["complete"])
+        self.assertNotIn("candidate_id", WorkbenchReader(FakeStore(**common)).read()["artifacts"]["items"][0]["trace"])
+
+    def test_non_committed_and_trace_mismatched_prediction_transactions_fail_closed(self):
+        root = Path(tempfile.mkdtemp(prefix="workbench-science-transaction-"))
+        record_path = root / "record.json"
+        record_path.write_text(json.dumps({
+            "candidate": {"candidate_id": "C0006"},
+            "artifact_inventory": [],
+        }), encoding="utf-8")
+        transaction = {
+            "transaction_id": "tx-prediction",
+            "status": "FAILED",
+            "workflow_id": "workflow-prediction",
+            "run_id": "run-prediction",
+            "task_id": "T002",
+            "attempt_id": "T002-A01",
+            "artifact_ids": ["record-C0006"],
+            "project_id": "project-1",
+        }
+        store = FakeStore(
+            state={"project_id": "project-1"},
+            candidates=[{"candidate_id": "C0006", "sequence": "AAAA"}],
+            evidence=[{
+                "event_id": "e1",
+                "event_type": "prediction_recorded",
+                "candidate_id": "C0006",
+                "project_id": "project-1",
+                "transaction_id": "tx-prediction",
+                "workflow_id": "workflow-prediction",
+                "run_id": "run-prediction",
+                "task_id": "T002",
+                "attempt_id": "T002-A01",
+                "record_artifact_id": "record-C0006",
+            }],
+            artifacts=[{
+                "artifact_id": "record-C0006",
+                "artifact_type": "prediction_record",
+                "path": str(record_path),
+                "sha256": file_sha256(record_path),
+                "transaction_id": "tx-prediction",
+                "project_id": "project-1",
+            }],
+            transactions=[transaction],
+        )
+
+        not_committed = WorkbenchReader(store).read()["candidates"]["items"][0]
+        self.assertEqual(
+            not_committed["associations"]["limitations"][0]["code"],
+            "prediction_transaction_unverified",
+        )
+
+        transaction["status"] = "COMMITTED"
+        store.transactions[0]["status"] = "COMMITTED"
+        store.evidence[0]["task_id"] = "T999"
+        mismatched = WorkbenchReader(store).read()["candidates"]["items"][0]
+        self.assertEqual(
+            mismatched["associations"]["limitations"][0]["code"],
+            "prediction_transaction_unverified",
+        )
+        self.assertNotIn("status_owner", mismatched["associations"])
+        self.assertEqual(mismatched["run_relation"], "unlinked")
+
+    def test_inventory_sha_mismatch_fails_closed_for_the_whole_association(self):
+        root = Path(tempfile.mkdtemp(prefix="workbench-science-inventory-"))
+        input_path = root / "structure.pdb"
+        input_path.write_text("ATOM\n", encoding="utf-8")
+        record_path = root / "record.json"
+        record_path.write_text(json.dumps({
+            "candidate": {"candidate_id": "C0006"},
+            "artifact_inventory": [{
+                "artifact_id": "input-C0006",
+                "role": "global.post_relax_pdb",
+                "path": str(input_path),
+                "sha256": "0" * 64,
+            }],
+        }), encoding="utf-8")
+        transaction = {
+            "transaction_id": "tx-prediction",
+            "status": "COMMITTED",
+            "workflow_id": "workflow-prediction",
+            "run_id": "run-prediction",
+            "task_id": "T002",
+            "attempt_id": "T002-A01",
+            "artifact_ids": ["record-C0006", "input-C0006"],
+            "project_id": "project-1",
+        }
+        store = FakeStore(
+            state={"project_id": "project-1"},
+            candidates=[{"candidate_id": "C0006", "sequence": "AAAA"}],
+            evidence=[{
+                "event_id": "e1",
+                "event_type": "prediction_recorded",
+                "candidate_id": "C0006",
+                "project_id": "project-1",
+                "transaction_id": "tx-prediction",
+                "workflow_id": "workflow-prediction",
+                "run_id": "run-prediction",
+                "task_id": "T002",
+                "attempt_id": "T002-A01",
+                "record_artifact_id": "record-C0006",
+            }],
+            artifacts=[
+                {
+                    "artifact_id": "record-C0006",
+                    "artifact_type": "prediction_record",
+                    "path": str(record_path),
+                    "sha256": file_sha256(record_path),
+                    "transaction_id": "tx-prediction",
+                    "project_id": "project-1",
+                },
+                {
+                    "artifact_id": "input-C0006",
+                    "artifact_type": "prediction_input:global.post_relax_pdb",
+                    "path": str(input_path),
+                    "sha256": file_sha256(input_path),
+                    "transaction_id": "tx-prediction",
+                    "project_id": "project-1",
+                },
+            ],
+            transactions=[transaction],
+        )
+
+        candidate = WorkbenchReader(store).read()["candidates"]["items"][0]
+        self.assertEqual(candidate["associations"]["artifact_total"], 0)
+        self.assertEqual(candidate["associations"]["artifact_ids"], [])
+        self.assertEqual(candidate["associations"]["structures"], [])
+        self.assertEqual(
+            candidate["associations"]["limitations"][0]["code"],
+            "prediction_inventory_unverified",
+        )
+
+    def test_sha_tamper_and_candidate_mismatch_each_fail_closed(self):
+        root = Path(tempfile.mkdtemp(prefix="workbench-science-mismatch-"))
+        record_path = root / "record.json"
+        record_path.write_text(json.dumps({
+            "candidate": {"candidate_id": "C9999"},
+            "artifact_inventory": [],
+        }), encoding="utf-8")
+        artifact = {
+            "artifact_id": "record-C0006",
+            "artifact_type": "prediction_record",
+            "path": str(record_path),
+            "sha256": file_sha256(record_path),
+            "transaction_id": "tx-prediction",
+            "project_id": "project-1",
+        }
+        store = FakeStore(
+            state={"project_id": "project-1"},
+            candidates=[{"candidate_id": "C0006", "sequence": "AAAA"}],
+            evidence=[{
+                "event_id": "e1",
+                "event_type": "prediction_recorded",
+                "candidate_id": "C0006",
+                "project_id": "project-1",
+                "transaction_id": "tx-prediction",
+                "run_id": "run-prediction",
+                "record_artifact_id": "record-C0006",
+            }],
+            artifacts=[artifact],
+            transactions=[{
+                "transaction_id": "tx-prediction",
+                "status": "COMMITTED",
+                "run_id": "run-prediction",
+                "artifact_ids": ["record-C0006"],
+                "project_id": "project-1",
+            }],
+        )
+
+        mismatch = WorkbenchReader(store).read()["candidates"]["items"][0]
+        self.assertEqual(
+            mismatch["associations"]["limitations"][0]["code"],
+            "prediction_record_candidate_mismatch",
+        )
+        self.assertNotIn("status_owner", mismatch["associations"])
+        self.assertEqual(mismatch["run_relation"], "unlinked")
+
+        record_path.write_text("tampered", encoding="utf-8")
+        tampered = WorkbenchReader(store).read()["candidates"]["items"][0]
+        self.assertEqual(
+            tampered["associations"]["limitations"][0]["code"],
+            "prediction_record_unverified",
+        )
+        self.assertNotIn("status_owner", tampered["associations"])
+        self.assertEqual(tampered["run_relation"], "unlinked")
+
     def test_no_run_returns_project_scoped_history_with_explicit_collection_counts(self):
         store = FakeStore(
             state={"project_id": "project-1", "project": "Demo"},
@@ -326,8 +787,12 @@ class WorkbenchReaderTests(unittest.TestCase):
 
         result = WorkbenchReader(store).read()
 
-        self.assertEqual([call[0] for call in store.calls], ["get_state", "list", "query", "list_artifacts"])
+        self.assertEqual(
+            [call[0] for call in store.calls],
+            ["get_state", "list", "query", "list_artifacts", "list_transactions"],
+        )
         self.assertEqual(store.calls[2][1], {"project_id": "project-1"})
+        self.assertEqual(store.calls[4][1], {})
         artifact = result["artifacts"]["items"][0]
         self.assertNotIn("path", artifact)
         self.assertEqual(artifact["protocol"]["version"], "1.4")

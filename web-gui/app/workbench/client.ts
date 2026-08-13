@@ -236,7 +236,81 @@ function assertCandidate(value: unknown, index: number): void {
   if (value.metrics !== undefined && !isObject(value.metrics)) {
     throw new WorkbenchContractError(`${field}.metrics must be an object`);
   }
+  if (value.associations !== undefined) {
+    assertCandidateAssociations(value.associations, `${field}.associations`);
+  }
   assertProvenanceRecord(value, field);
+}
+
+function assertCandidateShortlistAssociation(value: unknown, field: string): void {
+  if (!isObject(value)) {
+    throw new WorkbenchContractError(`${field} must be an object`);
+  }
+  assertOptionalString(value.event_id, `${field}.event_id`);
+  assertOptionalString(value.candidate_id, `${field}.candidate_id`);
+  assertBoolean(value.passed, `${field}.passed`);
+  if (
+    value.desirability !== undefined
+    && !(typeof value.desirability === "number" || value.desirability === null)
+  ) {
+    throw new WorkbenchContractError(`${field}.desirability must be a number or null`);
+  }
+  assertOptionalBoolean(value.pareto_front, `${field}.pareto_front`);
+  assertString(value.reason, `${field}.reason`);
+  if (
+    value.top_margin_metric !== undefined
+    && !(typeof value.top_margin_metric === "string" || value.top_margin_metric === null)
+  ) {
+    throw new WorkbenchContractError(`${field}.top_margin_metric must be a string or null`);
+  }
+}
+
+function assertCandidateAssociations(value: unknown, field: string): void {
+  if (!isObject(value)) {
+    throw new WorkbenchContractError(`${field} must be an object`);
+  }
+  assertNumber(value.evidence_total, `${field}.evidence_total`);
+  assertNumber(value.artifact_total, `${field}.artifact_total`);
+  assertStringArray(value.artifact_ids, `${field}.artifact_ids`);
+  assertBoolean(value.complete, `${field}.complete`);
+  if (!Array.isArray(value.limitations)) {
+    throw new WorkbenchContractError(`${field}.limitations must be an array`);
+  }
+  value.limitations.forEach((item, index) => {
+    const itemField = `${field}.limitations[${index}]`;
+    if (!isObject(item)) {
+      throw new WorkbenchContractError(`${itemField} must be an object`);
+    }
+    assertNonEmptyString(item.code, `${itemField}.code`);
+    assertNonEmptyString(item.summary, `${itemField}.summary`);
+  });
+  if (value.status_owner !== undefined) {
+    if (!isObject(value.status_owner)) {
+      throw new WorkbenchContractError(`${field}.status_owner must be an object`);
+    }
+    assertNonEmptyString(value.status_owner.run_id, `${field}.status_owner.run_id`);
+    assertRunRelation(value.status_owner.run_relation, `${field}.status_owner.run_relation`);
+  }
+  if (!Array.isArray(value.structures)) {
+    throw new WorkbenchContractError(`${field}.structures must be an array`);
+  }
+  value.structures.forEach((item, index) => {
+    const itemField = `${field}.structures[${index}]`;
+    if (!isObject(item)) {
+      throw new WorkbenchContractError(`${itemField} must be an object`);
+    }
+    assertNonEmptyString(item.artifact_id, `${itemField}.artifact_id`);
+    assertNonEmptyString(item.artifact_type, `${itemField}.artifact_type`);
+    assertOptionalString(item.role, `${itemField}.role`);
+    assertOptionalString(item.content_link, `${itemField}.content_link`);
+  });
+  if (!Array.isArray(value.shortlist)) {
+    throw new WorkbenchContractError(`${field}.shortlist must be an array`);
+  }
+  value.shortlist.forEach((item, index) => {
+    const itemField = `${field}.shortlist[${index}]`;
+    assertCandidateShortlistAssociation(item, itemField);
+  });
 }
 
 function assertEvidence(value: unknown, index: number): void {

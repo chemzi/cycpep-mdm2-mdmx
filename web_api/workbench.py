@@ -12,6 +12,7 @@ from contracts.action import get_action_spec
 from contracts.plan import PlanContractError, validate_plan_for_approval
 from contracts.trace import TraceContext
 from execution.action_registry import handler_for
+from .candidate_science import project_candidate_science
 
 
 DEFAULT_COLLECTION_LIMIT = 100
@@ -114,10 +115,13 @@ def _project_view(project_id: str, state: Mapping[str, Any]) -> dict[str, Any]:
 def _candidate_view(value: Mapping[str, Any], current_run_id: str | None) -> dict[str, Any]:
     result = {
         key: value[key]
-        for key in ("candidate_id", "sequence", "source_route", "status", "final_status", "created_at", "updated_at")
+        for key in (
+            "candidate_id", "sequence", "source_route", "status", "final_status",
+            "created_at", "updated_at", "associations",
+        )
         if value.get(key) is not None
     }
-    metrics = value.get("metrics") or value.get("metrics_json")
+    metrics = value.get("metrics")
     if isinstance(metrics, Mapping):
         result["metrics"] = dict(metrics)
     return _enrich_provenance(result, value, current_run_id)
@@ -394,10 +398,12 @@ class WorkbenchReader:
         *,
         status_reader: Callable[..., Mapping[str, Any]] = status,
         plan_reader: Callable[[str | Path], Mapping[str, Any]] = _read_plan,
+        artifact_bytes_reader: Callable[[str | Path], bytes] = lambda path: Path(path).read_bytes(),
     ):
         self._store = store
         self._status_reader = status_reader
         self._plan_reader = plan_reader
+        self._artifact_bytes_reader = artifact_bytes_reader
 
     def _read_current_binding(self, state: Mapping[str, Any], project_id: str):
         active = state.get("orchestrator")
@@ -457,9 +463,30 @@ class WorkbenchReader:
         )
 
         current_run_id = run.get("run_id") if run else None
-        candidate_views = [_candidate_view(value, current_run_id) for value in candidates]
+        project_transactions = list(self._store.list_transactions())
+        projection = project_candidate_science(
+            candidates=candidates,
+            evidence=evidence,
+            artifacts=artifacts,
+            transactions=project_transactions,
+            current_run_id=current_run_id,
+            artifact_bytes_reader=self._artifact_bytes_reader,
+        )
+        candidate_views = [
+            _candidate_view(value, current_run_id) for value in projection.candidates
+        ]
         evidence_views = [_evidence_view(value, current_run_id) for value in evidence]
-        artifact_views = [_artifact_view(value, current_run_id) for value in artifacts]
+        artifact_views = []
+        for value in artifacts:
+            projected = dict(value)
+            artifact_id = str(value.get("artifact_id") or "")
+            candidate_ids = projection.artifact_candidates.get(artifact_id, ())
+            if len(candidate_ids) == 1:
+                projected["candidate_id"] = candidate_ids[0]
+            role = projection.artifact_roles.get(artifact_id)
+            if role:
+                projected["role"] = role
+            artifact_views.append(_artifact_view(projected, current_run_id))
         transaction_views = [_transaction_view(value) for value in transaction_values]
 
         task_views, execution_views, execution_blockers = (
