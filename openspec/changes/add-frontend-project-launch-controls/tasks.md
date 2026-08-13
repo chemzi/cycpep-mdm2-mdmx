@@ -21,7 +21,7 @@
 - [x] 4.1 Add the first-tab-load dismissible full-viewport ledger using only existing tokens and scoped selectors; place close/View existing tasks top-right, target first, and Create and launch in the footer.
 - [x] 4.2 Add the exact-plan approval card with task resources, provisional/unavailable GPU minutes, totals, calibration, manual ceilings, and an `Auto-approve first GPU gate` option shown only for the bootstrap plan.
 - [x] 4.3 Add one compact `New project` button immediately before Refresh; preserve the mounted frame, selection, navigator, inspector, history, and existing content.
-- [ ] 4.4 Wire draft/approval, tab-persisted Launcher ID, launch/status, manual resume, auto policy, errors, and scoped refresh without synthetic state.
+- [x] 4.4 Wire draft/approval, tab-persisted Launcher ID, launch/status, manual resume, auto policy, errors, and scoped refresh without synthetic state.
 - [ ] 4.5 Test first-load/dismiss/reopen, repeat recovery, failure preservation, estimates, stale plan, accessibility/focus, and unchanged existing component/layout behavior.
 
 ## 5. Documentation and Demo Readiness

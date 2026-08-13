@@ -137,7 +137,7 @@ export interface UseProjectLaunchControlOptions extends ProjectControlClientOpti
 export interface UseProjectLaunchControlResult extends ProjectLaunchState {
   mutationInFlight: boolean;
   setForm(form: ProjectLaunchRequest): void;
-  createDraft(): Promise<ProjectDraftProjection | null>;
+  createDraft(form?: ProjectLaunchRequest): Promise<ProjectDraftProjection | null>;
   retrieveDraft(draftId: string): Promise<ProjectDraftProjection | null>;
   approveDraft(justification?: string): Promise<ProjectDraftProjection | null>;
   launch(options: ProjectLaunchOptions): Promise<ProjectControlView | null>;
@@ -168,6 +168,7 @@ export function useProjectLaunchControl(
     status: Exclude<ProjectLaunchStatus, "editing" | "failed">,
     operation: (signal: AbortSignal) => Promise<T>,
     success: (value: T) => void,
+    recover?: (error: ControlRequestError) => T | null,
   ): Promise<T | null> => {
     if (activeMutation.current) return null;
     const controller = new AbortController();
@@ -184,17 +185,21 @@ export function useProjectLaunchControl(
         error: cause instanceof Error ? cause.message : "Control request failed",
         control,
       });
-      return null;
+      return cause instanceof ControlRequestError && recover ? recover(cause) : null;
     } finally {
       if (activeMutation.current === controller) activeMutation.current = null;
     }
   }, []);
 
-  const createDraft = useCallback(() => run(
-    "resolving",
-    (signal) => client.createDraft(stateRef.current.form, signal).then((value) => value.data),
-    (review) => dispatch({ type: "draft-succeeded", review }),
-  ), [client, run]);
+  const createDraft = useCallback((form?: ProjectLaunchRequest) => {
+    const request = form ?? stateRef.current.form;
+    if (form) dispatch({ type: "form-changed", form });
+    return run(
+      "resolving",
+      (signal) => client.createDraft(request, signal).then((value) => value.data),
+      (review) => dispatch({ type: "draft-succeeded", review }),
+    );
+  }, [client, run]);
 
   const retrieveDraft = useCallback((draftId: string) => run(
     "resolving",
@@ -224,6 +229,7 @@ export function useProjectLaunchControl(
       (signal) => client.launchDraft(review.draft_id, boundOptions, signal)
         .then((value) => value.data),
       (control) => dispatch({ type: "control-succeeded", control }),
+      (error) => error.control,
     );
   }, [client, launcherIdFactory, run, storage]);
 
@@ -231,12 +237,14 @@ export function useProjectLaunchControl(
     "checking",
     (signal) => client.status(launcherRunId, signal).then((value) => value.data),
     (control) => dispatch({ type: "control-succeeded", control }),
+    (error) => error.control,
   ), [client, run]);
 
   const approveAndContinue = useCallback((request: ManualApprovalRequest) => run(
     "continuing",
     (signal) => client.approveAndContinue(request, signal).then((value) => value.data),
     (control) => dispatch({ type: "control-succeeded", control }),
+    (error) => error.control,
   ), [client, run]);
 
   return {
