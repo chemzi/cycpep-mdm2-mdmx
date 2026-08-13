@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from contracts.exploration_decision import ExplorationDecision
 from contracts.trace import TraceContext
+from prediction_pipeline.contracts import file_sha256
 from exploration import (
     build_exploration_shortlist_event,
     exploration_shortlist,
@@ -70,9 +71,30 @@ def _resolve_sources(*, store, project_config, report, prediction) -> _Publicati
     references = getattr(prediction, "references", {})
     prediction_run_id = str(references.get("prediction_run_id") or "")
     handoff_path = Path(str(references.get("handoff_path") or ""))
-    thresholds = _json_object(
-        handoff_path.parent / "inputs" / "thresholds.json", "thresholds"
-    )
+    transaction_id = str(references.get("transaction_id") or "")
+    if transaction_id:
+        threshold_path = Path(str(references.get("thresholds_path") or ""))
+        threshold_sha = str(references.get("thresholds_sha256") or "")
+        threshold_artifact_id = str(
+            references.get("thresholds_artifact_id") or ""
+        )
+        handoff_artifact_id = str(references.get("handoff_artifact_id") or "")
+        if not threshold_artifact_id or not handoff_artifact_id:
+            raise ExplorationDecisionPublicationError(
+                "thresholds_invalid",
+                "bootstrap Prediction threshold locator is missing",
+            )
+        thresholds = _json_object(threshold_path, "thresholds")
+        if file_sha256(threshold_path) != threshold_sha:
+            raise ExplorationDecisionPublicationError(
+                "thresholds_invalid",
+                "bootstrap Prediction threshold snapshot changed after readiness",
+            )
+    else:
+        thresholds = _json_object(
+            handoff_path.parent / "inputs" / "thresholds.json", "thresholds"
+        )
+        handoff_artifact_id = ""
     handoffs = [
         row
         for row in store.query(
@@ -81,7 +103,16 @@ def _resolve_sources(*, store, project_config, report, prediction) -> _Publicati
             event_type="prediction_handoff_ready",
         )
         if row.get("prediction_run_id") == prediction_run_id
-        and row.get("handoff_path") == str(handoff_path)
+        and (
+            row.get("handoff_artifact_id") == handoff_artifact_id
+            if transaction_id
+            else row.get("handoff_path") == str(handoff_path)
+        )
+        and (
+            row.get("thresholds_artifact_id") == threshold_artifact_id
+            if transaction_id
+            else True
+        )
     ]
     if len(handoffs) != 1:
         raise ExplorationDecisionPublicationError(

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from contracts.transaction import TransactionContext
+from threshold_contract import canonical_threshold_digest
 
 from .config import ExecutionConfig
 
@@ -54,6 +55,26 @@ def _observed_prediction_identity(
     return observations[0]
 
 
+def _prediction_threshold_snapshot(handoff_path: Path, handoff: dict) -> Path:
+    path = handoff_path.parent / "inputs" / "thresholds.json"
+    try:
+        thresholds = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ExecutionContractError(
+            "prediction_effects_invalid",
+            "Prediction threshold snapshot is missing or malformed",
+        ) from exc
+    if (
+        not isinstance(thresholds, dict)
+        or canonical_threshold_digest(thresholds) != handoff.get("thresholds_digest")
+    ):
+        raise ExecutionContractError(
+            "prediction_effects_scope_mismatch",
+            "Prediction threshold snapshot differs from the handoff authority",
+        )
+    return path
+
+
 def _prediction_artifacts(
     result: ExecutionActionResult,
     context: TransactionContext,
@@ -75,6 +96,7 @@ def _prediction_artifacts(
             "prediction_protocol_mismatch",
             "Prediction handoff does not match the task protocol identity",
         )
+    thresholds_path = _prediction_threshold_snapshot(handoff_paths[0], handoff)
     recorded_identity = handoff.get("execution_identity")
     if recorded_identity != expected_execution_identity:
         raise ExecutionContractError(
@@ -82,6 +104,11 @@ def _prediction_artifacts(
             "Prediction handoff conflicts with the approved execution identity",
         )
     staged = []
+    staged.append(staging.stage_artifact(
+        thresholds_path,
+        artifact_id=f"{context.transaction_id}-prediction-thresholds",
+        artifact_type="prediction_thresholds",
+    ))
     committed_inputs: dict[tuple[str, str], tuple[str, str]] = {}
     record_shas: dict[str, str] = {}
     approved_candidates = {

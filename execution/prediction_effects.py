@@ -17,6 +17,7 @@ from .results import (
     ExecutionActionResult,
     StateAppendMutation,
 )
+from threshold_contract import canonical_threshold_digest
 
 
 _PATCH_FIELDS = frozenset({
@@ -313,11 +314,44 @@ def _handoff_proposal(
     return proposal
 
 
+def _thresholds_proposal(
+    effects: dict,
+    handoff: dict,
+    transaction_id: str,
+) -> dict:
+    proposal = effects.get("thresholds_artifact")
+    if not isinstance(proposal, dict):
+        raise ExecutionContractError(
+            "prediction_effects_invalid", "thresholds_artifact must be an object"
+        )
+    path = Path(str(proposal.get("path") or "")).expanduser().resolve()
+    expected_id = f"{transaction_id}-prediction-thresholds"
+    if (
+        set(proposal) != {"artifact_id", "path"}
+        or proposal.get("artifact_id") != expected_id
+        or not path.is_file()
+    ):
+        raise ExecutionContractError(
+            "prediction_effects_invalid", "Prediction threshold snapshot is invalid"
+        )
+    thresholds = _json_object(path, "prediction threshold snapshot")
+    handoff_document = _json_object(Path(handoff["path"]), "prediction handoff")
+    if canonical_threshold_digest(thresholds) != handoff_document.get(
+        "thresholds_digest"
+    ):
+        raise ExecutionContractError(
+            "prediction_effects_scope_mismatch",
+            "Prediction threshold snapshot differs from the handoff authority",
+        )
+    return proposal
+
+
 def _evidence_proposals(
     effects: dict,
     records: dict[str, dict],
     prediction_metadata: dict[str, dict],
     handoff: dict,
+    thresholds: dict,
     expected_protocol: dict,
     expected_calibration_binding: dict,
     prediction_run_id: str,
@@ -351,6 +385,7 @@ def _evidence_proposals(
             )
         if event_type == "prediction_handoff_ready" and (
             event.get("handoff_artifact_id") != handoff["artifact_id"]
+            or event.get("thresholds_artifact_id") != thresholds["artifact_id"]
         ):
             raise ExecutionContractError(
                 "prediction_effects_scope_mismatch",
@@ -482,6 +517,7 @@ def load_prediction_transaction_effects(
             "schema_version", "run_id", "protocol_identity", "candidate_patches",
             "state_updates", "state_appends", "evidence_events",
             "record_artifacts", "handoff_artifact",
+            "thresholds_artifact",
         }
         or effects.get("schema_version") != 1
         or effects.get("run_id") != run_id
@@ -512,8 +548,9 @@ def load_prediction_transaction_effects(
         run_id,
         expected_protocol,
     )
+    thresholds = _thresholds_proposal(effects, handoff, transaction_id)
     _evidence_proposals(
-        effects, records, prediction_metadata, handoff, expected_protocol,
+        effects, records, prediction_metadata, handoff, thresholds, expected_protocol,
         expected_calibration_binding,
         prediction_run_id=run_id,
     )

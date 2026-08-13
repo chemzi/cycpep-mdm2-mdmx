@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from prediction_pipeline.contracts import file_sha256
+from threshold_contract import canonical_threshold_digest
 
 
 class PredictionPublicationError(ValueError):
@@ -18,6 +19,9 @@ class PredictionPublicationError(ValueError):
 class PredictionPublicationProof:
     artifact_ids: tuple[str, ...]
     evidence_ids: tuple[str, ...]
+    thresholds_artifact_id: str
+    thresholds_path: str
+    thresholds_sha256: str
 
 
 def validate_prediction_publication(
@@ -45,13 +49,19 @@ def validate_prediction_publication(
     artifact_ids = _validate_record_artifacts(
         store, transaction_id, plan, handoff, candidate_ids, expected, task
     )
-    evidence_ids = _validate_prediction_evidence(
+    evidence_ids, handoff_event = _validate_prediction_evidence(
         store, transaction_id, plan, handoff, candidate_ids, expected,
         artifact_ids, handoff_artifact_id, task,
+    )
+    thresholds = _validate_threshold_artifact(
+        store, transaction, handoff_event, handoff, expected, plan, task
     )
     return PredictionPublicationProof(
         artifact_ids=tuple(artifact_ids[value] for value in candidate_ids),
         evidence_ids=evidence_ids,
+        thresholds_artifact_id=str(thresholds["artifact_id"]),
+        thresholds_path=str(thresholds["path"]),
+        thresholds_sha256=str(thresholds["sha256"]),
     )
 
 
@@ -158,7 +168,42 @@ def _validate_prediction_evidence(
         _validate_event(
             event, expected, plan, handoff, task, artifact_ids, handoff_artifact_id
         )
-    return tuple(str(event.get("event_id") or "") for event in required)
+    return (
+        tuple(str(event.get("event_id") or "") for event in required),
+        handoffs[0],
+    )
+
+
+def _validate_threshold_artifact(
+    store, transaction, event, handoff, expected, plan, task
+):
+    artifact_id = str(event.get("thresholds_artifact_id") or "")
+    matches = [
+        item for item in store.list_artifacts()
+        if item.get("artifact_id") == artifact_id
+    ]
+    artifact = matches[0] if len(matches) == 1 else None
+    path = Path(str((artifact or {}).get("path") or "")).expanduser().resolve()
+    thresholds = _read_json(path)
+    digest = file_sha256(path) if thresholds is not None else None
+    if (
+        not artifact_id
+        or artifact_id not in tuple(transaction.get("artifact_ids") or ())
+        or not isinstance(artifact, Mapping)
+        or artifact.get("artifact_type") != "prediction_thresholds"
+        or artifact.get("producer_task_id") != task.get("task_id")
+        or any(artifact.get(key) != value for key, value in expected.items())
+        or (artifact.get("metadata") or {}).get("plan_id") != plan.get("plan_id")
+        or artifact.get("sha256") != digest
+        or canonical_threshold_digest(thresholds or {})
+        != event.get("thresholds_digest")
+        or event.get("thresholds_digest") != handoff.get("thresholds_digest")
+        or artifact_id not in tuple(event.get("artifact_ids") or ())
+    ):
+        raise PredictionPublicationError(
+            "formal Prediction threshold Artifact is missing or inconsistent"
+        )
+    return artifact
 
 
 def _events_by_candidate(events):

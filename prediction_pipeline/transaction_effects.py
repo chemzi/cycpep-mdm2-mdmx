@@ -58,6 +58,9 @@ class PredictionPersistence:
     def handoff_artifact_id(self) -> str:
         return f"{self.artifact_id_prefix}-prediction_handoff"
 
+    def thresholds_artifact_id(self) -> str:
+        return f"{self.artifact_id_prefix}-prediction-thresholds"
+
     def record_reference(self, candidate_id: str, path: Path, sha256: str) -> dict:
         if self.deferred:
             return {"record_artifact_id": self.record_artifact_id(candidate_id)}
@@ -268,7 +271,10 @@ class PredictionPersistence:
 
     def record_handoff_ready(self, summary: dict, handoff_path: Path) -> None:
         reference = (
-            {"handoff_artifact_id": self.handoff_artifact_id()}
+            {
+                "handoff_artifact_id": self.handoff_artifact_id(),
+                "thresholds_artifact_id": self.thresholds_artifact_id(),
+            }
             if self.deferred
             else {
                 "handoff_path": str(handoff_path),
@@ -388,5 +394,9 @@ class PredictionPersistence:
             "handoff_artifact": {
                 "artifact_id": self.handoff_artifact_id(),
                 "path": str(handoff_path),
+            },
+            "thresholds_artifact": {
+                "artifact_id": self.thresholds_artifact_id(),
+                "path": str(handoff_path.parent / "inputs" / "thresholds.json"),
             },
         }
