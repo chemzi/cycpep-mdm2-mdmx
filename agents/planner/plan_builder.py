@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from contracts.trace import derive_workflow_id
+from collections.abc import Mapping
+from contracts.exploration_decision import ExplorationDecision
+from contracts.trace import TraceContext, derive_workflow_id
 from data_layer import State
 from dataclasses import asdict
 from pathlib import Path
@@ -23,7 +25,7 @@ from .task_builders import (
     _design_iteration_tasks,
     _recommendation_tasks,
 )
-from .validation import _validate_critic_report
+from .validation import _bind_exploration_decision, _validate_critic_report
 import math
 
 def _inject_project_config(state: dict, project_config: dict | None) -> None:
@@ -90,8 +92,9 @@ def _plan_input_digest(
     source_round: int,
     budgets: dict,
     config: PlannerConfig,
+    decision_binding: dict[str, str] | None = None,
 ) -> str:
-    return object_sha256({
+    inputs = {
         "critic_report_path": str(report_path),
         "critic_report_sha256": report_sha,
         "workflow_id": workflow_id,
@@ -107,7 +110,14 @@ def _plan_input_digest(
         },
         "config": asdict(config),
         "planner_version": PLANNER_VERSION,
-    })
+    }
+    if decision_binding is not None:
+        inputs["exploration_decision"] = {
+            "decision_id": decision_binding["decision_id"],
+            "decision_sha256": decision_binding["decision_sha256"],
+        }
+    return object_sha256(inputs)
+
 
 def build_plan(
     *,
@@ -115,6 +125,7 @@ def build_plan(
     state: dict | None = None,
     config: PlannerConfig | None = None,
     project_config: dict | None = None,
+    exploration_decision: Mapping | None = None,
 ) -> dict:
     """Purely convert one frozen Critic report into an execution plan.
 
@@ -123,12 +134,25 @@ def build_plan(
     carried in ``state`` and must agree with ``state``'s ``project_id``.
     When omitted, behaviour is unchanged.
 
+    ``exploration_decision`` optionally binds one validated E2 Decision into
+    plan provenance and identity. Its adjustment is not applied to tasks, and
+    omitting it preserves the legacy source and digest shape.
+
     The injected config must also be injected into Execution (or carried in
     State), which re-verifies the digest and fails closed with
     ``project_config_drift`` on mismatch.
     """
     config = config or PlannerConfig()
     state = dict(state if state is not None else State.load())
+    state.pop("_frozen_exploration_decision", None)
+    validated_decision = (
+        ExplorationDecision.from_dict(exploration_decision)
+        if exploration_decision is not None
+        else None
+    )
+    canonical_decision = (
+        validated_decision.to_dict() if validated_decision is not None else None
+    )
     _inject_project_config(state, project_config)
     report_path = Path(critic_report_path).expanduser().resolve()
     report = _read_json(report_path, "critic_report")
@@ -136,6 +160,19 @@ def build_plan(
     _validate_critic_report(report, state, report_sha)
     budgets, total_design_budget = _budget_snapshot(state)
     project_id, workflow_id, source_round = _plan_workflow(state, report, report_sha)
+    decision_binding = (
+        _bind_exploration_decision(
+            validated_decision,
+            canonical_decision,
+            report=report,
+            state=state,
+            project_id=project_id,
+            workflow_id=workflow_id,
+            source_round=source_round,
+        )
+        if validated_decision is not None and canonical_decision is not None
+        else None
+    )
     issues_by_code = {issue["code"]: issue for issue in report["issues"]}
     tasks: list[dict] = []
     _design_iteration_tasks(
@@ -157,6 +194,7 @@ def build_plan(
         source_round=source_round,
         budgets=budgets,
         total_design_budget=total_design_budget,
+        decision_binding=decision_binding,
     )
 
 def _plan_governance(
@@ -347,10 +385,12 @@ def _assemble_plan(
     source_round: int,
     budgets: dict,
     total_design_budget: int,
+    decision_binding: dict[str, str] | None = None,
 ) -> dict:
     governance = _plan_governance(tasks, report["verdict"], source_round)
     input_digest = _plan_input_digest(
-        report_path, report_sha, workflow_id, state, source_round, budgets, config
+        report_path, report_sha, workflow_id, state, source_round, budgets, config,
+        decision_binding,
     )
     plan_id = f"planner_{input_digest[:12]}"
     status = governance["status"]
@@ -363,21 +403,32 @@ def _assemble_plan(
         f"status={status}; required approvals={len(required_approval_tasks)}; "
         f"blocked tasks={len(blocked_tasks)}; optional tasks={len(optional_task_ids)}."
     )
+    source = {
+        "critic_report": str(report_path),
+        "critic_report_sha256": report_sha,
+        "critic_report_id": report["report_id"],
+        "critic_verdict": report["verdict"],
+        "prediction_run_id": report["source"].get("prediction_run_id"),
+        "project_id": report["source"].get("project_id"),
+        "workflow_id": workflow_id,
+    }
+    if decision_binding is not None:
+        source.update(
+            {
+                "exploration_decision_id": decision_binding["decision_id"],
+                "exploration_decision_sha256": decision_binding["decision_sha256"],
+                "exploration_decision_input_digest": decision_binding[
+                    "decision_input_digest"
+                ],
+            }
+        )
     return {
         "schema_version": PLAN_SCHEMA_VERSION,
         "planner_version": PLANNER_VERSION,
         "plan_id": plan_id,
         "workflow_id": workflow_id,
         "input_digest": input_digest,
-        "source": {
-            "critic_report": str(report_path),
-            "critic_report_sha256": report_sha,
-            "critic_report_id": report["report_id"],
-            "critic_verdict": report["verdict"],
-            "prediction_run_id": report["source"].get("prediction_run_id"),
-            "project_id": report["source"].get("project_id"),
-            "workflow_id": workflow_id,
-        },
+        "source": source,
         "status": status,
         "summary": summary,
         "cycle": {
