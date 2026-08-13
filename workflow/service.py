@@ -74,7 +74,7 @@ def launch_project(
     launcher_run_id: str | None = None,
     dependencies: LauncherServiceDependencies | None = None,
 ) -> LauncherCommandResult:
-    deps = dependencies or _default_dependencies()
+    deps = dependencies or default_launcher_dependencies()
     resolved_launcher_run_id = None
     try:
         if launcher_run_id is not None:
@@ -166,7 +166,7 @@ def _recover_existing_launch(
 def status_launcher_run(
     *, launcher_run_id: str, dependencies: LauncherServiceDependencies | None = None
 ) -> LauncherCommandResult:
-    deps = dependencies or _default_dependencies()
+    deps = dependencies or default_launcher_dependencies()
     try:
         return _coordinate_locked(deps, launcher_run_id, (), execute=False)
     except Exception as error:
@@ -180,7 +180,7 @@ def resume_launcher_run(
     retry_bootstrap_prediction: bool = False,
     dependencies: LauncherServiceDependencies | None = None,
 ) -> LauncherCommandResult:
-    deps = dependencies or _default_dependencies()
+    deps = dependencies or default_launcher_dependencies()
     try:
         return _coordinate_locked(
             deps, launcher_run_id, tuple(approval_paths), execute=True,
@@ -188,6 +188,29 @@ def resume_launcher_run(
         )
     except Exception as error:
         return _unbound_failure(error, launcher_run_id=launcher_run_id)
+
+
+def continue_locked_launcher_run(
+    *,
+    dependencies: LauncherServiceDependencies,
+    session: Any,
+    report: DiagnosticReport,
+    approval_paths: Iterable[str | Path],
+) -> LauncherCommandResult:
+    """Continue one run while its caller already holds the diagnostic lock."""
+
+    if session.launcher_run_id != report.launcher_run_id:
+        raise DiagnosticContractError(
+            "launcher_diagnostic_binding_mismatch",
+            "Launcher diagnostic binding is invalid.",
+        )
+    return _coordinate_session(
+        dependencies,
+        session,
+        report,
+        tuple(approval_paths),
+        execute=True,
+    )
 
 
 def _coordinate_locked(
@@ -832,7 +855,7 @@ def _restore_bound_context(
     return restore_project_context(binding, loader=deps.load_context)
 
 
-def _default_dependencies() -> LauncherServiceDependencies:
+def default_launcher_dependencies() -> LauncherServiceDependencies:
     from .adapters import DefaultWorkflowRuntime
 
     diagnostics = DiagnosticStore(resolve_diagnostics_root())
@@ -863,6 +886,8 @@ def _default_dependencies() -> LauncherServiceDependencies:
 
 __all__ = [
     "LauncherServiceDependencies",
+    "continue_locked_launcher_run",
+    "default_launcher_dependencies",
     "launch_project",
     "resume_launcher_run",
     "status_launcher_run",
