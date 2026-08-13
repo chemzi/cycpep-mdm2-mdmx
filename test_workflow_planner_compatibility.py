@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import tempfile
 import unittest
@@ -10,8 +11,18 @@ from types import SimpleNamespace
 
 import data_layer
 from agents.planner import record_approval, validate_plan_for_approval
+from contracts.trace import TraceContext
 from core.context import ProjectContext, ProjectPaths
+from exploration import exploration_shortlist
+from exploration_decision import build_exploration_decision, record_exploration_decision
 from prediction_pipeline.contracts import file_sha256, object_sha256
+from target_bootstrap import config_digest
+from test_exploration_decision import (
+    PROTOCOL,
+    THRESHOLDS,
+    THRESHOLD_DIGEST,
+    evidence_batch,
+)
 from workflow.adapters import DefaultWorkflowRuntime
 from workflow.boundaries import FormalBoundaryInspector
 from workflow.runtime_context import bind_project_context
@@ -32,13 +43,18 @@ class WorkflowPlannerCompatibilityTests(unittest.TestCase):
         self.project_id = "launcher_planner_compatibility"
         self.config = {
             "project_id": self.project_id,
-            "targets": [{"id": "MDM2"}, {"id": "MDMX"}],
+            "targets": [
+                {"id": "MDM2", "design": {"lengths": [8, 10, 12]}},
+                {"id": "MDMX", "design": {"lengths": [8, 10, 12]}},
+            ],
             "review": {
                 "status": "approved",
                 "approved_digest": "a" * 64,
                 "content_digest": "a" * 64,
             },
         }
+        self.config["review"]["approved_digest"] = config_digest(self.config)
+        self.config["review"]["content_digest"] = config_digest(self.config)
         self.context = ProjectContext(
             project_id=self.project_id,
             config=self.config,
@@ -57,6 +73,7 @@ class WorkflowPlannerCompatibilityTests(unittest.TestCase):
         with bind_project_context(self.context):
             data_layer.State.save(self._state())
             report_path, report_id = self._critic_report()
+            self._publish_formal_decision()
             runtime = self._runtime()
 
             planner_result = runtime.run_planner(report_path)
@@ -116,14 +133,103 @@ class WorkflowPlannerCompatibilityTests(unittest.TestCase):
     def _runtime(self) -> DefaultWorkflowRuntime:
         runtime = object.__new__(DefaultWorkflowRuntime)
         runtime.context = self.context
+        runtime.store = data_layer.get_storage_backend()
         runtime.inspector = FormalBoundaryInspector(
-            store=data_layer.get_storage_backend(),
+            store=runtime.store,
             research_validator=lambda *_args, **_kwargs: None,
             design_validator=lambda *_args, **_kwargs: None,
             prediction_validator=lambda *_args, **_kwargs: None,
             orchestrator_status=lambda **_kwargs: {},
         )
         return runtime
+
+    def _publish_formal_decision(self) -> None:
+        workflow_id = "workflow_planner_compatibility"
+        run_id = "run_planner_compatibility"
+        prediction_run_id = "prediction_planner_compatibility"
+        targets = ("MDM2", "MDMX")
+        trace = TraceContext(self.project_id, workflow_id, run_id)
+        batteries = []
+        excluded = {
+            "event_id",
+            "event_type",
+            "agent",
+            "phase",
+            "project_id",
+            "workflow_id",
+            "run_id",
+            "targets",
+        }
+        for source in evidence_batch():
+            payload = {
+                key: deepcopy(value)
+                for key, value in source.items()
+                if key not in excluded
+            }
+            payload["prediction_run_id"] = prediction_run_id
+            event_id = data_layer.EvidenceLogger.log(
+                "prediction",
+                "battery_evaluated",
+                payload,
+                targets=list(targets),
+                phase="evaluate",
+                trace_context=trace,
+            )
+            batteries.append(next(
+                row
+                for row in data_layer.EvidenceLogger.get_all()
+                if row["event_id"] == event_id
+            ))
+        shortlist_id = data_layer.EvidenceLogger.log(
+            "critic",
+            "exploration_shortlist",
+            exploration_shortlist(
+                batteries,
+                targets=list(targets),
+                thresholds=THRESHOLDS,
+            ),
+            targets=list(targets),
+            phase="critic",
+            round_num=2,
+            trace_context=trace,
+        )
+        shortlist = next(
+            row
+            for row in data_layer.EvidenceLogger.get_all()
+            if row["event_id"] == shortlist_id
+        )
+        handoff_id = data_layer.EvidenceLogger.log(
+            "prediction",
+            "prediction_handoff_ready",
+            {
+                "prediction_run_id": prediction_run_id,
+                "candidate_ids": sorted(row["candidate_id"] for row in batteries),
+                "protocol_identity": dict(PROTOCOL),
+                "thresholds_digest": THRESHOLD_DIGEST,
+                "handoff_artifact_id": "artifact-planner-compatibility",
+            },
+            targets=list(targets),
+            phase="evaluate",
+            trace_context=trace,
+        )
+        handoff = next(
+            row
+            for row in data_layer.EvidenceLogger.get_all()
+            if row["event_id"] == handoff_id
+        )
+        decision = build_exploration_decision(
+            battery_events=batteries,
+            shortlist_event=shortlist,
+            prediction_handoff_event=handoff,
+            project_config=self.config,
+            thresholds=THRESHOLDS,
+            project_id=self.project_id,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            target_ids=targets,
+            source_round=2,
+        )
+        record_exploration_decision(decision)
 
     def _state(self) -> dict:
         return {

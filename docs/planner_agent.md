@@ -16,8 +16,9 @@ requires a new approval and Orchestrator run, and never reopens the failed task.
 
 This is an additive public interface: `build_initial_prediction_bootstrap_plan`,
 `run_initial_prediction_bootstrap`, and `retry_initial_prediction_bootstrap`
-are exported by `agents.planner`; the existing `run(critic_report_path=...)`
-signature and Critic source remain unchanged. Repository callers of Planner
+are exported by `agents.planner`; the Critic-driven `run()` entry retains its
+existing defaults and accepts additive keyword-only ExplorationDecision handoff
+arguments for the formal closed-loop runtime. Repository callers of Planner
 plan construction and validation were searched and continue through the same
 canonical plan/approval contract. Older plan files remain readable audit
 history; an unstarted Prediction task without `execution_identity` is rejected
@@ -47,6 +48,15 @@ Planner 只做规划和审计，不会直接运行 Research、Design、Predictio
 - 每个 issue 是否有且只有一个 recommendation 映射；
 - recommendation action 是否在 Planner 的封闭动作表中；
 - Critic → Planner handoff 是否保留四项强制安全约束。
+
+正式 closed-loop runtime 还会从项目绑定的 SQLite Store 解析当前
+`prediction_handoff_ready` 的 workflow identity 与唯一 `exploration_decision`，并通过
+`run(exploration_decision=..., exploration_decision_required=True)` 显式送入 Planner。
+Planner 自身不扫描 Evidence、目录、日志、State history 或 ambient experience；E3-A
+负责 Decision contract 与 project/workflow/round/Prediction-run/target binding，E3-B
+只把合法 Decision 的 length policy 物化到现有 `design_jobs[*].lengths`。需要
+`iterate_design` 的正式下一轮若缺少 Decision，会 fail closed；初始 bootstrap 与未声明
+Decision requirement 的直接兼容调用仍保留明确的 no-Decision contract。
 
 遇到未知 action 时 Planner fail-closed。这样 Critic 新增一种动作后，必须同步补充
 Planner 和 Orchestrator 的明确处理方式，不能把陌生字符串直接当命令执行。
