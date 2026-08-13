@@ -29,6 +29,7 @@ from prediction_pipeline.adapters import (  # noqa: E402
 from prediction_pipeline.contracts import (  # noqa: E402
     ContractError,
     PredictionConfig,
+    SCHEMA_VERSION,
     candidate_from_row,
     file_sha256,
     validate_project,
@@ -573,7 +574,7 @@ def _write_candidate_bundle(
     candidate, candidate_dir: Path, global_artifacts: dict, target_artifacts: dict
 ) -> dict:
     bundle = {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "candidate_id": candidate.candidate_id,
         "sequence": candidate.sequence,
         "protocol": protocol_binding(),

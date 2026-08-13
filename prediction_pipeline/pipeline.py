@@ -116,6 +116,11 @@ def _artifact_inventory(bundle: ArtifactBundle | None) -> list[dict]:
         for index, entry in enumerate(values.get("rosetta_outputs", [])):
             add_entry(f"{target_id}.rosetta[{index}].output", entry.get("output"))
             add_entry(f"{target_id}.rosetta[{index}].metadata", entry.get("metadata"))
+        if values.get("rosetta_rejections"):
+            inventory.append({
+                "role": f"{target_id}.rosetta_rejections",
+                "path": str(bundle.path), "sha256": bundle.sha256,
+            })
     return inventory
 
 

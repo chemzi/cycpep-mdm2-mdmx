@@ -10,15 +10,20 @@ from typing import Any, Iterable
 
 from project_config import required_target_ids
 from core.integrity import canonical_json, file_sha256, object_sha256
+from .protocol import PREDICTION_PROTOCOL
 from peptide_contract import (
     MAX_CYCLIC_PEPTIDE_LENGTH,
     MIN_CYCLIC_PEPTIDE_LENGTH,
 )
 
 
-SCHEMA_VERSION = 1
-PREDICTION_PIPELINE_VERSION = "1.5.1"
+SCHEMA_VERSION = 2
+PREDICTION_PIPELINE_VERSION = "1.6.0"
 PREDICTION_SCORING_IMPLEMENTATION = "prediction_pipeline"
+ROSETTA_MAXIMUM_TERMINAL_DISTANCE_ANGSTROM = float(
+    PREDICTION_PROTOCOL["parameters"]["rosetta_interface"]
+    ["maximum_terminal_c_to_n_distance_angstrom"]
+)
 CANDIDATE_ID_RE = re.compile(r"^C\d{4,}$")
 SEQUENCE_RE = re.compile(r"^[ACDEFGHIKLMNPQRSTVWY]+$")
 SUPPORTED_CYCLIZATION = frozenset(

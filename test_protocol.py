@@ -12,7 +12,7 @@ from core.protocol import (
     protocol_identity_sha256,
 )
 from prediction_pipeline.adapters import load_artifact_bundle
-from prediction_pipeline.contracts import ContractError
+from prediction_pipeline.contracts import ContractError, SCHEMA_VERSION
 from prediction_pipeline.execution_identity import build_prediction_execution_identity
 from prediction_pipeline.protocol import (
     ACTIVE_PREDICTOR_PROTOCOL,
@@ -242,7 +242,7 @@ class BundleProtocolValidationTests(unittest.TestCase):
 
     def _bundle(self, extra=None) -> Path:
         data = {
-            "schema_version": 1,
+            "schema_version": SCHEMA_VERSION,
             "candidate_id": "C0001",
             "sequence": "ACDEFGHIK",
             "global": {},
@@ -388,6 +388,9 @@ class ProtocolSchemaTests(unittest.TestCase):
                 },
                 "boltz": {
                     "diffusion_samples": 1,
+                },
+                "rosetta_interface": {
+                    "maximum_terminal_c_to_n_distance_angstrom": 2.0,
                 },
             },
             "metadata": {"description": "x"},
@@ -537,6 +540,17 @@ class ProtocolSchemaTests(unittest.TestCase):
         protocol = PredictionProtocol.from_data(self._data())
         self.assertEqual(protocol.boltz_diffusion_samples, 1)
         self.assertEqual(protocol.post_relax_coordinate_stdev, 0.5)
+        self.assertEqual(
+            protocol.rosetta_maximum_terminal_c_to_n_distance_angstrom, 2.0
+        )
+
+    def test_non_positive_rosetta_terminal_distance_rejected(self):
+        with self.assertRaises(ProtocolError):
+            PredictionProtocol.from_data(
+                self._data(rosetta_interface={
+                    "maximum_terminal_c_to_n_distance_angstrom": 0.0,
+                })
+            )
 
     def test_multi_protocol_coexistence(self):
         # Two parameter sets produce two distinct identities; a registry keyed

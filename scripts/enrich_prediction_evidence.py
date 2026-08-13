@@ -37,11 +37,15 @@ from prediction_pipeline.contracts import (  # noqa: E402
     file_sha256,
     validate_project,
 )
-from prediction_pipeline.rosetta_worker import run_rosetta_interface  # noqa: E402
+from prediction_pipeline.rosetta_worker import (  # noqa: E402
+    MAXIMUM_TERMINAL_C_TO_N_DISTANCE_ANGSTROM,
+    run_rosetta_interface,
+)
 from prediction_pipeline.relax_worker import run_post_relax  # noqa: E402
 from prediction_pipeline.structures import (  # noqa: E402
     exact_sequence_chain,
     parse_pdb,
+    terminal_bond_distance,
 )
 from target_bootstrap import assert_project_approved  # noqa: E402
 
@@ -359,6 +363,69 @@ def _apply_post_relax(args, candidate, bundle: dict, candidate_dir: Path) -> Non
         bundle["global"][key] = relax_result[key]
 
 
+def _add_rosetta_evidence(
+    args,
+    target_id: str,
+    target_values: dict,
+    candidate,
+    candidate_dir: Path,
+    source_bundle: Path,
+    target_chain: str,
+) -> None:
+    target_values.pop("rosetta_output", None)
+    target_values.pop("rosetta_output_sha256", None)
+    target_values.pop("rosetta_rejections", None)
+    rosetta_outputs = []
+    rosetta_rejections = []
+    for prediction in target_values["complex_predictions"]:
+        pdb, _, metadata = _prediction_paths(prediction, source_bundle.parent)
+        binder_chain = str(
+            prediction.get("binder_chain")
+            or metadata.get("binder_chain")
+            or exact_sequence_chain(parse_pdb(pdb), candidate.sequence)
+        )
+        safe_model = str(metadata.get("model_id") or "model").replace("/", "_")
+        model_id = str(metadata.get("model_id") or "")
+        try:
+            rosetta_outputs.append(run_rosetta_interface(
+                executable=args.rosetta_scripts,
+                pyrosetta_python=args.pyrosetta_python,
+                complex_pdb=pdb,
+                target_chain=target_chain,
+                binder_chain=binder_chain,
+                binder_sequence=candidate.sequence,
+                predictor=prediction["predictor"],
+                model_id=model_id,
+                seed=prediction["seed"],
+                output_dir=(
+                    candidate_dir / "rosetta_interface" / target_id
+                    / f"{prediction['predictor']}_{safe_model}_seed_{prediction['seed']}"
+                ),
+                timeout=args.rosetta_timeout,
+            ))
+        except ContractError as exc:
+            if exc.code != "rosetta_cyclic_bond_open":
+                raise
+            rosetta_rejections.append({
+                "predictor": prediction["predictor"],
+                "model_id": model_id,
+                "seed": prediction["seed"],
+                "prediction_pdb_sha256": file_sha256(pdb),
+                "target_chain": target_chain,
+                "binder_chain": binder_chain,
+                "binder_sequence": candidate.sequence,
+                "code": "rosetta_cyclic_bond_open",
+                "observed_terminal_c_to_n_distance_angstrom": (
+                    terminal_bond_distance(parse_pdb(pdb), binder_chain)
+                ),
+                "maximum_terminal_c_to_n_distance_angstrom": (
+                    MAXIMUM_TERMINAL_C_TO_N_DISTANCE_ANGSTROM
+                ),
+            })
+    target_values["rosetta_outputs"] = rosetta_outputs
+    target_values["rosetta_rejections"] = rosetta_rejections
+
+
 def _enrich_target(
     args,
     target_id: str,
@@ -428,34 +495,10 @@ def _enrich_target(
             target_values["prodigy_outputs"] = existing_outputs + generated
 
     if add_rosetta:
-        target_values.pop("rosetta_output", None)
-        target_values.pop("rosetta_output_sha256", None)
-        rosetta_outputs = []
-        for prediction in target_values["complex_predictions"]:
-            pdb, _, metadata = _prediction_paths(prediction, source_bundle.parent)
-            binder_chain = str(
-                prediction.get("binder_chain")
-                or metadata.get("binder_chain")
-                or exact_sequence_chain(parse_pdb(pdb), candidate.sequence)
-            )
-            safe_model = str(metadata.get("model_id") or "model").replace("/", "_")
-            rosetta_outputs.append(run_rosetta_interface(
-                executable=args.rosetta_scripts,
-                pyrosetta_python=args.pyrosetta_python,
-                complex_pdb=pdb,
-                target_chain=target_chain,
-                binder_chain=binder_chain,
-                binder_sequence=candidate.sequence,
-                predictor=prediction["predictor"],
-                model_id=str(metadata.get("model_id") or ""),
-                seed=prediction["seed"],
-                output_dir=(
-                    candidate_dir / "rosetta_interface" / target_id
-                    / f"{prediction['predictor']}_{safe_model}_seed_{prediction['seed']}"
-                ),
-                timeout=args.rosetta_timeout,
-            ))
-        target_values["rosetta_outputs"] = rosetta_outputs
+        _add_rosetta_evidence(
+            args, target_id, target_values, candidate, candidate_dir,
+            source_bundle, target_chain,
+        )
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)

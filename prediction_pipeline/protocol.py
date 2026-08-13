@@ -31,6 +31,7 @@ PREDICTION_PROTOCOL, PREDICTION_PROTOCOL_IDENTITY_SHA256 = load_protocol(
         "af2_prodigy": dict,
         "enrichment": dict,
         "boltz": dict,
+        "rosetta_interface": dict,
     },
 )
 # Parameters-only digest (scientific semantics); the identity digest above
@@ -52,6 +53,9 @@ _ENRICHMENT_ALLOWED_KEYS = frozenset({
     "post_relax_coordinate_stdev",
 })
 _BOLTZ_ALLOWED_KEYS = frozenset({"diffusion_samples"})
+_ROSETTA_ALLOWED_KEYS = frozenset({
+    "maximum_terminal_c_to_n_distance_angstrom",
+})
 
 
 def _require_known_keys(section: dict, allowed: frozenset[str], label: str) -> None:
@@ -85,6 +89,7 @@ class PredictionProtocol:
     post_relax_repeats: int
     post_relax_coordinate_stdev: float
     boltz_diffusion_samples: int
+    rosetta_maximum_terminal_c_to_n_distance_angstrom: float
 
     @classmethod
     def from_data(cls, data: dict) -> "PredictionProtocol":
@@ -162,6 +167,24 @@ class PredictionProtocol:
             raise ProtocolError(
                 "boltz.diffusion_samples must be a positive integer"
             )
+        rosetta = parameters.get("rosetta_interface")
+        if not isinstance(rosetta, dict):
+            raise ProtocolError(
+                "prediction protocol section 'rosetta_interface' must be an object"
+            )
+        _require_known_keys(rosetta, _ROSETTA_ALLOWED_KEYS, "rosetta_interface")
+        maximum_terminal_distance = rosetta.get(
+            "maximum_terminal_c_to_n_distance_angstrom"
+        )
+        if (
+            not isinstance(maximum_terminal_distance, (int, float))
+            or isinstance(maximum_terminal_distance, bool)
+            or maximum_terminal_distance <= 0
+        ):
+            raise ProtocolError(
+                "rosetta_interface.maximum_terminal_c_to_n_distance_angstrom "
+                "must be a positive number"
+            )
         return cls(
             name=name,
             version=version,
@@ -173,6 +196,9 @@ class PredictionProtocol:
             post_relax_repeats=post_relax_repeats,
             post_relax_coordinate_stdev=float(coordinate_stdev),
             boltz_diffusion_samples=diffusion_samples,
+            rosetta_maximum_terminal_c_to_n_distance_angstrom=float(
+                maximum_terminal_distance
+            ),
         )
 
 

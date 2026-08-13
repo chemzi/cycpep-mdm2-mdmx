@@ -299,11 +299,14 @@ def _battery_l3(c: dict, th: dict, targets: tuple[str, ...]) -> tuple[bool, dict
         tdg = threshold_for_target(th, "L3_dg", target)
         tsc = threshold_for_target(th, "L3_sc", target)
         tdsasa = threshold_for_target(th, "L3_dsasa", target)
-        l3_by_target[target] = all([
-            _cmp(_f(target_value(c, target, "dg")), tdg.get("operator", "<"), tdg.get("value")),
-            _cmp(_f(target_value(c, target, "sc")), tsc.get("operator", ">"), tsc.get("value")),
-            _cmp(_f(target_value(c, target, "dsasa")), tdsasa.get("operator", ">"), tdsasa.get("value")),
-        ])
+        l3_by_target[target] = (
+            not _target_has_l3_rejection(c, target)
+            and all([
+                _cmp(_f(target_value(c, target, "dg")), tdg.get("operator", "<"), tdg.get("value")),
+                _cmp(_f(target_value(c, target, "sc")), tsc.get("operator", ">"), tsc.get("value")),
+                _cmp(_f(target_value(c, target, "dsasa")), tdsasa.get("operator", ">"), tdsasa.get("value")),
+            ])
+        )
     required_dg_method = th.get("L3_dg", {}).get("method")
     method_ok = (
         not required_dg_method
@@ -415,18 +418,27 @@ def _battery_missing_evidence(c: dict, targets: tuple[str, ...]) -> list[str]:
     }
     missing_evidence.extend(name for name, value in global_required.items() if value in (None, ""))
     for target in targets:
+        scientific_rejection = _target_has_l3_rejection(c, target)
         for metric in (
             "ipsae", "dg", "sc", "dsasa", "hotspot_cov",
             "site_consistency", "pose_rmsd", "seed_convergence",
         ):
             value = target_value(c, target, metric)
             if value in (None, "") and not (
-                len(targets) == 1
-                and metric in {"site_consistency", "pose_rmsd", "seed_convergence"}
-                and c.get(metric) not in (None, "")
+                (scientific_rejection and metric in {"dg", "sc", "dsasa"})
+                or (
+                    len(targets) == 1
+                    and metric in {"site_consistency", "pose_rmsd", "seed_convergence"}
+                    and c.get(metric) not in (None, "")
+                )
             ):
                 missing_evidence.append(f"{target}:{metric}")
     return missing_evidence
+
+
+def _target_has_l3_rejection(c: dict, target: str) -> bool:
+    return bool(target_value(c, target, "rosetta_scientific_rejections"))
+
 
 def compute_pareto_front(
     candidates: list[dict],

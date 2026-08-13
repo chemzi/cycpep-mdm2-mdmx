@@ -6,7 +6,6 @@ import json
 import math
 import os
 import shlex
-import statistics
 import subprocess
 import time
 from dataclasses import dataclass
@@ -14,12 +13,17 @@ from pathlib import Path
 from typing import Iterable
 
 from .contracts import (
-    SCHEMA_VERSION,
+    SCHEMA_VERSION, ROSETTA_MAXIMUM_TERMINAL_DISTANCE_ANGSTROM,
     ContractError,
     file_sha256,
     object_sha256,
 )
 from .metrics import parse_prodigy_output, parse_rosetta_interface_output
+from .model_rejections import (
+    model_identity as _rosetta_model_identity,
+    validate_exact_coverage,
+    validate_rejection,
+)
 
 
 @dataclass(frozen=True)
@@ -190,6 +194,50 @@ def _validate_scored_output(
     return result
 
 
+def _validate_rosetta_rejection(
+    entry: dict, *, label: str, predictions_by_hash: dict[str, dict],
+    target_chain: str, sequence: str,
+) -> dict:
+    """Validate a model-bound cyclic-geometry rejection without file output."""
+    prediction_sha = str(entry.get("prediction_pdb_sha256") or "").strip().lower()
+    prediction = predictions_by_hash.get(prediction_sha)
+    if prediction is None:
+        raise ContractError(
+            "rosetta_rejection_prediction_mismatch",
+            f"{label} does not reference a declared prediction",
+        )
+    prediction_metadata = parse_metadata(prediction.get("metadata"))
+    expected_model_id = str(prediction_metadata.get("model_id") or "").strip()
+    binder_chain = str(
+        prediction.get("binder_chain")
+        or prediction_metadata.get("binder_chain")
+        or ""
+    ).strip()
+    return validate_rejection(
+        entry,
+        label=label,
+        prediction=prediction,
+        target_chain=target_chain,
+        binder_chain=binder_chain,
+        binder_sequence=sequence,
+        expected_model_id=expected_model_id,
+    )
+
+
+def _declared_rosetta_model_identity(prediction: dict) -> tuple[str, str, int, str]:
+    metadata = parse_metadata(prediction.get("metadata"))
+    model_id = str(metadata.get("model_id") or "").strip()
+    if not model_id:
+        raise ContractError(
+            "rosetta_prediction_identity_missing",
+            "complex prediction requires metadata-bound model_id for Rosetta coverage",
+        )
+    return (
+        prediction["predictor"], model_id,
+        prediction["seed"], prediction["pdb"]["sha256"],
+    )
+
+
 def _validate_rosetta_metadata(
     entry: dict,
     *,
@@ -262,7 +310,7 @@ def _validate_rosetta_metadata(
         isinstance(closure, bool)
         or not isinstance(closure, (int, float))
         or not math.isfinite(float(closure))
-        or float(closure) > 2.0
+        or float(closure) > ROSETTA_MAXIMUM_TERMINAL_DISTANCE_ANGSTROM
     ):
         raise ContractError(
             "rosetta_topology_invalid", f"{label} has invalid C--N distance {closure!r}"
@@ -404,6 +452,22 @@ def _load_global_artifacts(raw: dict, base: Path) -> dict:
     return global_artifacts
 
 
+def _validate_target_artifact_keys(values: object, target_id: str) -> None:
+    if not isinstance(values, dict):
+        raise ContractError("artifact_target_type", f"{target_id} must be an object")
+    allowed = {
+        "target_chain", "complex_predictions",
+        "prodigy_output", "prodigy_output_sha256", "prodigy_outputs",
+        "rosetta_output", "rosetta_output_sha256",
+        "rosetta_outputs", "rosetta_rejections",
+    }
+    unknown = sorted(set(values) - allowed)
+    if unknown:
+        raise ContractError(
+            "artifact_unknown_keys", f"target {target_id} has unknown keys: {unknown}"
+        )
+
+
 def _load_target_artifacts(
     raw: dict, base: Path, required_targets: tuple[str, ...], sequence: str
 ) -> dict[str, dict]:
@@ -418,22 +482,7 @@ def _load_target_artifacts(
     target_artifacts: dict[str, dict] = {}
     for target_id in required_targets:
         values = target_raw.get(target_id) or {}
-        if not isinstance(values, dict):
-            raise ContractError(
-                "artifact_target_type", f"target {target_id} artifacts must be an object"
-            )
-        unknown = sorted(set(values) - {
-            "target_chain", "complex_predictions",
-            "prodigy_output", "prodigy_output_sha256",
-            "prodigy_outputs",
-            "rosetta_output", "rosetta_output_sha256",
-            "rosetta_outputs",
-        })
-        if unknown:
-            raise ContractError(
-                "artifact_unknown_keys",
-                f"target {target_id} artifacts contain unknown keys: {unknown}",
-            )
+        _validate_target_artifact_keys(values, target_id)
         result = dict(values)
         predictions = values.get("complex_predictions") or []
         if not isinstance(predictions, list):
@@ -492,15 +541,24 @@ def _load_target_artifacts(
                 f"{target_id}.prodigy_outputs must cover every complex prediction once",
             )
         rosetta_outputs = values.get("rosetta_outputs") or []
+        rosetta_rejections = values.get("rosetta_rejections") or []
+        rosetta_collections_declared = (
+            "rosetta_outputs" in values or "rosetta_rejections" in values
+        )
         if not isinstance(rosetta_outputs, list):
             raise ContractError(
                 "artifact_scored_output_type",
                 f"{target_id}.rosetta_outputs must be a list",
             )
-        if values.get("rosetta_output") and rosetta_outputs:
+        if not isinstance(rosetta_rejections, list):
             raise ContractError(
-                "rosetta_evidence_ambiguous",
-                f"{target_id} cannot declare both rosetta_output and rosetta_outputs",
+                "artifact_rejection_type",
+                f"{target_id}.rosetta_rejections must be a list",
+            )
+        if values.get("rosetta_output") or values.get("rosetta_output_sha256"):
+            raise ContractError(
+                "rosetta_legacy_evidence_unsupported",
+                f"{target_id} schema v2 requires per-model Rosetta evidence",
             )
         result["rosetta_outputs"] = [
             _validate_scored_output(
@@ -512,7 +570,7 @@ def _load_target_artifacts(
             for index, item in enumerate(rosetta_outputs)
         ]
         target_chain = str(values.get("target_chain") or "").strip()
-        if result["rosetta_outputs"] and not target_chain:
+        if (result["rosetta_outputs"] or rosetta_rejections) and not target_chain:
             raise ContractError(
                 "target_chain_missing",
                 f"{target_id}.target_chain is required with Rosetta evidence",
@@ -525,27 +583,31 @@ def _load_target_artifacts(
                 target_chain=target_chain,
                 sequence=sequence,
             )
-        identities = [
-            (item["predictor"], item["model_id"], item["seed"])
-            for item in result["rosetta_outputs"]
+        result["rosetta_rejections"] = [
+            _validate_rosetta_rejection(
+                item,
+                label=f"targets.{target_id}.rosetta_rejections[{index}]",
+                predictions_by_hash=predictions_by_hash,
+                target_chain=target_chain,
+                sequence=sequence,
+            )
+            for index, item in enumerate(rosetta_rejections)
         ]
-        if len(set(identities)) != len(identities):
-            raise ContractError(
-                "scored_output_identity_duplicate",
-                f"{target_id}.rosetta_outputs contains duplicate model identities",
+        if rosetta_collections_declared:
+            validate_exact_coverage(
+                target_id,
+                [
+                    _declared_rosetta_model_identity(item)
+                    for item in result["complex_predictions"]
+                ],
+                result["rosetta_outputs"],
+                result["rosetta_rejections"],
             )
-        linked_prediction_hashes = {
-            item["prediction_pdb_sha256"] for item in result["rosetta_outputs"]
-        }
-        if result["rosetta_outputs"] and (
-            len(result["rosetta_outputs"]) != len(result["complex_predictions"])
-            or linked_prediction_hashes != set(predictions_by_hash)
-        ):
+        if result["rosetta_rejections"] and not result["prodigy_outputs"]:
             raise ContractError(
-                "rosetta_coverage_mismatch",
-                f"{target_id}.rosetta_outputs must cover every complex prediction once",
+                "prodigy_coverage_mismatch", f"{target_id} requires per-model PRODIGY"
             )
-        for key in ("prodigy_output", "rosetta_output"):
+        for key in ("prodigy_output",):
             if values.get(key):
                 result[key] = _materialize_file(
                     values, key, base, f"targets.{target_id}.{key}"
@@ -599,114 +661,6 @@ def parse_metadata(path_entry: dict | None) -> dict:
             "prediction_metadata_type", "prediction metadata must be an object"
         )
     return value
-
-
-def parse_target_physics(target_artifacts: dict) -> tuple[dict, list[dict]]:
-    metrics, provenance = {}, []
-    prodigy_outputs = target_artifacts.get("prodigy_outputs") or []
-    prodigy = target_artifacts.get("prodigy_output")
-    if prodigy_outputs:
-        samples = []
-        for entry in prodigy_outputs:
-            parsed = parse_prodigy_output(
-                entry["output"]["path"].read_text(
-                    encoding="utf-8", errors="replace"
-                )
-            )
-            samples.append({
-                "predictor": entry["predictor"],
-                "model_id": entry["model_id"],
-                "seed": entry["seed"],
-                "prediction_pdb_sha256": entry["prediction_pdb_sha256"],
-                "artifact": str(entry["output"]["path"]),
-                "sha256": entry["output"]["sha256"],
-                "metrics": parsed,
-            })
-        methods = {sample["metrics"].get("dg_method") for sample in samples}
-        if len(methods) != 1:
-            raise ContractError(
-                "prodigy_method_inconsistent",
-                f"PRODIGY outputs use inconsistent methods: {sorted(methods)}",
-            )
-        metrics["dg"] = float(statistics.median(
-            sample["metrics"]["dg"] for sample in samples
-        ))
-        metrics["dg_method"] = methods.pop()
-        provenance.append({
-            "tool": "PRODIGY",
-            "aggregation": "median_across_declared_predictions",
-            "samples": samples,
-            "metrics": ["dg", "dg_method"],
-        })
-    elif prodigy:
-        parsed = parse_prodigy_output(
-            prodigy["path"].read_text(encoding="utf-8", errors="replace")
-        )
-        metrics.update(parsed)
-        provenance.append({
-            "tool": "PRODIGY",
-            "aggregation": "legacy_single_prediction",
-            "artifact": str(prodigy["path"]),
-            "sha256": prodigy["sha256"],
-            "metrics": sorted(parsed),
-        })
-    rosetta_outputs = target_artifacts.get("rosetta_outputs") or []
-    rosetta = target_artifacts.get("rosetta_output")
-    if rosetta_outputs:
-        samples = []
-        for entry in rosetta_outputs:
-            parsed = parse_rosetta_interface_output(
-                entry["output"]["path"].read_text(
-                    encoding="utf-8", errors="replace"
-                )
-            )
-            samples.append({
-                "predictor": entry["predictor"],
-                "model_id": entry["model_id"],
-                "seed": entry["seed"],
-                "prediction_pdb_sha256": entry["prediction_pdb_sha256"],
-                "artifact": str(entry["output"]["path"]),
-                "sha256": entry["output"]["sha256"],
-                "metadata_artifact": (
-                    str(entry["metadata"]["path"]) if entry.get("metadata") else None
-                ),
-                "metadata_sha256": (
-                    entry["metadata"]["sha256"] if entry.get("metadata") else None
-                ),
-                "metrics": parsed,
-            })
-        metrics["sc"] = float(statistics.median(
-            sample["metrics"]["sc"] for sample in samples
-        ))
-        metrics["dsasa"] = float(statistics.median(
-            sample["metrics"]["dsasa"] for sample in samples
-        ))
-        rosetta_dg = [
-            sample["metrics"].get("rosetta_dg_separated") for sample in samples
-        ]
-        if all(value is not None for value in rosetta_dg):
-            metrics["rosetta_dg_separated"] = float(statistics.median(rosetta_dg))
-        provenance.append({
-            "tool": "Rosetta InterfaceAnalyzer",
-            "aggregation": "median_across_declared_predictions",
-            "samples": samples,
-            "metrics": [
-                key for key in ("sc", "dsasa", "rosetta_dg_separated")
-                if key in metrics
-            ],
-        })
-    elif rosetta:
-        parsed = parse_rosetta_interface_output(
-            rosetta["path"].read_text(encoding="utf-8", errors="replace")
-        )
-        metrics.update(parsed)
-        provenance.append({
-            "tool": "Rosetta InterfaceAnalyzer",
-            "artifact": str(rosetta["path"]),
-            "sha256": rosetta["sha256"],
-            "metrics": sorted(parsed),
-        })
-    return metrics, provenance
 
 
 def run_prodigy(

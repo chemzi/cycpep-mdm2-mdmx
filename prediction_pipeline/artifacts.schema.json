@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://novapeptide.local/schemas/prediction-artifacts-v1.json",
-  "title": "NovaPeptide Prediction raw artifact bundle v1",
+  "$id": "https://novapeptide.local/schemas/prediction-artifacts-v2.json",
+  "title": "NovaPeptide Prediction raw artifact bundle v2",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "candidate_id", "sequence", "global", "targets"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "candidate_id": {"type": "string", "pattern": "^C\\d{4,}$"},
     "sequence": {
       "type": "string",
@@ -80,12 +80,15 @@
           "type": "array",
           "items": {"$ref": "#/$defs/scored_output"}
         },
-        "rosetta_output": {"type": "string"},
-        "rosetta_output_sha256": {"$ref": "#/$defs/sha256"},
         "rosetta_outputs": {
           "type": "array",
           "description": "Rosetta InterfaceAnalyzer output for every declared complex prediction, linked by PDB SHA-256.",
           "items": {"$ref": "#/$defs/scored_output"}
+        },
+        "rosetta_rejections": {
+          "type": "array",
+          "description": "Bound negative evidence for declared complex predictions that fail the cyclic-geometry precondition before InterfaceAnalyzer execution.",
+          "items": {"$ref": "#/$defs/rosetta_rejection"}
         }
       }
     },
@@ -102,6 +105,40 @@
         "output_sha256": {"$ref": "#/$defs/sha256"},
         "metadata": {"type": "string"},
         "metadata_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "rosetta_rejection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "predictor",
+        "model_id",
+        "seed",
+        "prediction_pdb_sha256",
+        "target_chain",
+        "binder_chain",
+        "binder_sequence",
+        "code",
+        "observed_terminal_c_to_n_distance_angstrom",
+        "maximum_terminal_c_to_n_distance_angstrom"
+      ],
+      "properties": {
+        "predictor": {"type": "string", "minLength": 1},
+        "model_id": {"type": "string", "minLength": 1},
+        "seed": {"type": "integer"},
+        "prediction_pdb_sha256": {"$ref": "#/$defs/sha256"},
+        "target_chain": {"type": "string", "minLength": 1},
+        "binder_chain": {"type": "string", "minLength": 1},
+        "binder_sequence": {
+          "type": "string",
+          "pattern": "^[ACDEFGHIKLMNPQRSTVWY]{7,20}$"
+        },
+        "code": {"const": "rosetta_cyclic_bond_open"},
+        "observed_terminal_c_to_n_distance_angstrom": {
+          "type": "number",
+          "exclusiveMinimum": 2.0
+        },
+        "maximum_terminal_c_to_n_distance_angstrom": {"const": 2.0}
       }
     }
   }
