@@ -17,6 +17,7 @@ export interface WorkbenchWorkspaceProps {
   refreshError: string | null;
   autoRefreshEnabled: boolean;
   onRefresh: () => void;
+  onNewProject?: () => void;
   onAutoRefreshChange: (enabled: boolean) => void;
   initialSelection?: WorkbenchSelection;
   initialCollapsedPanels?: WorkbenchAuxiliaryPanel[];
@@ -38,6 +39,7 @@ export function WorkbenchWorkspace({
   refreshError,
   autoRefreshEnabled,
   onRefresh,
+  onNewProject = () => undefined,
   onAutoRefreshChange,
   initialSelection = OVERVIEW,
   initialCollapsedPanels = [],
@@ -59,6 +61,7 @@ export function WorkbenchWorkspace({
       requestStatus={requestStatus}
       refreshError={refreshError}
       autoRefreshEnabled={autoRefreshEnabled}
+      onNewProject={onNewProject}
       onRefresh={onRefresh}
       onAutoRefreshChange={onAutoRefreshChange}
     />}
