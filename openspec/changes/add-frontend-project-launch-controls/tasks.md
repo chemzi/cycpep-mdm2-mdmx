@@ -9,7 +9,7 @@
 - [x] 2.2 Add the narrow operator facade that restores exact ProjectContext, validates formal Planner authority, returns a path-free approval view, records explicit approval, and resumes under the existing lock.
 - [x] 2.3 Normalize bootstrap task estimates and `budget_request` into one provisional `simple-v1` interpretation with consistent totals/status/calibration metadata; do not add an estimator.
 - [x] 2.4 Implement the small web service that applies maximum-slot plus summed proposal/candidate/GPU-minute ceilings only to the first `initial_prediction_bootstrap` gate, consumes the policy, and leaves every later/retry plan for human approval without retrying science.
-- [ ] 2.5 Add `/api/v2/control/...` routes and cover errors, repeat submission, response-loss recovery, sanitization, and preservation of old routes.
+- [x] 2.5 Add `/api/v2/control/...` routes and cover errors, repeat submission, response-loss recovery, sanitization, and preservation of old routes.
 
 ## 3. Scoped Workbench Projection
 
