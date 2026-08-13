@@ -31,6 +31,7 @@ from workflow.exploration_decision_publication import (
     ExplorationDecisionPublicationError,
     publish_exploration_decision,
 )
+from prediction_pipeline.contracts import file_sha256
 
 
 class WorkflowExplorationDecisionPublicationTests(unittest.TestCase):
@@ -136,6 +137,44 @@ class WorkflowExplorationDecisionPublicationTests(unittest.TestCase):
         self.assertEqual(captured.exception.code, "thresholds_invalid")
         self.assertFalse(self.store.query(event_type="exploration_shortlist"))
         self.assertFalse(self.store.query(event_type="exploration_decision"))
+
+    def test_bootstrap_uses_committed_threshold_locator_and_artifact_handoff_id(self) -> None:
+        committed = self.root / "committed-thresholds" / "thresholds.json"
+        committed.parent.mkdir()
+        committed.write_text(json.dumps(THRESHOLDS), encoding="utf-8")
+        transactional = SQLiteStore(
+            self.root / "transactional.db", project_id=PROJECT_ID
+        )
+        for row in self.batteries:
+            transactional.append(row)
+        handoff = deepcopy(self.handoff_event)
+        handoff.pop("handoff_path", None)
+        handoff["handoff_artifact_id"] = "tx-current-prediction_handoff"
+        handoff["thresholds_artifact_id"] = "tx-current-prediction-thresholds"
+        transactional.append(handoff)
+        prediction = FormalBoundary.completed(
+            "prediction",
+            prediction_run_id=PREDICTION_RUN_ID,
+            transaction_id="tx-current",
+            handoff_path=str(self.handoff_path),
+            handoff_artifact_id="tx-current-prediction_handoff",
+            thresholds_path=str(committed),
+            thresholds_sha256=file_sha256(committed),
+            thresholds_artifact_id="tx-current-prediction-thresholds",
+        )
+
+        decision = publish_exploration_decision(
+            store=transactional,
+            project_config=self.project,
+            critic_report_path=self._critic_report(),
+            prediction=prediction,
+            source_round=1,
+        )
+
+        self.assertEqual(decision.prediction_run_id, PREDICTION_RUN_ID)
+        self.assertEqual(
+            len(transactional.query(event_type="exploration_decision")), 1
+        )
 
     def test_threshold_digest_mismatch_fails_before_publication(self) -> None:
         (self.run_dir / "inputs" / "thresholds.json").write_text(

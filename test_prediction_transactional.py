@@ -830,6 +830,8 @@ class PredictionTransactionalTests(unittest.TestCase):
         store = SQLiteStore(root / "store.db", project_id="prediction_test")
         self.assertEqual(store.get("C0001")["final_status"], "pending")
         self.assertEqual(store.query(event_type="prediction_recorded"), [])
+        self.assertEqual(store.query(event_type="prediction_handoff_ready"), [])
+        self.assertEqual(store.list_artifacts(), [])
         self.assertFalse(any((root / "execution" / "artifacts").rglob("*.json")))
 
     def test_missing_observed_identity_is_not_filled_from_expected(self):
@@ -917,6 +919,8 @@ class PredictionTransactionalTests(unittest.TestCase):
         store = SQLiteStore(root / "store.db", project_id="prediction_test")
         self.assertEqual(store.get("C0001")["final_status"], "pending")
         self.assertEqual(store.query(event_type="prediction_recorded"), [])
+        self.assertEqual(store.query(event_type="prediction_handoff_ready"), [])
+        self.assertEqual(store.list_artifacts(), [])
         self.assertFalse(any((root / "execution" / "artifacts").rglob("*.json")))
 
     def test_post_commit_compensation_restores_owned_candidate_patch(self):

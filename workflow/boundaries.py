@@ -528,11 +528,16 @@ class FormalBoundaryInspector:
             "prediction",
             prediction_run_id=prediction_run_id,
             handoff_path=str(handoff_path),
+            handoff_artifact_id=handoff_artifact_id,
+            thresholds_artifact_id=publication.thresholds_artifact_id,
+            thresholds_path=publication.thresholds_path,
+            thresholds_sha256=publication.thresholds_sha256,
             transaction_id=transaction_id,
             task_id=task_id,
             attempt_id=attempt_id,
             artifact_ids=(
                 str(artifact.get("artifact_id") or handoff_artifact_id),
+                publication.thresholds_artifact_id,
                 *record_artifact_ids,
             ),
             evidence_ids=(

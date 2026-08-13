@@ -12,6 +12,7 @@ from agents.planner import build_initial_prediction_bootstrap_plan
 from agents.prediction_contract import CRITIC_READY_STATUSES
 from prediction_pipeline.contracts import file_sha256
 from prediction_pipeline.execution_identity import build_prediction_execution_identity
+from threshold_contract import canonical_threshold_digest
 from workflow.boundaries import FormalBoundary, FormalBoundaryInspector
 
 
@@ -208,6 +209,79 @@ def _assert_prediction_proof_tampering_blocks(
         project_id="project-1", plan=plan, orchestrator=orchestrator
     ).status, "blocked")
     record_path.write_text(original_record, encoding="utf-8")
+
+
+def _threshold_artifact_fixture(root):
+    path = root / "committed-thresholds.json"
+    path.write_text("{}", encoding="utf-8")
+    artifact_id = "tx-prediction-prediction-thresholds"
+    return artifact_id, path, canonical_threshold_digest({}), {
+        "artifact_id": artifact_id,
+        "artifact_type": "prediction_thresholds",
+        "path": str(path),
+        "sha256": file_sha256(path),
+        "producer_task_id": "T001",
+    }
+
+
+def _prediction_common(plan, identity, record_artifact_id, threshold_artifact_id):
+    artifact_ids = [
+        "tx-prediction-prediction_handoff",
+        record_artifact_id,
+        threshold_artifact_id,
+    ]
+    return artifact_ids, {
+        "project_id": "project-1", "workflow_id": "workflow-1",
+        "run_id": "run-1", "plan_id": plan["plan_id"],
+        "task_id": "T001", "attempt_id": "T001-A01",
+        "transaction_id": "tx-prediction",
+        "prediction_run_id": "prediction-domain",
+        "execution_identity": identity,
+        "artifact_ids": artifact_ids,
+    }
+
+
+def _bind_threshold_artifact_trace(artifact, common, plan):
+    artifact.update({
+        **{key: common[key] for key in (
+            "project_id", "workflow_id", "run_id", "task_id",
+            "attempt_id", "transaction_id",
+        )},
+        "metadata": {"project_id": "project-1", "plan_id": plan["plan_id"]},
+    })
+
+
+def _assert_threshold_boundary(case, inspector, store, plan, orchestrator, artifact_id, path):
+    completed = inspector.prediction_execution(
+        project_id="project-1", plan=plan, orchestrator=orchestrator
+    )
+    case.assertEqual(completed.status, "completed")
+    case.assertEqual(completed.references["thresholds_artifact_id"], artifact_id)
+    case.assertEqual(completed.references["thresholds_path"], str(path.resolve()))
+    removed = store.artifacts.pop(artifact_id)
+    missing = inspector.prediction_execution(
+        project_id="project-1", plan=plan, orchestrator=orchestrator
+    )
+    case.assertEqual(missing.blocker_code, "prediction_execution_correlation_invalid")
+    store.artifacts[artifact_id] = removed
+    original = path.read_text(encoding="utf-8")
+    path.write_text('{"changed": true}', encoding="utf-8")
+    changed = inspector.prediction_execution(
+        project_id="project-1", plan=plan, orchestrator=orchestrator
+    )
+    case.assertEqual(changed.blocker_code, "prediction_execution_correlation_invalid")
+    path.write_text(original, encoding="utf-8")
+    artifact = store.artifacts[artifact_id]
+    original_transaction_id = artifact["transaction_id"]
+    artifact["transaction_id"] = "tx-wrong"
+    wrong_trace = inspector.prediction_execution(
+        project_id="project-1", plan=plan, orchestrator=orchestrator
+    )
+    case.assertEqual(
+        wrong_trace.blocker_code, "prediction_execution_correlation_invalid"
+    )
+    artifact["transaction_id"] = original_transaction_id
+    return completed
 
 
 class FormalBoundaryInspectorTests(unittest.TestCase):
@@ -536,12 +610,15 @@ class FormalBoundaryInspectorTests(unittest.TestCase):
             }
             record_path.write_text(json.dumps(record), encoding="utf-8")
             handoff_path = root / "prediction_handoff.json"
+            (threshold_artifact_id, thresholds_path, thresholds_digest,
+             threshold_artifact) = _threshold_artifact_fixture(root)
             handoff = {
                 "project_id": "project-1",
                 "run_id": "prediction-domain",
                 "pipeline_version": "test",
                 "protocol_identity": identity["prediction_protocol"],
                 "execution_identity": identity,
+                "thresholds_digest": thresholds_digest,
                 "downstream": {
                     "critic_input_statuses": list(CRITIC_READY_STATUSES),
                     "authoritative_record_field": "record_path",
@@ -586,19 +663,15 @@ class FormalBoundaryInspectorTests(unittest.TestCase):
                 "observed_execution_identity": identity,
             }
             record_artifact_id = "tx-prediction-prediction-record-C0001"
+            artifact_ids, common = _prediction_common(
+                plan, identity, record_artifact_id, threshold_artifact_id
+            )
+            _bind_threshold_artifact_trace(threshold_artifact, common, plan)
             handoff["categories"]["needs_optimization"][0]["record_artifact_id"] = (
                 record_artifact_id
             )
             handoff_path.write_text(json.dumps(handoff), encoding="utf-8")
             run["tasks"]["T001"]["outputs"][0]["sha256"] = file_sha256(handoff_path)
-            common = {
-                "project_id": "project-1", "workflow_id": "workflow-1",
-                "run_id": "run-1", "plan_id": plan["plan_id"],
-                "task_id": "T001", "attempt_id": "T001-A01",
-                "transaction_id": "tx-prediction",
-                "prediction_run_id": "prediction-domain",
-                "execution_identity": identity,
-            }
             prediction_events = [{
                 **common, "event_id": "recorded-C0001", "agent": "prediction",
                 "event_type": "prediction_recorded", "candidate_id": "C0001",
@@ -607,6 +680,8 @@ class FormalBoundaryInspectorTests(unittest.TestCase):
                 **common, "event_id": "handoff-ready", "agent": "prediction",
                 "event_type": "prediction_handoff_ready",
                 "handoff_artifact_id": "tx-prediction-prediction_handoff",
+                "thresholds_artifact_id": threshold_artifact_id,
+                "thresholds_digest": thresholds_digest,
             }, {
                 **common, "event_id": "battery-C0001", "agent": "prediction",
                 "event_type": "battery_evaluated", "candidate_id": "C0001",
@@ -615,6 +690,7 @@ class FormalBoundaryInspectorTests(unittest.TestCase):
                 **common, "status": "COMMITTED",
                 "action": "evaluate_new_design_candidates",
                 "metadata": {"project_id": "project-1", "plan_id": plan["plan_id"]},
+                "artifact_ids": artifact_ids,
             }
             store = _Store(
                 [completion, *prediction_events],
@@ -628,7 +704,7 @@ class FormalBoundaryInspectorTests(unittest.TestCase):
                         "project_id", "workflow_id", "run_id", "task_id",
                         "attempt_id", "transaction_id",
                     )},
-                }, record_artifact_id: {
+                }, threshold_artifact_id: threshold_artifact, record_artifact_id: {
                     "artifact_id": record_artifact_id,
                     "artifact_type": "prediction_record",
                     "path": str(record_path),
@@ -643,14 +719,12 @@ class FormalBoundaryInspectorTests(unittest.TestCase):
                 statuses={"tx-prediction": "COMMITTED"},
             )
             inspector = _inspector(store)
-
-            completed = inspector.prediction_execution(
-                project_id="project-1", plan=plan, orchestrator=orchestrator
+            completed = _assert_threshold_boundary(
+                self, inspector, store, plan, orchestrator,
+                threshold_artifact_id, thresholds_path,
             )
-            self.assertEqual(completed.status, "completed")
             self.assertEqual(completed.references["prediction_run_id"], "prediction-domain")
             self.assertIn("battery-C0001", completed.references["evidence_ids"])
-
             _assert_prediction_proof_tampering_blocks(
                 self, inspector, store, plan, orchestrator,
                 record_artifact_id, prediction_events, record_path,
