@@ -131,7 +131,7 @@ class WorkflowPlannerCompatibilityTests(unittest.TestCase):
             "round": 2,
             "phase": "critic",
             "design_budget": {"route_A": 20, "route_B": 10},
-            "compute_budget": {"global_budget_minutes": 240.0},
+            "compute_budget": {"global_budget_minutes": 300.0},
             "project_config": self.config,
             "iteration_history": [],
         }
@@ -190,7 +190,7 @@ class WorkflowPlannerCompatibilityTests(unittest.TestCase):
 
     def _assert_current_planner_metadata(self, plan: dict) -> None:
         self.assertEqual(plan["schema_version"], 2)
-        self.assertEqual(plan["decision_metadata"]["global_budget_minutes"], 240.0)
+        self.assertEqual(plan["decision_metadata"]["global_budget_minutes"], 300.0)
         self.assertEqual(plan["decision_metadata"]["budget_status"], "within_budget")
         self.assertGreater(
             plan["decision_metadata"]["total_estimated_gpu_minutes"], 0.0

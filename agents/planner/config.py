@@ -85,7 +85,7 @@ class PlannerConfig:
     gpu_minutes_per_proposal: float = 5.0
     gpu_minutes_per_candidate_factor: float = 0.25
     gpu_cost_per_minute_usd: float = 0.02
-    prediction_gpu_slot_minutes_per_candidate: int = 11
+    prediction_gpu_slot_minutes_per_candidate: int = 15
 
     def __post_init__(self) -> None:
         for name in (

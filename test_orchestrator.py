@@ -19,7 +19,7 @@ from agents.orchestrator import (
     skip,
     status,
 )
-from agents.planner import record_approval, run as planner_run
+from agents.planner import PlannerConfig, record_approval, run as planner_run
 from prediction_pipeline.contracts import file_sha256, object_sha256
 
 
@@ -169,7 +169,7 @@ class OrchestratorTests(unittest.TestCase):
         ], marker=marker)
         return planner_run(critic_report_path=report)
 
-    def _approval(self, plan_result, *, max_minutes=207.0):
+    def _approval(self, plan_result, *, max_minutes=255.0):
         task_ids = plan_result["plan"]["approval_request"]["required_task_ids"]
         return record_approval(
             plan_path=plan_result["plan_path"],
@@ -503,6 +503,74 @@ class OrchestratorTests(unittest.TestCase):
         )
         self.assertEqual(recovered["run"]["tasks"]["T001"]["status"], "failed")
         self.assertFalse((data_layer.DATA_DIR / "orchestrator" / "gpu_lease.json").exists())
+
+    def test_completion_keeps_actual_usage_authoritative_under_30_minute_ceiling(self):
+        within_report = self._critic_report([
+            self._issue("l2_interface_confidence_low", "iterate_interface_design"),
+        ], marker="within-30-minute-ceiling")
+        within_plan = planner_run(
+            critic_report_path=within_report,
+            config=PlannerConfig(gpu_minutes_per_proposal=2.0),
+        )
+        within_approval = record_approval(
+            plan_path=within_plan["plan_path"], task_ids=["T001"],
+            approver="PI-test", justification="approved actual-usage boundary test",
+            max_gpu_job_slots=1, max_gpu_minutes=30,
+            max_design_proposals=12, max_prediction_candidates=0,
+        )
+        within_run = initialize(
+            plan_path=within_plan["plan_path"],
+            approval_paths=[within_approval["approval_path"]],
+        )
+        within_claim = claim(
+            run_path=within_run["run_path"], task_id="T001", worker="design-agent"
+        )
+        completed = complete(
+            run_path=within_run["run_path"],
+            task_id="T001",
+            claim_token=within_claim["claim_token"],
+            output_paths=[
+                "design_result=" + str(self._design_output("within_budget.json"))
+            ],
+            gpu_minutes=22.33897502720356,
+        )
+        self.assertEqual(
+            completed["run"]["tasks"]["T001"]["resource_usage"]["gpu_minutes"],
+            22.33897502720356,
+        )
+
+    def test_completion_rejects_actual_usage_above_30_minute_ceiling(self):
+        exceeded_report = self._critic_report([
+            self._issue("l2_interface_confidence_low", "iterate_interface_design"),
+        ], marker="exceeds-30-minute-ceiling")
+        exceeded_plan = planner_run(
+            critic_report_path=exceeded_report,
+            config=PlannerConfig(gpu_minutes_per_proposal=2.0),
+        )
+        exceeded_approval = record_approval(
+            plan_path=exceeded_plan["plan_path"], task_ids=["T001"],
+            approver="PI-test", justification="approved actual-usage boundary test",
+            max_gpu_job_slots=1, max_gpu_minutes=30,
+            max_design_proposals=12, max_prediction_candidates=0,
+        )
+        exceeded_run = initialize(
+            plan_path=exceeded_plan["plan_path"],
+            approval_paths=[exceeded_approval["approval_path"]],
+        )
+        exceeded_claim = claim(
+            run_path=exceeded_run["run_path"], task_id="T001", worker="design-agent"
+        )
+        with self.assertRaises(OrchestratorContractError) as exceeded:
+            complete(
+                run_path=exceeded_run["run_path"],
+                task_id="T001",
+                claim_token=exceeded_claim["claim_token"],
+                output_paths=[
+                    "design_result=" + str(self._design_output("over_budget.json"))
+                ],
+                gpu_minutes=30.000001,
+            )
+        self.assertEqual(exceeded.exception.code, "gpu_minutes_exceeded")
 
     def test_failure_is_terminal_and_blocks_dependency_without_retry(self):
         plan_result = self._required_plan()
