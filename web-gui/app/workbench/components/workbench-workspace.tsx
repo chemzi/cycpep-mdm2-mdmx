@@ -1,5 +1,6 @@
 import type { WorkbenchReadModel } from "../domain";
 import type { WorkbenchRequestStatus } from "../request-lifecycle";
+import type { ApprovalControlProjection, ManualApprovalRequest } from "../control-domain";
 import { reconcileWorkbenchSelection } from "../selection";
 import type { WorkbenchSelection } from "../selection";
 import { WorkbenchFrame } from "./workbench-frame";
@@ -8,6 +9,7 @@ import { WorkbenchInspector } from "./workbench-inspector";
 import { WorkbenchNavigator } from "./workbench-navigator";
 import { WorkbenchPrimary } from "./workbench-primary";
 import { WorkbenchTopBar } from "./workbench-top-bar";
+import { ApprovalControlCard } from "./approval-control-card";
 
 export type WorkbenchAuxiliaryPanel = "inspector" | "history";
 
@@ -25,6 +27,15 @@ export interface WorkbenchWorkspaceProps {
   collapsedPanels?: WorkbenchAuxiliaryPanel[];
   onSelectionChange?: (selection: WorkbenchSelection) => void;
   onPanelCollapsedChange?: (panel: WorkbenchAuxiliaryPanel, collapsed: boolean) => void;
+  approvalControl?: ApprovalControlProjection | null;
+  manualApprovalRequest?: ManualApprovalRequest | null;
+  autoApprovalEligible?: boolean;
+  autoApprovalSelected?: boolean;
+  approvalPending?: boolean;
+  approvalError?: string | null;
+  onManualApprovalRequestChange?: (request: ManualApprovalRequest) => void;
+  onAutoApprovalChange?: (enabled: boolean) => void;
+  onApproveAndContinue?: (request: ManualApprovalRequest) => void;
 }
 
 const OVERVIEW: WorkbenchSelection = { kind: "overview", identity: null };
@@ -47,6 +58,15 @@ export function WorkbenchWorkspace({
   collapsedPanels: controlledCollapsedPanels,
   onSelectionChange = () => undefined,
   onPanelCollapsedChange = () => undefined,
+  approvalControl = null,
+  manualApprovalRequest = null,
+  autoApprovalEligible = false,
+  autoApprovalSelected = false,
+  approvalPending = false,
+  approvalError = null,
+  onManualApprovalRequestChange = () => undefined,
+  onAutoApprovalChange = () => undefined,
+  onApproveAndContinue = () => undefined,
 }: WorkbenchWorkspaceProps) {
   const selection = reconcileWorkbenchSelection(controlledSelection ?? initialSelection, data);
   const collapsedPanels = controlledCollapsedPanels ?? initialCollapsedPanels;
@@ -71,6 +91,17 @@ export function WorkbenchWorkspace({
       onSelectionChange={onSelectionChange}
     />}
     primary={<section id="workbench-primary" className="primary-workspace" aria-label="Selected workspace">
+      {approvalControl && manualApprovalRequest ? <ApprovalControlCard
+        approval={approvalControl}
+        request={manualApprovalRequest}
+        autoApprovalEligible={autoApprovalEligible}
+        autoApprovalSelected={autoApprovalSelected}
+        pending={approvalPending}
+        error={approvalError}
+        onRequestChange={onManualApprovalRequestChange}
+        onAutoApprovalChange={onAutoApprovalChange}
+        onApprove={onApproveAndContinue}
+      /> : null}
       <WorkbenchPrimary data={data} selection={selection} onSelectionChange={onSelectionChange} />
     </section>}
     inspector={<WorkbenchInspector
