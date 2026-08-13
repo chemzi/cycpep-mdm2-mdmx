@@ -18,7 +18,7 @@ Planner currently chooses peptide lengths from target configuration or an ambien
 
 ### Modified Capabilities
 
-None.
+- `workflow/planner-exploration-decision-input`: Supersede E3-A's phase-local non-operative and ambient-fallback behavior so the explicitly bound Decision governs only iterate-design lengths and Decision absence uses the deterministic approved/static length policy without ambient experience.
 
 ## Impact
 

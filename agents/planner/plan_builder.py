@@ -135,8 +135,8 @@ def build_plan(
     When omitted, behaviour is unchanged.
 
     ``exploration_decision`` optionally binds one validated E2 Decision into
-    plan provenance and identity. Its adjustment is not applied to tasks, and
-    omitting it preserves the legacy source and digest shape.
+    plan provenance and identity. Its adjustment may narrow only iterate-design
+    peptide lengths; omitting it preserves the legacy source and digest shape.
 
     The injected config must also be injected into Execution (or carried in
     State), which re-verifies the digest and fails closed with

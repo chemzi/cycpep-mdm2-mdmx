@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from contracts.exploration_decision import ExplorationDecision
 from contracts.plan import validate_sha256
@@ -44,8 +44,22 @@ def _bind_exploration_decision(
             "critic_required_targets_invalid",
             "Critic required_targets must be non-empty unique non-blank strings",
         )
+    project_config = state.get("project_config")
+    project_config = project_config if isinstance(project_config, Mapping) else {}
+    project_review = project_config.get("review")
+    project_review = project_review if isinstance(project_review, Mapping) else {}
     bindings = (
         (decision.project_id, project_id, "project"),
+        (
+            decision.evidence_support.get("project_id"),
+            project_config.get("project_id"),
+            "approved project",
+        ),
+        (
+            decision.evidence_support.get("approval_digest"),
+            project_review.get("approved_digest"),
+            "approved project revision",
+        ),
         (decision.workflow_id, workflow_id, "workflow"),
         (decision.source_round, source_round, "source round"),
         (decision.applies_to_round, source_round + 1, "applicable round"),

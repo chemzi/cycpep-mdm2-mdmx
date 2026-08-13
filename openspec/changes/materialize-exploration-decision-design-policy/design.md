@@ -2,6 +2,8 @@
 
 See `proposal.md` for motivation and `specs/workflow/exploration-decision-design-materialization/spec.md` for behavior. At the frozen base, `agents/planner/task_builder.py::_materialize_design_jobs` owns allocation, seed derivation, configured-length resolution, and an implicit ambient `experience` read/write fallback. E3-A provides a canonical dict already validated by `ExplorationDecision.from_dict()` at `state["_frozen_exploration_decision"]`.
 
+E3-A intentionally froze Decision identity before making it operative. This change supersedes that phase-local boundary: the same explicitly bound private value now governs only iterate-design length materialization, while its no-Decision path becomes deterministic and independent of ambient experience. The remaining E3-A identity, validation, provenance, reserved-key, and no-persistence requirements remain unchanged.
+
 The active Launcher is isolated from this worktree, and the change cannot touch Planner plan construction, schemas, contracts, Store/runtime state, execution, prediction, Design, Critic, project configuration, protocol, or thresholds.
 
 ## Goals / Non-Goals

@@ -5,7 +5,7 @@ E2 now provides an immutable, fully validated `ExplorationDecision`, but Planner
 ## What Changes
 
 - Add an explicit optional `exploration_decision` input to `build_plan()` and parse it only through the public `ExplorationDecision.from_dict()` contract.
-- Validate the Planner handoff bindings for project, workflow, source/applicable rounds, Prediction run, and target scope; mismatches fail closed before plan assembly.
+- Validate the Planner handoff bindings for project, current approved project revision digest, workflow, source/applicable rounds, Prediction run, and target scope; mismatches fail closed before plan assembly.
 - Canonicalize the validated Decision with `validated_decision.to_dict()` and bind its Decision ID plus `object_sha256(...)` to Planner `input_digest`.
 - Inject the canonical Decision only into Planner's local State copy under `_frozen_exploration_decision`; do not call `State.update`, write Evidence, or discover a Decision from ambient history.
 - Add Decision ID, canonical Decision SHA-256, and Decision input digest to the Planner source only when an explicit Decision is present.

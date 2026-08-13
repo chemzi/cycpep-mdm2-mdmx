@@ -63,8 +63,12 @@ class PlannerExplorationDecisionTests(unittest.TestCase):
                 ],
                 "review": {
                     "status": "approved",
-                    "approved_digest": "a" * 64,
-                    "content_digest": "a" * 64,
+                    "approved_digest": self.decision["evidence_support"][
+                        "approval_digest"
+                    ],
+                    "content_digest": self.decision["evidence_support"][
+                        "approval_digest"
+                    ],
                 },
             },
             "iteration_history": [{"event_type": "exploration_decision", "newer": True}],
@@ -249,6 +253,30 @@ class PlannerExplorationDecisionTests(unittest.TestCase):
                     state=deepcopy(self.state),
                     exploration_decision=deepcopy(self.decision),
                 )
+
+    def test_stale_approved_project_revision_fails_closed(self):
+        state = deepcopy(self.state)
+        state["project_config"]["review"]["approved_digest"] = "f" * 64
+
+        with self.assertRaisesRegex(
+            PlannerContractError, "approved project revision"
+        ):
+            build_plan(
+                critic_report_path=self._report(),
+                state=state,
+                exploration_decision=deepcopy(self.decision),
+            )
+
+    def test_missing_approved_project_revision_fails_as_planner_contract(self):
+        state = deepcopy(self.state)
+        state.pop("project_config")
+
+        with self.assertRaisesRegex(PlannerContractError, "approved project"):
+            build_plan(
+                critic_report_path=self._report(),
+                state=state,
+                exploration_decision=deepcopy(self.decision),
+            )
 
     def test_invalid_contract_and_ambiguous_critic_target_scopes_fail_closed(self):
         invalid = deepcopy(self.decision)

@@ -60,8 +60,12 @@ class PlannerServiceExplorationDecisionTests(unittest.TestCase):
                 ],
                 "review": {
                     "status": "approved",
-                    "approved_digest": "a" * 64,
-                    "content_digest": "a" * 64,
+                    "approved_digest": self.decision["evidence_support"][
+                        "approval_digest"
+                    ],
+                    "content_digest": self.decision["evidence_support"][
+                        "approval_digest"
+                    ],
                 },
             },
             "iteration_history": [],

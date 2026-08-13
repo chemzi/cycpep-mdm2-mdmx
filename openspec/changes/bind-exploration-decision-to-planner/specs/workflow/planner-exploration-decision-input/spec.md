@@ -7,7 +7,7 @@ Define the explicit frozen handoff by which Planner binds one validated E2 Explo
 ### Requirement: Planner accepts only an explicit validated ExplorationDecision
 Planner SHALL accept an optional explicit ExplorationDecision input. When supplied, Planner MUST restore it through the public ExplorationDecision contract and MUST fail closed if the contract or any Planner handoff binding is invalid. Planner MUST NOT reconstruct the Decision, duplicate its internal validator, or discover a Decision from Evidence, experience, State history, or another ambient source.
 
-The validated Decision MUST match the plan's project ID, workflow ID, source round, next applicable round, Prediction run ID, and Critic required-target scope. Target scope equality MUST be order-insensitive after the Critic scope is verified as a non-empty unique string sequence; this comparison MUST NOT reorder the Critic source or downstream task inputs.
+The validated Decision MUST match the plan's project ID, current approved project revision digest, workflow ID, source round, next applicable round, Prediction run ID, and Critic required-target scope. Target scope equality MUST be order-insensitive after the Critic scope is verified as a non-empty unique string sequence; this comparison MUST NOT reorder the Critic source or downstream task inputs.
 
 #### Scenario: Valid explicit Decision binding
 - **WHEN** a caller supplies a contract-valid Decision whose project, workflow, source round, applicable round, Prediction run, and target scope match the Critic/Planner inputs
@@ -20,6 +20,10 @@ The validated Decision MUST match the plan's project ID, workflow ID, source rou
 #### Scenario: Handoff identity mismatch fails closed
 - **WHEN** the validated Decision mismatches the plan project ID, workflow ID, source round, applicable round, Prediction run ID, or required-target scope
 - **THEN** Planner rejects plan construction before producing a plan
+
+#### Scenario: Stale approved project revision fails closed
+- **WHEN** a Decision was created under a different approved project revision digest than the current explicit project configuration
+- **THEN** Planner rejects plan construction before freezing the Decision or producing a plan
 
 #### Scenario: Equivalent reordered target scope is accepted without mutation
 - **WHEN** the Decision target IDs and Critic required targets contain the same unique non-empty strings in different orders

@@ -26,13 +26,13 @@ The implementation runs in an isolated worktree from `02c54edeb3580d58877e7c7bf1
 
 ### D1. Restore the Decision once through the public E2 contract
 
-`build_plan()` receives an optional mapping and immediately passes it to `ExplorationDecision.from_dict()`. Planner retains the resulting immutable object plus its canonical `to_dict()` serialization. Planner validation checks only relationships between that already-valid object and current Planner/Critic inputs: `project_id`, `workflow_id`, `source_round`, `applies_to_round == source_round + 1`, `prediction_run_id`, and `target_ids` against `required_targets`.
+`build_plan()` receives an optional mapping and immediately passes it to `ExplorationDecision.from_dict()`. Planner retains the resulting immutable object plus its canonical `to_dict()` serialization. Planner validation checks only relationships between that already-valid object and current Planner/Critic inputs: `project_id`, the Decision policy envelope's `approval_digest` against the current explicit approved project revision, `workflow_id`, `source_round`, `applies_to_round == source_round + 1`, `prediction_run_id`, and `target_ids` against `required_targets`.
 
 Alternative considered: reproduce selected E2 field checks in Planner. Rejected because it creates a second validator that can drift from the formal contract.
 
 ### D2. Validate after Planner identity resolution and before task construction
 
-Planner copies caller State, removes any ambient `_frozen_exploration_decision` value as non-authoritative, then loads/validates the Critic report and resolves the authoritative project/workflow/source-round tuple using its current seam. It validates an explicitly supplied Decision handoff and injects the canonical dictionary into that local State copy under `_frozen_exploration_decision` before task builders run. The underscored key is therefore invocation-owned and cannot be supplied through State authority.
+Planner copies caller State, removes any ambient `_frozen_exploration_decision` value as non-authoritative, then loads/validates the Critic report and resolves the authoritative project/workflow/source-round tuple using its current seam. It validates an explicitly supplied Decision handoff, including the current approved project revision, and injects the canonical dictionary into that local State copy under `_frozen_exploration_decision` before task builders run. The underscored key is therefore invocation-owned and cannot be supplied through State authority.
 
 Target binding first verifies that Critic `required_targets` is a non-empty unique sequence of non-empty strings, then compares a sorted copy with the canonical Decision target tuple. It does not mutate the Critic sequence consumed by task builders and does not consult project configuration to invent or widen the target set.
 

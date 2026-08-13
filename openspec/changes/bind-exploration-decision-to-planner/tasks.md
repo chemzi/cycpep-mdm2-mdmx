@@ -2,14 +2,14 @@
 
 - [x] 1.1 Add focused isolated Planner fixtures that construct contract-valid ExplorationDecisions and capture the frozen-baseline Decision-absent source, input digest, plan ID, and task surfaces.
 - [x] 1.2 Add failing focused tests for valid binding, deterministic replay, a different valid Decision changing plan identity, canonical source provenance, and local-only frozen-State injection.
-- [x] 1.3 Add failing mismatch tests for project, workflow, source round, applicable round, Prediction run, and target scope, plus invalid-contract rejection and a positive reordered-equivalent target-scope regression that proves task input order is unchanged.
+- [x] 1.3 Add failing mismatch tests for project, current approved project revision digest, workflow, source round, applicable round, Prediction run, and target scope, plus invalid-contract rejection and a positive reordered-equivalent target-scope regression that proves task input order is unchanged.
 - [x] 1.4 Add failing regressions proving Decision absence preserves legacy shape/identity, ambient Evidence/history is not consulted, no State/Evidence persistence occurs, and Decision changes do not alter tasks/budgets/approvals/execution/proposal counts/lengths/seeds.
 - [x] 1.5 Strengthen characterization with the frozen pre-change digest formula/plan ID, direct schema complete/partial provenance validation, real explicit-workflow import coverage, and missing-length ambient-experience guards.
 
 ## 2. Minimal Planner Implementation
 
 - [x] 2.1 Add the optional keyword-only `exploration_decision` input to `build_plan()` and restore it exclusively through `ExplorationDecision.from_dict()`.
-- [x] 2.2 Implement focused Planner handoff validation for project/workflow/source/applicable-round/Prediction-run/target bindings and inject the canonical payload only into the invocation-local State copy.
+- [x] 2.2 Implement focused Planner handoff validation for project/current-approved-revision/workflow/source/applicable-round/Prediction-run/target bindings and inject the canonical payload only into the invocation-local State copy.
 - [x] 2.3 Compute the canonical Decision SHA with `object_sha256(validated_decision.to_dict())` and conditionally bind Decision ID plus SHA into Planner input identity without changing the absent path.
 - [x] 2.4 Conditionally emit the three Decision provenance fields in Critic-source plans and make the Planner plan schema accept them only as an all-or-none additive group.
 - [x] 2.5 Update `contracts/plan.py` or `agents/planner/validation.py` only if focused contract validation proves necessary; otherwise leave them unchanged. Do not modify any forbidden module.
