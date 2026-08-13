@@ -62,6 +62,87 @@ def _task(task_id, action, depends_on=(), *, gate="proposed", approval=False):
 
 
 class WorkbenchReaderTests(unittest.TestCase):
+    def test_task_resource_request_is_an_exact_safe_immutable_projection(self):
+        task = _task("T001", "iterate_design")
+        task["resource_request"] = {
+            "class": "gpu",
+            "gpu_job_slots": 1,
+            "proposal_count": 8,
+            "candidate_limit": 12,
+            "estimated_gpu_minutes": 42.5,
+            "estimate_status": "estimated",
+            "estimator_version": "simple-v1",
+            "calibration_status": "provisional",
+            "internal_plan_path": "C:/secret/plan.json",
+            "unknown_extension": {"mutable": True},
+        }
+        plan = {"plan_id": "plan-1", "workflow_id": "workflow-1", "tasks": [task]}
+        run = {
+            "run_id": "run-1",
+            "workflow_id": "workflow-1",
+            "status": "ready",
+            "plan": {
+                "plan_id": "plan-1",
+                "project_id": "project-1",
+                "plan_path": "internal",
+            },
+            "tasks": {"T001": {"status": "ready", "attempts": 0}},
+        }
+        reader = WorkbenchReader(
+            FakeStore(
+                state={
+                    "project_id": "project-1",
+                    "orchestrator": {"run_path": "internal"},
+                }
+            ),
+            status_reader=lambda **_: {"run": run},
+            plan_reader=lambda *_: plan,
+        )
+
+        resource = reader.read()["tasks"]["items"][0]["resource_request"]
+
+        self.assertEqual(resource, {
+            "class": "gpu",
+            "gpu_job_slots": 1,
+            "proposal_count": 8,
+            "candidate_limit": 12,
+            "estimated_gpu_minutes": 42.5,
+            "estimate_status": "estimated",
+            "estimator_version": "simple-v1",
+            "calibration_status": "provisional",
+        })
+        resource["candidate_limit"] = 999
+        self.assertEqual(task["resource_request"]["candidate_limit"], 12)
+        self.assertNotIn("secret", repr(resource).lower())
+
+    def test_legacy_task_without_resource_request_keeps_previous_shape(self):
+        task = _task("T001", "iterate_design")
+        task.pop("resource_request")
+        plan = {"plan_id": "plan-1", "workflow_id": "workflow-1", "tasks": [task]}
+        run = {
+            "run_id": "run-1",
+            "workflow_id": "workflow-1",
+            "status": "ready",
+            "plan": {
+                "plan_id": "plan-1",
+                "project_id": "project-1",
+                "plan_path": "internal",
+            },
+            "tasks": {"T001": {"status": "ready", "attempts": 0}},
+        }
+        item = WorkbenchReader(
+            FakeStore(
+                state={
+                    "project_id": "project-1",
+                    "orchestrator": {"run_path": "internal"},
+                }
+            ),
+            status_reader=lambda **_: {"run": run},
+            plan_reader=lambda *_: plan,
+        ).read()["tasks"]["items"][0]
+
+        self.assertNotIn("resource_request", item)
+
     def test_no_run_returns_project_scoped_history_with_explicit_collection_counts(self):
         store = FakeStore(
             state={"project_id": "project-1", "project": "Demo"},

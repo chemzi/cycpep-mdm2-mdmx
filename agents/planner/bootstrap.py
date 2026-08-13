@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -26,6 +27,51 @@ from .task_builder import _task
 
 
 BOOTSTRAP_SOURCE_KIND = "initial_prediction_bootstrap"
+
+
+def _normalize_bootstrap_estimate(
+    plan: dict[str, Any], metadata: dict[str, object]
+) -> None:
+    """Keep bootstrap task estimates and the budget summary in one interpretation."""
+    required_task_ids = set(plan["approval_request"]["required_task_ids"])
+    required_gpu_resources = [
+        task["resource_request"]
+        for task in plan["tasks"]
+        if task["task_id"] in required_task_ids
+        and task["resource_request"]["class"] == "gpu"
+    ]
+    estimates = [resource.get("estimated_gpu_minutes") for resource in required_gpu_resources]
+    estimates_available = bool(estimates) and all(
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and float(value) >= 0
+        and resource.get("estimate_status") == "estimated"
+        for resource, value in zip(required_gpu_resources, estimates)
+    )
+    estimator_version = metadata.get("estimator_version")
+    budget = plan["budget_request"]
+    if estimates_available:
+        total = float(sum(float(value) for value in estimates))
+        metadata["total_estimated_gpu_minutes"] = total
+        metadata["estimator_version"] = "simple-v1"
+        metadata["estimate_calibration_status"] = "provisional"
+        budget.update({
+            "gpu_minutes": total,
+            "gpu_minutes_status": "estimated",
+            "gpu_minutes_estimator_version": "simple-v1",
+            "gpu_minutes_calibration_status": "provisional",
+        })
+        return
+
+    metadata["total_estimated_gpu_minutes"] = None
+    metadata["estimate_calibration_status"] = "unavailable"
+    budget.update({
+        "gpu_minutes": None,
+        "gpu_minutes_status": "benchmark_required",
+        "gpu_minutes_estimator_version": estimator_version,
+        "gpu_minutes_calibration_status": "unavailable",
+    })
 
 
 def _normalize_source(source: Mapping[str, Any]) -> dict[str, Any]:
@@ -195,6 +241,7 @@ def build_initial_prediction_bootstrap_plan(
         "tasks": tasks,
     }
     plan["decision_metadata"] = _compute_plan_metadata(tasks, {}, config, {})
+    _normalize_bootstrap_estimate(plan, plan["decision_metadata"])
     return plan
 
 

@@ -12,6 +12,7 @@ import base64
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 import re
 import subprocess
@@ -20,7 +21,7 @@ import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -33,7 +34,16 @@ from target_bootstrap import (  # noqa: E402
     approve_draft,
     edit_target_draft,
 )
+from web_api.project_control import ProjectControlError, ProjectControlService  # noqa: E402
+from web_api.scoped_workbench import read_launcher_workbench  # noqa: E402
 from web_api.workbench import WorkbenchReader  # noqa: E402
+from workflow.control_models import (  # noqa: E402
+    ManualApprovalRequest,
+    ProjectLaunchOptions,
+    ProjectLaunchRequest,
+    ScopedReadIdentity,
+)
+from workflow.errors import DiagnosticContractError, sanitize_message  # noqa: E402
 
 STORE = Path(os.environ.get("CYCPEP_WEB_STORE", ROOT / "data" / "web_api"))
 DRAFTS = STORE / "drafts"
@@ -43,6 +53,23 @@ ARTIFACTS: dict[str, dict] = {}
 HOST_RE = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:]+\])$")
 USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 ALIAS_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,31}$")
+_LOGGER = logging.getLogger(__name__)
+_CONTROL_STATUS = {
+    "control_binding_invalid": 409,
+    "control_binding_conflict": 409,
+    "approval_plan_stale": 409,
+    "approval_estimate_unavailable": 409,
+    "approval_ceiling_exceeded": 409,
+    "project_review_blocked": 409,
+    "launcher_run_not_found": 404,
+    "launcher_operation_failed": 502,
+}
+
+
+def _require_matching_id(body: dict, name: str, expected: str) -> None:
+    supplied = body.get(name)
+    if supplied is not None and supplied != expected:
+        raise ValueError(f"URL and body {name} differ")
 
 
 def _draft_path(draft_id: str) -> Path:
@@ -295,6 +322,31 @@ class Handler(BaseHTTPRequestHandler):
         size = int(self.headers.get("Content-Length", "0"))
         return json.loads(self.rfile.read(size) or b"{}")
 
+    def _object_body(self):
+        value = self._body()
+        if not isinstance(value, dict):
+            raise ValueError("request body must be an object")
+        return value
+
+    def _project_control(self):
+        service = getattr(self.server, "project_control_service", None)
+        return service if service is not None else ProjectControlService(DRAFTS)
+
+    def _control_json(self, value, *, status=200):
+        failure = value.get("control_failure") if isinstance(value, dict) else None
+        if not failure:
+            return self._json(status, value)
+        error_status = _CONTROL_STATUS.get(failure.get("code"), 409)
+        return self._json(error_status, error={**failure, "control": value})
+
+    def _control_error(self, status, code, message):
+        return self._json(status, error={
+            "code": code,
+            "message": sanitize_message(
+                str(message), fallback="Control operation could not be completed."
+            ),
+        })
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", os.environ.get("CYCPEP_UI_ORIGIN", "http://localhost:3000"))
@@ -303,7 +355,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path.startswith("/api/v2/control/"):
+            return self._do_control_get(path)
+        if path == "/api/v2/workbench" and "launcher_run_id" in parse_qs(
+            parsed.query, keep_blank_values=True
+        ):
+            return self._do_scoped_workbench(parsed.query)
         try:
             if path == "/api/v1/health":
                 return self._json(200, {"status": "ok", "adapter": "local"})
@@ -349,6 +408,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/v2/control/project-drafts" or path.startswith(
+            "/api/v2/control/"
+        ):
+            return self._do_control_post(path)
         try:
             body = self._body()
             if path == "/api/v1/project-drafts":
@@ -389,6 +452,127 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             return self._json(502, error={"code": "connection_failed", "message": str(exc)})
 
+    def _do_scoped_workbench(self, query):
+        try:
+            values = parse_qs(query, keep_blank_values=True).get("launcher_run_id", [])
+            if len(values) != 1:
+                raise ValueError("launcher_run_id must appear exactly once")
+            identity = ScopedReadIdentity.from_dict({"launcher_run_id": values[0]})
+            reader = getattr(
+                self.server, "launcher_workbench_reader", read_launcher_workbench
+            )
+            return self._json(200, reader(launcher_run_id=identity.launcher_run_id))
+        except (AttributeError, TypeError, ValueError) as exc:
+            return self._control_error(400, "validation_error", exc)
+        except DiagnosticContractError as exc:
+            status = 404 if exc.code == "launcher_diagnostic_not_found" else 409
+            return self._control_error(status, exc.code, exc)
+        except Exception:
+            _LOGGER.exception("scoped workbench read failed")
+            return self._control_error(
+                502, "workbench_unavailable", "Scoped workbench read failed."
+            )
+
+    def _do_control_get(self, path):
+        try:
+            service = self._project_control()
+            draft = re.fullmatch(
+                r"/api/v2/control/project-drafts/([^/]+)", path
+            )
+            if draft:
+                return self._json(200, service.retrieve_draft(draft.group(1)))
+            run = re.fullmatch(
+                r"/api/v2/control/launcher-runs/([^/]+)", path
+            )
+            if run:
+                identity = ScopedReadIdentity.from_dict({
+                    "launcher_run_id": run.group(1)
+                })
+                return self._control_json(service.status(identity.launcher_run_id))
+            return self._json(
+                404, error={"code": "not_found", "message": "Route not found"}
+            )
+        except FileNotFoundError:
+            return self._control_error(404, "not_found", "Resource not found.")
+        except (AttributeError, TypeError, ValueError) as exc:
+            return self._control_error(400, "validation_error", exc)
+        except ProjectControlError as exc:
+            failure = exc.to_dict()
+            return self._json(
+                _CONTROL_STATUS.get(failure["code"], 409), error=failure
+            )
+        except Exception:
+            _LOGGER.exception("control GET failed")
+            return self._control_error(
+                502, "launcher_operation_failed", "Control operation failed."
+            )
+
+    def _do_control_post(self, path):
+        try:
+            body = self._object_body()
+            service = self._project_control()
+            if path == "/api/v2/control/project-drafts":
+                request = ProjectLaunchRequest.from_dict(body)
+                return self._json(201, service.create_draft(request))
+            approve = re.fullmatch(
+                r"/api/v2/control/project-drafts/([^/]+)/approve", path
+            )
+            if approve:
+                _require_matching_id(body, "draft_id", approve.group(1))
+                return self._json(200, service.approve_project(
+                    approve.group(1), justification=body.get("justification")
+                ))
+            launch = re.fullmatch(
+                r"/api/v2/control/project-drafts/([^/]+)/launch", path
+            )
+            if launch:
+                _require_matching_id(body, "draft_id", launch.group(1))
+                options = ProjectLaunchOptions.from_dict(body.get("options", body))
+                return self._control_json(
+                    service.launch_project(launch.group(1), options)
+                )
+            approval = re.fullmatch(
+                r"/api/v2/control/launcher-runs/([^/]+)/approval", path
+            )
+            if approval:
+                request = ManualApprovalRequest.from_dict(body)
+                if request.launcher_run_id != approval.group(1):
+                    raise ValueError("URL and body launcher_run_id differ")
+                return self._control_json(service.approve_and_continue(request))
+            continuation = re.fullmatch(
+                r"/api/v2/control/launcher-runs/([^/]+)/continue", path
+            )
+            if continuation:
+                identity = ScopedReadIdentity.from_dict({
+                    "launcher_run_id": continuation.group(1)
+                })
+                _require_matching_id(body, "launcher_run_id", identity.launcher_run_id)
+                return self._control_json(service.continue_run(identity.launcher_run_id))
+            return self._json(
+                404, error={"code": "not_found", "message": "Route not found"}
+            )
+        except (
+            AttributeError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            UnicodeDecodeError,
+            ValueError,
+        ) as exc:
+            return self._control_error(400, "validation_error", exc)
+        except FileNotFoundError:
+            return self._control_error(404, "not_found", "Resource not found.")
+        except ProjectControlError as exc:
+            failure = exc.to_dict()
+            return self._json(
+                _CONTROL_STATUS.get(failure["code"], 409), error=failure
+            )
+        except Exception:
+            _LOGGER.exception("control POST failed")
+            return self._control_error(
+                502, "launcher_operation_failed", "Control operation failed."
+            )
+
     def do_PATCH(self):
         match = re.fullmatch(r"/api/v1/project-drafts/(drf_[A-Za-z0-9]+)/targets/([^/]+)", urlparse(self.path).path)
         if not match:
@@ -411,6 +595,7 @@ def main() -> None:
         )
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.workbench_store = get_storage_backend()
+    server.project_control_service = ProjectControlService(DRAFTS)
     server.serve_forever()
 
 

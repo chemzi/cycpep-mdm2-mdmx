@@ -20,6 +20,21 @@ export type WorkbenchRequestAction =
 
 export type RefreshSource = "manual" | "automatic";
 
+export interface WorkbenchScopeTransition {
+  changed: boolean;
+  refetch: boolean;
+}
+
+export function beginWorkbenchScopeChange(
+  active: AbortController | null,
+  previousLauncherRunId: string | undefined,
+  nextLauncherRunId: string | undefined,
+): WorkbenchScopeTransition {
+  const changed = previousLauncherRunId !== nextLauncherRunId;
+  if (changed) active?.abort();
+  return { changed, refetch: changed };
+}
+
 export function beginWorkbenchRequest(
   active: AbortController | null,
   source: RefreshSource,

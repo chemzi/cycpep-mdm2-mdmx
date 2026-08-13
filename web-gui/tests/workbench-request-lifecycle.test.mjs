@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { parseWorkbenchEnvelope } from "../app/workbench/client.ts";
 import {
+  beginWorkbenchScopeChange,
   initialWorkbenchRequestState,
   workbenchRequestReducer,
 } from "../app/workbench/request-lifecycle.ts";
@@ -67,4 +68,25 @@ test("a refresh failure preserves the last successful response as stale", async 
     data,
     error: "Refresh failed",
   });
+});
+
+test("a launcher scope change aborts the old request and requests immediate refetch", () => {
+  const active = new AbortController();
+  const transition = beginWorkbenchScopeChange(
+    active,
+    "launcher_0123456789abcdef0123456789abcdef",
+    "launcher_fedcba9876543210fedcba9876543210",
+  );
+
+  assert.equal(active.signal.aborted, true);
+  assert.deepEqual(transition, { changed: true, refetch: true });
+});
+
+test("the same launcher scope does not abort an active request", () => {
+  const active = new AbortController();
+  const launcherRunId = "launcher_0123456789abcdef0123456789abcdef";
+  const transition = beginWorkbenchScopeChange(active, launcherRunId, launcherRunId);
+
+  assert.equal(active.signal.aborted, false);
+  assert.deepEqual(transition, { changed: false, refetch: false });
 });

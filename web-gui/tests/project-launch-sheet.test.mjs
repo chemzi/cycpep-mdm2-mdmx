@@ -38,7 +38,7 @@ before(async () => {
 after(() => vite?.close());
 
 test("the launch sheet is an honest target-first full-screen control surface", () => {
-  const html = renderToStaticMarkup(createElement(ProjectLaunchSheet, { onClose() {} }));
+  const html = renderToStaticMarkup(createElement(ProjectLaunchSheet, { onClose() {}, onLaunch() {} }));
 
   assert.match(html, /role="dialog"/);
   assert.match(html, /aria-modal="true"/);
@@ -50,7 +50,13 @@ test("the launch sheet is an honest target-first full-screen control surface", (
   assert.match(html, /Initial Design/);
   assert.match(html, /heavy Prediction/);
   assert.match(html, /Create and launch/);
-  assert.match(html, /Entering a target creates a review draft\. It does not start scientific or GPU work/);
+  assert.match(html, /Resolve target/);
+  assert.match(html, /Organism ID/);
+  assert.match(html, /Objective/);
+  assert.match(html, /Approver/);
+  assert.match(html, /Justification/);
+  assert.match(html, /Resolve and approve the project before launch/);
+  assert.match(html, /Create and launch[^]*?disabled|disabled[^]*?Create and launch/);
   assert.doesNotMatch(html, /preview|not connected|not implemented/i);
   assert.doesNotMatch(html, /target resolved|project approved|GPU approved/i);
 });
@@ -78,15 +84,41 @@ test("the compact New project entry is immediately before Refresh", () => {
   ]) assert.match(html, new RegExp(region));
 });
 
-test("launch readiness requires a target and complete automatic ceilings", () => {
-  const empty = { minutes: "", slots: "", designs: "", candidates: "" };
-  const complete = { minutes: "60", slots: "1", designs: "3", candidates: "8" };
+test("launch readiness requires approved review, identity, and valid complete ceilings", () => {
+  const empty = { max_gpu_minutes: "", max_gpu_job_slots: "", max_design_proposals: "", max_prediction_candidates: "" };
+  const complete = { max_gpu_minutes: "60", max_gpu_job_slots: "0", max_design_proposals: "0", max_prediction_candidates: "8" };
 
-  assert.equal(isLaunchRequestReady("", "manual", empty), false);
-  assert.equal(isLaunchRequestReady("MDM2", "manual", empty), true);
-  assert.equal(isLaunchRequestReady("MDM2", "automatic", empty), false);
-  assert.equal(isLaunchRequestReady("MDM2", "automatic", complete), true);
-  assert.equal(isLaunchRequestReady("MDM2", "automatic", { ...complete, slots: "0" }), false);
+  assert.equal(isLaunchRequestReady("MDM2", "manual", complete, false, "PI", "Reviewed"), false);
+  assert.equal(isLaunchRequestReady("MDM2", "manual", complete, true, "", "Reviewed"), false);
+  assert.equal(isLaunchRequestReady("MDM2", "manual", complete, true, "PI", "Reviewed"), true);
+  assert.equal(isLaunchRequestReady("MDM2", "automatic", empty, true, "PI", "Reviewed"), false);
+  assert.equal(isLaunchRequestReady("MDM2", "automatic", complete, true, "PI", "Reviewed"), true);
+  assert.equal(isLaunchRequestReady("MDM2", "automatic", { ...complete, max_gpu_minutes: "0" }, true, "PI", "Reviewed"), false);
+  assert.equal(isLaunchRequestReady("MDM2", "automatic", { ...complete, max_gpu_job_slots: "-1" }, true, "PI", "Reviewed"), false);
+});
+
+test("server review projection controls the formal approval stage", () => {
+  const readyReview = {
+    draft_id: "draft-1", project_id: "project-1", name: "MDM2 campaign",
+    target_identifier: "MDM2", resolved_identity: "MDM2 / Q00987",
+    structure_status: "Structure ready", review_status: "ready",
+    blockers: [], uncertainties: ["Isoform selection retained for review"],
+  };
+  const ready = renderToStaticMarkup(createElement(ProjectLaunchSheet, {
+    onClose() {}, review: readyReview, onApproveDraft() {},
+    initialRequest: { target_identifier: "MDM2", options: { identifier_type: "gene", organism_id: 9606, epitope: null, objective: "binder", launcher_run_id: null, first_gate_auto_policy: null } },
+  }));
+  const blocked = renderToStaticMarkup(createElement(ProjectLaunchSheet, {
+    onClose() {}, review: { ...readyReview, review_status: "review_required", blockers: ["Structure unresolved"] },
+    initialRequest: { target_identifier: "MDM2", options: { identifier_type: "gene", organism_id: 9606, epitope: null, objective: "binder", launcher_run_id: null, first_gate_auto_policy: null } },
+  }));
+
+  assert.match(ready, /MDM2 campaign/);
+  assert.match(ready, /MDM2 \/ Q00987/);
+  assert.match(ready, /Approve project/);
+  assert.match(ready, /Isoform selection retained for review/);
+  assert.doesNotMatch(blocked, /Approve project/);
+  assert.match(blocked, /Review blockers: Structure unresolved/);
 });
 
 test("launch styles are scoped and preserve the existing frame contract", async () => {
@@ -99,7 +131,9 @@ test("launch styles are scoped and preserve the existing frame contract", async 
   assert.match(css, /\.workbench-frame\s*\{[^}]*grid-template-areas:[^}]*navigator primary inspector[^}]*history history history/s);
   assert.match(page, /sessionStorage\.getItem\(LAUNCH_SHEET_DISMISSED_KEY\)/);
   assert.match(page, /<ProjectLaunchSheet/);
-  assert.match(page, /const content = !model/);
+  assert.match(page, /launcherRunId: activeLauncherRunId/);
+  assert.match(page, /setActiveLauncherRunId\(launcherRunId\)/);
+  assert.doesNotMatch(page, /demoTarget|displayedModel|createEmptyMonitoringModel/);
   assert.ok(page.indexOf("{content}") < page.indexOf("{launchSheetOpen ? <ProjectLaunchSheet"));
   assert.doesNotMatch(css, /\.launch-(?:overlay|sheet|ledger)[^{]*\{[^}]*(?:--canvas|--surface|--raised|--selection)\s*:/s);
 });

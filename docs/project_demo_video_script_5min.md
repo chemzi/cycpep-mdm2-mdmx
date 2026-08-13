@@ -21,11 +21,12 @@
 | 02:05–02:45 | 明确显示 Initial Design 已提交；停在重型 Prediction 前。展示 task、槽位、候选数、`simple-v1` 暂定分钟及待基准校准。 | “正式 GPU 审批点发生在 Initial Design 已提交之后、重型 Prediction 之前。这里的数字是 Planner 给出的暂定估算，仍明确标注待基准校准；前端不会把它说成真实校准工时。” |
 | 02:45–03:20 | 点“批准并继续”，或展示本次运行已在上限内自动批准；Prediction 进入运行。 | “审批绑定精确计划、任务范围和资源上限。Orchestrator 只下发已注册任务，Worker 在事务边界内运行；后续循环若含新 Design，也会作为新的正式计划接受审批。” |
 | 03:20–03:55 | 跳切到标明运行 ID 的正式下游运行；展示候选序列、结构、L1–L7 和证据。 | “耗时计算完成后，每个结果都能回到对应 protocol、artifact 和 Evidence。这里的跳切来自另一条明确标识的正式运行，不是合成进度。” |
-| 03:55–04:20 | 展示 `0 / N passed`、shortlist、calibrated/provisional/unavailable。 | “科学通过和探索价值始终分开。即使零个候选通过全部阈值，系统仍可给出下一轮 shortlist，但不会把它们包装成已通过结果。” |
-| 04:20–04:35 | 高亮 Critic → Planner → 下一轮 Execution，定格工作台。 | “Critic 基于正式证据评议，Planner 形成下一轮可执行计划，再经过资源审批进入执行。这是一个把证据、资源和决策放在一起的可恢复闭环。” |
+| 03:55–04:20 | 展示 `0 / N passed`、shortlist、calibrated/provisional/unavailable；随后刷新 Launcher 状态，切换到该正式运行的新 `plan_id`。 | “科学通过和探索价值始终分开。即使零个候选通过全部阈值，系统仍可给出下一轮 shortlist，但不会把它们包装成已通过结果。” |
+| 04:20–04:35 | 高亮 Critic → Planner；让新的 `Awaiting approval · action required` 卡片进入画面，显示不同的 plan digest 和资源，再定格。 | “Critic 基于正式证据评议，Planner 形成下一轮可执行计划。新的计划会再次显式请求人工批准，不会沿用首次自动授权或静默停住。” |
 
 ## 录屏取舍
 
 - 不展示 SSH、本地路径、原始日志或配置文件。
 - 如果自动批准不满足上限，停在等待批准并演示人工批准。
 - 耗时计算后只跳切到明确标出运行 ID 的正式运行，不使用伪造成功画面。
+- 录制前把 awaiting-approval 与下游运行的 `launcher_run_id`、`project_id`、`plan_id` 记入场记；二者必须能通过控制状态路由和 scoped Workbench 读取复核。若现场没有这两条正式运行，删去对应镜头，不以测试 fixture 或静态 JSON 代替。

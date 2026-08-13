@@ -14,6 +14,7 @@ type BoundedCollectionObject = JsonObject & {
 
 export interface FetchWorkbenchOptions {
   apiOrigin?: string;
+  launcherRunId?: string;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
 }
@@ -395,18 +396,36 @@ export function parseWorkbenchEnvelope(value: unknown): WorkbenchEnvelope {
   return value as unknown as WorkbenchEnvelope;
 }
 
-function workbenchUrl(apiOrigin: string | undefined): string {
-  if (!apiOrigin) return WORKBENCH_ENDPOINT;
-  return `${apiOrigin.replace(/\/$/, "")}${WORKBENCH_ENDPOINT}`;
+export function buildWorkbenchUrl(
+  apiOrigin: string | undefined,
+  launcherRunId?: string,
+): string {
+  const endpoint = apiOrigin
+    ? `${apiOrigin.replace(/\/$/, "")}${WORKBENCH_ENDPOINT}`
+    : WORKBENCH_ENDPOINT;
+  if (launcherRunId === undefined) return endpoint;
+  assertLauncherRunId(launcherRunId);
+  return `${endpoint}?launcher_run_id=${encodeURIComponent(launcherRunId)}`;
+}
+
+const LAUNCHER_RUN_ID = /^launcher_[0-9a-f]{32}$/;
+
+function assertLauncherRunId(value: string): void {
+  if (!LAUNCHER_RUN_ID.test(value)) {
+    throw new WorkbenchContractError("launcherRunId is invalid");
+  }
 }
 
 export async function fetchWorkbench(
   options: FetchWorkbenchOptions = {},
 ): Promise<WorkbenchEnvelope> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const response = await fetchImpl(workbenchUrl(options.apiOrigin), {
+  const response = await fetchImpl(
+    buildWorkbenchUrl(options.apiOrigin, options.launcherRunId),
+    {
     signal: options.signal,
-  });
+    },
+  );
   if (!response.ok) {
     throw new Error(`Workbench request failed with HTTP ${response.status}`);
   }

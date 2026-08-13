@@ -203,6 +203,27 @@ def _reason_codes(task: Mapping[str, Any], state: Mapping[str, Any], *, executab
     return list(dict.fromkeys(reasons))
 
 
+def _resource_request_view(task: Mapping[str, Any]) -> dict[str, Any] | None:
+    resource = task.get("resource_request")
+    if not isinstance(resource, Mapping):
+        return None
+    result = {
+        key: resource.get(key)
+        for key in (
+            "class",
+            "gpu_job_slots",
+            "proposal_count",
+            "candidate_limit",
+            "estimated_gpu_minutes",
+            "estimate_status",
+            "estimator_version",
+            "calibration_status",
+        )
+        if key in resource
+    }
+    return result
+
+
 def _task_view(task: Mapping[str, Any], state: Mapping[str, Any]) -> dict[str, Any]:
     action_name = str(task.get("action") or "")
     try:
@@ -252,6 +273,9 @@ def _task_view(task: Mapping[str, Any], state: Mapping[str, Any]) -> dict[str, A
     protocol = _protocol(task)
     if protocol:
         result["protocol"] = protocol
+    resource_request = _resource_request_view(task)
+    if resource_request is not None:
+        result["resource_request"] = resource_request
     return result
 
 

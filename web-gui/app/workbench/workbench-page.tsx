@@ -1,19 +1,93 @@
 "use client";
 
-import { useCallback, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 import type { WorkbenchReadModel } from "./domain";
 import { FailureState, LoadingState } from "./components/shared-states";
-import { ProjectLaunchSheet } from "./components/project-launch-sheet";
+import { ProjectLaunchSheet, type ProjectLaunchSubmission, type ProjectReviewProjection } from "./components/project-launch-sheet";
 import { WorkbenchWorkspace } from "./components/workbench-workspace";
+import type { ApprovalControlProjection, ManualApprovalRequest, ProjectDraftProjection, ProjectLaunchRequest } from "./control-domain";
 import type { WorkbenchAuxiliaryPanel } from "./components/workbench-workspace";
 import { useWorkbenchSelection } from "./selection";
 import type { WorkbenchSelection } from "./selection";
 import { useWorkbench } from "./use-workbench";
+import { getPersistedLaunchAttempt, useProjectLaunchControl } from "./use-project-launch-control";
 
 const AUTO_REFRESH_KEY = "cycpep-workbench-v2-auto-refresh";
 const LAUNCH_SHEET_DISMISSED_KEY = "cycpep-launch-sheet-dismissed";
 const LAUNCH_SHEET_CHANGE_EVENT = "cycpep-launch-sheet-change";
+const ACTIVE_LAUNCHER_KEY = "cycpep-active-launcher-run-v1";
+
+const INITIAL_LAUNCH_REQUEST: ProjectLaunchRequest = {
+  target_identifier: "",
+  options: {
+    identifier_type: "auto",
+    organism_id: 9606,
+    epitope: null,
+    objective: "binder",
+    launcher_run_id: null,
+    first_gate_auto_policy: null,
+  },
+};
+
+function stringValue(value: unknown, fallback: string) {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function stringList(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function sheetReview(
+  draft: ProjectDraftProjection | null,
+  targetIdentifier: string,
+): ProjectReviewProjection | null {
+  if (!draft) return null;
+  const target = draft.targets[0] ?? {};
+  const structure = typeof target.structure === "object" && target.structure !== null
+    ? target.structure as Record<string, unknown>
+    : {};
+  const blockers = stringList(draft.review.blocking_issues);
+  const status = draft.review.status === "approved"
+    ? "approved"
+    : blockers.length === 0 ? "ready" : "review_required";
+  return {
+    draft_id: draft.draft_id,
+    project_id: draft.project_id,
+    name: draft.name,
+    target_identifier: targetIdentifier.trim(),
+    resolved_identity: stringValue(
+      target.uniprot ?? target.gene_name ?? target.id,
+      "Resolved target",
+    ),
+    structure_status: stringValue(structure.readiness ?? structure.status, "Unavailable"),
+    review_status: status,
+    blockers,
+    uncertainties: stringList(target.uncertainties),
+  };
+}
+
+function approvalRequest(
+  approval: NonNullable<ReturnType<typeof useProjectLaunchControl>["lastControl"]>["approval_control"],
+): ManualApprovalRequest | null {
+  if (!approval) return null;
+  return {
+    launcher_run_id: approval.launcher_run_id,
+    project_id: approval.project_id,
+    approved_content_binding: approval.approved_content_binding,
+    plan_id: approval.plan_id,
+    plan_sha256: approval.plan_sha256,
+    required_task_ids: approval.required_task_ids,
+    approver: "",
+    justification: "",
+    ceilings: {
+      max_gpu_job_slots: null,
+      max_gpu_minutes: null,
+      max_design_proposals: null,
+      max_prediction_candidates: null,
+    },
+  };
+}
 
 function subscribeLaunchSheet(callback: () => void) {
   window.addEventListener(LAUNCH_SHEET_CHANGE_EVENT, callback);
@@ -42,6 +116,13 @@ function LoadedWorkbench({
   onRefresh,
   onAutoRefreshChange,
   onNewProject,
+  approvalControl,
+  manualApprovalRequest,
+  approvalPending,
+  approvalError,
+  launcherStatus,
+  onManualApprovalRequestChange,
+  onApproveAndContinue,
 }: {
   data: WorkbenchReadModel;
   requestStatus: ReturnType<typeof useWorkbench>["status"];
@@ -50,6 +131,13 @@ function LoadedWorkbench({
   onRefresh: () => void;
   onAutoRefreshChange: (enabled: boolean) => void;
   onNewProject: () => void;
+  approvalControl: ApprovalControlProjection | null;
+  manualApprovalRequest: ManualApprovalRequest | null;
+  approvalPending: boolean;
+  approvalError: string | null;
+  launcherStatus: string | null;
+  onManualApprovalRequestChange: (request: ManualApprovalRequest) => void;
+  onApproveAndContinue: (request: ManualApprovalRequest) => void;
 }) {
   const [selection, setSelection] = useWorkbenchSelection(data, initialSelection(data));
   const [collapsedPanels, setCollapsedPanels] = useState<WorkbenchAuxiliaryPanel[]>([]);
@@ -72,10 +160,23 @@ function LoadedWorkbench({
       collapsedPanels={collapsedPanels}
       onSelectionChange={setSelection}
       onPanelCollapsedChange={setPanelCollapsed}
+      approvalControl={approvalControl}
+      manualApprovalRequest={manualApprovalRequest}
+      approvalPending={approvalPending}
+      approvalError={approvalError}
+      launcherStatus={launcherStatus}
+      onManualApprovalRequestChange={onManualApprovalRequestChange}
+      onApproveAndContinue={onApproveAndContinue}
     />;
 }
 
 export function WorkbenchPage() {
+  const [activeLauncherRunId, setActiveLauncherRunId] = useState<string | undefined>(() => {
+    if (typeof window === "undefined") return undefined;
+    return getPersistedLaunchAttempt(window.sessionStorage)?.launcher_run_id
+      ?? window.sessionStorage.getItem(ACTIVE_LAUNCHER_KEY)
+      ?? undefined;
+  });
   const launchSheetOpen = useSyncExternalStore(subscribeLaunchSheet, launchSheetSnapshot, () => false);
   const [initialAutoRefresh] = useState(() => {
     if (typeof window === "undefined") return true;
@@ -85,7 +186,31 @@ export function WorkbenchPage() {
   const workbench = useWorkbench({
     autoRefreshIntervalMs: 10_000,
     initialAutoRefresh,
+    launcherRunId: activeLauncherRunId,
   });
+  const control = useProjectLaunchControl({ initialForm: INITIAL_LAUNCH_REQUEST });
+  const review = useMemo(
+    () => sheetReview(control.review, control.form.target_identifier),
+    [control.form.target_identifier, control.review],
+  );
+  const [manualDraft, setManualDraft] = useState<{
+    planId: string;
+    request: ManualApprovalRequest;
+  } | null>(null);
+  const approvalControl = control.lastControl?.approval_control ?? null;
+  const manualRequest = manualDraft && manualDraft.planId === approvalControl?.plan_id
+    ? manualDraft.request
+    : approvalRequest(approvalControl);
+  const refreshControlStatus = control.refreshStatus;
+
+  useEffect(() => {
+    if (!activeLauncherRunId) return;
+    const timer = window.setInterval(
+      () => void refreshControlStatus(activeLauncherRunId),
+      10_000,
+    );
+    return () => window.clearInterval(timer);
+  }, [activeLauncherRunId, refreshControlStatus]);
   const model = workbench.data?.data ?? null;
 
   const setLaunchSheet = useCallback((open: boolean) => {
@@ -101,6 +226,23 @@ export function WorkbenchPage() {
     workbench.setAutoRefreshEnabled(enabled);
   }
 
+  async function launchProject(submission: ProjectLaunchSubmission) {
+    control.setForm(submission.request);
+    const result = await control.launch(submission.request.options, submission.request);
+    const launcherRunId = result?.launcher?.launcher_run_id;
+    if (!launcherRunId) return;
+    window.sessionStorage.setItem(ACTIVE_LAUNCHER_KEY, launcherRunId);
+    setActiveLauncherRunId(launcherRunId);
+    closeLaunchSheet();
+  }
+
+  async function refreshAll() {
+    await Promise.all([
+      workbench.refresh(),
+      activeLauncherRunId ? control.refreshStatus(activeLauncherRunId) : Promise.resolve(null),
+    ]);
+  }
+
   const content = !model
     ? <main className="initial-state">
         {workbench.status === "failed-before-data"
@@ -113,12 +255,31 @@ export function WorkbenchPage() {
         refreshError={workbench.error}
         autoRefreshEnabled={workbench.autoRefreshEnabled}
         onNewProject={openLaunchSheet}
-        onRefresh={() => void workbench.refresh()}
+        onRefresh={() => void refreshAll()}
         onAutoRefreshChange={setAutoRefresh}
+        approvalControl={approvalControl}
+        manualApprovalRequest={manualRequest}
+        approvalPending={control.mutationInFlight}
+        approvalError={control.error}
+        launcherStatus={control.lastControl?.launcher
+          ? `${control.lastControl.launcher.status} · ${control.lastControl.launcher.boundary ?? "launcher"}`
+          : activeLauncherRunId ? "Checking formal run status" : null}
+        onManualApprovalRequestChange={(request) => setManualDraft({ planId: request.plan_id, request })}
+        onApproveAndContinue={(request) => void control.approveAndContinue(request).then(() => refreshAll())}
       />;
 
   return <>
     {content}
-    {launchSheetOpen ? <ProjectLaunchSheet onClose={closeLaunchSheet} /> : null}
+    {launchSheetOpen ? <ProjectLaunchSheet
+      onClose={closeLaunchSheet}
+      review={review}
+      mutation={control.status === "resolving" ? "resolve" : control.status === "approving" ? "approve" : control.status === "launching" ? "launch" : null}
+      error={control.error}
+      launcherRunId={activeLauncherRunId ?? null}
+      initialRequest={control.form}
+      onResolveDraft={(request) => void control.createDraft(request)}
+      onApproveDraft={() => void control.approveDraft()}
+      onCreateAndLaunch={(submission) => void launchProject(submission)}
+    /> : null}
   </>;
 }
