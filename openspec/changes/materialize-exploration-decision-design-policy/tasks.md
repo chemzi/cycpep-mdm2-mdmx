@@ -21,7 +21,7 @@
 
 ## 4. Restore Legacy No-Job Semantics and Merge to Shared E3
 
-- [x] 4.1 Restore `_materialize_design_jobs` early return before Decision/length validation and replace the zero-request/empty-target fail-closed regressions with legacy `[]` regressions.
+- [x] 4.1 Restore `_materialize_design_jobs` early return before Decision/length validation, replace the zero-request/empty-target fail-closed regressions with legacy `[]` regressions, and reconcile E3-A's four phase-local non-materialization/ambient-experience tests with the combined E3-A → E3-B contract.
 - [x] 4.2 Run focused tests, full unittest, Architecture Gate, strict OpenSpec, compile, and `git diff --check` using isolated fixtures only.
 - [x] 4.3 Rebase the feature branch onto the latest `e3/closed-loop-runtime` without following `integration/data-integrity-transaction`, then rerun affected gates.
 - [ ] 4.4 Run high-reasoning Spec and Standards reviews and OpenSpec implementation verification; resolve all P0/P1 findings.
