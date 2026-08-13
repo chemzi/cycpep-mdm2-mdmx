@@ -551,7 +551,7 @@ dd { margin: 4px 0 0; color: var(--ink); font-size: 11px; overflow-wrap: anywher
 
 .launch-field { min-width: 0; display: grid; gap: 7px; color: var(--ink-soft); font-size: 10px; }
 .launch-field > span { font-family: var(--font-data); letter-spacing: .04em; }
-.launch-field input, .launch-field select {
+.launch-field input, .launch-field select, .launch-field textarea {
   width: 100%;
   min-width: 0;
   height: 38px;
@@ -562,6 +562,7 @@ dd { margin: 4px 0 0; color: var(--ink); font-size: 11px; overflow-wrap: anywher
   padding: 0 11px;
   font-size: 12px;
 }
+.launch-field textarea { min-height: 50px; padding-block: 8px; resize: vertical; }
 .launch-field input::placeholder { color: var(--ink-faint); }
 .launch-field input:disabled { background: var(--canvas); color: var(--ink-faint); }
 .launch-target-field input {
@@ -572,6 +573,14 @@ dd { margin: 4px 0 0; color: var(--ink); font-size: 11px; overflow-wrap: anywher
   font-size: 18px;
 }
 .launch-inline-fields { display: grid; grid-template-columns: 1fr 1.15fr; gap: 10px; margin-top: 12px; }
+.launch-objective-field, .launch-justification-field { margin-top: 12px; }
+.launch-stage-action {
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+  margin-top: 15px; border: 1px solid var(--divider-strong); border-radius: 4px;
+  background: var(--raised); color: var(--selection); padding: 8px 10px; font-size: 10px; font-weight: 700;
+}
+.launch-stage-action:disabled { color: var(--ink-faint); }
+.launch-control-error { margin: 12px 0 0; border-left: 2px solid var(--failure); background: var(--failure-soft); color: var(--failure); padding: 8px 10px; font-size: 10px; }
 .launch-field-note { margin: 15px 0 0; color: var(--ink-faint); font-size: 10px; line-height: 1.5; }
 
 .launch-review-register { margin: 0; }
