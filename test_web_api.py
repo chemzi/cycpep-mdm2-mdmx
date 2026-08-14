@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 import web_api.server as server
 from storage import SQLiteStore
 from test_workbench import FakeStore
+from web_api.workbench import WorkbenchReader
 
 
 class WebApiTrustBoundaryTests(unittest.TestCase):
@@ -335,6 +336,144 @@ class WebApiTrustBoundaryTests(unittest.TestCase):
                 payload = server._candidate_payload(row)
                 self.assertIsNotNone(payload["artifact_id"])
                 self.assertFalse(payload["all_layers_pass"])
+
+    def test_v2_artifact_content_serves_registered_structure_bytes(self):
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            store = SQLiteStore(root / "store.db", project_id="project-1")
+            coordinate = root / "candidate.pdb"
+            coordinate.write_text("ATOM\n", encoding="utf-8")
+            digest = hashlib.sha256(coordinate.read_bytes()).hexdigest()
+            store.commit_transaction(
+                context={
+                    "transaction_id": "tx-1", "status": "COMMITTING",
+                    "task_id": "T1", "attempt_id": "A1",
+                    "metadata": {"project_id": "project-1"},
+                },
+                candidate_updates=[{"candidate_id": "C1", "sequence": "AAAA"}],
+                state_updates={}, state_appends=(), artifacts=[{
+                    "artifact_id": "art-1", "artifact_type": "design_pdb",
+                    "path": str(coordinate),
+                    "size_bytes": coordinate.stat().st_size, "sha256": digest,
+                }],
+            )
+            status, payload = self._request(
+                "GET", "/api/v2/artifacts/art-1/content", store=store
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(payload, coordinate.read_bytes())
+
+    def test_v2_artifact_content_rejects_unexposed_and_mismatched_artifacts(self):
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            store = SQLiteStore(root / "store.db", project_id="project-1")
+            coordinate = root / "candidate.pdb"
+            coordinate.write_text("ATOM\n", encoding="utf-8")
+            digest = hashlib.sha256(coordinate.read_bytes()).hexdigest()
+            store.commit_transaction(
+                context={
+                    "transaction_id": "tx-1", "status": "COMMITTING",
+                    "task_id": "T1", "attempt_id": "A1",
+                    "metadata": {"project_id": "project-1"},
+                },
+                candidate_updates=[{"candidate_id": "C1", "sequence": "AAAA"}],
+                state_updates={}, state_appends=(), artifacts=[{
+                    "artifact_id": "art-1", "artifact_type": "design_pdb",
+                    "path": str(coordinate),
+                    "size_bytes": coordinate.stat().st_size, "sha256": digest,
+                }],
+            )
+            store.register_artifact({
+                "artifact_id": "art-hidden", "artifact_type": "design_pdb",
+                "path": str(coordinate),
+                "size_bytes": coordinate.stat().st_size, "sha256": digest,
+            })
+            status, payload = self._request(
+                "GET", "/api/v2/artifacts/art-hidden/content", store=store
+            )
+            self.assertEqual(status, 404)
+            self.assertEqual(payload["error"]["code"], "artifact_not_found")
+            coordinate.write_text("ATOM CHANGED\n", encoding="utf-8")
+            status, payload = self._request(
+                "GET", "/api/v2/artifacts/art-1/content", store=store
+            )
+            self.assertEqual(status, 409)
+            self.assertEqual(payload["error"]["code"], "artifact_content_mismatch")
+            # Artifact without an integrity digest is never served.
+            store.commit_transaction(
+                context={
+                    "transaction_id": "tx-2", "status": "COMMITTING",
+                    "task_id": "T1", "attempt_id": "A1",
+                    "metadata": {"project_id": "project-1"},
+                },
+                candidate_updates=[], state_updates={}, state_appends=(), artifacts=[{
+                    "artifact_id": "art-nohash", "artifact_type": "design_pdb",
+                    "path": str(coordinate),
+                    "size_bytes": coordinate.stat().st_size,
+                }],
+            )
+            status, payload = self._request(
+                "GET", "/api/v2/artifacts/art-nohash/content", store=store
+            )
+            self.assertEqual(status, 409)
+            self.assertEqual(payload["error"]["code"], "artifact_content_unverified")
+
+    def test_v2_artifact_content_returns_integrity_headers(self):
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            store = SQLiteStore(root / "store.db", project_id="project-1")
+            coordinate = root / "candidate.pdb"
+            coordinate.write_text("ATOM\n", encoding="utf-8")
+            digest = hashlib.sha256(coordinate.read_bytes()).hexdigest()
+            store.commit_transaction(
+                context={
+                    "transaction_id": "tx-1", "status": "COMMITTING",
+                    "task_id": "T1", "attempt_id": "A1",
+                    "metadata": {"project_id": "project-1"},
+                },
+                candidate_updates=[{"candidate_id": "C1", "sequence": "AAAA"}],
+                state_updates={}, state_appends=(), artifacts=[{
+                    "artifact_id": "art-1", "artifact_type": "design_pdb",
+                    "path": str(coordinate),
+                    "size_bytes": coordinate.stat().st_size, "sha256": digest,
+                }],
+            )
+            httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+            httpd.workbench_store = store
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            try:
+                connection = HTTPConnection("127.0.0.1", httpd.server_port, timeout=5)
+                connection.request("GET", "/api/v2/artifacts/art-1/content")
+                response = connection.getresponse()
+                raw = response.read()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader("X-Artifact-SHA256"), digest)
+                self.assertTrue(
+                    response.getheader("Content-Type", "").startswith("chemical/x-pdb")
+                )
+                self.assertNotIn("path", str(response.getheaders()))
+                connection.close()
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+                thread.join(timeout=5)
+
+    def test_v2_workbench_artifact_views_synthesise_structure_content_link(self):
+        store = FakeStore(
+            state={"project_id": "project-1"},
+            artifacts=[
+                {"artifact_id": "art-1", "artifact_type": "design_pdb", "project_id": "project-1"},
+                {"artifact_id": "art-2", "artifact_type": "report", "project_id": "project-1"},
+            ],
+        )
+        result = WorkbenchReader(store).read()
+        views = {item["artifact_id"]: item for item in result["artifacts"]["items"]}
+        self.assertEqual(
+            views["art-1"].get("content_link"),
+            "/api/v2/artifacts/art-1/content",
+        )
+        self.assertNotIn("content_link", views["art-2"])
 
     def test_manifest_identity_and_hash_are_required(self):
         with tempfile.TemporaryDirectory() as root_dir:
