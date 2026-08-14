@@ -63,10 +63,14 @@ class SQLiteStore(Store):
         *,
         project_id: str = "default",
         read_only: bool = False,
+        immutable_snapshot: bool = False,
     ):
         self.path = Path(path)
         self.project_id = project_id
         self.read_only = read_only
+        self.immutable_snapshot = immutable_snapshot
+        if immutable_snapshot and not read_only:
+            raise ValueError("immutable_snapshot requires read_only=True")
         if read_only:
             try:
                 if not self.path.is_file():
@@ -84,8 +88,9 @@ class SQLiteStore(Store):
 
     def _connect(self) -> sqlite3.Connection:
         if self.read_only:
+            query = "mode=ro&immutable=1" if self.immutable_snapshot else "mode=ro"
             connection = sqlite3.connect(
-                f"file:{self.path.resolve().as_posix()}?mode=ro",
+                f"file:{self.path.resolve().as_posix()}?{query}",
                 uri=True,
                 timeout=_BUSY_TIMEOUT_MS / 1000,
                 isolation_level=None,

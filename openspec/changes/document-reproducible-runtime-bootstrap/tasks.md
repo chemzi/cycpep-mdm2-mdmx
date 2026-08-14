@@ -3,6 +3,7 @@
 - [x] 1.1 Add focused failing CLI regressions for `doctor --project`, default text and `--json` rendering, READY/NOT READY exit codes, invalid input normalization, unchanged `launch`/`status`/`resume` dispatch, and compatibility with the existing three-field `CommandHandlers` constructor.
 - [x] 1.2 Add focused failing service regressions proving explicit approved-project selection, all-required-target coordinate SHA validation including `structure_plan=None`, existing-Store read-only validation versus absent-Store parent readiness with `store_will_initialize_on_launch`, independent failure accumulation, stable check identifiers/statuses, credential redaction, and zero mutation of approved project/formal runtime roots.
 - [x] 1.3 Add focused failing runtime regressions that exercise the real public configuration/validator composition seams with controlled host probes, including exact ColabDesign/Boltz/PyRosetta/PRODIGY identities, availability-only RFdiffusion and LigandMPNN checks, protocol-selected checkpoint, GPU visibility, Store preflight, writable-root metadata, and required `OPENAI_API_KEY` under the sole `fresh_full_launcher` profile.
+- [x] 1.4 Add WAL-sidecar regressions proving doctor uses immutable validation only for a checkpointed Store, fails closed on non-empty WAL authority, and leaves database/`-wal`/`-shm` bytes and metadata unchanged.
 
 ## 2. Implement the read-only doctor
 
@@ -10,6 +11,7 @@
 - [x] 2.2 Compose approved project and public coordinate/SHA checks, `ExecutionConfig.from_environment()`, existing-Store read-only or absent-Store parent readiness, Design configuration metadata, and public Prediction runtime validators into the report; extract an Execution-owned public pure required-tool-path validator shared with the existing handler, and do not import private Execution/Design runtime functions.
 - [x] 2.3 Add text and JSON renderers that emit no secret values or tracebacks, include actionable ownership/remediation for failures, and return zero only for READY.
 - [x] 2.4 Add the additive `workflow doctor` CLI route and prove all pre-existing workflow commands and browser-safe JSON behavior remain unchanged.
+- [x] 2.5 Keep ordinary Store readers unchanged while routing only checkpointed doctor preflight through immutable SQLite snapshot validation and rejecting uncheckpointed WAL authority.
 
 ## 3. Build the auditable deployment documentation
 

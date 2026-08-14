@@ -41,6 +41,14 @@ Doctor SHALL check the project-scoped SQLite/runtime locator inputs, configured 
 - **WHEN** the configured SQLite file already exists but fails schema or project-binding validation
 - **THEN** doctor reports the Store check as failed rather than treating it as a fresh database target
 
+#### Scenario: Existing checkpointed Store is inspected without sidecar mutation
+- **WHEN** doctor validates an existing SQLite Store with no uncheckpointed WAL authority
+- **THEN** it uses an immutable read snapshot and does not change the database, `-wal`, or `-shm` bytes or metadata
+
+#### Scenario: Existing Store has uncheckpointed WAL authority
+- **WHEN** the configured Store has a non-empty WAL that immutable mode would ignore
+- **THEN** doctor fails the Store check without changing the database or its sidecars and asks the Store owner to provide a quiescent checkpointed Store
+
 #### Scenario: GPU is not visible
 - **WHEN** CUDA files exist but no NVIDIA GPU is visible to the process
 - **THEN** doctor reports GPU visibility as failed and does not return ready
