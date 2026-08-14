@@ -90,16 +90,17 @@ flowchart LR
 | GET | `/api/v1/project-drafts/{draft_id}` | 已实现 |
 | PATCH | `/api/v1/project-drafts/{draft_id}/targets/{target_id}` | 已实现 |
 | POST | `/api/v1/project-drafts/{draft_id}/approve` | 已实现 |
-| GET | `/api/v1/artifacts/{artifact_id}/coordinates` | 已实现；仅返回七层全清且 manifest/hash 验证通过的本地坐标 |
+| GET | `/api/v1/artifacts/{artifact_id}/coordinates` | 已实现；返回 manifest 身份与 SHA-256 校验通过的本地坐标（不再要求七层全清，未全清候选前端标注“仅供参考”） |
 | POST/GET | run queue endpoints | 未实现 |
 
 ## 6. 结构可视化接入要求
 
-可视化依次要求：候选记录 `all_layers_pass=true`；manifest 与坐标文件存在；坐标位于
-`CYCPEP_ARTIFACT_ROOTS` allow-list 内；后端重新计算 SHA-256 并与索引记录匹配；registry
-生成 opaque `artifact_id`；坐标接口只从 registry 返回 PDB/mmCIF。浏览器不得提交路径或
-下载 URL。当前 UI 使用 3Dmol.js 渲染接口返回的真实内容；任一条件不满足时只展示明确的
-空工作区，不展示示例分子。
+可视化不再要求候选 `all_layers_pass=true`：只要候选的 manifest 身份匹配、坐标文件位于
+`CYCPEP_ARTIFACT_ROOTS` allow-list 内、且后端重新计算的 SHA-256 与索引记录匹配，就注册
+opaque `artifact_id`；坐标接口只从 registry 返回 PDB/mmCIF。未全清
+（`all_layers_pass=false`）的候选仍可查看，前端以“NOT CLEARED · 仅供参考”标注，不代表科学
+通过。浏览器不得提交路径或下载 URL。当前 UI 使用 3Dmol.js 按需加载——点选候选后才拉取
+坐标，不一次性渲染全部结构；无 artifact 时只展示明确的空工作区，不展示示例分子。
 
 ## 7. 上线前剩余工程
 

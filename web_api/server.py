@@ -85,9 +85,14 @@ def _artifact_roots() -> list[Path]:
 
 
 def _register_coordinate_artifact(row: dict) -> str | None:
-    """Register a hash-verified, manifest-bound coordinate without exposing its path."""
-    if not _truthy(row.get("all_layers_pass")):
-        return None
+    """Register a hash-verified, manifest-bound coordinate without exposing its path.
+
+    Layer clearance (``all_layers_pass``) is intentionally NOT a requirement: any
+    candidate whose manifest identity matches and whose coordinate file passes the
+    SHA-256 check may be viewed, so users can inspect incomplete candidates.  The
+    UI is responsible for labelling such candidates as "not cleared / for
+    reference only".  SSH snapshots never register artifacts (``allow_artifacts=False``).
+    """
     candidate_id = row.get("candidate_id")
     sequence = row.get("sequence")
     coordinate = row.get("design_pdb_path")
