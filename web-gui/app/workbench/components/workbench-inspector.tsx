@@ -169,7 +169,7 @@ function CandidateInspector({
             <button type="button" onClick={() => item.artifact_id && onSelectionChange({ kind: "artifact", identity: item.artifact_id })}>
               Artifact: {item.artifact_id ?? "Unavailable"}
             </button>
-            <span>{item.content_link ? ` · ${item.content_link}` : " · Content unavailable"}</span>
+            <span>{item.content_link ? ` · ${item.content_link}` : " · Recorded; browser preview not published"}</span>
           </li>)}
         </ul>
       </section>
@@ -207,7 +207,7 @@ export function WorkbenchInspector({
     const artifact = data.artifacts.items.find((item) => item.artifact_id === selection.identity);
     content = artifact ? <>
       <IdentityDetail title="artifact" identity={selection.identity} trace={artifact.trace} protocol={artifact.protocol} />
-      <p>{artifact.content_link ? `Content link: ${artifact.content_link}` : "Content unavailable: no formal content_link returned"}</p>
+      <p>{artifact.content_link ? `Content link: ${artifact.content_link}` : "Recorded in the formal Store; browser preview was not published."}</p>
     </> : null;
   } else {
     content = <IdentityDetail title="project" identity={data.project.project_id} trace={data.trace} />;

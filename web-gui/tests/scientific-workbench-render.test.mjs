@@ -154,7 +154,7 @@ test("renders Evidence as structured provenance and artifact content as contract
   assert.match(evidenceHtml, /MDM2, MDMX/);
   assert.match(evidenceHtml, /protocol-exploration-v1/);
   assert.match(evidenceHtml, /parent_event_id/);
-  assert.match(artifactHtml, /Content unavailable: no formal content_link returned/);
+  assert.match(artifactHtml, /Recorded in the formal Store; browser preview was not published\./);
   assert.doesNotMatch(artifactHtml, /\/api\/v1/);
   assert.doesNotMatch(artifactHtml, /coordinates/);
 });

@@ -82,7 +82,7 @@ test("C0006 renders exact formal science despite bounded project collections", (
   assert.match(html, /artifact-c0006-post-relax/);
   assert.match(html, /artifact-c0006-boltz/);
   assert.match(html, /prediction_input:global.post_relax_pdb/);
-  assert.match(html, /Content unavailable: no formal content_link returned/);
+  assert.match(html, /Recorded in the formal Store; browser preview was not published\./);
   assert.match(html, /evt-shortlist-c0006/);
   assert.match(html, /retained_for_round_2/);
   assert.doesNotMatch(html, /No metrics returned/);

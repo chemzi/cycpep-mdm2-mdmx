@@ -164,7 +164,7 @@ export function StructureViewer({ artifact }: { artifact: ArtifactView | null })
         <div ref={element} className="viewer-canvas" />
         {state === "unavailable" && (
           <div className="viewer-message">
-            Content unavailable: no formal content_link returned.
+            Recorded in the formal Store; browser preview was not published.
           </div>
         )}
         {state === "loading" && <div className="viewer-message">Loading returned artifact content…</div>}

@@ -131,5 +131,5 @@ export function ArtifactContentAvailability({ artifact }: { artifact: ArtifactVi
   const state = artifactContentState(artifact);
   return state.available
     ? <span>Browser-safe content link available</span>
-    : <span>Content unavailable: no formal content_link returned</span>;
+    : <span>Recorded in the formal Store; browser preview was not published.</span>;
 }
