@@ -42,6 +42,7 @@ from contracts.trace import TRACE_ID_RE, TraceContext
 from core.context import ProjectPaths  # noqa: E402
 from storage import (  # noqa: E402
     SQLiteStore,
+    StorageUnavailableError,
     write_csv_projection,
     write_json_projection,
     write_jsonl_projection,
@@ -218,7 +219,18 @@ def validate_storage_backend(
 ) -> None:
     """Prove one exact formal Store can be opened without writes."""
 
-    SQLiteStore(database_path, project_id=project_id, read_only=True)
+    database = Path(database_path)
+    wal = Path(str(database) + "-wal")
+    if wal.is_file() and wal.stat().st_size:
+        raise StorageUnavailableError(
+            "formal Store has a non-empty WAL; a quiescent TRUNCATE checkpoint is required"
+        )
+    SQLiteStore(
+        database,
+        project_id=project_id,
+        read_only=True,
+        immutable_snapshot=True,
+    )
 
 
 def _project_id() -> str:

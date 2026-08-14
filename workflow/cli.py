@@ -1,4 +1,4 @@
-"""Single-document JSON command-line adapter for the Workflow Launcher."""
+"""Command-line adapter for the Workflow Launcher and readiness doctor."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from .models import BrowserResult, LauncherCommandResult
 
 
 Command = Callable[..., LauncherCommandResult]
+DoctorCommand = Callable[..., object]
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -40,6 +41,9 @@ def _parser() -> argparse.ArgumentParser:
     resume.add_argument("--launcher-run", required=True)
     resume.add_argument("--approval", action="append", default=[])
     resume.add_argument("--retry-bootstrap-prediction", action="store_true")
+    doctor = commands.add_parser("doctor", add_help=True)
+    doctor.add_argument("--project", required=True)
+    doctor.add_argument("--json", action="store_true")
     return parser
 
 
@@ -81,23 +85,64 @@ def _dispatch(arguments: argparse.Namespace, handlers: CommandHandlers) -> Launc
     )
 
 
+def _run_doctor_command(
+    arguments: argparse.Namespace,
+    doctor_handler: DoctorCommand | None,
+    destination: TextIO,
+) -> int:
+    from .doctor import render_doctor_json, render_doctor_text, run_doctor
+
+    runtime_failed = False
+    try:
+        report = (doctor_handler or run_doctor)(project_path=arguments.project)
+    except Exception as error:
+        from .doctor import internal_doctor_report
+
+        runtime_failed = True
+        report = internal_doctor_report(arguments.project)
+        _LOGGER.error("doctor runtime failed: %s", type(error).__name__)
+    destination.write(
+        render_doctor_json(report) if arguments.json else render_doctor_text(report)
+    )
+    return 2 if runtime_failed else report.exit_code
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
     handlers: CommandHandlers | None = None,
+    doctor_handler: DoctorCommand | None = None,
     stdout: TextIO | None = None,
 ) -> int:
     destination = stdout or sys.stdout
+    raw_arguments = list(sys.argv[1:] if argv is None else argv)
+    doctor_requested = bool(raw_arguments and raw_arguments[0] == "doctor")
     try:
-        arguments = _parser().parse_args(argv)
-        result = _dispatch(arguments, handlers or _default_handlers())
-        if not isinstance(result, LauncherCommandResult):
-            raise TypeError("Launcher service must return LauncherCommandResult")
+        arguments = _parser().parse_args(raw_arguments)
     except Exception as error:
-        # The CLI is the final browser-facing boundary: unexpected service or
-        # import failures are normalized once, emitted once, and never resumed
-        # into a later workflow boundary here.
+        if doctor_requested:
+            from .doctor import invalid_doctor_report, render_doctor_json, render_doctor_text
+
+            report = invalid_doctor_report("", "invalid doctor input")
+            wants_json = "--json" in raw_arguments
+            destination.write(
+                render_doctor_json(report) if wants_json else render_doctor_text(report)
+            )
+            _LOGGER.error("doctor input rejected: %s", type(error).__name__)
+            return 2
         result = _invalid_input(error)
+    else:
+        if arguments.command == "doctor":
+            return _run_doctor_command(arguments, doctor_handler, destination)
+        try:
+            result = _dispatch(arguments, handlers or _default_handlers())
+            if not isinstance(result, LauncherCommandResult):
+                raise TypeError("Launcher service must return LauncherCommandResult")
+        except Exception as error:
+            # The CLI is the final browser-facing boundary: unexpected service or
+            # import failures are normalized once and never resumed later.
+            result = _invalid_input(error)
+    if result.payload.error is not None:
         normalized = result.payload.error
         _LOGGER.error(
             "launcher CLI failed: code=%s component=%s message=%s",

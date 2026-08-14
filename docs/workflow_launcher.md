@@ -47,8 +47,17 @@ workflow, task, transaction, candidate, or approval state.
 
 ## Commands
 
-Run commands from the repository root. Each command writes exactly one
-browser-safe JSON document to stdout.
+Run commands from the repository root. `launch`, `status`, and `resume` each
+write exactly one browser-safe JSON document to stdout. `doctor` writes a
+human-readable readiness report by default; pass `--json` for automation.
+
+On a newly provisioned host, complete [production runtime installation](./INSTALLATION.md).
+Before every fresh `launch`, run the read-only readiness check and continue only
+when it reports `READY` with exit code 0:
+
+```bash
+python -m workflow doctor --project projects/approved-project.json
+```
 
 ```bash
 python -m workflow launch --project projects/approved-project.json

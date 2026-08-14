@@ -6,7 +6,9 @@ import tempfile
 import unittest
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
+from data_layer import validate_storage_backend
 from storage import SQLiteStore, StorageUnavailableError
 
 
@@ -108,6 +110,82 @@ class SQLiteStoreReadOnlyTests(unittest.TestCase):
                         "project_id": "project-1",
                     }
                 )
+
+    def test_doctor_validation_uses_immutable_snapshot_without_touching_wal_sidecars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "store.db"
+            SQLiteStore(database, project_id="project-1")
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute("PRAGMA journal_mode = WAL")
+                connection.execute("SELECT 1").fetchone()
+                observed = tuple(
+                    path for path in (database, Path(str(database) + "-wal"), Path(str(database) + "-shm"))
+                    if path.exists()
+                )
+                before = {
+                    path: (path.read_bytes(), path.stat().st_mtime_ns)
+                    for path in observed
+                }
+                with patch("storage.sqlite_store.sqlite3.connect", wraps=sqlite3.connect) as connect:
+                    validate_storage_backend(database, project_id="project-1")
+                uri = str(connect.call_args_list[0].args[0])
+                self.assertIn("mode=ro", uri)
+                self.assertIn("immutable=1", uri)
+                self.assertEqual(
+                    before,
+                    {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in observed},
+                )
+            finally:
+                connection.close()
+
+    def test_doctor_validation_fails_closed_on_uncheckpointed_wal_authority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "store.db"
+            SQLiteStore(database, project_id="project-1")
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute("PRAGMA journal_mode = WAL")
+                connection.execute("PRAGMA wal_autocheckpoint = 0")
+                connection.execute(
+                    "INSERT INTO projects(project_id, created_at, updated_at) VALUES (?, ?, ?)",
+                    ("project-wal", "2026-08-14T00:00:00Z", "2026-08-14T00:00:00Z"),
+                )
+                connection.commit()
+                wal = Path(str(database) + "-wal")
+                self.assertGreater(wal.stat().st_size, 0)
+                observed = tuple(
+                    path for path in (database, wal, Path(str(database) + "-shm"))
+                    if path.exists()
+                )
+                before = {
+                    path: (path.read_bytes(), path.stat().st_mtime_ns)
+                    for path in observed
+                }
+                with self.assertRaisesRegex(StorageUnavailableError, "quiescent TRUNCATE checkpoint"):
+                    validate_storage_backend(database, project_id="project-wal")
+                self.assertEqual(
+                    before,
+                    {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in observed},
+                )
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                self.assertEqual(wal.stat().st_size, 0)
+                checkpointed = {
+                    path: (path.read_bytes(), path.stat().st_mtime_ns)
+                    for path in observed
+                }
+                validate_storage_backend(database, project_id="project-wal")
+                self.assertEqual(
+                    checkpointed,
+                    {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in observed},
+                )
+            finally:
+                connection.close()
+
+    def test_immutable_snapshot_requires_read_only_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "requires read_only"):
+                SQLiteStore(Path(tmp) / "store.db", immutable_snapshot=True)
 
 
 if __name__ == "__main__":
