@@ -134,7 +134,7 @@ def fetch_pmc_fulltext(pmc_ids: list[str]) -> dict[str, str]:
                         paragraphs.append(text.strip())
                 full = " ".join(paragraphs)
                 if pmid:
-                    texts[pmid] = full[:8000]  # 截断到 8000 字符
+                    texts[pmid] = full[:30000]  # 截断到 30000 字符
         except Exception as e:
             print(f"[pubmed] PMC 全文失败 (batch {i}): {e}", file=sys.stderr)
         time.sleep(0.5)
@@ -181,7 +181,7 @@ def main() -> int:
             "source": paper.get("source", ""),
             "authors": [a.get("name", "") for a in paper.get("authors", [])[:5]],
             "doi": paper.get("elocationid", ""),
-            "content": full_text if full_text else abstract_text[:8000],
+            "content": full_text if full_text else abstract_text[:30000],
             "source_type": (
                 "pmc_fulltext" if full_text
                 else "pubmed_abstract" if abstract_text
