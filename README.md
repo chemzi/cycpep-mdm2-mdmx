@@ -71,26 +71,34 @@ Research → Design → Prediction → Critic → Planner
 8. 正式状态应通过统一 Store/数据层访问；执行失败不能留下已部分写入的正式 CandidateIndex 或 State。
 9. Prediction evidence 必须携带产生它的协议 identity 对象 `{name, version, sha256}`（见 `protocols/prediction_v1.json`）；Action Contract 的 `predictor_protocol` 也必须是这个 identity 对象而非裸字符串，任务据此钉死它要执行的具体协议参数。bundle 可以合法地“未绑定”（legacy），但系统绝不允许猜测或自动补标协议；任何 reuse/resume/enrichment 都必须证明计算参数与声明的协议 SHA 完全一致。**协议 SHA 只覆盖 `parameters`（科学语义）**：`metadata`（description/author/comment）的改动不改变 SHA-256，不会使存量 evidence 失效；只有科学参数变化才要求协议版本 bump，且此时存量 bundle 在 Execution 完整性判定中视为“绑定不同协议”，不得复用（协议升级 = Prediction evidence 全量重跑）。
 
-## 4. Quick Start
+## 4. 15-minute orientation and provisioned run
+
+`requirements.txt` 只覆盖仓库的基础 Python 依赖，不是完整科学运行时。
+新 GPU 主机应先按 [installation guide](./docs/INSTALLATION.md) 配置隔离的
+Design/Prediction 环境、模型、checkpoint 和正式运行目录；外部组件的身份、来源与许可
+边界见 [third-party runtime inventory](./THIRD_PARTY.md)。
+
+在**已经 provisioned** 的机器上，从仓库根目录激活 core 环境并选择一个未被修改的
+approved project。先运行只读 readiness doctor；只有显示 `READY` 且退出码为 0 时才启动：
 
 ```bash
-git clone https://github.com/chemzi/cycpep-mdm2-mdmx.git
-cd cycpep-mdm2-mdmx
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# Linux/macOS: source .venv/bin/activate
-python -m pip install -r requirements.txt
+source /path/to/core-environment/bin/activate
+export CYCPEP_PROJECT_CONFIG="$PWD/projects/approved-project.json"
+
+python -m workflow doctor --project "$CYCPEP_PROJECT_CONFIG"
+python -m workflow launch --project "$CYCPEP_PROJECT_CONFIG"
 ```
 
-创建并批准一个 target 配置：
+保存 `launch` 返回的 `launcher_run_id`。后续只用该 ID 查询或显式继续；审批仍必须使用
+owner 生成、与 immutable plan 精确绑定的正式 approval artifact：
 
 ```bash
-python -m target_bootstrap draft --identifier P12345 --type uniprot --output projects/new_target.draft.json
-python -m target_bootstrap show --draft projects/new_target.draft.json
-python -m target_bootstrap approve --draft projects/new_target.draft.json --output projects/new_target.json
+python -m workflow status --launcher-run <launcher_run_id>
+python -m workflow resume --launcher-run <launcher_run_id> --approval <approval.json>
 ```
 
-批准内容经过编辑会使 approval 失效。`requirements.txt` 只覆盖基础 Python 依赖；它不能单独提供完整 Design/Prediction 所需的模型、checkpoint、GPU 驱动和外部科学工具。
+不要把 doctor 通过理解成科学结论，也不要把 `awaiting_approval` 当作失败。完整命令、
+状态和恢复边界见 [Workflow Launcher operator guide](./docs/workflow_launcher.md)。
 
 ## 5. Target Bootstrap / Project Configuration
 

@@ -22,6 +22,7 @@ from prediction_pipeline.protocol import (
 from .prediction_artifact_gate import artifact_bundle_complete as _artifact_bundle_complete
 
 from .config import ExecutionConfig
+from .prediction_runtime import validate_required_prediction_tool_paths
 from .contracts import (
     EXECUTION_SCHEMA_VERSION,
     EXECUTION_WORKER_VERSION,
@@ -310,22 +311,6 @@ def _link_candidate_artifacts(source_dir: Path, staging_root: Path, candidate_id
     destination.symlink_to(source_dir.resolve(), target_is_directory=True)
 
 
-def _require_prediction_tools(config: ExecutionConfig) -> None:
-    required = {
-        "boltz_executable": config.boltz_executable,
-        "boltz_cache": config.boltz_cache,
-        "boltz_checkpoint": config.boltz_checkpoint,
-        "prodigy_executable": config.prodigy_executable,
-        "pyrosetta_python": config.pyrosetta_python,
-    }
-    missing = sorted(name for name, path in required.items() if path is None or not path.exists())
-    if missing:
-        raise ExecutionContractError(
-            "prediction_toolchain_incomplete",
-            f"full Prediction requires configured tools: {missing}",
-        )
-
-
 def _observe_prediction_runtime(
     config: ExecutionConfig, expected_identity: dict
 ) -> tuple[dict, dict]:
@@ -335,7 +320,7 @@ def _observe_prediction_runtime(
     from prediction_pipeline.colabdesign_worker import validate_colabdesign_runtime
     from prediction_pipeline.rosetta_worker import validate_pyrosetta_runtime
 
-    _require_prediction_tools(config)
+    validate_required_prediction_tool_paths(config)
     try:
         prediction_config = PredictionConfig.from_dict(
             expected_identity.get("prediction_config")
