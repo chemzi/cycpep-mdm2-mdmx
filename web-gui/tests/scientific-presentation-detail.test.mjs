@@ -115,7 +115,7 @@ test("selection-sensitive Evidence and artifact details preserve opaque contract
   assert.match(evidenceHtml, /protocol-exploration-v1/);
   assert.match(evidenceHtml, /parent_event_id/);
   assert.match(artifactHtml, /artifact-2/);
-  assert.match(artifactHtml, /Content unavailable: no formal content_link returned/);
+  assert.match(artifactHtml, /Recorded in the formal Store; browser preview was not published\./);
   assert.doesNotMatch(artifactHtml, /\/api\/v1|coordinates|server path/i);
 });
 
