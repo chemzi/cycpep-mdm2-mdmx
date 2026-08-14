@@ -306,6 +306,36 @@ class WebApiTrustBoundaryTests(unittest.TestCase):
                 self.assertIsNotNone(server._candidate_payload(row)["artifact_id"])
                 self.assertIsNone(server._candidate_payload(row, allow_artifacts=False)["artifact_id"])
 
+    def test_coordinate_artifact_registered_without_layer_clearance(self):
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            coordinate = root / "candidate.pdb"
+            manifest = root / "manifest.json"
+            coordinate.write_text("ATOM\n", encoding="utf-8")
+            digest = hashlib.sha256(coordinate.read_bytes()).hexdigest()
+            row = {
+                "candidate_id": "cand-1",
+                "sequence": "AAAA",
+                "all_layers_pass": False,
+                "design_pdb_path": str(coordinate),
+                "design_pdb_hash": digest,
+                "manifest_path": str(manifest),
+            }
+            manifest.write_text(json.dumps({
+                "candidate_id": "cand-1",
+                "sequence": "AAAA",
+                "length": 4,
+                "refold_pdb": str(coordinate),
+                "refold_pdb_hash": digest,
+                "manifest_path": str(manifest),
+            }), encoding="utf-8")
+            with patch.object(server, "ROOT", root), patch.dict(
+                os.environ, {"CYCPEP_ARTIFACT_ROOTS": str(root)}, clear=False
+            ):
+                payload = server._candidate_payload(row)
+                self.assertIsNotNone(payload["artifact_id"])
+                self.assertFalse(payload["all_layers_pass"])
+
     def test_manifest_identity_and_hash_are_required(self):
         with tempfile.TemporaryDirectory() as root_dir:
             root = Path(root_dir)
