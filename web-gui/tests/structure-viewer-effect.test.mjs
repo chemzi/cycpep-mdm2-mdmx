@@ -15,7 +15,7 @@ function createHookHarness(element) {
   const states = [];
   const effects = [];
   let cursor = 0;
-  let pendingEffect = null;
+  let pendingEffects = [];
 
   return {
     render(renderComponent) {
@@ -43,17 +43,19 @@ function createHookHarness(element) {
           value,
           previous.dependencies[dependencyIndex],
         ));
-      if (changed) pendingEffect = { index, effect, dependencies };
+      if (changed) pendingEffects.push({ index, effect, dependencies });
     },
     flushEffect() {
-      assert.ok(pendingEffect, "the component scheduled an artifact effect");
-      const next = pendingEffect;
-      pendingEffect = null;
-      effects[next.index]?.cleanup?.();
-      effects[next.index] = {
-        dependencies: next.dependencies,
-        cleanup: next.effect(),
-      };
+      assert.ok(pendingEffects.length, "the component scheduled an artifact effect");
+      const next = pendingEffects;
+      pendingEffects = [];
+      for (const entry of next) {
+        effects[entry.index]?.cleanup?.();
+        effects[entry.index] = {
+          dependencies: entry.dependencies,
+          cleanup: entry.effect(),
+        };
+      }
     },
   };
 }
@@ -198,6 +200,14 @@ async function switchArtifact(scenario, artifact) {
   await settle();
 }
 
+async function requestPreview(scenario, artifact) {
+  const node = scenario.harness.render(() => StructureViewer({ artifact }));
+  findButton(node, "Load structure preview").props.onClick();
+  scenario.harness.render(() => StructureViewer({ artifact }));
+  scenario.harness.flushEffect();
+  await settle();
+}
+
 async function resolveArtifact(scenario, link, coordinates) {
   scenario.requests.get(link).resolve({
     ok: true,
@@ -211,51 +221,95 @@ function viewArtifact(scenario, artifact) {
   return scenario.harness.render(() => StructureViewer({ artifact }));
 }
 
-test("switching linked structure identity clears stale content and resets representation", async () => {
+test("structure preview stays idle until an explicit load action", async () => {
   const scenario = createStructureScenario();
-  const { events } = scenario;
+  const artifactA = linkedArtifact("artifact-A", "/content/A");
+  await switchArtifact(scenario, artifactA);
 
+  assert.deepEqual(scenario.events, [], "no fetch happens before the preview is requested");
+  const idleA = viewArtifact(scenario, artifactA);
+  assert.match(nodeText(idleA), /preview loads on demand/);
+  assert.ok(
+    findButton(idleA, "Load structure preview"),
+    "idle state offers an explicit load action",
+  );
+  assert.equal(findButton(idleA, "cartoon"), null, "no representation controls before loading");
+
+  await requestPreview(scenario, artifactA);
+  assert.deepEqual(scenario.events, ["fetch:/content/A"]);
+
+  await resolveArtifact(scenario, "/content/A", "MODEL A");
+  const readyA = viewArtifact(scenario, artifactA);
+  assert.equal(findButton(readyA, "cartoon").props["aria-pressed"], true);
+  assert.equal(findButton(readyA, "sticks").props["aria-pressed"], false);
+  assert.match(scenario.events.join("|"), /add:MODEL A:pdb\|style:cartoon/);
+});
+
+test("switching linked structure identity resets to idle without fetching", async () => {
+  const scenario = createStructureScenario();
   const artifactA = linkedArtifact("artifact-A", "/content/A");
   const artifactB = linkedArtifact("artifact-B", "/content/B");
+
   await switchArtifact(scenario, artifactA);
+  await requestPreview(scenario, artifactA);
   await resolveArtifact(scenario, "/content/A", "MODEL A");
   const readyA = viewArtifact(scenario, artifactA);
   findButton(readyA, "sticks").props.onClick();
-  assert.equal(findButton(viewArtifact(scenario, artifactA), "sticks").props["aria-pressed"], true);
+  assert.equal(
+    findButton(viewArtifact(scenario, artifactA), "sticks").props["aria-pressed"],
+    true,
+  );
 
-  events.length = 0;
+  scenario.events.length = 0;
   await switchArtifact(scenario, artifactB);
-  assert.deepEqual(events.slice(0, 3), ["clear", "render", "fetch:/content/B"]);
-  const loadingB = viewArtifact(scenario, artifactB);
-  assert.match(nodeText(loadingB), /Loading returned artifact content/);
-  assert.equal(findButton(loadingB, "sticks"), null);
+  assert.deepEqual(
+    scenario.events,
+    ["clear", "render"],
+    "switching identity clears the viewer without fetching",
+  );
+  const idleB = viewArtifact(scenario, artifactB);
+  assert.match(nodeText(idleB), /preview loads on demand/);
+  assert.ok(findButton(idleB, "Load structure preview"));
+  assert.equal(findButton(idleB, "sticks"), null);
 
+  await requestPreview(scenario, artifactB);
+  assert.deepEqual(scenario.events, ["clear", "render", "fetch:/content/B"]);
   await resolveArtifact(scenario, "/content/B", "MODEL B");
   const readyB = viewArtifact(scenario, artifactB);
   assert.equal(findButton(readyB, "cartoon").props["aria-pressed"], true);
   assert.equal(findButton(readyB, "sticks").props["aria-pressed"], false);
-  assert.match(events.join("|"), /add:MODEL B:pdb\|style:cartoon/);
+  assert.match(scenario.events.join("|"), /add:MODEL B:pdb\|style:cartoon/);
 
+  scenario.events.length = 0;
   await switchArtifact(scenario, artifactA);
-  await resolveArtifact(scenario, "/content/A", "MODEL A RETURNED");
-  const returnedA = viewArtifact(scenario, artifactA);
-  assert.equal(findButton(returnedA, "cartoon").props["aria-pressed"], true);
-  assert.equal(findButton(returnedA, "sticks").props["aria-pressed"], false);
+  assert.deepEqual(
+    scenario.events,
+    ["clear", "render"],
+    "returning to an identity requires a fresh explicit request",
+  );
+  const idleA = viewArtifact(scenario, artifactA);
+  assert.ok(findButton(idleA, "Load structure preview"));
 });
 
-test("a failed replacement load leaves the cleared viewer unavailable", async () => {
+test("a failed preview load reports the error and keeps controls hidden", async () => {
   const scenario = createStructureScenario();
-  const artifactA = linkedArtifact("artifact-A", "/content/A");
   const artifactB = linkedArtifact("artifact-B", "/content/B");
-  await switchArtifact(scenario, artifactA);
-  await resolveArtifact(scenario, "/content/A", "MODEL A");
-  scenario.events.length = 0;
   await switchArtifact(scenario, artifactB);
-  scenario.requests.get("/content/B").reject(new Error("replacement failed"));
+  await requestPreview(scenario, artifactB);
+  scenario.requests.get("/content/B").reject(new Error("preview load failed"));
   await settle();
 
-  assert.deepEqual(scenario.events.slice(0, 3), ["clear", "render", "fetch:/content/B"]);
   const failedB = viewArtifact(scenario, artifactB);
-  assert.match(nodeText(failedB), /replacement failed/);
+  assert.match(nodeText(failedB), /preview load failed/);
   assert.equal(findButton(failedB, "cartoon"), null);
+});
+
+test("an artifact without a published content link remains unavailable", async () => {
+  const scenario = createStructureScenario();
+  const artifact = linkedArtifact("artifact-C", null);
+  await switchArtifact(scenario, artifact);
+  const unavailable = viewArtifact(scenario, artifact);
+  assert.match(nodeText(unavailable), /browser preview was not published/);
+  assert.equal(findButton(unavailable, "Load structure preview"), null);
+  assert.deepEqual(scenario.events, [], "no fetch is attempted without a content link");
 });

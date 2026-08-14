@@ -6,7 +6,7 @@ import type { ArtifactView } from "../domain";
 import { artifactContentState } from "../scientific-selectors";
 
 type ViewerStyle = "cartoon" | "sticks" | "surface";
-type ViewerLoadState = "unavailable" | "loading" | "ready" | "failed";
+type ViewerLoadState = "idle" | "unavailable" | "loading" | "ready" | "failed";
 type MolViewer = {
   addModel(data: string, format: string): void;
   addSurface(type: unknown, style: object): void;
@@ -59,6 +59,14 @@ function modelFormat(contentType: string | null): "cif" | "pdb" {
 export function StructureViewer({ artifact }: { artifact: ArtifactView | null }) {
   const element = useRef<HTMLDivElement>(null);
   const viewer = useRef<MolViewer | null>(null);
+  const content = artifactContentState(artifact);
+  const identity = artifact && content.available
+    ? `${artifact.artifact_id}\u0000${content.contentLink}`
+    : null;
+  const [requested, setRequested] = useState<{
+    identity: string | null;
+    value: boolean;
+  }>({ identity: null, value: false });
   const [loadResult, setLoadResult] = useState<{
     identity: string | null;
     state: ViewerLoadState;
@@ -68,32 +76,33 @@ export function StructureViewer({ artifact }: { artifact: ArtifactView | null })
     identity: string | null;
     style: ViewerStyle;
   }>({ identity: null, style: "cartoon" });
-  const content = artifactContentState(artifact);
-  const identity = artifact && content.available
-    ? `${artifact.artifact_id}\u0000${content.contentLink}`
-    : null;
-  const state: ViewerLoadState = loadResult.identity === identity
-    ? loadResult.state
-    : content.available
-      ? "loading"
-      : "unavailable";
+  const requestedNow = requested.identity === identity && requested.value;
+  const state: ViewerLoadState = !content.available
+    ? "unavailable"
+    : loadResult.identity === identity
+      ? loadResult.state
+      : requestedNow
+        ? "loading"
+        : "idle";
   const message = loadResult.identity === identity ? loadResult.message : "";
-  let style: ViewerStyle;
-  if (representation.identity === identity) {
-    style = representation.style;
-  } else {
-    const reset = { identity, style: "cartoon" as const };
-    setRepresentation(reset);
-    style = reset.style;
-  }
+  const style = representation.identity === identity
+    ? representation.style
+    : "cartoon";
 
   useLayoutEffect(() => {
+    // A new artifact identity always starts idle: clear the previous canvas
+    // and load the preview only after an explicit user request.
     const previous = viewer.current;
     viewer.current = null;
     previous?.clear();
     previous?.render();
+    setRequested({ identity, value: false });
+    setLoadResult({ identity: null, state: "unavailable", message: "" });
+    setRepresentation({ identity, style: "cartoon" });
+  }, [identity]);
 
-    if (!content.available || !element.current) {
+  useLayoutEffect(() => {
+    if (!requestedNow || !content.available || !element.current) {
       return;
     }
     const contentLink = content.contentLink;
@@ -131,7 +140,7 @@ export function StructureViewer({ artifact }: { artifact: ArtifactView | null })
 
     void load();
     return () => { cancelled = true; };
-  }, [content.available, content.contentLink, identity]);
+  }, [requestedNow, content.available, content.contentLink, identity]);
 
   function applyStyle(next: ViewerStyle) {
     setRepresentation({ identity, style: next });
@@ -165,6 +174,14 @@ export function StructureViewer({ artifact }: { artifact: ArtifactView | null })
         {state === "unavailable" && (
           <div className="viewer-message">
             Recorded in the formal Store; browser preview was not published.
+          </div>
+        )}
+        {state === "idle" && (
+          <div className="viewer-message">
+            <p>Recorded in the formal Store; preview loads on demand.</p>
+            <button type="button" onClick={() => setRequested({ identity, value: true })}>
+              Load structure preview
+            </button>
           </div>
         )}
         {state === "loading" && <div className="viewer-message">Loading returned artifact content…</div>}
