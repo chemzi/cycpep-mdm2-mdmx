@@ -211,6 +211,7 @@ class WorkbenchReaderTests(unittest.TestCase):
             "artifact_id": "prediction-input-0001",
             "artifact_type": "prediction_input:global.post_relax_pdb",
             "role": "global.post_relax_pdb",
+            "content_link": "/api/v2/artifacts/prediction-input-0001/content",
         }])
         self.assertEqual(candidate["associations"]["shortlist"][0]["event_id"], "shortlist-C0006")
         self.assertEqual(len(byte_reads), 1, "only Prediction record bytes are re-hashed")

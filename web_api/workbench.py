@@ -12,7 +12,11 @@ from contracts.action import get_action_spec
 from contracts.plan import PlanContractError, validate_plan_for_approval
 from contracts.trace import TraceContext
 from execution.action_registry import handler_for
-from .candidate_science import project_candidate_science
+from .candidate_science import (
+    _safe_content_link,
+    is_structure_artifact,
+    project_candidate_science,
+)
 
 
 DEFAULT_COLLECTION_LIMIT = 100
@@ -161,8 +165,11 @@ def _artifact_view(value: Mapping[str, Any], current_run_id: str | None) -> dict
         )
         if value.get(key) is not None
     }
-    content_link = value.get("content_link")
-    if isinstance(content_link, str) and content_link.startswith("/api/") and ".." not in content_link and "\\" not in content_link:
+    content_link = _safe_content_link(value)
+    artifact_id = str(value.get("artifact_id") or "")
+    if content_link is None and is_structure_artifact(value) and artifact_id:
+        content_link = f"/api/v2/artifacts/{artifact_id}/content"
+    if content_link:
         result["content_link"] = content_link
     input_ids = value.get("input_artifact_ids")
     if isinstance(input_ids, list):

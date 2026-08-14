@@ -360,9 +360,33 @@ dd { margin: 4px 0 0; color: var(--ink); font-size: 11px; overflow-wrap: anywher
 .viewer-canvas { position: absolute; inset: 0; }
 .viewer-message { position: absolute; inset: 0; display: grid; place-items: center; padding: 30px; color: var(--ink-soft); font-size: 11px; text-align: center; }
 .viewer-message.error { color: var(--failure); }
+.viewer-message.viewer-load-trigger {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.viewer-load-trigger strong {
+  display: inline-block;
+  margin-top: 10px;
+  border: 1px solid var(--divider-strong);
+  border-radius: 4px;
+  background: rgba(255,255,255,.94);
+  color: var(--ink-soft);
+  padding: 6px 10px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.viewer-load-trigger:hover strong,
+.viewer-load-trigger:focus-visible strong {
+  border-color: var(--selection);
+  color: var(--selection);
+}
 .viewer-controls { position: absolute; top: 10px; left: 10px; display: flex; gap: 4px; }
 .viewer-controls button { border: 1px solid var(--divider-strong); border-radius: 4px; background: rgba(255,255,255,.94); color: var(--ink-soft); padding: 5px 7px; font-size: 9px; }
 .viewer-controls button.active { color: var(--selection); border-color: var(--selection); background: var(--selection-soft); }
+.viewer-note { position: absolute; right: 10px; bottom: 8px; left: 10px; color: var(--ink-soft); font-size: 10px; text-align: center; }
 
 .workbench-blockers.is-compact { clear: both; margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--divider); }
 .workbench-blockers.is-compact h2 { margin: 0 0 7px; color: var(--warning); font-size: 11px; }

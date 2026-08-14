@@ -86,9 +86,14 @@ def _artifact_roots() -> list[Path]:
 
 
 def _register_coordinate_artifact(row: dict) -> str | None:
-    """Register a hash-verified, manifest-bound coordinate without exposing its path."""
-    if not _truthy(row.get("all_layers_pass")):
-        return None
+    """Register a hash-verified, manifest-bound coordinate without exposing its path.
+
+    Layer clearance (``all_layers_pass``) is intentionally NOT a requirement: any
+    candidate whose manifest identity matches and whose coordinate file passes the
+    SHA-256 check may be viewed, so users can inspect incomplete candidates.  The
+    UI is responsible for labelling such candidates as "not cleared / for
+    reference only".  SSH snapshots never register artifacts (``allow_artifacts=False``).
+    """
     candidate_id = row.get("candidate_id")
     sequence = row.get("sequence")
     coordinate = row.get("design_pdb_path")
@@ -295,6 +300,55 @@ class Handler(BaseHTTPRequestHandler):
         size = int(self.headers.get("Content-Length", "0"))
         return json.loads(self.rfile.read(size) or b"{}")
 
+    def _artifact_content(self, artifact_id: str):
+        """Serve verified Store artifact bytes over the browser-safe v2 route."""
+        store = getattr(self.server, "workbench_store", None)
+        if store is None:
+            return self._json(503, error={
+                "code": "workbench_unavailable",
+                "message": "Workbench read model is unavailable",
+            })
+        exposed = {
+            str(item.get("artifact_id")): item
+            for item in store.list_artifacts()
+        }
+        artifact = exposed.get(artifact_id)
+        if artifact is None:
+            return self._json(404, error={
+                "code": "artifact_not_found",
+                "message": "Verified artifact is not registered",
+            })
+        path = Path(str(artifact.get("path") or "")).expanduser()
+        try:
+            path = path.resolve(strict=True)
+            payload = path.read_bytes()
+        except (OSError, RuntimeError):
+            return self._json(404, error={
+                "code": "artifact_content_missing",
+                "message": "Registered artifact content is unavailable",
+            })
+        expected = _normalise_sha256(artifact.get("sha256"))
+        if not expected:
+            return self._json(409, error={
+                "code": "artifact_content_unverified",
+                "message": "Registered artifact has no integrity digest",
+            })
+        actual = hashlib.sha256(payload).hexdigest()
+        if actual != expected:
+            return self._json(409, error={
+                "code": "artifact_content_mismatch",
+                "message": "Registered artifact content failed its SHA-256 check",
+            })
+        fmt = "pdb" if path.suffix.casefold() == ".pdb" else "cif"
+        self.send_response(200)
+        self.send_header("Content-Type", "chemical/x-pdb" if fmt == "pdb" else "chemical/x-mmcif")
+        self.send_header("X-Artifact-SHA256", actual)
+        self.send_header("Cache-Control", "private, no-store")
+        self.send_header("Access-Control-Allow-Origin", os.environ.get("CYCPEP_UI_ORIGIN", "http://localhost:3000"))
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", os.environ.get("CYCPEP_UI_ORIGIN", "http://localhost:3000"))
@@ -323,6 +377,11 @@ class Handler(BaseHTTPRequestHandler):
                         "message": "Workbench read model is unavailable",
                     })
                 return self._json(200, WorkbenchReader(store).read())
+            artifact_content_match = re.fullmatch(
+                r"/api/v2/artifacts/([A-Za-z0-9_.-]{1,128})/content", path
+            )
+            if artifact_content_match:
+                return self._artifact_content(artifact_content_match.group(1))
             artifact_match = re.fullmatch(r"/api/v1/artifacts/(art_[a-f0-9]{24})/coordinates", path)
             if artifact_match:
                 artifact = ARTIFACTS.get(artifact_match.group(1))

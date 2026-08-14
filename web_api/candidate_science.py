@@ -36,6 +36,33 @@ def _safe_content_link(value: Mapping[str, Any]) -> str | None:
     return None
 
 
+STRUCTURE_ARTIFACT_TYPES = frozenset({
+    "structure",
+    "design_pdb",
+    "prediction_input:global.post_relax_pdb",
+    "prediction_input:global.design_reference_pdb",
+})
+
+
+def is_structure_artifact(value: Mapping[str, Any], *, role: str | None = None) -> bool:
+    """True when an artifact record is a viewable structure (PDB/CIF coordinate)."""
+    artifact_type = str(value.get("artifact_type") or "")
+    if artifact_type in STRUCTURE_ARTIFACT_TYPES:
+        return True
+    if artifact_type.startswith("prediction_input:"):
+        role_value = role if role is not None else str(value.get("role") or "")
+        return role_value.endswith(".pdb")
+    return False
+
+
+def content_link_for_artifact(value: Mapping[str, Any], artifact_id: str) -> str | None:
+    """Return a browser-safe content link, synthesising the v2 route when absent."""
+    link = _safe_content_link(value)
+    if link is None and artifact_id:
+        link = f"/api/v2/artifacts/{artifact_id}/content"
+    return link
+
+
 def _browser_metrics(value: Mapping[str, Any]) -> dict[str, Any]:
     """Remove formally known internal locator fields without inspecting values."""
     result: dict[str, Any] = {}
@@ -195,15 +222,7 @@ class _ProjectionBuilder:
             artifact = self.artifacts.get(artifact_id) or {}
             role = str(item.get("role") or "")
             artifact_type = str(artifact.get("artifact_type") or "")
-            is_structure = artifact_type in {
-                "design_pdb",
-                "prediction_input:global.post_relax_pdb",
-                "prediction_input:global.design_reference_pdb",
-            } or (
-                artifact_type.startswith("prediction_input:")
-                and role.endswith(".pdb")
-            )
-            if not is_structure:
+            if not is_structure_artifact(artifact, role=role):
                 continue
             descriptor: dict[str, Any] = {
                 "artifact_id": artifact_id,
@@ -211,7 +230,7 @@ class _ProjectionBuilder:
             }
             if role:
                 descriptor["role"] = role
-            content_link = _safe_content_link(artifact)
+            content_link = content_link_for_artifact(artifact, artifact_id)
             if content_link:
                 descriptor["content_link"] = content_link
             structures.append(descriptor)
