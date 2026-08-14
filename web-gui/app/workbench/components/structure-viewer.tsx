@@ -27,6 +27,54 @@ declare global {
 
 const THREE_DMOL_SCRIPT =
   "https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.4.2/3Dmol-min.js";
+const VIEWER_BACKGROUND = "#07110f";
+const CARTOON_EMPTY_THRESHOLD = 0.0005;
+
+function requestFrame(callback: () => void): void {
+  if (
+    typeof window !== "undefined" &&
+    typeof window.requestAnimationFrame === "function"
+  ) {
+    window.requestAnimationFrame(callback);
+  } else {
+    setTimeout(callback, 0);
+  }
+}
+
+function countVisiblePixels(canvas: HTMLCanvasElement): number | null {
+  try {
+    const width = canvas.width;
+    const height = canvas.height;
+    if (!width || !height) return null;
+    const offscreen = document.createElement("canvas");
+    offscreen.width = width;
+    offscreen.height = height;
+    const context = offscreen.getContext("2d");
+    if (!context) return null;
+    context.drawImage(canvas, 0, 0);
+    const data = context.getImageData(0, 0, width, height).data;
+    const background = parseInt(VIEWER_BACKGROUND.slice(1), 16);
+    const bgRed = (background >> 16) & 255;
+    const bgGreen = (background >> 8) & 255;
+    const bgBlue = background & 255;
+    let visible = 0;
+    for (let index = 0; index < data.length; index += 4) {
+      const red = data[index];
+      const green = data[index + 1];
+      const blue = data[index + 2];
+      if (
+        Math.abs(red - bgRed) > 6 ||
+        Math.abs(green - bgGreen) > 6 ||
+        Math.abs(blue - bgBlue) > 6
+      ) {
+        visible += 1;
+      }
+    }
+    return visible;
+  } catch {
+    return null;
+  }
+}
 
 function loadViewerLibrary(): Promise<void> {
   if (window.$3Dmol) return Promise.resolve();
@@ -117,7 +165,8 @@ export function StructureViewer({ artifact }: { artifact: ArtifactView | null })
         if (cancelled || !element.current || !window.$3Dmol) return;
         const instance = window.$3Dmol.createViewer(element.current, {
           antialias: true,
-          backgroundColor: "#07110f",
+          backgroundColor: VIEWER_BACKGROUND,
+          preserveDrawingBuffer: true,
         });
         instance.addModel(coordinates, modelFormat(response.headers.get("content-type")));
         instance.setStyle({}, { cartoon: { color: "spectrum" } });
@@ -125,6 +174,17 @@ export function StructureViewer({ artifact }: { artifact: ArtifactView | null })
         instance.render();
         viewer.current = instance;
         setLoadResult({ identity, state: "ready", message: "" });
+        // Some WebGL drivers drop the first frame after a fresh model add;
+        // re-render once the loading overlay has been removed, then verify
+        // that the requested representation produced visible geometry.
+        requestFrame(() => {
+          if (cancelled || viewer.current !== instance || !element.current) return;
+          instance.render();
+          requestFrame(() => {
+            if (cancelled || viewer.current !== instance) return;
+            verifyRepresentationRendered(instance, "cartoon");
+          });
+        });
       } catch (cause) {
         if (!cancelled) {
           setLoadResult({
@@ -142,8 +202,35 @@ export function StructureViewer({ artifact }: { artifact: ArtifactView | null })
     return () => { cancelled = true; };
   }, [requestedNow, content.available, content.contentLink, identity]);
 
+  function verifyRepresentationRendered(
+    instance: MolViewer,
+    style: ViewerStyle,
+  ): void {
+    // 3Dmol's cartoon renderer silently produces no geometry for synthetic
+    // reference helices whose carbonyl geometry is degenerate (constant
+    // backbone C-O direction collapses the spline frame to NaN); fall back
+    // so the canvas is never blank for the user.
+    if (style !== "cartoon") return;
+    const container = element.current;
+    const canvas = container?.querySelector?.("canvas");
+    if (!canvas) return;
+    const visible = countVisiblePixels(canvas);
+    if (visible === null) return;
+    const total = canvas.width * canvas.height;
+    if (total <= 0 || visible / total >= CARTOON_EMPTY_THRESHOLD) return;
+    setRepresentation({ identity, style: "sticks" });
+    instance.setStyle({}, { stick: { colorscheme: "Jmol" } });
+    instance.render();
+    setLoadResult({
+      identity,
+      state: "ready",
+      message: "Cartoon did not render for this structure; showing sticks instead.",
+    });
+  }
+
   function applyStyle(next: ViewerStyle) {
     setRepresentation({ identity, style: next });
+    setLoadResult({ identity, state: "ready", message: "" });
     const instance = viewer.current;
     if (!instance || !window.$3Dmol) return;
     instance.setStyle(
@@ -161,6 +248,13 @@ export function StructureViewer({ artifact }: { artifact: ArtifactView | null })
       });
     }
     instance.render();
+    if (next === "cartoon") {
+      requestFrame(() => {
+        if (viewer.current === instance) {
+          verifyRepresentationRendered(instance, "cartoon");
+        }
+      });
+    }
   }
 
   return (
@@ -177,29 +271,35 @@ export function StructureViewer({ artifact }: { artifact: ArtifactView | null })
           </div>
         )}
         {state === "idle" && (
-          <div className="viewer-message">
-            <p>Recorded in the formal Store; preview loads on demand.</p>
-            <button type="button" onClick={() => setRequested({ identity, value: true })}>
-              Load structure preview
-            </button>
-          </div>
+          <button
+            type="button"
+            className="viewer-message viewer-load-trigger"
+            aria-label="Load structure preview"
+            onClick={() => setRequested({ identity, value: true })}
+          >
+            <span>Recorded in the formal Store; preview loads on demand.</span>
+            <strong>Load structure preview</strong>
+          </button>
         )}
         {state === "loading" && <div className="viewer-message">Loading returned artifact content…</div>}
         {state === "failed" && <div className="viewer-message error">{message}</div>}
         {state === "ready" && (
-          <div className="viewer-controls" aria-label="Structure representation">
-            {(["cartoon", "sticks", "surface"] as const).map((item) => (
-              <button
-                type="button"
-                key={item}
-                className={style === item ? "active" : undefined}
-                aria-pressed={style === item}
-                onClick={() => applyStyle(item)}
-              >
-                {item}
-              </button>
-            ))}
-          </div>
+          <>
+            {message !== "" && <div className="viewer-note">{message}</div>}
+            <div className="viewer-controls" aria-label="Structure representation">
+              {(["cartoon", "sticks", "surface"] as const).map((item) => (
+                <button
+                  type="button"
+                  key={item}
+                  className={style === item ? "active" : undefined}
+                  aria-pressed={style === item}
+                  onClick={() => applyStyle(item)}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          </>
         )}
       </div>
     </section>

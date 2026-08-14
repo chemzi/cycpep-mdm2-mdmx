@@ -93,7 +93,8 @@ function linkedArtifact(artifactId, contentLink) {
 
 function findButton(node, label) {
   if (!node || typeof node !== "object") return null;
-  if (node.type === "button" && node.props?.children === label) return node;
+  if (node.type === "button"
+    && (node.props?.children === label || node.props?.["aria-label"] === label)) return node;
   const children = Array.isArray(node.props?.children)
     ? node.props.children
     : [node.props?.children];
@@ -164,12 +165,53 @@ after(async () => {
   await rm(cacheDir, { recursive: true, force: true });
 });
 
+function createSamplingContext(canvas) {
+  return {
+    drawImage() {},
+    getImageData() {
+      const size = canvas.width * canvas.height;
+      const data = new Uint8ClampedArray(size * 4);
+      const painted = Math.max(0, Math.min(canvas.nonBg, size));
+      for (let index = 0; index < size * 4; index += 4) {
+        data[index] = 7;
+        data[index + 1] = 17;
+        data[index + 2] = 15;
+        data[index + 3] = 255;
+      }
+      for (let index = 0; index < painted; index += 1) {
+        data[index * 4] = 190;
+        data[index * 4 + 1] = 190;
+        data[index * 4 + 2] = 190;
+        data[index * 4 + 3] = 255;
+      }
+      return { data };
+    },
+  };
+}
+
 function createStructureScenario() {
   const events = [];
   const requests = new Map();
-  const harness = createHookHarness({});
+  const canvas = {
+    width: 100,
+    height: 100,
+    nonBg: 5000,
+    getContext(kind) {
+      return kind === "2d" ? createSamplingContext(canvas) : null;
+    },
+  };
+  const container = {
+    querySelector(selector) {
+      return selector === "canvas" ? canvas : null;
+    },
+  };
+  const harness = createHookHarness(container);
   globalThis.__structureViewerHooks = harness;
   globalThis.window = {
+    requestAnimationFrame(callback) {
+      callback();
+      return 0;
+    },
     $3Dmol: {
       SurfaceType: { VDW: "vdw" },
       createViewer() {
@@ -184,14 +226,23 @@ function createStructureScenario() {
       },
     },
   };
-  globalThis.document = {};
+  globalThis.document = {
+    createElement(tag) {
+      if (tag !== "canvas") return {};
+      return {
+        width: 0,
+        height: 0,
+        getContext: (kind) => (kind === "2d" ? createSamplingContext(canvas) : null),
+      };
+    },
+  };
   globalThis.fetch = (url) => {
     events.push(`fetch:${url}`);
     const request = deferred();
     requests.set(url, request);
     return request.promise;
   };
-  return { events, harness, requests };
+  return { events, harness, requests, canvas };
 }
 
 async function switchArtifact(scenario, artifact) {
@@ -312,4 +363,33 @@ test("an artifact without a published content link remains unavailable", async (
   assert.match(nodeText(unavailable), /browser preview was not published/);
   assert.equal(findButton(unavailable, "Load structure preview"), null);
   assert.deepEqual(scenario.events, [], "no fetch is attempted without a content link");
+});
+
+test("a visible cartoon keeps the cartoon representation after verification", async () => {
+  const scenario = createStructureScenario();
+  const artifactA = linkedArtifact("artifact-A", "/content/A");
+  await switchArtifact(scenario, artifactA);
+  await requestPreview(scenario, artifactA);
+  await resolveArtifact(scenario, "/content/A", "MODEL A");
+
+  const readyA = viewArtifact(scenario, artifactA);
+  assert.equal(findButton(readyA, "cartoon").props["aria-pressed"], true);
+  assert.equal(findButton(readyA, "sticks").props["aria-pressed"], false);
+  assert.doesNotMatch(nodeText(readyA), /Cartoon did not render/);
+  assert.doesNotMatch(scenario.events.join("|"), /style:stick/);
+});
+
+test("a cartoon that renders nothing falls back to sticks with a note", async () => {
+  const scenario = createStructureScenario();
+  scenario.canvas.nonBg = 0;
+  const artifactA = linkedArtifact("artifact-A", "/content/A");
+  await switchArtifact(scenario, artifactA);
+  await requestPreview(scenario, artifactA);
+  await resolveArtifact(scenario, "/content/A", "MODEL A");
+
+  const readyA = viewArtifact(scenario, artifactA);
+  assert.equal(findButton(readyA, "sticks").props["aria-pressed"], true);
+  assert.equal(findButton(readyA, "cartoon").props["aria-pressed"], false);
+  assert.match(nodeText(readyA), /Cartoon did not render/);
+  assert.match(scenario.events.join("|"), /style:cartoon.*style:stick/);
 });
