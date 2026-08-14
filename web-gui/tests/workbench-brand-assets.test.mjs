@@ -46,18 +46,19 @@ test("layout wires local font roles and consistent workbench metadata", async ()
   assert.doesNotMatch(layout, /Frontend V2 Workbench|observability contract|architecture slogan/i);
 });
 
-test("brand mark is an original decorative cyclic-peptide and paired-target vector", async () => {
+test("the workbench title uses the NovaPeptide team mark", async () => {
   const component = await readFile(
     new URL("workbench/components/brand-mark.tsx", appUrl),
     "utf8",
   );
+  const styles = await readFile(new URL("globals.css", appUrl), "utf8");
+  const logo = await readFile(new URL("nova-peptide-logo.png", publicUrl));
   const favicon = await readFile(new URL("favicon.svg", publicUrl), "utf8");
 
   assert.match(component, /aria-hidden="true"/);
-  assert.match(component, /focusable="false"/);
-  assert.match(component, /<path/);
-  assert.match(component, /<line/);
-  assert.doesNotMatch(component, /gradient|filter|glow|<circle/gi);
+  assert.match(styles, /url\("\/nova-peptide-logo\.png"\)/);
+  assert.match(styles, /border-radius:\s*50%/);
+  assert.deepEqual([...logo.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
 
   assert.match(favicon, /<path/);
   assert.match(favicon, /<line/);
