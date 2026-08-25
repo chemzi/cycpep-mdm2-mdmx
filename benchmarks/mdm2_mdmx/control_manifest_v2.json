@@ -1,0 +1,1162 @@
+{
+  "schema_version": 2,
+  "manifest_kind": "mdm2_mdmx_control_manifest",
+  "benchmark_id": "mdm2_mdmx_published_binder_series_v1",
+  "target_id": [
+    "MDM2",
+    "MDMX"
+  ],
+  "target_uniprot": {
+    "MDM2": "Q00987",
+    "MDMX": "O15151"
+  },
+  "cyclization_type": "mixed",
+  "negatives_per_positive": null,
+  "seed": 20260811,
+  "scoring_protocol_expected": {
+    "model": "af2+boltz-2.2.1+prodigy+rosetta-interfaceanalyzer",
+    "seeds": 101,
+    "tool": "prediction-stack-v1"
+  },
+  "notes": [
+    "6 literature positive peptide controls + 28 in-silico presumed negatives (16 hotspot Ala mutants + 12 composition-preserving shuffles).",
+    "Positive controls are linear peptides in the cited experimental literature; the manifest-level cyclization_type is therefore 'mixed' rather than head_to_tail_amide.",
+    "Negatives are presumed in-silico negatives with construction provenance; none are experimentally validated non-binders in this manifest.",
+    "Negative controls have source.pdb_id=null; parent_pdb_id and parent_structural_context_pdb are parent/context provenance only and must not be interpreted as exact-sequence structures.",
+    "Calibration is per-target independent (MDM2 / MDMX).",
+    "Binding metadata (project_id/approved_digest/protocol) is filled at scoring time by scripts/score_control_dataset.py; nothing is baked in."
+  ],
+  "controls": [
+    {
+      "control_id": "C9001",
+      "label": "positive",
+      "role": "literature_positive_control",
+      "sequence": "ETFSDLWKLLPE",
+      "source": {
+        "pdb_id": null,
+        "name": "p53 12mer",
+        "doi": "10.1074/jbc.M109.073056",
+        "pmid": "19910468",
+        "target": [
+          "MDM2",
+          "MDMX"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide",
+          "topology": "linear",
+          "head_to_tail_cyclized": false,
+          "termini": "not_verified_from_primary_source_in_this_audit"
+        },
+        "pdb_by_target": {
+          "MDM2": null,
+          "MDMX": null
+        },
+        "structural_context_pdb": [
+          "1YCR"
+        ],
+        "structural_context_note": "1YCR contains the p53 15mer, not the exact C9001 12mer.",
+        "assay": [
+          {
+            "type": "fluorescence_polarization",
+            "targets": [
+              "MDM2",
+              "MDMX"
+            ]
+          },
+          {
+            "type": "ELISA_competition",
+            "targets": [
+              "MDM2",
+              "MDMX"
+            ]
+          }
+        ],
+        "affinity": {
+          "note": "Functional binding evidence exists for the exact 12mer; use source paper values only with assay-specific provenance."
+        },
+        "exact_sequence_supported": true,
+        "exact_pdb_supported": false,
+        "evidence_class": "experimental_positive"
+      }
+    },
+    {
+      "control_id": "C9002",
+      "label": "positive",
+      "role": "literature_positive_control",
+      "sequence": "SQETFSDLWKLLPEN",
+      "source": {
+        "pdb_id": "1YCR",
+        "name": "p53 15mer",
+        "doi": "10.1126/science.274.5289.948",
+        "pmid": "8875929",
+        "target": [
+          "MDM2",
+          "MDMX"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide",
+          "topology": "linear",
+          "head_to_tail_cyclized": false,
+          "termini": "not_verified_from_primary_source_in_this_audit"
+        },
+        "pdb_by_target": {
+          "MDM2": [
+            "1YCR"
+          ],
+          "MDMX": [
+            "3DAB"
+          ]
+        },
+        "additional_citations": [
+          {
+            "pdb_id": "3DAB",
+            "target": "MDMX",
+            "doi": "10.4161/cc.7.8.6365",
+            "pmid": "18414040"
+          }
+        ],
+        "assay": [
+          {
+            "type": "X-ray_crystallography",
+            "targets": [
+              "MDM2",
+              "MDMX"
+            ]
+          }
+        ],
+        "exact_sequence_supported": true,
+        "exact_pdb_supported": true,
+        "evidence_class": "experimental_positive"
+      }
+    },
+    {
+      "control_id": "C9003",
+      "label": "positive",
+      "role": "literature_positive_control",
+      "sequence": "TSFAEYWNLLSP",
+      "source": {
+        "pdb_id": "3EQS",
+        "name": "PMI",
+        "doi": "10.1073/pnas.0900947106",
+        "pmid": "19255450",
+        "target": [
+          "MDM2",
+          "MDMX"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide",
+          "topology": "linear",
+          "head_to_tail_cyclized": false,
+          "termini": "not_verified_from_primary_source_in_this_audit"
+        },
+        "pdb_by_target": {
+          "MDM2": [
+            "3EQS"
+          ],
+          "MDMX": [
+            "3EQY"
+          ]
+        },
+        "assay": [
+          {
+            "type": "binding_affinity",
+            "targets": [
+              "MDM2",
+              "MDMX"
+            ]
+          },
+          {
+            "type": "X-ray_crystallography",
+            "targets": [
+              "MDM2",
+              "MDMX"
+            ]
+          }
+        ],
+        "affinity": {
+          "MDM2": {
+            "Kd": 3.2,
+            "unit": "nM"
+          },
+          "MDMX": {
+            "Kd": 8.5,
+            "unit": "nM"
+          }
+        },
+        "exact_sequence_supported": true,
+        "exact_pdb_supported": true,
+        "evidence_class": "experimental_positive"
+      }
+    },
+    {
+      "control_id": "C9004",
+      "label": "positive",
+      "role": "literature_positive_control",
+      "sequence": "LTFLEYWAQLMQ",
+      "source": {
+        "pdb_id": "5UMM",
+        "name": "PMI-M3",
+        "doi": "10.1016/j.apsb.2021.06.010",
+        "pmid": "34589387",
+        "target": [
+          "MDM2",
+          "MDMX"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide",
+          "topology": "linear",
+          "head_to_tail_cyclized": false,
+          "termini": "not_verified_from_primary_source_in_this_audit"
+        },
+        "pdb_by_target": {
+          "MDM2": [
+            "5UMM"
+          ],
+          "MDMX": [
+            "5UML"
+          ]
+        },
+        "assay": [
+          {
+            "type": "ITC",
+            "targets": [
+              "MDM2",
+              "MDMX"
+            ]
+          },
+          {
+            "type": "X-ray_crystallography",
+            "targets": [
+              "MDM2",
+              "MDMX"
+            ]
+          }
+        ],
+        "affinity": {
+          "MDM2": {
+            "Kd": 3.7,
+            "unit": "pM"
+          },
+          "MDMX": {
+            "Kd": 10.7,
+            "unit": "pM"
+          }
+        },
+        "exact_sequence_supported": true,
+        "exact_pdb_supported": true,
+        "evidence_class": "experimental_positive"
+      }
+    },
+    {
+      "control_id": "C9005",
+      "label": "positive",
+      "role": "literature_positive_control",
+      "sequence": "LTFEHYWAQLTS",
+      "source": {
+        "pdb_id": "3G03",
+        "name": "pDI",
+        "doi": "10.4161/cc.8.8.8185",
+        "pmid": "19305137",
+        "target": [
+          "MDM2",
+          "MDMX"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide",
+          "topology": "linear",
+          "head_to_tail_cyclized": false,
+          "termini": "not_verified_from_primary_source_in_this_audit"
+        },
+        "pdb_by_target": {
+          "MDM2": [
+            "3G03"
+          ],
+          "MDMX": [
+            "3FDO",
+            "3JZO"
+          ]
+        },
+        "additional_citations": [
+          {
+            "pdb_id": "3JZO",
+            "target": "MDMX",
+            "doi": "10.1074/jbc.M109.073056",
+            "pmid": "19910468"
+          }
+        ],
+        "assay": [
+          {
+            "type": "fluorescence_polarization",
+            "targets": [
+              "MDM2",
+              "MDMX"
+            ]
+          },
+          {
+            "type": "X-ray_crystallography",
+            "targets": [
+              "MDM2",
+              "MDMX"
+            ]
+          }
+        ],
+        "affinity": {
+          "MDM2": {
+            "Kd": 3.6,
+            "unit": "nM",
+            "citation_pmid": "19305137"
+          },
+          "MDMX": {
+            "Kd": 6.1,
+            "unit": "nM",
+            "citation_pmid": "19305137"
+          }
+        },
+        "exact_sequence_supported": true,
+        "exact_pdb_supported": true,
+        "evidence_class": "experimental_positive"
+      }
+    },
+    {
+      "control_id": "C9006",
+      "label": "positive",
+      "role": "literature_positive_control",
+      "sequence": "ETFEHWWSQLLS",
+      "source": {
+        "pdb_id": "3JZS",
+        "name": "pDIQ",
+        "doi": "10.1074/jbc.M109.073056",
+        "pmid": "19910468",
+        "target": [
+          "MDM2",
+          "MDMX"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide",
+          "topology": "linear",
+          "head_to_tail_cyclized": false,
+          "termini": "not_verified_from_primary_source_in_this_audit"
+        },
+        "pdb_by_target": {
+          "MDM2": [
+            "3JZS"
+          ],
+          "MDMX": [
+            "3JZQ"
+          ]
+        },
+        "assay": [
+          {
+            "type": "ELISA_competition",
+            "targets": [
+              "MDM2",
+              "MDMX"
+            ]
+          },
+          {
+            "type": "X-ray_crystallography",
+            "targets": [
+              "MDM2",
+              "MDMX"
+            ]
+          }
+        ],
+        "affinity": {
+          "MDM2": {
+            "IC50": 8,
+            "unit": "nM"
+          },
+          "MDMX": {
+            "IC50": 110,
+            "unit": "nM"
+          }
+        },
+        "exact_sequence_supported": true,
+        "exact_pdb_supported": true,
+        "evidence_class": "experimental_positive"
+      }
+    },
+    {
+      "control_id": "C9101",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "ETASDLWKLLPE",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (F3A) of C9001 (p53 12mer); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9001",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1126/science.274.5289.948",
+        "parent_structural_context_pdb": [
+          "1YCR"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "1YCR",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9102",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "ETFSDLAKLLPE",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (W7A) of C9001 (p53 12mer); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9001",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1126/science.274.5289.948",
+        "parent_structural_context_pdb": [
+          "1YCR"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "1YCR",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9103",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "ETFSDLWKLAPE",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (L10A) of C9001 (p53 12mer); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9001",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1126/science.274.5289.948",
+        "parent_structural_context_pdb": [
+          "1YCR"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "1YCR",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9104",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "ETASDLAKLLPE",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (F3A+W7A) of C9001 (p53 12mer); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9001",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1126/science.274.5289.948",
+        "parent_structural_context_pdb": [
+          "1YCR"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "1YCR",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9105",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "SQETASDLWKLLPEN",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (F5A) of C9002 (p53 15mer); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9002",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1126/science.274.5289.948",
+        "parent_structural_context_pdb": [
+          "1YCR",
+          "3DAB"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "1YCR",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9106",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "SQETFSDLAKLLPEN",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (W9A) of C9002 (p53 15mer); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9002",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1126/science.274.5289.948",
+        "parent_structural_context_pdb": [
+          "1YCR",
+          "3DAB"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "1YCR",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9107",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "SQETFSDLWKLAPEN",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (L12A) of C9002 (p53 15mer); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9002",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1126/science.274.5289.948",
+        "parent_structural_context_pdb": [
+          "1YCR",
+          "3DAB"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "1YCR",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9108",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "TSAAEYWNLLSP",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (F3A) of C9003 (PMI); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9003",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1073/pnas.0900947106",
+        "parent_structural_context_pdb": [
+          "3EQS",
+          "3EQY"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "3EQS",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9109",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "TSFAEYANLLSP",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (W7A) of C9003 (PMI); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9003",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1073/pnas.0900947106",
+        "parent_structural_context_pdb": [
+          "3EQS",
+          "3EQY"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "3EQS",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9110",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "TSFAEYWNLASP",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (L10A) of C9003 (PMI); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9003",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1073/pnas.0900947106",
+        "parent_structural_context_pdb": [
+          "3EQS",
+          "3EQY"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "3EQS",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9111",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "LTALEYWAQLMQ",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (F3A) of C9004 (PMI-M3); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9004",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "parent_structural_context_pdb": [
+          "5UMM",
+          "5UML"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "doi": "10.1016/j.apsb.2021.06.010",
+        "parent_pdb_id": "5UMM",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9112",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "LTFLEYAAQLMQ",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (W7A) of C9004 (PMI-M3); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9004",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "parent_structural_context_pdb": [
+          "5UMM",
+          "5UML"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "doi": "10.1016/j.apsb.2021.06.010",
+        "parent_pdb_id": "5UMM",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9113",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "LTAEHYWAQLTS",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (F3A) of C9005 (pDI); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9005",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "parent_structural_context_pdb": [
+          "3G03",
+          "3FDO",
+          "3JZO"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "doi": "10.4161/cc.8.8.8185",
+        "parent_pdb_id": "3G03",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9114",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "LTFEHYAAQLTS",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (W7A) of C9005 (pDI); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9005",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "parent_structural_context_pdb": [
+          "3G03",
+          "3FDO",
+          "3JZO"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "doi": "10.4161/cc.8.8.8185",
+        "parent_pdb_id": "3G03",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9115",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "ETAEHWWSQLLS",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (F3A) of C9006 (pDIQ); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9006",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "parent_structural_context_pdb": [
+          "3JZS",
+          "3JZQ"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "doi": "10.1074/jbc.M109.073056",
+        "parent_pdb_id": "3JZS",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9116",
+      "label": "negative",
+      "role": "in_silico_hotspot_alanine_mutant",
+      "sequence": "ETFEHWASQLLS",
+      "source": {
+        "pdb_id": null,
+        "method": "in-silico hotspot Ala mutant (W7A) of C9006 (pDIQ); hotspot residues per p53 F19/W23/L26 alignment (Kussie 1996)",
+        "parent_control_id": "C9006",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "parent_structural_context_pdb": [
+          "3JZS",
+          "3JZQ"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "doi": "10.1074/jbc.M109.073056",
+        "parent_pdb_id": "3JZS",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9117",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "FLWSKTPEDELL",
+      "source": {
+        "pdb_id": null,
+        "method": "composition-preserving shuffle of C9001 (p53 12mer), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9001",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1126/science.274.5289.948",
+        "parent_structural_context_pdb": [
+          "1YCR"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "1YCR",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9118",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "LTKFELSPEDLW",
+      "source": {
+        "pdb_id": null,
+        "method": "composition-preserving shuffle of C9001 (p53 12mer), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9001",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1126/science.274.5289.948",
+        "parent_structural_context_pdb": [
+          "1YCR"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "1YCR",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9119",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "NLKLSTWEEQPFSDL",
+      "source": {
+        "pdb_id": null,
+        "method": "composition-preserving shuffle of C9002 (p53 15mer), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9002",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1126/science.274.5289.948",
+        "parent_structural_context_pdb": [
+          "1YCR",
+          "3DAB"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "1YCR",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9120",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "DLENLWESSPTKLQF",
+      "source": {
+        "pdb_id": null,
+        "method": "composition-preserving shuffle of C9002 (p53 15mer), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9002",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1126/science.274.5289.948",
+        "parent_structural_context_pdb": [
+          "1YCR",
+          "3DAB"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "1YCR",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9121",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "TASEYPLWFNLS",
+      "source": {
+        "pdb_id": null,
+        "method": "composition-preserving shuffle of C9003 (PMI), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9003",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1073/pnas.0900947106",
+        "parent_structural_context_pdb": [
+          "3EQS",
+          "3EQY"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "3EQS",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9122",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "SLAWLTYPENFS",
+      "source": {
+        "pdb_id": null,
+        "method": "composition-preserving shuffle of C9003 (PMI), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9003",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "doi": "10.1073/pnas.0900947106",
+        "parent_structural_context_pdb": [
+          "3EQS",
+          "3EQY"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "parent_pdb_id": "3EQS",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9123",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "EAQQWFTLLYLM",
+      "source": {
+        "pdb_id": null,
+        "method": "composition-preserving shuffle of C9004 (PMI-M3), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9004",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "parent_structural_context_pdb": [
+          "5UMM",
+          "5UML"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "doi": "10.1016/j.apsb.2021.06.010",
+        "parent_pdb_id": "5UMM",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9124",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "QTLAFLMQEYLW",
+      "source": {
+        "pdb_id": null,
+        "method": "composition-preserving shuffle of C9004 (PMI-M3), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9004",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "parent_structural_context_pdb": [
+          "5UMM",
+          "5UML"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "doi": "10.1016/j.apsb.2021.06.010",
+        "parent_pdb_id": "5UMM",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9125",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "HETWFLAYLSQT",
+      "source": {
+        "pdb_id": null,
+        "method": "composition-preserving shuffle of C9005 (pDI), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9005",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "parent_structural_context_pdb": [
+          "3G03",
+          "3FDO",
+          "3JZO"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "doi": "10.4161/cc.8.8.8185",
+        "parent_pdb_id": "3G03",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9126",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "WSQTATLEYLHF",
+      "source": {
+        "pdb_id": null,
+        "method": "composition-preserving shuffle of C9005 (pDI), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9005",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "parent_structural_context_pdb": [
+          "3G03",
+          "3FDO",
+          "3JZO"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "doi": "10.4161/cc.8.8.8185",
+        "parent_pdb_id": "3G03",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9127",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "WLHLSTESFQEW",
+      "source": {
+        "pdb_id": null,
+        "method": "composition-preserving shuffle of C9006 (pDIQ), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9006",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "parent_structural_context_pdb": [
+          "3JZS",
+          "3JZQ"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "doi": "10.1074/jbc.M109.073056",
+        "parent_pdb_id": "3JZS",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    },
+    {
+      "control_id": "C9128",
+      "label": "negative",
+      "role": "in_silico_sequence_shuffle",
+      "sequence": "LLSWSEHQEWTF",
+      "source": {
+        "pdb_id": null,
+        "method": "composition-preserving shuffle of C9006 (pDIQ), hotspot register disrupted (all hotspot positions changed), fixed seed 20260811",
+        "parent_control_id": "C9006",
+        "note": "presumed in-silico negative; not experimentally validated as a non-binder. source.pdb_id is null because no exact structure is claimed for this mutant/shuffle. parent_pdb_id and parent_structural_context_pdb refer only to the unmodified parent/control context.",
+        "parent_structural_context_pdb": [
+          "3JZS",
+          "3JZQ"
+        ],
+        "molecular_form": {
+          "entity_type": "peptide_sequence_construct",
+          "topology": "linear_sequence_model",
+          "head_to_tail_cyclized": false,
+          "experimental_chemical_entity": "not_established"
+        },
+        "exact_pdb_supported": false,
+        "exact_experimental_negative_supported": false,
+        "negative_evidence_class": "presumed_in_silico_negative",
+        "doi": "10.1074/jbc.M109.073056",
+        "parent_pdb_id": "3JZS",
+        "pdb_provenance_scope": "parent_control_context_only"
+      }
+    }
+  ]
+}
