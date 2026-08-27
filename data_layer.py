@@ -24,7 +24,8 @@
         # 准入下一阶段
         ...
 """
-import json, csv, hashlib, os, statistics, uuid
+import functools
+import json, csv, hashlib, os, statistics, sys, tempfile, types, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -37,23 +38,232 @@ from project_config import (
     target_value,
     threshold_for_target,
 )
+from threshold_contract import merge_thresholds, normalize_thresholds
+from contracts.event import EvidenceEvent
+from contracts.trace import TraceContext
+from core.context import ProjectPaths  # noqa: E402
+from storage import SQLiteStore  # noqa: E402 (PR3)
+from storage.file_store import FileStore  # noqa: E402 (PR3)
 
 ROOT = Path(__file__).resolve().parent
-ACTIVE_PROJECT_CONFIG = load_project_config()
-_IS_REFERENCE_PROJECT = ACTIVE_PROJECT_CONFIG["project_id"] == "mdm2_mdmx_reference"
-_DEFAULT_DATA_DIR = (
-    ROOT / "data" if _IS_REFERENCE_PROJECT
-    else ROOT / "data" / "projects" / target_slug(ACTIVE_PROJECT_CONFIG["project_id"])
-)
-_DEFAULT_EVIDENCE_DIR = (
-    ROOT / "evidence" if _IS_REFERENCE_PROJECT
-    else ROOT / "evidence" / "projects" / target_slug(ACTIVE_PROJECT_CONFIG["project_id"])
-)
-DATA_DIR = Path(os.environ.get("CYCPEP_DATA_DIR", _DEFAULT_DATA_DIR))
-EVIDENCE_DIR = Path(os.environ.get("CYCPEP_EVIDENCE_DIR", _DEFAULT_EVIDENCE_DIR))
-STATE_PATH = DATA_DIR / "state.json"
-LOG_PATH   = EVIDENCE_DIR / "evidence_log.jsonl"
-INDEX_PATH = DATA_DIR / "candidate_index.csv"
+
+# ============================================================
+# 惰性项目运行时（Engineering Standard §7 / Roadmap PR5）
+# ============================================================
+# 项目配置与派生路径不再于 import 时解析；首次访问（模块属性或内部 helper）
+# 时才加载并缓存。模块级名字（ACTIVE_PROJECT_CONFIG / DATA_DIR / ...）通过
+# PEP 562 ``__getattr__`` 提供，``from data_layer import DATA_DIR`` 等旧用法
+# 保持不变；显式赋值重定向（测试与 mock 常用）由 _LazyPathsModule 协调，
+# 赋值/删除时同步失效路径缓存，删除后重新按环境解析，不会永久残留。
+
+
+@functools.lru_cache(maxsize=1)
+def _active_project_config() -> dict:
+    """Approved project config, resolved once on first access (PR5)."""
+    return load_project_config()
+
+
+def _sqlite_db_path() -> Path | None:
+    """Configured SQLite DB path (PR3), resolved lazily on first access (PR5)."""
+    raw = os.environ.get("CYCPEP_DB_PATH")
+    return Path(raw) if raw else None
+
+
+def _project_data_dir(config: dict) -> Path:
+    """Project-scoped data dir (single source: core.context.ProjectPaths)."""
+    return ProjectPaths().resolve(config["project_id"], root=ROOT).data_dir
+
+
+def _project_evidence_dir(config: dict) -> Path:
+    """Project-scoped evidence dir (single source: core.context.ProjectPaths)."""
+    return ProjectPaths().resolve(config["project_id"], root=ROOT).evidence_dir
+
+
+_runtime_paths: dict | None = None
+
+
+def _paths() -> dict:
+    """Resolve project data/evidence paths once; honour env overrides."""
+    global _runtime_paths
+    if _runtime_paths is None:
+        config = _active_project_config()
+        data_dir = Path(os.environ.get("CYCPEP_DATA_DIR", _project_data_dir(config)))
+        evidence_dir = Path(os.environ.get("CYCPEP_EVIDENCE_DIR", _project_evidence_dir(config)))
+        _runtime_paths = {
+            "data_dir": data_dir,
+            "evidence_dir": evidence_dir,
+            "state_path": data_dir / "state.json",
+            "log_path": evidence_dir / "evidence_log.jsonl",
+            "index_path": data_dir / "candidate_index.csv",
+        }
+    return _runtime_paths
+
+
+def _reset_runtime_paths() -> None:
+    """Drop the cached path snapshot so the next access re-resolves."""
+    global _runtime_paths
+    _runtime_paths = None
+
+
+_LAZY_ATTRIBUTES = {
+    "ACTIVE_PROJECT_CONFIG": _active_project_config,
+    "DATA_DIR": lambda: _paths()["data_dir"],
+    "EVIDENCE_DIR": lambda: _paths()["evidence_dir"],
+    "STATE_PATH": lambda: _paths()["state_path"],
+    "LOG_PATH": lambda: _paths()["log_path"],
+    "INDEX_PATH": lambda: _paths()["index_path"],
+    "SQLITE_DB_PATH": _sqlite_db_path,
+}
+
+
+def __getattr__(name):
+    """PEP 562: serve legacy data-layer names lazily on first access."""
+    getter = _LAZY_ATTRIBUTES.get(name)
+    if getter is not None:
+        return getter()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _module_attr(name):
+    """Read a lazy module name through the module object (PEP 562 does not
+    apply to bare globals inside this module)."""
+    return getattr(sys.modules[__name__], name)
+
+
+class _LazyPathsModule(types.ModuleType):
+    """Coordinate explicit path redirections with the lazy accessors.
+
+    Repository code and tests follow the established pattern of redirecting
+    paths with ``data_layer.DATA_DIR = tmp``, and ``unittest.mock.patch``
+    applies/drops such attributes via ``__setattr__``/``__delattr__``.  PEP 562
+    ``__getattr__`` alone cannot serve this: a plain assignment writes a
+    permanent ``__dict__`` entry that shadows the lazy accessor for the rest
+    of the process.  Intercepting assignment/deletion keeps the contract
+    consistent:
+
+    - reads prefer an explicit ``__dict__`` value (the repo-wide redirect
+      pattern) and otherwise fall back to the ``_runtime_paths`` cache;
+    - assignments write ``__dict__`` AND invalidate the cache, so a later
+      ``del`` makes the next read re-resolve from the environment;
+    - deletions drop both, matching ``mock.patch`` ``stop`` semantics.
+    """
+
+    _PATH_KEYS = {
+        "DATA_DIR": "data_dir",
+        "EVIDENCE_DIR": "evidence_dir",
+        "STATE_PATH": "state_path",
+        "LOG_PATH": "log_path",
+        "INDEX_PATH": "index_path",
+    }
+
+    def __setattr__(self, name: str, value) -> None:
+        if name in _LazyPathsModule._PATH_KEYS:
+            _reset_runtime_paths()
+        super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in _LazyPathsModule._PATH_KEYS:
+            _reset_runtime_paths()
+        try:
+            super().__delattr__(name)
+        except AttributeError:
+            if name not in _LazyPathsModule._PATH_KEYS:
+                raise
+
+
+# Install the module-level hooks so redirects never break the lazy contract.
+sys.modules[__name__].__class__ = _LazyPathsModule
+
+
+class _LazyClassAttribute:
+    """Descriptor that resolves a class attribute once on first access (PR5)."""
+
+    _MISSING = object()
+
+    def __init__(self, getter):
+        self._getter = getter
+        self._value = self._MISSING
+
+    def __get__(self, obj, owner=None):
+        if self._value is self._MISSING:
+            self._value = self._getter()
+        return self._value
+
+
+def get_storage_backend():
+    """Return the configured backend without exposing backend details to Agents.
+
+    The legacy file backend remains the default for backwards compatibility.
+    Set ``CYCPEP_DB_PATH`` to opt a runtime into SQLite during migration.
+    """
+    db_path = _module_attr("SQLITE_DB_PATH")
+    if db_path:
+        return SQLiteStore(db_path, project_id=_module_attr("ACTIVE_PROJECT_CONFIG")["project_id"])
+    return FileStore(_module_attr("DATA_DIR"), _module_attr("EVIDENCE_DIR"))
+
+
+
+
+class EvidenceTraceQueryError(ValueError):
+    """A trace query is unsafe because its natural key is ambiguous."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+_LEGACY_DEFAULT_DESIGN_BUDGET = {
+    "route_A_mdm2": 400,
+    "route_A_mdmx": 400,
+    "route_B": 400,
+    "route_C": 200,
+}
+
+
+def _default_design_budget(config: dict) -> dict[str, int]:
+    """Build route capacity keys from the approved target identities."""
+    budget = {
+        f"route_A_{target_slug(target_id)}": 400
+        for target_id in required_target_ids(config)
+    }
+    budget.update({"route_B": 400, "route_C": 200})
+    return budget
+
+
+def _default_state(config: dict) -> dict:
+    """Default State projection for the given project config (PR5, lazy)."""
+    return {
+        "project": config.get("name", config["project_id"]),
+        "project_id": config["project_id"],
+        "project_config": config,
+        "targets": {
+            target["id"]: {key: value for key, value in target.items() if key != "id"}
+            for target in config["targets"]
+        },
+        "phase": "research",
+        "round": 1,
+        "pocket_differences": {},
+        "known_dual_binders": [],
+        "design_budget": _default_design_budget(config),
+        "candidate_count": 0,
+        "iteration_history": [],
+        "thresholds": {},
+    }
+
+
+def _write_json_atomic(path: str | Path, payload: dict):
+    """Write JSON beside its destination and atomically replace the old file."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    handle, temp_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+        os.replace(temp_name, destination)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
 
 # v5: 七层指标电池主列。旧列名保留做 alias（见 _ALIAS_MAP），不破坏已有代码。
 INDEX_COLUMNS = [
@@ -125,38 +335,19 @@ def _alias_keys(row: dict) -> dict:
 class State:
     """读/写 state.json —— 所有Agent共享的'白板'"""
     
-    _project_config = ACTIVE_PROJECT_CONFIG
-    _default = {
-        "project": _project_config.get("name", _project_config["project_id"]),
-        "project_id": _project_config["project_id"],
-        "project_config": _project_config,
-        # Legacy mapping retained for older agents. New code reads project_config.
-        "targets": {
-            target["id"]: {key: value for key, value in target.items() if key != "id"}
-            for target in _project_config["targets"]
-        },
-        "phase": "research",
-        "round": 1,
-        "pocket_differences": {},
-        "known_dual_binders": [],
-        "design_budget": {"route_A_mdm2": 400, "route_A_mdmx": 400,
-                          "route_B": 400, "route_C": 200},
-        "candidate_count": 0,
-        "iteration_history": [],
-        # v5: 七层指标电池阈值（来自 data_layer.DEFAULT_THRESHOLDS，最终由正对照标定）
-        "thresholds": {},
-    }
+    _project_config = _LazyClassAttribute(_active_project_config)
+    _default = _LazyClassAttribute(lambda: _default_state(_active_project_config()))
     
     @classmethod
     def load(cls) -> dict:
-        if STATE_PATH.exists():
-            return json.loads(STATE_PATH.read_text(encoding="utf-8"))
-        return cls._default.copy()
+        state_path = _module_attr("STATE_PATH")
+        if state_path.exists():
+            return json.loads(state_path.read_text(encoding="utf-8"))
+        return json.loads(json.dumps(cls._default))
     
     @classmethod
     def save(cls, data: dict):
-        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_atomic(_module_attr("STATE_PATH"), data)
     
     @classmethod
     def update(cls, patches: dict):
@@ -172,6 +363,101 @@ class State:
         s.setdefault("iteration_history", []).append(entry)
         cls.save(s)
 
+    @classmethod
+    def sync_project_config(cls, config: dict) -> dict:
+        """Make the approved config authoritative for target identity in state."""
+        state = cls.load()
+        previous_targets = set((state.get("targets") or {}).keys())
+        previous_digest = state.get("approved_digest") or (
+            ((state.get("project_config") or {}).get("review") or {}).get("approved_digest")
+        )
+        approved_digest = (config.get("review") or {}).get("approved_digest")
+        config_changed = bool(previous_digest and approved_digest and previous_digest != approved_digest)
+        if config_changed:
+            # Strong evidence from a different approved target/config is not transferable.
+            state["thresholds"] = {}
+        previous_budget = state.get("design_budget")
+        desired_budget = _default_design_budget(config)
+        budget_migrated = False
+        if (
+            config_changed
+            or previous_budget in (None, {})
+            or previous_budget == _LEGACY_DEFAULT_DESIGN_BUDGET
+        ) and previous_budget != desired_budget:
+            state["design_budget"] = desired_budget
+            budget_migrated = True
+        state["project"] = config.get("name", config["project_id"])
+        state["project_id"] = config["project_id"]
+        state["project_config"] = json.loads(json.dumps(config))
+        state["approved_digest"] = approved_digest
+        # Deliberate replacement: removed targets must not survive a re-approval.
+        state["targets"] = {
+            target["id"]: {key: value for key, value in target.items() if key != "id"}
+            for target in config.get("targets", [])
+        }
+        cls.save(state)
+        current_targets = set(state["targets"])
+        EvidenceLogger.log("research", "state_project_config_sync", {
+            "previous_approved_digest": previous_digest,
+            "approved_digest": approved_digest,
+            "config_changed": config_changed,
+            "required_target_ids": list(required_target_ids(config)),
+            "removed_targets": sorted(previous_targets - current_targets),
+            "final_targets": sorted(current_targets),
+            "thresholds_cleared": config_changed,
+            "design_budget_migrated": budget_migrated,
+            "design_budget_keys": sorted((state.get("design_budget") or {}).keys()),
+        }, phase="research")
+        return state
+
+    @classmethod
+    def sync_thresholds_from_cache(cls, cache_path: str | Path) -> dict:
+        """Recover/merge canonical Research thresholds from a validated cache.
+
+        The threshold cache is the durable Research artifact. ``state.json`` is
+        its evidence-aware runtime projection and may safely be rebuilt.
+        """
+        path = Path(cache_path)
+        state = cls.load()
+        status = "complete"
+        error = None
+        incoming = {}
+        if not path.exists():
+            status = "cache_missing"
+        else:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                incoming = payload.get("thresholds", payload) if isinstance(payload, dict) else {}
+            except (OSError, json.JSONDecodeError) as exc:
+                status = "cache_invalid"
+                error = f"{type(exc).__name__}: {str(exc)[:160]}"
+
+        existing, existing_audit = normalize_thresholds(state.get("thresholds") or {})
+        if status == "complete":
+            merged, audit = merge_thresholds(existing, incoming)
+        else:
+            merged = existing
+            audit = {
+                "cache_keys": [], "final_keys": list(merged),
+                "overwritten": [], "skipped": [], "conflict_reasons": {},
+                "state_normalization": existing_audit,
+                "cache_normalization": {"input_keys": [], "canonical_keys": [], "conflicts": []},
+            }
+        state["thresholds"] = merged
+        cls.save(state)
+        EvidenceLogger.log("research", "threshold_cache_sync", {
+            "status": status,
+            "cache_path": str(path),
+            "cache_keys": audit["cache_keys"],
+            "final_keys": audit["final_keys"],
+            "overwritten": audit["overwritten"],
+            "skipped": audit["skipped"],
+            "conflict_reasons": audit["conflict_reasons"],
+            "normalization_conflicts": audit["cache_normalization"].get("conflicts", []),
+            "error": error,
+        }, phase="research")
+        return {"state": state, "status": status, "audit": audit, "error": error}
+
 
 # ============================================================
 # 证据日志
@@ -181,25 +467,34 @@ class EvidenceLogger:
     
     @classmethod
     def _write(cls, entry: dict):
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(LOG_PATH, "a", encoding="utf-8") as f:
+        # Every new write passes through the same event contract.  Existing
+        # JSONL rows remain untouched and are still readable by get_all().
+        EvidenceEvent.from_dict(entry)
+        log_path = _module_attr("LOG_PATH")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     
     @classmethod
     def log(cls, agent: str, event_type: str, payload: dict,
             targets: list = None, phase: str = None,
-            round_num: int = None, blocks: list = None):
-        entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "event_id": str(uuid.uuid4())[:12],
-            "agent": agent,
-            "event_type": event_type
-        }
-        if phase:    entry["phase"] = phase
-        if round_num: entry["round"] = round_num
-        if targets:  entry["targets"] = targets
-        if blocks:   entry["blocks"] = blocks
-        entry.update(payload)
+            round_num: int = None, blocks: list = None,
+            trace_context: TraceContext | dict | None = None):
+        if trace_context is not None and not isinstance(trace_context, TraceContext):
+            trace_context = TraceContext.from_dict(trace_context)
+        event = EvidenceEvent(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            event_id=str(uuid.uuid4())[:12],
+            agent=agent,
+            event_type=event_type,
+            payload=dict(payload or {}),
+            trace_context=trace_context,
+            phase=phase,
+            round_num=round_num,
+            targets=targets,
+            blocks=blocks,
+        )
+        entry = event.to_dict()
         cls._write(entry)
         return entry["event_id"]
 
@@ -228,7 +523,9 @@ class EvidenceLogger:
         cls.log("design", "candidate_registered", {"candidate": candidate},
                 targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
                 phase="design")
-        cls._increment_counter()
+        # candidate_count is exclusively managed by _next_candidate_id() in
+        # agents/design.py.  Calling _increment_counter() here would double-
+        # count every candidate (P0-3).
 
     @classmethod
     def evaluate_layer_start(cls, layer: int, n_candidates: int, thresholds: dict):
@@ -276,24 +573,78 @@ class EvidenceLogger:
     @classmethod
     def critic_review(cls, issues: list, passed: bool, summary: str,
                       recommendation: str, metrics: dict,
-                      round_num: int = None):
-        return cls.log("critic", "critic_review", {
+                      report_id: str = "", report_path: str = "",
+                      report_sha256: str = ""):
+        payload = {
             "issues": issues, "pass": passed,
             "summary": summary, "recommendation": recommendation,
             "metrics_snapshot": metrics
-        }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
-                phase="critic", round_num=round_num)
+        }
+        if report_id:
+            payload["report_id"] = report_id
+        if report_path:
+            payload["report_path"] = report_path
+        if report_sha256:
+            payload["report_sha256"] = report_sha256
+        return cls.log("critic", "critic_review", payload,
+                targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
+                phase="critic")
 
     @classmethod
     def planner_adjust(cls, trigger_event_id: str, old_strategy: dict,
-                       new_strategy: dict, reason: str,
-                       round_num: int = None):
-        cls.log("planner", "planner_adjust", {
+                       new_strategy: dict, reason: str):
+        return cls.log("planner", "planner_adjust", {
             "trigger_event_id": trigger_event_id,
             "old_strategy": old_strategy, "new_strategy": new_strategy,
             "reason": reason
         }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
                 phase="iterate", round_num=round_num)
+
+    @classmethod
+    def planner_plan(cls, plan_id: str, plan_path: str, plan_sha256: str,
+                     critic_report_id: str, status: str, task_count: int,
+                     required_approval_task_ids: list,
+                     critic_report_path: str | None = None,
+                     critic_report_sha256: str | None = None,
+                     trace_context: TraceContext | dict | None = None):
+        """Record one immutable Planner plan without authorizing execution."""
+        payload = {
+            "plan_id": plan_id,
+            "plan_path": plan_path,
+            "plan_sha256": plan_sha256,
+            "critic_report_id": critic_report_id,
+            "status": status,
+            "task_count": task_count,
+            "required_approval_task_ids": required_approval_task_ids,
+        }
+        if critic_report_path:
+            payload["critic_report_path"] = critic_report_path
+        if critic_report_sha256:
+            payload["critic_report_sha256"] = critic_report_sha256
+        return cls.log("planner", "planner_plan", payload, targets=list(required_target_ids(
+            State.load().get("project_config") or State._project_config
+        )), phase="iterate", trace_context=trace_context)
+
+    @classmethod
+    def planner_approval_recorded(
+        cls, approval_id: str, approval_path: str, approval_sha256: str,
+        plan_id: str, plan_sha256: str, approved_task_ids: list,
+        approver: str, budget_limits: dict,
+        trace_context: TraceContext | dict | None = None,
+    ):
+        """Record a human approval artifact bound to an immutable plan digest."""
+        return cls.log("planner", "planner_approval_recorded", {
+            "approval_id": approval_id,
+            "approval_path": approval_path,
+            "approval_sha256": approval_sha256,
+            "plan_id": plan_id,
+            "plan_sha256": plan_sha256,
+            "approved_task_ids": approved_task_ids,
+            "approver": approver,
+            "budget_limits": budget_limits,
+        }, targets=list(required_target_ids(
+            State.load().get("project_config") or State._project_config
+        )), phase="iterate", trace_context=trace_context)
 
     @classmethod
     def error(cls, agent: str, error_type: str, message: str,
@@ -311,9 +662,10 @@ class EvidenceLogger:
 
     @classmethod
     def get_all(cls) -> list:
-        if not LOG_PATH.exists():
+        log_path = _module_attr("LOG_PATH")
+        if not log_path.exists():
             return []
-        return [json.loads(line) for line in LOG_PATH.read_text(encoding="utf-8").strip().split("\n") if line]
+        return [json.loads(line) for line in log_path.read_text(encoding="utf-8").strip().split("\n") if line]
 
     @classmethod
     def filter(cls, agent: str = None, event_type: str = None, candidate_id: str = None) -> list:
@@ -332,6 +684,86 @@ class EvidenceLogger:
                 if e.get("candidate_id") == candidate_id
                 or (isinstance(e.get("candidate"), dict) and e["candidate"].get("candidate_id") == candidate_id)]
 
+    @classmethod
+    def _trace_field(cls, field: str, value: str) -> list:
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{field} must be a non-empty string")
+        return [entry for entry in cls.get_all() if entry.get(field) == value]
+
+    @classmethod
+    def trace_workflow(cls, workflow_id: str) -> list:
+        return cls._trace_field("workflow_id", workflow_id)
+
+    @classmethod
+    def trace_run(cls, run_id: str) -> list:
+        return cls._trace_field("run_id", run_id)
+
+    @classmethod
+    def trace_task(
+        cls,
+        task_id: str,
+        *,
+        workflow_id: str | None = None,
+        run_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> list:
+        """Read task evidence without silently joining distinct workflows.
+
+        ``task_id`` is plan-local (for example, every plan can contain
+        ``T001``).  Existing single-workflow callers remain compatible, while
+        an unscoped query spanning multiple workflows fails closed.
+        """
+        entries = cls._trace_field("task_id", task_id)
+        if workflow_id is not None:
+            if not isinstance(workflow_id, str) or not workflow_id:
+                raise ValueError("workflow_id must be a non-empty string")
+            entries = [entry for entry in entries if entry.get("workflow_id") == workflow_id]
+        if run_id is not None:
+            if not isinstance(run_id, str) or not run_id:
+                raise ValueError("run_id must be a non-empty string")
+            entries = [entry for entry in entries if entry.get("run_id") == run_id]
+        if attempt_id is not None:
+            if not isinstance(attempt_id, str) or not attempt_id:
+                raise ValueError("attempt_id must be a non-empty string")
+            entries = [entry for entry in entries if entry.get("attempt_id") == attempt_id]
+        if workflow_id is None and run_id is None:
+            workflow_scopes = {entry.get("workflow_id") for entry in entries}
+            if len(workflow_scopes) > 1:
+                raise EvidenceTraceQueryError(
+                    "ambiguous_trace_query",
+                    f"task_id {task_id} occurs in multiple workflows; provide workflow_id or run_id",
+                )
+        return entries
+
+    @classmethod
+    def trace_artifact(
+        cls,
+        artifact_id: str | None = None,
+        *,
+        path: str | None = None,
+        sha256: str | None = None,
+    ) -> list:
+        if not any((artifact_id, path, sha256)):
+            raise ValueError("trace_artifact requires artifact_id, path or sha256")
+        values = {key: value for key, value in {
+            "artifact_id": artifact_id, "path": path, "sha256": sha256
+        }.items() if value}
+        results = []
+        for entry in cls.get_all():
+            if any(entry.get(key) == value for key, value in values.items()):
+                results.append(entry)
+                continue
+            for collection_name in ("artifacts", "outputs"):
+                artifacts = entry.get(collection_name)
+                if isinstance(artifacts, list) and any(
+                    isinstance(item, dict)
+                    and any(item.get(key) == value for key, value in values.items())
+                    for item in artifacts
+                ):
+                    results.append(entry)
+                    break
+        return results
+
 
 # ============================================================
 # 候选索引表
@@ -341,14 +773,15 @@ class CandidateIndex:
 
     @classmethod
     def _ensure_exists(cls):
-        if not INDEX_PATH.exists():
-            INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with open(INDEX_PATH, "w", newline="", encoding="utf-8-sig") as f:
+        index_path = _module_attr("INDEX_PATH")
+        if not index_path.exists():
+            index_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(index_path, "w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.writer(f)
                 writer.writerow(INDEX_COLUMNS)
             return
 
-        with open(INDEX_PATH, "r", encoding="utf-8-sig", newline="") as f:
+        with open(index_path, "r", encoding="utf-8-sig", newline="") as f:
             header = next(csv.reader(f), [])
         if header != INDEX_COLUMNS:
             cls._migrate_schema(header)
@@ -356,12 +789,13 @@ class CandidateIndex:
     @classmethod
     def _migrate_schema(cls, old_header: list[str]):
         """把旧 CSV 显式迁移到当前 schema，并在同目录保留原始备份。"""
-        with open(INDEX_PATH, "r", encoding="utf-8-sig", newline="") as f:
+        index_path = _module_attr("INDEX_PATH")
+        with open(index_path, "r", encoding="utf-8-sig", newline="") as f:
             old_rows = list(csv.DictReader(f))
 
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup = INDEX_PATH.with_name(f"{INDEX_PATH.stem}.pre_v5_{stamp}.csv")
-        backup.write_bytes(INDEX_PATH.read_bytes())
+        backup = index_path.with_name(f"{index_path.stem}.pre_v5_{stamp}.csv")
+        backup.write_bytes(index_path.read_bytes())
 
         migrated = []
         for old_row in old_rows:
@@ -385,8 +819,9 @@ class CandidateIndex:
     @classmethod
     def _write_rows(cls, rows: list[dict]):
         """同目录临时文件写完后原子替换，避免中断时留下半张 CSV。"""
-        INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = INDEX_PATH.with_name(f".{INDEX_PATH.name}.{uuid.uuid4().hex}.tmp")
+        index_path = _module_attr("INDEX_PATH")
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = index_path.with_name(f".{index_path.name}.{uuid.uuid4().hex}.tmp")
         try:
             with open(temp_path, "w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.DictWriter(f, fieldnames=INDEX_COLUMNS, extrasaction="ignore")
@@ -395,7 +830,7 @@ class CandidateIndex:
                     {col: row.get(col, "") for col in INDEX_COLUMNS}
                     for row in rows
                 )
-            os.replace(temp_path, INDEX_PATH)
+            os.replace(temp_path, index_path)
         finally:
             if temp_path.exists():
                 temp_path.unlink()
@@ -437,7 +872,7 @@ class CandidateIndex:
         ordered = cls._prepare_row(row)
         if cls.find(ordered["candidate_id"]):
             raise ValueError(f"duplicate candidate_id: {ordered['candidate_id']}")
-        with open(INDEX_PATH, "a", newline="", encoding="utf-8-sig") as f:
+        with open(_module_attr("INDEX_PATH"), "a", newline="", encoding="utf-8-sig") as f:
             csv.DictWriter(f, fieldnames=INDEX_COLUMNS, extrasaction="ignore").writerow(ordered)
 
     @classmethod
@@ -450,14 +885,14 @@ class CandidateIndex:
         duplicates.update(cid for cid in new_ids if new_ids.count(cid) > 1)
         if duplicates:
             raise ValueError(f"duplicate candidate_id(s): {sorted(duplicates)}")
-        with open(INDEX_PATH, "a", newline="", encoding="utf-8-sig") as f:
+        with open(_module_attr("INDEX_PATH"), "a", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=INDEX_COLUMNS, extrasaction="ignore")
             writer.writerows(prepared)
 
     @classmethod
     def load(cls) -> list[dict]:
         cls._ensure_exists()
-        with open(INDEX_PATH, "r", encoding="utf-8-sig") as f:
+        with open(_module_attr("INDEX_PATH"), "r", encoding="utf-8-sig") as f:
             return list(csv.DictReader(f))
 
     @classmethod

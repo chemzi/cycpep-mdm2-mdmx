@@ -22,9 +22,11 @@ Step 8: 阈值文献检索 — 为七层指标电池的每一层找文献依据�
 每层: {value, operator, unit, source, pmid, confidence, note}
 """
 
-import json, os, sys, argparse, re, threading, time, urllib.request, urllib.parse
+import json, os, sys, argparse, re, socket, ssl, threading, time, urllib.request, urllib.parse, urllib.error
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from threshold_contract import canonical_threshold_key, normalize_thresholds
 
 PUBMED_SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 PUBMED_SUMMARY_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
@@ -71,7 +73,7 @@ LAYER_QUERIES = {
             "protein peptide interface delta SASA",
         ],
     },
-    "L4_ring_closure": {
+    "L4_nc_term_dist": {
         "desc": "环肽环闭合几何 QC（肽键距离）",
         "queries": [
             "head-to-tail cyclic peptide",
@@ -82,10 +84,10 @@ LAYER_QUERIES = {
         "desc": "热点残基覆盖率定义（设计意图）",
         "queries": [
             "hotspot residues protein interface design",
-            "p53 MDM2 peptide inhibitor hotspot",
+            "hotspot coverage protein peptide interface design",
         ],
     },
-    "L6_pose_convergence": {
+    "L6_pose_rmsd": {
         "desc": "多预测器/多 seed 结合 pose 收敛 RMSD",
         "queries": [
             "binding pose prediction RMSD",
@@ -156,6 +158,38 @@ EXTRACTION_PROMPT_TMPL = """你是计算结构生物学专家，专门做环肽/
 # ===== PubMed 工具 =====
 _LAST_REQ = [0.0]
 _THROTTLE_LOCK = threading.Lock()
+_NETWORK_STATE = threading.local()
+
+
+def classify_network_error(exc: Exception) -> str:
+    text = str(exc).casefold()
+    if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
+        return "http_429"
+    if isinstance(exc, (TimeoutError, socket.timeout)) or "timed out" in text:
+        return "network_timeout"
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, ssl.SSLError) or any(
+        token in text for token in ("certificate verify failed", "ssl", "tls", "ca certificate")
+    ):
+        return "tls_ca_error"
+    if isinstance(reason, socket.gaierror) or any(
+        token in text for token in ("name or service not known", "getaddrinfo", "nodename nor servname")
+    ):
+        return "dns_error"
+    if isinstance(exc, (json.JSONDecodeError, ET.ParseError)):
+        return "response_parse_error"
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"http_{exc.code}"
+    return "network_request_failed"
+
+
+def _record_network_error(exc: Exception):
+    _NETWORK_STATE.error_code = classify_network_error(exc)
+    _NETWORK_STATE.error_message = str(exc).replace("\n", " ")[:200]
+
+
+def _network_diagnostic() -> tuple[str | None, str | None]:
+    return getattr(_NETWORK_STATE, "error_code", None), getattr(_NETWORK_STATE, "error_message", None)
 
 def _throttle(min_interval=0.5):
     """NCBI 限速：无 key 3 req/s，保守取 0.5s 间隔。"""
@@ -182,6 +216,7 @@ def search_pubmed(term: str, max_results: int = 5, retries: int = 3) -> list[str
                 time.sleep(2.0 * (attempt + 1))
                 continue
             print(f"[thresh] 搜索失败 '{term}': {e}", file=sys.stderr)
+            _record_network_error(e)
             return []
     return []
 
@@ -196,6 +231,7 @@ def fetch_abstracts(pmids: list[str]) -> dict[str, dict]:
             return json.loads(resp.read().decode()).get("result", {})
     except Exception as e:
         print(f"[thresh] 元数据失败: {e}", file=sys.stderr)
+        _record_network_error(e)
         return {}
 
 
@@ -225,6 +261,7 @@ def fetch_full_abstract(pmids: list[str]) -> dict[str, str]:
             texts[pmid_elem.text] = " ".join(sections)
     except Exception as e:
         print(f"[thresh] 摘要获取失败: {e}", file=sys.stderr)
+        _record_network_error(e)
     return texts
 
 
@@ -250,6 +287,7 @@ def fetch_pmc_ids(pmids: list[str], retries: int = 3) -> dict[str, str]:
                     time.sleep(1.5 * (attempt + 1))
                     continue
                 print(f"[thresh] PMC 转换失败 (batch {i}): {e}", file=sys.stderr)
+                _record_network_error(e)
     return pmc_map
 
 
@@ -295,6 +333,7 @@ def fetch_pmc_fulltext(pmc_ids: list[str], retries: int = 3) -> dict[str, str]:
                     time.sleep(1.5 * (attempt + 1))
                     continue
                 print(f"[thresh] PMC 全文失败 (batch {i}): {e}", file=sys.stderr)
+                _record_network_error(e)
     return texts
 
 
@@ -403,6 +442,9 @@ def curated_threshold_result(
 # ===== 单层处理 =====
 def research_one_layer(layer_key: str, cfg: dict, model: str) -> dict:
     """对一层指标：检索 -> 取正文/摘要 -> LLM 抽取阈值。"""
+    layer_key = canonical_threshold_key(layer_key)
+    _NETWORK_STATE.error_code = None
+    _NETWORK_STATE.error_message = None
     desc = cfg["desc"]
 
     # 多 query 合并 pmids（串行 + 全局限速，避免 429）
@@ -414,7 +456,14 @@ def research_one_layer(layer_key: str, cfg: dict, model: str) -> dict:
     pmids = [p for p in pmids if not (p in seen or seen.add(p))][:6]
 
     if not pmids:
-        return {"layer": layer_key, "found": False, "reason": "no_papers", "desc": desc}
+        error_code, error_message = _network_diagnostic()
+        return {
+            "layer": layer_key, "found": False,
+            "reason": "network_request_failed" if error_code else "no_papers",
+            "stage_error_code": error_code or "api_empty_result",
+            "error_message": error_message or "PubMed search completed with no matching papers",
+            "desc": desc,
+        }
 
     meta = fetch_abstracts(pmids)
     text_map, source_type_map = fetch_paper_texts(pmids)
@@ -440,6 +489,7 @@ def research_one_layer(layer_key: str, cfg: dict, model: str) -> dict:
     }
 
     if not records:
+        error_code, error_message = _network_diagnostic()
         return {
             "layer": layer_key,
             "found": False,
@@ -447,6 +497,8 @@ def research_one_layer(layer_key: str, cfg: dict, model: str) -> dict:
             "pmids_checked": pmids,
             **text_stats,
             "reason": "no_paper_text",
+            "stage_error_code": error_code or "api_empty_result",
+            "error_message": error_message or "paper metadata was found but no source text was available",
         }
 
     curated_result = curated_threshold_result(
@@ -463,6 +515,8 @@ def research_one_layer(layer_key: str, cfg: dict, model: str) -> dict:
             "pmids_checked": pmids,
             **text_stats,
             "reason": "llm_unavailable_no_api_key",
+            "stage_error_code": "missing_api_key",
+            "error_message": "LLM API key not configured; literature retrieval still completed",
         }
 
     prompt = EXTRACTION_PROMPT_TMPL.format(metric_desc=desc)
@@ -478,11 +532,16 @@ def research_one_layer(layer_key: str, cfg: dict, model: str) -> dict:
     except Exception as e:
         print(f"[thresh] {layer_key} LLM 失败: {e}", file=sys.stderr)
         result = None
+        llm_error = str(e).replace("\n", " ")[:200]
+    else:
+        llm_error = None
 
     if not result or not result.get("found"):
         return {
             "layer": layer_key, "found": False, "desc": desc,
             "pmids_checked": pmids, **text_stats, "reason": "llm_no_threshold",
+            "stage_error_code": "llm_request_failed" if llm_error else "no_explicit_threshold",
+            "error_message": llm_error or "papers did not yield a verified explicit threshold",
         }
 
     source_pmid = str(result.get("source_pmid", ""))
@@ -530,7 +589,7 @@ def main() -> int:
 
     layers = LAYER_QUERIES
     if args.layers:
-        wanted = set(args.layers.split(","))
+        wanted = {canonical_threshold_key(key) for key in args.layers.split(",")}
         layers = {k: v for k, v in LAYER_QUERIES.items() if k in wanted}
 
     llm_available = bool(os.environ.get("OPENAI_API_KEY"))
@@ -558,8 +617,26 @@ def main() -> int:
                 results[k] = {"layer": k, "found": False, "reason": f"exception: {e}"}
                 print(f"[thresh] {k}: exception {e}", file=sys.stderr)
 
+    results, normalization_audit = normalize_thresholds(results)
+
     n_found = sum(1 for r in results.values() if r.get("found"))
     n_auto_usable = sum(1 for r in results.values() if r.get("auto_usable"))
+    error_codes = {
+        key: value.get("stage_error_code")
+        for key, value in results.items() if value.get("stage_error_code")
+    }
+    network_error_codes = {
+        "dns_error", "tls_ca_error", "http_429", "network_timeout",
+        "network_request_failed", "response_parse_error",
+    }
+    if any(code in network_error_codes or str(code).startswith("http_") for code in error_codes.values()):
+        run_status = "degraded_network"
+    elif any(code == "api_empty_result" for code in error_codes.values()):
+        run_status = "degraded_empty_results"
+    elif not llm_available:
+        run_status = "degraded_no_llm"
+    else:
+        run_status = "complete"
     output = {
         "metric_battery": results,
         "_meta": {
@@ -568,7 +645,11 @@ def main() -> int:
             "n_auto_usable": n_auto_usable,
             "llm_model": model,
             "llm_available": llm_available,
-            "run_status": "complete" if llm_available else "degraded_no_llm",
+            "run_status": run_status,
+            "stage_error_code": error_codes,
+            "fallbacks_used": (["curated_verified_thresholds", "team_provisional_defaults"]
+                               if not llm_available else []),
+            "normalization_audit": normalization_audit,
             "note": "只有 PMID 与论文文本原句校验通过的 paper_explicit 数值可自动覆盖默认值；其余等待正对照标定。",
         },
     }

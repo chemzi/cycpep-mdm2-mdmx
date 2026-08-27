@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novapeptide.local/schemas/critic-report-v1.json",
+  "title": "NovaPeptide Critic Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "critic_version",
+    "report_id",
+    "input_digest",
+    "source",
+    "verdict",
+    "passed",
+    "summary",
+    "issue_counts",
+    "issues",
+    "metrics_snapshot",
+    "recommendations",
+    "planner_handoff"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "critic_version": {"type": "string", "minLength": 1},
+    "report_id": {"type": "string", "pattern": "^critic_[0-9a-f]{12}$"},
+    "input_digest": {"$ref": "#/$defs/sha256"},
+    "source": {
+      "type": "object",
+      "required": [
+        "prediction_handoff",
+        "prediction_handoff_sha256",
+        "prediction_run_id",
+        "prediction_pipeline_version",
+        "required_targets",
+        "record_count"
+      ],
+      "properties": {
+        "prediction_handoff": {"type": "string"},
+        "prediction_handoff_sha256": {"$ref": "#/$defs/sha256"},
+        "prediction_run_id": {"type": "string"},
+        "prediction_pipeline_version": {"type": "string"},
+        "project_id": {"type": ["string", "null"]},
+        "required_targets": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "record_count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "verdict": {"enum": ["blocked", "iterate", "review", "clear"]},
+    "passed": {"type": "boolean"},
+    "summary": {"type": "string"},
+    "issue_counts": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "issues": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/issue"}
+    },
+    "metrics_snapshot": {"type": "object"},
+    "recommendations": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/recommendation"}
+    },
+    "planner_handoff": {
+      "type": "object",
+      "required": [
+        "critic_report_id",
+        "issue_codes",
+        "recommended_actions",
+        "policy_constraints"
+      ],
+      "properties": {
+        "critic_report_id": {"type": "string"},
+        "issue_codes": {"type": "array", "items": {"type": "string"}},
+        "recommended_actions": {"type": "array", "items": {"type": "string"}},
+        "policy_constraints": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "severity",
+        "category",
+        "message",
+        "candidate_ids",
+        "evidence",
+        "recommended_action",
+        "owner_hint",
+        "blocks_finalization"
+      ],
+      "properties": {
+        "code": {"type": "string"},
+        "severity": {"enum": ["blocker", "high", "medium", "info"]},
+        "category": {"type": "string"},
+        "message": {"type": "string"},
+        "candidate_ids": {"type": "array", "items": {"type": "string"}},
+        "evidence": {"type": "array"},
+        "recommended_action": {"type": "string"},
+        "owner_hint": {"type": "string"},
+        "blocks_finalization": {"type": "boolean"}
+      }
+    },
+    "recommendation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "owner_hint",
+        "priority",
+        "reason_codes",
+        "approval_required"
+      ],
+      "properties": {
+        "action": {"type": "string"},
+        "owner_hint": {"type": "string"},
+        "priority": {"enum": ["P0", "P1", "P2"]},
+        "reason_codes": {"type": "array", "items": {"type": "string"}},
+        "approval_required": {"type": "boolean"}
+      }
+    }
+  }
+}

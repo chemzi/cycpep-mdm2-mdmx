@@ -82,10 +82,10 @@ eid_d = EvidenceLogger.design_batch(
 )
 check("design_batch 返回 event_id", len(eid_d) > 0)
 
-# 2c: candidate_registered (同时自增 counter)
+# 2c: candidate_registered (仅记录 evidence，不增 counter；counter 由 _next_candidate_id 管理)
 EvidenceLogger.candidate_registered({"candidate_id": "C0042", "sequence": "GFEWALAAK"})
 s = State.load()
-check("candidate_registered 自增 counter", s["candidate_count"] == 151)
+check("candidate_registered 不自动自增 counter（P0-3）", s["candidate_count"] == 150)
 
 # 2d: evaluate_layer_start
 eid_es = EvidenceLogger.evaluate_layer_start(

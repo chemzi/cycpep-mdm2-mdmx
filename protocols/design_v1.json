@@ -1,0 +1,19 @@
+{
+  "cheap_filter": {
+    "max_keep_per_backbone": 4
+  },
+  "description": "RFdiffusion backbone generation + LigandMPNN sequence sampling + AfCycDesign fixed-sequence refold, with global cheap pre-filter and Route C template cyclization/mutation expansion.",
+  "ligandmpnn": {
+    "checkpoint": "proteinmpnn_v_48_020.pt",
+    "model_type": "protein_mpnn",
+    "n_seq_per_backbone": 8
+  },
+  "mutation": {
+    "attempts_factor": 10,
+    "protected_pharmacophore": "FWL"
+  },
+  "rfdiff": {
+    "timesteps": 50
+  },
+  "version": "design_v1"
+}
