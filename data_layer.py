@@ -598,7 +598,7 @@ class EvidenceLogger:
             "old_strategy": old_strategy, "new_strategy": new_strategy,
             "reason": reason
         }, targets=list(required_target_ids((State.load().get("project_config") or State._project_config))),
-                phase="iterate")
+                phase="iterate", round_num=round_num)
 
     @classmethod
     def planner_plan(cls, plan_id: str, plan_path: str, plan_sha256: str,
